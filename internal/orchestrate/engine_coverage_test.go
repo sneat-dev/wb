@@ -9,6 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubobserver/testfixture"
+
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"github.com/sneat-dev/wb/internal/quality"
 )
 
@@ -32,6 +36,7 @@ func TestOrchCovNormalizeRejectsIncoherentLifecycleOptions(t *testing.T) {
 		{name: "dry run with resume", mutate: func(o *Options) { o.DryRun, o.Resume = true, true }, wantIn: "--dry-run cannot be combined"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			options := valid
 			test.mutate(&options)
 			if _, err := Normalize(options); err == nil || !strings.Contains(err.Error(), test.wantIn) {
@@ -139,6 +144,7 @@ func TestOrchCovParseLsRemoteSymrefReadsTheDefaultBranch(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // legacy external-process fixture remains serial during runner migration
 func TestOrchCovReadOriginHeadSymrefRefusesAnUnexpectedRef(t *testing.T) {
 	dir := t.TempDir()
 	runEngineGit(t, dir, "init", "-b", "main")
@@ -161,7 +167,7 @@ func TestOrchCovRunParallelRunsEveryIndexOnce(t *testing.T) {
 
 func TestOrchCovGitHubChecksPollIntervalUsesTheConfiguredOverride(t *testing.T) {
 	t.Parallel()
-	if got := githubChecksPollInterval(Options{}); got != DefaultCheckPollInterval {
+	if got := githubChecksPollInterval(Options{}); got != githubchecks.DefaultCheckPollInterval {
 		t.Fatalf("default poll interval = %s", got)
 	}
 	if got := githubChecksPollInterval(Options{CheckPollInterval: time.Second}); got != time.Second {
@@ -357,39 +363,39 @@ exit 30
 	options := Options{Timeout: time.Minute}
 
 	t.Run("reuses the open pull request", func(t *testing.T) {
-		state := orchCovScriptState(t, script)
-		state.answer(t, "list", "https://example.test/acme/app/pull/41\n")
-		state.answer(t, "create", "")
-		state.answer(t, "create-exit", "0")
+		state := testfixture.ScriptState(t, script)
+		state.Answer(t, "list", "https://example.test/acme/app/pull/41\n")
+		state.Answer(t, "create", "")
+		state.Answer(t, "create-exit", "0")
 		url, err := openPullRequest(context.Background(), t.TempDir(), "wb/deps", "main", "title", "body", options)
 		if err != nil || url != "https://example.test/acme/app/pull/41" {
 			t.Fatalf("openPullRequest = %q, %v", url, err)
 		}
 	})
 	t.Run("creates one", func(t *testing.T) {
-		state := orchCovScriptState(t, script)
-		state.answer(t, "list", "\n")
-		state.answer(t, "create", "Creating pull request...\nhttps://example.test/acme/app/pull/42\n")
-		state.answer(t, "create-exit", "0")
+		state := testfixture.ScriptState(t, script)
+		state.Answer(t, "list", "\n")
+		state.Answer(t, "create", "Creating pull request...\nhttps://example.test/acme/app/pull/42\n")
+		state.Answer(t, "create-exit", "0")
 		url, err := openPullRequest(context.Background(), t.TempDir(), "wb/deps", "main", "title", "body", options)
 		if err != nil || url != "https://example.test/acme/app/pull/42" {
 			t.Fatalf("openPullRequest = %q, %v", url, err)
 		}
 	})
 	t.Run("creation failed", func(t *testing.T) {
-		state := orchCovScriptState(t, script)
-		state.answer(t, "list", "\n")
-		state.answer(t, "create", "gh: validation failed\n")
-		state.answer(t, "create-exit", "1")
+		state := testfixture.ScriptState(t, script)
+		state.Answer(t, "list", "\n")
+		state.Answer(t, "create", "gh: validation failed\n")
+		state.Answer(t, "create-exit", "1")
 		if _, err := openPullRequest(context.Background(), t.TempDir(), "wb/deps", "main", "title", "body", options); err == nil {
 			t.Fatal("a failed gh pr create was accepted")
 		}
 	})
 	t.Run("no url", func(t *testing.T) {
-		state := orchCovScriptState(t, script)
-		state.answer(t, "list", "\n")
-		state.answer(t, "create", "\n")
-		state.answer(t, "create-exit", "0")
+		state := testfixture.ScriptState(t, script)
+		state.Answer(t, "list", "\n")
+		state.Answer(t, "create", "\n")
+		state.Answer(t, "create-exit", "0")
 		if _, err := openPullRequest(context.Background(), t.TempDir(), "wb/deps", "main", "title", "body", options); err == nil ||
 			!strings.Contains(err.Error(), "no pull request URL") {
 			t.Fatalf("missing URL error = %v", err)
@@ -409,8 +415,8 @@ func TestOrchCovChangedFilesAndBranchAheadReportGitFailures(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // legacy external-process fixture remains serial during runner migration
 func TestOrchCovChangedFilesNamesEveryModifiedPath(t *testing.T) {
-	t.Parallel()
 	dir := t.TempDir()
 	runEngineGit(t, dir, "init", "-b", "main")
 	writeEngineFile(t, filepath.Join(dir, "kept.txt"), "contents\n")

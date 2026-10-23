@@ -12,8 +12,51 @@ import (
 
 	"github.com/sneat-dev/wb/internal/daemon"
 	"github.com/sneat-dev/wb/internal/runlog"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/worktrees"
+	"github.com/spf13/cobra"
 )
+
+// TestRunRecipeCommandThreadsExtraOrgsIntoFleetDiscoveryInProcess proves that
+// running a named recipe (not --list) reaches runRun's fleet discovery with
+// the real invocation's extraOrgs, not a hardcoded empty one: a fake gh
+// records every argv it is called with, and the distinguishing org set only
+// on inv.extraOrgs appears in that log only if runRun actually received it.
+func TestRunRecipeCommandThreadsExtraOrgsIntoFleetDiscoveryInProcess(t *testing.T) {
+	binDir := t.TempDir()
+	logPath := filepath.Join(binDir, "gh-calls.log")
+	script := "#!/bin/sh\n" +
+		"echo \"$@\" >> " + logPath + "\n" +
+		`if [ "$1" = "api" ] && [ "$2" = "user" ]; then printf 'HTTP/2 200 OK\n\n{"login":"cwcov-user"}\n'; exit 0; fi` + "\n" +
+		`if [ "$1" = "api" ] && [ "$2" = "user/orgs" ]; then printf 'HTTP/2 200 OK\n\n[]\n'; exit 0; fi` + "\n" +
+		`if [ "$1" = "repo" ] && [ "$2" = "list" ]; then printf '[]\n'; exit 0; fi` + "\n" +
+		`printf '{"total_count":0,"items":[]}\n'` + "\n" +
+		"exit 0\n"
+	if err := testenv.WriteExecutableFile(filepath.Join(binDir, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("WB_HOME", t.TempDir())
+
+	configPath := filepath.Join(t.TempDir(), "wb.yaml")
+	if err := os.WriteFile(configPath, []byte("recipes:\n  refresh-ci:\n    type: command\n    command: \"true\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	projectsRoot := t.TempDir()
+	inv := &invocation{projectsRoot: projectsRoot, extraOrgs: []string{"target-org-9f3"}}
+	if _, _, err := cwCovExec(t, projectsRoot, func() *cobra.Command { return newRunCmd(inv) },
+		"refresh-ci", "--config", configPath); err != nil {
+		t.Fatalf("wb run refresh-ci: %v", err)
+	}
+	log, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read gh call log: %v", err)
+	}
+	if !strings.Contains(string(log), "target-org-9f3") {
+		t.Fatalf("gh calls = %q, want a repo list call naming the invocation's extraOrgs", log)
+	}
+}
 
 func TestRunCommandPreservesStreamsAndExitCode(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -39,75 +82,17 @@ func TestRunCommandPreservesStreamsAndExitCode(t *testing.T) {
 	}
 }
 
-func TestRunCommandRejectsRecipeFlags(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	code := run([]string{"run", "--apply", "--", "/bin/true"}, &stdout, &stderr)
-	if code != exitUsage {
-		t.Fatalf("exit code = %d, want usage code %d; stderr=%s", code, exitUsage, stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "belong to WB modes") {
-		t.Errorf("stderr does not explain the incompatible flag: %s", stderr.String())
-	}
-}
-
-func TestRunAsyncFlagRequiresCommandMode(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	code := run([]string{"run", "--async", "recipe-name"}, &stdout, &stderr)
-	if code != exitUsage {
-		t.Fatalf("exit code = %d, want usage code %d; stderr=%s", code, exitUsage, stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "--async requires command mode") {
-		t.Errorf("stderr does not explain async command mode: %s", stderr.String())
-	}
-}
-
-func TestRunAsyncRequiresExplicitStableWorker(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	code := run([]string{"run", "--async", "--", "go", "test"}, &stdout, &stderr)
-	if code != exitUsage {
-		t.Fatalf("exit code = %d, want usage code %d; stderr=%s", code, exitUsage, stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "--async requires --worker <stable-id>") || !strings.Contains(stderr.String(), "never guesses") {
-		t.Errorf("stderr does not explain worker binding: %s", stderr.String())
-	}
-}
-
-func TestRunWorkerFlagRequiresAsyncCommandMode(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	code := run([]string{"run", "--worker", "agent-a", "--", "go", "test"}, &stdout, &stderr)
-	if code != exitUsage {
-		t.Fatalf("exit code = %d, want usage code %d; stderr=%s", code, exitUsage, stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "--worker requires --async command mode") {
-		t.Errorf("stderr does not explain worker binding: %s", stderr.String())
-	}
-}
-
-func TestRunIdempotencyKeyRequiresAsyncCommandMode(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	code := run([]string{"run", "--idempotency-key", "retry-1", "--", "go", "test"}, &stdout, &stderr)
-	if code != exitUsage {
-		t.Fatalf("exit code = %d, want usage code %d; stderr=%s", code, exitUsage, stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "--idempotency-key requires --async command mode") {
-		t.Errorf("stderr does not explain idempotency scope: %s", stderr.String())
-	}
-}
-
 func TestDaemonRawSubmitReportsAdministratorOptInWithoutWritingPolicy(t *testing.T) {
 	root := t.TempDir()
 	policyPath := filepath.Join(t.TempDir(), "daemon-raw-exec.json")
-	previousRoot := projectsRoot
-	projectsRoot = root
-	t.Cleanup(func() { projectsRoot = previousRoot })
 	t.Chdir(root)
 
 	deps := daemonTestDependencies(t, root)
-	deps.rawPolicy = func(root string) (bool, string, error) {
+	deps.RawPolicy = func(root string) (bool, string, error) {
 		allowed, err := daemon.LoadRawExecutionPolicy(policyPath, root)
 		return allowed, policyPath, err
 	}
-	command := newDaemonOperationSubmitCmd(deps)
+	command := daemonCommandForTest("operation submit", &invocation{}, deps)
 	command.SetArgs([]string{"--", "/bin/echo", "hello"})
 	var stdout, stderr bytes.Buffer
 	command.SetOut(&stdout)
@@ -122,53 +107,6 @@ func TestDaemonRawSubmitReportsAdministratorOptInWithoutWritingPolicy(t *testing
 	}
 	if _, statErr := os.Stat(policyPath); !os.IsNotExist(statErr) {
 		t.Fatalf("CLI wrote raw execution policy: %v", statErr)
-	}
-}
-
-func TestGovernedEnvironmentCapsChildParallelism(t *testing.T) {
-	t.Setenv("GOFLAGS", "-mod=readonly")
-	environment := governedEnvironment([]string{"PATH=/bin"}, "wbo-test", []string{"go", "test", "./..."}, 2)
-	joined := strings.Join(environment, "\n")
-	for _, want := range []string{
-		"WB_OPERATION_ID=wbo-test",
-		"WB_CPU_UNITS=2",
-		"GOMAXPROCS=2",
-		"NX_PARALLEL=2",
-		// -p follows the allocation (units), not a hardcoded -p=1: forcing
-		// single-package parallelism was the root cause of sneat-dev/wb#621
-		// (a broad `go test ./...` building one package at a time on an
-		// otherwise idle 18-core machine).
-		"GOFLAGS=-mod=readonly -p=2",
-	} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("environment is missing %q:\n%s", want, joined)
-		}
-	}
-}
-
-// TestGovernedEnvironmentRespectsCallersExplicitDashP proves the caller's own
-// -p wins: governedEnvironment must not append a second -p when the caller
-// already pinned one.
-func TestGovernedEnvironmentRespectsCallersExplicitDashP(t *testing.T) {
-	t.Setenv("GOFLAGS", "-p=8")
-	environment := governedEnvironment([]string{"PATH=/bin"}, "wbo-test", []string{"go", "build", "./..."}, 5)
-	joined := strings.Join(environment, "\n")
-	if !strings.Contains(joined, "GOFLAGS=-p=8") {
-		t.Fatalf("environment does not preserve the caller's -p=8: %s", joined)
-	}
-	if strings.Contains(joined, "-p=5") {
-		t.Fatalf("environment overrode the caller's explicit -p: %s", joined)
-	}
-}
-
-// TestGovernedEnvironmentLeavesGOFLAGSAloneForNonGoCommands proves the
-// GOFLAGS/-p injection is scoped to the go tool, not every governed command.
-func TestGovernedEnvironmentLeavesGOFLAGSAloneForNonGoCommands(t *testing.T) {
-	t.Setenv("GOFLAGS", "")
-	environment := governedEnvironment([]string{"PATH=/bin"}, "wbo-test", []string{"pytest", "-q"}, 2)
-	joined := strings.Join(environment, "\n")
-	if strings.Contains(joined, "GOFLAGS=") {
-		t.Fatalf("environment set GOFLAGS for a non-go command: %s", joined)
 	}
 }
 

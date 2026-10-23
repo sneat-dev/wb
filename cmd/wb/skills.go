@@ -1,76 +1,30 @@
 package main
 
 import (
-	"fmt"
 	"os"
 
+	"github.com/sneat-dev/wb/ai"
+	"github.com/sneat-dev/wb/internal/buildinfo"
+	"github.com/sneat-dev/wb/internal/claudesettings"
+	"github.com/sneat-dev/wb/internal/cli/cmdskills"
+	"github.com/sneat-dev/wb/internal/wbskills"
 	"github.com/spf13/cobra"
 	"github.com/strongo/cli-helpers/skillsync"
 	skillscmd "github.com/strongo/cli-helpers/skillsync/cobracmd"
 )
 
-// newSkillsCmd groups everything about installing WB's own Agent Skills
-// (embedded from ai/skills, see package ai) into a harness's skills
-// directory -- Claude Code's ~/.claude/skills, Cursor's ~/.cursor/skills,
-// Codex's ~/.codex/skills -- so an orchestrating agent has them available
-// in any project, not only inside a checkout of sneat-dev/wb.
-//
-// See ai/skills/wb-skills/SKILL.md for the agent-facing walkthrough this
-// command family exists to make discoverable in the first place: the defect
-// that motivated it was an orchestrator session missing `wb session park`
-// entirely because nothing had ever installed it where that session's
-// harness looks for skills.
 func newSkillsCmd() *cobra.Command {
-	command := &cobra.Command{
-		Use:   "skills",
-		Short: "Install WB's Agent Skills into a harness's skills directory",
-		Long: `Install WB's Agent Skills into a harness's skills directory.
-
-WB ships agent-facing skills under ai/skills/ in its own repository, and
-Claude Code auto-discovers them there for a session working inside that
-checkout. A session orchestrating any other repository, with wb installed
-globally, has never had them at all -- there is nothing to auto-discover
-outside a wb checkout.
-
-'wb skills sync' closes that gap by copying every shipped skill into each
-present harness's skills directory (Claude Code, Cursor, Codex) once, so
-it is available everywhere wb is. It runs automatically after
-'wb self-update'.`,
-	}
-	command.AddCommand(newSkillsSyncCmd())
-	command.AddCommand(newSkillsHookCmd())
-	return command
+	return cmdskills.New(newCLIErrorRuntime(), cmdskills.SyncDependencies{Config: func() (skillsync.Config, error) { return wbskills.Config(ai.SkillsFS, buildinfo.Snapshot()) }, Home: os.UserHomeDir, Getenv: os.Getenv}, maintenanceHookDependencies())
 }
 
-// skillsDriftMessage is printed by the SessionStart hook. Ordinary WB
-// invocations stay quiet: repeating one warning on every tool call consumed
-// more agent context than the warning protected and made private feature builds
-// particularly noisy. A verified self-update still synchronizes skills
-// immediately, while SessionStart reports drift once when it can affect work.
-func skillsDriftMessage(dir string, status skillsync.Status, currentVersion string) string {
-	syncedVersion, installed := syncedSkillsWBVersion(status)
-	if !installed {
-		return fmt.Sprintf("wb: Agent Skills are not installed in %s -- run `wb skills sync`", dir)
-	}
-	return fmt.Sprintf("wb: Agent Skills in %s were synced by wb %s, this is wb %s -- run `wb skills sync`", dir, syncedVersion, currentVersion)
-}
-
-func syncedSkillsWBVersion(status skillsync.Status) (string, bool) {
-	plugin := wbSkillsPlugin.String()
-	if !status.Installed {
-		return "", false
-	}
-	if _, ok := status.Plugins[plugin]; !ok {
-		return "", false
-	}
-	version := status.SupplierCLIVersions[plugin][wbSkillsCLI.String()]
-	return version, version != ""
-}
-
-func defaultHarnessSkillsDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return skillscmd.DefaultHarnesses[0].SkillsDir(home, os.Getenv), nil
+func maintenanceHookDependencies() cmdskills.HookDependencies {
+	return cmdskills.HookDependencies{Executable: hookExecutable, Quote: shellQuote, Home: os.UserHomeDir, MergeSettings: claudesettings.MergeSessionStart, WriteSettings: claudesettings.WriteAtomically, Announcement: func() string {
+		return wbskills.Announcement(wbskills.AnnouncementDependencies{SkillsDir: func() (string, error) {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return "", err
+			}
+			return skillscmd.DefaultHarnesses[0].SkillsDir(home, os.Getenv), nil
+		}, ReadStatus: skillsync.ReadStatus, Version: buildinfo.Version})
+	}}
 }

@@ -76,7 +76,9 @@ func TestTailCovEnsureRootRefusesAnUnusableWriteHome(t *testing.T) {
 // EnsureHome directly: an uncreatable home, an uninspectable one, and a path
 // that exists but is not a directory.
 func TestTailCovEnsureHomeReportsFilesystemFailures(t *testing.T) {
+	t.Parallel()
 	t.Run("uncreatable home", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		if err := os.Symlink(filepath.Join(dir, "missing-target"), filepath.Join(dir, "dangling")); err != nil {
 			t.Fatal(err)
@@ -87,6 +89,7 @@ func TestTailCovEnsureHomeReportsFilesystemFailures(t *testing.T) {
 		}
 	})
 	t.Run("uninspectable home", func(t *testing.T) {
+		t.Parallel()
 		file := tailCovRegularFile(t, t.TempDir(), "regular")
 		err := EnsureHome(filepath.Join(file, "home"))
 		if err == nil || !strings.Contains(err.Error(), "inspect WB home") {
@@ -94,6 +97,7 @@ func TestTailCovEnsureHomeReportsFilesystemFailures(t *testing.T) {
 		}
 	})
 	t.Run("home is not a directory", func(t *testing.T) {
+		t.Parallel()
 		file := tailCovRegularFile(t, t.TempDir(), "regular")
 		err := EnsureHome(file)
 		if err == nil || !strings.Contains(err.Error(), "not a directory") {
@@ -105,7 +109,9 @@ func TestTailCovEnsureHomeReportsFilesystemFailures(t *testing.T) {
 // TestTailCovSeedReadmeReportsFilesystemFailures pins that a README that
 // cannot be inspected or written is reported rather than swallowed.
 func TestTailCovSeedReadmeReportsFilesystemFailures(t *testing.T) {
+	t.Parallel()
 	t.Run("uninspectable readme", func(t *testing.T) {
+		t.Parallel()
 		file := tailCovRegularFile(t, t.TempDir(), "regular")
 		err := SeedReadme(file)
 		if err == nil || !strings.Contains(err.Error(), "inspect WB home README") {
@@ -113,6 +119,7 @@ func TestTailCovSeedReadmeReportsFilesystemFailures(t *testing.T) {
 		}
 	})
 	t.Run("unwritable readme", func(t *testing.T) {
+		t.Parallel()
 		missing := filepath.Join(t.TempDir(), "absent-home")
 		err := SeedReadme(missing)
 		if err == nil || !strings.Contains(err.Error(), "write WB home README") {
@@ -155,6 +162,7 @@ func TestTailCovPinnedHomeMarkerRequiresAResolvableUserHome(t *testing.T) {
 // the filesystem's error instead of a half-resolved path when a component
 // cannot be traversed (here: a regular file used as a directory).
 func TestTailCovResolveAbsReportsUninspectablePaths(t *testing.T) {
+	t.Parallel()
 	file := tailCovRegularFile(t, t.TempDir(), "regular")
 	if resolved, err := resolveAbs(filepath.Join(file, "child")); err == nil {
 		t.Fatalf("resolveAbs(%q) = %q, want the traversal error", filepath.Join(file, "child"), resolved)

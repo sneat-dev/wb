@@ -83,6 +83,10 @@ func readAdoptedWorktreePointer(path string) (string, bool) {
 // otherwise touching the worktree itself. operationDirectory is the held,
 // locked task directory (see prepareOperationRoot/acquireLockAt).
 func createAdoptionRegistration(operationDirectory *os.File, operationRoot, owner, repository, worktree string, now time.Time) (string, error) {
+	return createAdoptionRegistrationWithObservation(operationDirectory, operationRoot, owner, repository, worktree, now, nil)
+}
+
+func createAdoptionRegistrationWithObservation(operationDirectory *os.File, operationRoot, owner, repository, worktree string, now time.Time, beforeIdentity func(string)) (string, error) {
 	ownerFD, err := openOrCreateNoFollowDirectory(int(operationDirectory.Fd()), owner)
 	if err != nil {
 		return "", err
@@ -100,6 +104,9 @@ func createAdoptionRegistration(operationDirectory *os.File, operationRoot, owne
 	repositoryDirectory := os.NewFile(uintptr(repositoryFD), "wb-adopt-registration")
 	defer func() { _ = repositoryDirectory.Close() }()
 	registrationPath := filepath.Join(ownerPath, repository)
+	if beforeIdentity != nil {
+		beforeIdentity(registrationPath)
+	}
 	if !directoryStillMatches(registrationPath, repositoryDirectory) {
 		return "", fmt.Errorf("adopted worktree registration path changed before writing; refusing redirected registration")
 	}
@@ -168,6 +175,10 @@ type AdoptResult struct {
 
 // Adopt is documented on the package-level comment above.
 func Adopt(ctx context.Context, options AdoptOptions) ([]AdoptResult, error) {
+	return adoptWithHomeObservation(ctx, options, nil)
+}
+
+func adoptWithHomeObservation(ctx context.Context, options AdoptOptions, beforeHome func()) ([]AdoptResult, error) {
 	projectsRoot, err := absoluteProjectsRoot(options.ProjectsRoot)
 	if err != nil {
 		return nil, err
@@ -226,6 +237,9 @@ func Adopt(ctx context.Context, options AdoptOptions) ([]AdoptResult, error) {
 	}
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].Path < candidates[j].Path })
 
+	if beforeHome != nil {
+		beforeHome()
+	}
 	home, err := wbhome.Root(projectsRoot)
 	if err != nil {
 		return nil, err
@@ -239,7 +253,7 @@ func Adopt(ctx context.Context, options AdoptOptions) ([]AdoptResult, error) {
 
 func adoptOne(ctx context.Context, projectsRoot, home string, candidate OrphanWorktree, apply bool, initiator string, now time.Time) AdoptResult {
 	result := AdoptResult{Path: candidate.Path}
-	if candidate.Layout != LayoutExternal {
+	if candidate.Layout != LayoutExternal && (candidate.Layout != LayoutCurrent || !hasRetiredPrepareCandidateAcknowledgement(projectsRoot, candidate.EffortID, candidate.Path, candidate.Branch, candidateBranchHead(ctx, candidate.Path))) {
 		result.Action = AdoptSkipped
 		result.Reason = fmt.Sprintf("layout is %q, not external; already under WB management", candidate.Layout)
 		return result
@@ -252,12 +266,14 @@ func adoptOne(ctx context.Context, projectsRoot, home string, candidate OrphanWo
 	// An already-claimed worktree — adopted before, or genuinely created by
 	// `wb worktree create` and merely discovered here — is a no-op. Re-running
 	// a sweep over hundreds of worktrees after an interruption must be safe.
-	if _, _, _, err := activeWorkLogClaim(home, candidate.Path); err == nil {
+	claimed, claimErr := adoptionClaimState(home, candidate.Path)
+	if claimed {
 		result.Action = AdoptAlreadyAdopted
 		return result
-	} else if !errors.Is(err, errWorkLogProjectionNotFound) {
+	}
+	if claimErr != nil {
 		result.Action = AdoptSkipped
-		result.Reason = fmt.Sprintf("existing Work Log state is inconsistent, refusing to adopt: %v", err)
+		result.Reason = fmt.Sprintf("existing Work Log state is inconsistent, refusing to adopt: %v", claimErr)
 		return result
 	}
 	_, _, owner, repository, err := managedWorktreeCanonicalCoordinates(ctx, projectsRoot, candidate.Path)
@@ -315,10 +331,12 @@ func adoptApply(home, owner, repository string, manifest Manifest, worktree, ini
 	defer func() { _ = lock.release() }()
 	// Re-check under the lock: another sweep or session may have adopted this
 	// exact worktree in the window between the pre-lock check and here.
-	if _, _, _, err := activeWorkLogClaim(home, worktree); err == nil {
+	claimed, claimErr := adoptionClaimState(home, worktree)
+	if claimed {
 		return nil
-	} else if !errors.Is(err, errWorkLogProjectionNotFound) {
-		return fmt.Errorf("existing Work Log state is inconsistent, refusing to adopt: %w", err)
+	}
+	if claimErr != nil {
+		return fmt.Errorf("existing Work Log state is inconsistent, refusing to adopt: %w", claimErr)
 	}
 	if _, err := createAdoptionRegistration(operation.Directory, operation.Path, owner, repository, worktree, now); err != nil {
 		return err
@@ -332,4 +350,18 @@ func adoptApply(home, owner, repository string, manifest Manifest, worktree, ini
 		return fmt.Errorf("record adoption Work Log claim: %w", err)
 	}
 	return nil
+}
+
+// adoptionClaimState makes absence the sole admissible unclaimed state. Both
+// callers use it: once for a nonmutating preview and again under the task lock
+// before publishing registration and claim evidence.
+func adoptionClaimState(home, worktree string) (claimed bool, err error) {
+	_, _, _, err = activeWorkLogClaim(home, worktree)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, errWorkLogProjectionNotFound) {
+		return false, nil
+	}
+	return false, err
 }

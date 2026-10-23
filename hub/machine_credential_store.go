@@ -64,6 +64,26 @@ func (store machineCredentialStore) RotateMachineCredential(ctx context.Context,
 		if getErr != nil {
 			return fmt.Errorf("read current machine enrollment: %w", getErr)
 		}
+		// M-c: RefuseIfPeerNameCollision's own read (the plain "enroll" RPC
+		// route's pre-check, cmd/wb/daemon_peers.go) happens before this
+		// transaction, so a concurrent PeerAdminService.Invite of the same
+		// name can commit its own peer trust document in the gap between
+		// that pre-check and this write — the same MachineID, since both
+		// paths derive it identically from identity + machine name. Without
+		// this re-check, that race would let a plain enroll silently rotate
+		// a fresh peer's credential out from under it, indistinguishable
+		// from an ordinary re-enrollment. Reading the trust document inside
+		// this same atomic transaction, at the point that actually decides
+		// the write, closes the gap the way Invite's own transaction already
+		// closes the mirror-image race for peers.
+		var trustRecord PeerRecord
+		trustFound, trustErr := transaction.Get(ctx, peerTrustCollection, enrollmentID, &trustRecord)
+		if trustErr != nil {
+			return fmt.Errorf("check peer trust record: %w", trustErr)
+		}
+		if trustFound {
+			return fmt.Errorf("%q already belongs to a peer; enrolling it as a plain machine would shadow that peer", binding.MachineName)
+		}
 		var collision machineCredentialDocument
 		credentialFound, credentialErr := transaction.Get(ctx, machineCredentialCollection, credentialID, &collision)
 		if credentialErr != nil {
@@ -119,7 +139,30 @@ func machineCredentialID(digest MachineTokenDigest) string {
 	return hex.EncodeToString(digest[:])
 }
 
+// NewMachineIndex wires MachineIndex to the same enrollment collection
+// machineCredentialStore writes, without exposing RotateMachineCredential or
+// ResolveMachineCredential to a caller that only needs "does this name
+// already have a credential".
+func NewMachineIndex(backend githubapp.DocumentStore) MachineIndex {
+	return machineIndexStore{backend: backend}
+}
+
+type machineIndexStore struct{ backend githubapp.DocumentStore }
+
+func (index machineIndexStore) HasCredential(ctx context.Context, machineID string) (bool, error) {
+	if index.backend == nil {
+		return false, errMachineCredentialUnavailable
+	}
+	var document machineEnrollmentDocument
+	found, err := index.backend.Get(ctx, machineEnrollmentCollection, machineID, &document)
+	if err != nil {
+		return false, err
+	}
+	return found, nil
+}
+
 var (
 	_ MachineCredentialStore    = machineCredentialStore{}
 	_ MachineCredentialResolver = machineCredentialStore{}
+	_ MachineIndex              = machineIndexStore{}
 )

@@ -293,6 +293,7 @@ func TestHkCovRunVerifiesARealCanonicalRescueAttestation(t *testing.T) {
 }
 
 func TestHkCovParseRefUpdatesScannerError(t *testing.T) {
+	t.Parallel()
 	failure := errors.New("ref stream failed")
 	if _, err := ParseRefUpdates(iotest.ErrReader(failure)); err == nil || !strings.Contains(err.Error(), "read pushed-ref list") {
 		t.Fatalf("ParseRefUpdates(erroring reader) error = %v", err)
@@ -300,6 +301,7 @@ func TestHkCovParseRefUpdatesScannerError(t *testing.T) {
 }
 
 func TestHkCovClassifyPushTierUnrecognizedNamespace(t *testing.T) {
+	t.Parallel()
 	updates := []RefUpdate{{
 		LocalRef: "refs/notes/commits", LocalSHA: strings.Repeat("a", 40),
 		RemoteRef: "refs/notes/commits", RemoteSHA: zeroOID40,
@@ -314,6 +316,7 @@ func TestHkCovClassifyPushTierUnrecognizedNamespace(t *testing.T) {
 }
 
 func TestHkCovClassifyPendingPushRejectsMalformedInput(t *testing.T) {
+	t.Parallel()
 	repo := initRepo(t)
 	if _, err := ClassifyPendingPush(strings.NewReader("only two fields\n"), repo); err == nil || !strings.Contains(err.Error(), "malformed pushed-ref line") {
 		t.Fatalf("ClassifyPendingPush(malformed) error = %v", err)
@@ -334,23 +337,23 @@ func TestHkCovDetectDefaultBranchLocalState(t *testing.T) {
 	repo := initRepo(t)
 	t.Setenv(DefaultBranchEnv, "")
 
-	if got := detectDefaultBranch(repo); got != "" {
-		t.Fatalf("detectDefaultBranch(no remote refs) = %q, want empty", got)
+	if got := DetectDefaultBranch(repo); got != "" {
+		t.Fatalf("DetectDefaultBranch(no remote refs) = %q, want empty", got)
 	}
 
 	// The recorded origin/HEAD symref wins.
 	git(t, repo, "update-ref", "refs/remotes/origin/main", "HEAD")
 	git(t, repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
-	if got := detectDefaultBranch(repo); got != "main" {
-		t.Fatalf("detectDefaultBranch(origin/HEAD) = %q, want main", got)
+	if got := DetectDefaultBranch(repo); got != "main" {
+		t.Fatalf("DetectDefaultBranch(origin/HEAD) = %q, want main", got)
 	}
 
 	// Without origin/HEAD the conventional remote-tracking ref is used.
 	git(t, repo, "symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
 	git(t, repo, "update-ref", "-d", "refs/remotes/origin/main")
 	git(t, repo, "update-ref", "refs/remotes/origin/master", "HEAD")
-	if got := detectDefaultBranch(repo); got != "master" {
-		t.Fatalf("detectDefaultBranch(fallback) = %q, want master", got)
+	if got := DetectDefaultBranch(repo); got != "master" {
+		t.Fatalf("DetectDefaultBranch(fallback) = %q, want master", got)
 	}
 }
 
@@ -373,6 +376,7 @@ func TestHkCovDefaultPRStatusCachePath(t *testing.T) {
 }
 
 func TestHkCovCachedGHPRLookupDefaultsAndBlankInputs(t *testing.T) {
+	t.Parallel()
 	lookup := &CachedGHPRLookup{}
 	if lookup.ttl() != defaultPRStatusCacheTTL {
 		t.Fatalf("ttl() = %v, want %v", lookup.ttl(), defaultPRStatusCacheTTL)
@@ -398,15 +402,20 @@ func TestHkCovCachedGHPRLookupDefaultsAndBlankInputs(t *testing.T) {
 func TestHkCovCachedGHPRLookupUsesTheDefaultRunner(t *testing.T) {
 	repo := initRepo(t)
 	isolateEnvironment(t)
-	hkCovFakeGH(t, "printf '[{\"number\": 7}]'\n")
+	marker := filepath.Join(t.TempDir(), "lookup-dispatched")
+	t.Setenv("HKCOV_LOOKUP_MARKER", marker)
+	hkCovFakeGH(t, "printf dispatched > \"$HKCOV_LOOKUP_MARKER\"\nprintf '[{\"number\": 7}]'\n")
 	cachePath := filepath.Join(t.TempDir(), "pr-status-cache.json")
 	lookup := &CachedGHPRLookup{
 		RepoRoot: repo, RepoSlug: "acme/widget", CachePath: cachePath,
-		TTL: time.Minute, Timeout: 5 * time.Second,
+		TTL: time.Minute, Timeout: 30 * time.Second,
 	}
 	open, known := lookup.OpenPullRequest("feature")
 	if !open || !known {
 		t.Fatalf("OpenPullRequest = %v, %v; want a known open pull request", open, known)
+	}
+	if contents, err := os.ReadFile(marker); err != nil || string(contents) != "dispatched" {
+		t.Fatalf("native lookup dispatch = %q, %v", contents, err)
 	}
 	cache := loadPRStatusCache(cachePath)
 	if entry, found := cache["acme/widget#feature"]; !found || !entry.Open {
@@ -415,6 +424,7 @@ func TestHkCovCachedGHPRLookupUsesTheDefaultRunner(t *testing.T) {
 }
 
 func TestHkCovCachedGHPRLookupRejectsBadJSON(t *testing.T) {
+	t.Parallel()
 	repo := initRepo(t)
 	lookup := &CachedGHPRLookup{
 		RepoRoot: repo, RepoSlug: "acme/widget",
@@ -442,6 +452,7 @@ func TestHkCovRunGHExecutesTheFakeBinary(t *testing.T) {
 }
 
 func TestHkCovPRStatusCacheLoadAndSave(t *testing.T) {
+	t.Parallel()
 	if cache := loadPRStatusCache("   "); len(cache) != 0 {
 		t.Fatalf("loadPRStatusCache(blank) = %#v, want empty", cache)
 	}
@@ -490,6 +501,7 @@ func TestHkCovPRStatusCacheLoadAndSave(t *testing.T) {
 }
 
 func TestHkCovPRHeadQualifier(t *testing.T) {
+	t.Parallel()
 	if got := prHeadQualifier("acme/widget", "feature"); got != "acme:feature" {
 		t.Fatalf("prHeadQualifier = %q, want acme:feature", got)
 	}

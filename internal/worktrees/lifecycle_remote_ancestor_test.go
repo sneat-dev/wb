@@ -7,6 +7,7 @@ import (
 )
 
 func TestCleanupSafetyRejectsDivergedRemoteEvenWhenLocalIsIntegrated(t *testing.T) {
+	t.Parallel()
 	eligible, reason := cleanupSafetyEligibility(ListResult{
 		Clean: true, IntegratedAtOrigin: true,
 		HeadSHA: "local", RemoteHeadSHA: "diverged",
@@ -17,6 +18,7 @@ func TestCleanupSafetyRejectsDivergedRemoteEvenWhenLocalIsIntegrated(t *testing.
 }
 
 func TestUnfetchedRemoteObjectIsARefusalSignal(t *testing.T) {
+	t.Parallel()
 	if !isUnfetchedGitObjectError(assertiveError("exit status 128: fatal: Not a valid commit name deadbeef")) {
 		t.Fatal("missing remote object must be classified without aborting inventory")
 	}

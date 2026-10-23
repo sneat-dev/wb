@@ -9,8 +9,17 @@ dist/
 !hub/web/dist/
 hub/web/dist/*
 !hub/web/dist/.gitkeep
+# cockpit/web/dist follows the same rule as hub/web/dist above: the Angular
+# build output is ignored, and only the placeholder that lets go:embed compile
+# in a clean clone is tracked.
+!cockpit/web/dist/
+cockpit/web/dist/*
+!cockpit/web/dist/.gitkeep
 node_modules/
 .astro/
+# The Angular CLI writes its build cache where it is run from, the repository
+# root included, so it is ignored at any depth.
+.angular/
 test-results/
 *.o
 *.exe
@@ -40,3 +49,4 @@ test-results/
 # Python bytecode caches (tools/sdlc-metrics and any other Python tooling).
 __pycache__/
 *.pyc
+cockpit/web/dist-preview/

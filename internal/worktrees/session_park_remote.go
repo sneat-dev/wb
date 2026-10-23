@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/sneat-dev/wb/internal/gitremote"
-	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/sessionpark"
 )
 
@@ -47,23 +46,7 @@ func WithParkedRemoteResumeCustody(ctx context.Context, projectsRoot string, bun
 		}
 	}
 	sort.SliceStable(members, func(i, j int) bool { return members[i].snapshot.WorktreeDir < members[j].snapshot.WorktreeDir })
-	defer func() {
-		for index := len(members) - 1; index >= 0; index-- {
-			member := &members[index]
-			if member.unlock != nil {
-				member.unlock()
-			}
-			if member.journal != nil {
-				_ = member.journal.Close()
-			}
-			if member.worktree != nil {
-				member.worktree.close()
-			}
-			if member.canonical != nil {
-				member.canonical.close()
-			}
-		}
-	}()
+	defer closeParkedSessionMembers(members)
 	for index := range members {
 		if index > 0 && members[index-1].snapshot.WorktreeDir == members[index].snapshot.WorktreeDir {
 			return fmt.Errorf("remote parked-session member path is duplicated")
@@ -125,9 +108,6 @@ func validateRemoteParkedMember(ctx context.Context, projectsRoot string, prepar
 	}
 	if err := corroborateProjectionAcrossHomes(projectsRoot, prepared.resolvedWorktreeDir, projection); err != nil {
 		return fmt.Errorf("corroborate source Work Log claim: %w", err)
-	}
-	if _, err := sessionmove.ParseWorkLogReference(member.WorkLogReference); err != nil {
-		return fmt.Errorf("source Work Log reference is invalid")
 	}
 	events, _, err := readLocalEventsForAppend(prepared.journal)
 	if err != nil {

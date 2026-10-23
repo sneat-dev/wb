@@ -24,6 +24,7 @@ func (f *fakeRunner) Run(_ context.Context, args ...string) ([]byte, error) {
 }
 
 func TestSearchQueryDoesNotImplicitlyExcludeArchivedRepositories(t *testing.T) {
+	t.Parallel()
 	runner := &fakeRunner{fn: func(args []string) ([]byte, error) {
 		if strings.Contains(strings.Join(args, " "), "archived:false") {
 			t.Fatalf("default query unexpectedly excludes archived repositories: %v", args)
@@ -46,6 +47,7 @@ func TestSearchQueryDoesNotImplicitlyExcludeArchivedRepositories(t *testing.T) {
 }
 
 func TestSearchQueryExplicitlyExcludesArchivedRepositories(t *testing.T) {
+	t.Parallel()
 	runner := &fakeRunner{fn: func(args []string) ([]byte, error) {
 		if !strings.Contains(strings.Join(args, " "), "archived:false") {
 			t.Fatalf("explicit archive exclusion missing: %v", args)
@@ -62,6 +64,7 @@ func TestSearchQueryExplicitlyExcludesArchivedRepositories(t *testing.T) {
 }
 
 func TestInventoryFullyInventoriesMoreThanFifteenOwners(t *testing.T) {
+	t.Parallel()
 	owners := make([]Owner, 20)
 	for i := range owners {
 		owners[i] = Owner{Login: "org-" + string(rune('a'+i)), Qualifier: "org"}
@@ -82,6 +85,7 @@ func TestInventoryFullyInventoriesMoreThanFifteenOwners(t *testing.T) {
 }
 
 func TestInventoryReconcilesPartialOwnerResultsAndKeepsDiagnostics(t *testing.T) {
+	t.Parallel()
 	runner := &fakeRunner{fn: func(args []string) ([]byte, error) {
 		if strings.Contains(strings.Join(args, " "), "org-broken") {
 			return nil, errors.New("rate limited")
@@ -103,6 +107,7 @@ func TestInventoryReconcilesPartialOwnerResultsAndKeepsDiagnostics(t *testing.T)
 }
 
 func TestInventoryAppliesImmutableCreatedBeforeCutoff(t *testing.T) {
+	t.Parallel()
 	runner := &fakeRunner{fn: func(args []string) ([]byte, error) {
 		return []byte(`[{"total_count":2,"items":[
 {"id":"1","number":1,"title":"before","html_url":"https://github.com/acme/app/pull/1","repository_url":"https://api.github.com/repos/acme/app","user":{"login":"a"},"created_at":"2026-08-10T23:59:59Z","updated_at":"2026-08-11T00:00:00Z"},
@@ -119,6 +124,7 @@ func TestInventoryAppliesImmutableCreatedBeforeCutoff(t *testing.T) {
 }
 
 func TestInventoryNoonCutoffKeepsEarlierPRsOnTheSameDay(t *testing.T) {
+	t.Parallel()
 	runner := &fakeRunner{fn: func(args []string) ([]byte, error) {
 		query := strings.Join(args, " ")
 		if strings.Contains(query, "created:<2026-08-11") {
@@ -135,6 +141,7 @@ func TestInventoryNoonCutoffKeepsEarlierPRsOnTheSameDay(t *testing.T) {
 }
 
 func TestInventoryDetailFailureIsVisibleAndIncomplete(t *testing.T) {
+	t.Parallel()
 	runner := &fakeRunner{fn: func(args []string) ([]byte, error) {
 		if len(args) > 0 && args[0] == "pr" {
 			return nil, errors.New("details unavailable")
@@ -151,6 +158,7 @@ func TestInventoryDetailFailureIsVisibleAndIncomplete(t *testing.T) {
 }
 
 func TestMarkdownAndJSONIncludeStableSnapshotMetadataAndPRFields(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 30, 12, 34, 56, 0, time.UTC)
 	report := Report{
 		SchemaVersion: 1, SnapshotAt: now,

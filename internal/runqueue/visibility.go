@@ -10,6 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/filewrite"
 )
 
 // This file makes the CPU lease queue inspectable: who is waiting, in what
@@ -96,7 +98,82 @@ type State struct {
 
 var ticketSeq int64
 
+// queueRootOverrideFrom/queueRootOverrideTo, when queueRootOverrideFrom is
+// non-empty, replace the projectsRoot-derived directory every admission call
+// in this package (Acquire, Admit, AdmitExplicit, Register, RegisterHeavy,
+// and their read-only Peek/Snapshot counterparts) resolves its queue state
+// against, but ONLY when the projectsRoot a caller passes is exactly equal
+// to queueRootOverrideFrom — every other projectsRoot keeps resolving to its
+// own, real, unoverridden directory. It exists only so cmd/wb's own tests
+// can give the one, specific projectsRoot the test binary would otherwise
+// default to (see TestMain, which keys it to defaultProjectsRoot()) an
+// isolated CPU admission queue, separate from the real, machine-wide one an
+// outer `wb run -- go test ./cmd/wb/...` invocation already holds a slot in
+// — without it, a test that itself calls into `wb run --` (e.g.
+// TestRunCommandAdmitsCPUHeavyWorkBelowFloor) joins that same queue and
+// waits behind its own outer holder forever (sneat-dev/wb#623's own
+// deadlock on this VM). The override is keyed, rather than blanket, so a
+// test that explicitly passes its own `--projects-root`/t.TempDir() (e.g.
+// TestRunCommandReportsQueueVisibilityOnStderr) keeps contending for that
+// root's real, unoverridden queue directory — proving `wb run` still wires
+// --projects-root into CPU admission (PR #736 review finding B1). Production
+// code must never assign either var; only SetQueueRootForTest, meant to be
+// called from a package's TestMain or from a test itself, does.
+//
+// This is one (from, to) slot, not a map: it supports only one active
+// override at a time, from sequential (never parallel) tests, exactly like
+// any other single global variable a test seam overrides — the same
+// contract SetNumCPUForTest already carries. A second SetQueueRootForTest
+// call displaces whatever key is currently active (last writer wins), and
+// nested use must restore in LIFO (reverse) order, the same discipline a
+// nested defer/t.Cleanup chain already gives for free. queueRootOverrideMu
+// only makes concurrent reads and writes of the pair data-race-free; it
+// does not, and cannot, make two simultaneously active overrides coexist,
+// or make an out-of-order restore safe.
+var (
+	queueRootOverrideMu   sync.Mutex
+	queueRootOverrideFrom string
+	queueRootOverrideTo   string
+)
+
+// SetQueueRootForTest overrides the directory queueRoot resolves to, but
+// only for the exact fromProjectsRoot given — every other projectsRoot is
+// unaffected. It returns a restore func. See queueRootOverrideFrom/
+// queueRootOverrideTo for this override's sequential-only contract.
+// Production code must never call this; it exists for TestMain and for
+// tests the same way SetNumCPUForTest exists for tests that need a
+// specific NumCPU.
+func SetQueueRootForTest(fromProjectsRoot, dir string) (restore func()) {
+	queueRootOverrideMu.Lock()
+	previousFrom, previousTo := queueRootOverrideFrom, queueRootOverrideTo
+	queueRootOverrideFrom, queueRootOverrideTo = fromProjectsRoot, dir
+	queueRootOverrideMu.Unlock()
+	return func() {
+		queueRootOverrideMu.Lock()
+		queueRootOverrideFrom, queueRootOverrideTo = previousFrom, previousTo
+		queueRootOverrideMu.Unlock()
+	}
+}
+
+// QueueDirForTest returns exactly the directory queueRoot resolves for
+// projectsRoot right now: the real, unoverridden path, or the active
+// override's target when projectsRoot matches its key. It exists only so
+// a test in another package — cmd/wb's TestMain, which installs the
+// binary-wide isolation this seam exists for — can assert that its own
+// isolation is actually in effect, rather than trusting it silently
+// (PR #736 review finding B1, round 3). Production code must never call
+// this.
+func QueueDirForTest(projectsRoot string) string {
+	return queueRoot(projectsRoot)
+}
+
 func queueRoot(projectsRoot string) string {
+	queueRootOverrideMu.Lock()
+	from, to := queueRootOverrideFrom, queueRootOverrideTo
+	queueRootOverrideMu.Unlock()
+	if from != "" && projectsRoot == from {
+		return to
+	}
 	return filepath.Join(projectsRoot, ".wb", "runtime", "cpu")
 }
 
@@ -188,26 +265,35 @@ func Register(projectsRoot string, self Participant) *Ticket {
 // TestAdmitHeavySimultaneousArrivalsRespectTheCap's three-way case
 // occasionally admitting 9+12+6 instead of 9+9+9).
 func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	return atomicWriteFileInjected(path, data, perm, nil)
+}
+
+// atomicWriteFileInjected is atomicWriteFile's test seam (task-9 PR-8): every
+// production call site reaches it only through atomicWriteFile, which always
+// passes a nil *filewrite.Injector, so production behaviour is unchanged. A
+// test passes its own Injector to reach the create/write/close/chmod/rename
+// failure branches deterministically.
+func atomicWriteFileInjected(path string, data []byte, perm os.FileMode, inj *filewrite.Injector) error {
 	directory := filepath.Dir(path)
-	temporary, err := os.CreateTemp(directory, ".tmp-*")
+	temporary, err := filewrite.CreateTemp(directory, ".tmp-*", inj)
 	if err != nil {
 		return err
 	}
 	tempPath := temporary.Name()
-	if _, err := temporary.Write(data); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.Write(temporary, data, tempPath, inj); err != nil {
+		_ = filewrite.Close(temporary, tempPath, inj)
 		_ = os.Remove(tempPath)
 		return err
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, tempPath, inj); err != nil {
 		_ = os.Remove(tempPath)
 		return err
 	}
-	if err := os.Chmod(tempPath, perm); err != nil {
+	if err := filewrite.ChmodPath(tempPath, perm, inj); err != nil {
 		_ = os.Remove(tempPath)
 		return err
 	}
-	if err := os.Rename(tempPath, path); err != nil {
+	if err := filewrite.Rename(tempPath, path, inj); err != nil {
 		_ = os.Remove(tempPath)
 		return err
 	}
@@ -240,7 +326,10 @@ func reapStaleTempFile(dir string, entry os.DirEntry) {
 // registerAt is Register generalized to any namespace/directory; RegisterHeavy
 // (heavy.go) is its only other caller.
 func registerAt(projectsRoot string, namespace ticketNamespace, dir string, self Participant) *Ticket {
-	now := time.Now().UTC()
+	return registerAtTime(projectsRoot, namespace, dir, self, time.Now().UTC())
+}
+
+func registerAtTime(projectsRoot string, namespace ticketNamespace, dir string, self Participant, now time.Time) *Ticket {
 	ticket := &Ticket{projectsRoot: projectsRoot, namespace: namespace, createdAt: now, self: self}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return ticket
@@ -310,8 +399,9 @@ func (ticket *Ticket) Snapshot(budget int) State {
 	return snapshot(ticket.projectsRoot, ticket.namespace, ticket.pathLocked(), budget)
 }
 
-// Peek reports legacy-pool queue state without registering a waiter — used
-// by `wb run --queue` and by the initial "admitted (queue empty)" check.
+// Peek reports legacy-pool queue state without registering a waiter. No
+// production caller remains: `wb run --queue` lists through ListQueue. It is
+// kept for cmd/wb tests that observe the pool.
 func Peek(projectsRoot string, budget int) State {
 	return snapshot(projectsRoot, namespaceLegacy, "", budget)
 }
@@ -476,10 +566,13 @@ type Announcement struct {
 // just means that slot stays anonymous in State (readHolders skips slots
 // with no holder file), never a hard error.
 func (lease *Lease) Announce(self Participant) *Announcement {
+	return lease.announceAt(self, time.Now().UTC())
+}
+
+func (lease *Lease) announceAt(self Participant, started time.Time) *Announcement {
 	if lease == nil || len(lease.files) == 0 {
 		return &Announcement{}
 	}
-	started := time.Now().UTC()
 	announcement := &Announcement{self: self, started: started}
 	for _, file := range lease.files {
 		holderPath := holderPathFor(file.Name())
@@ -500,10 +593,14 @@ func (lease *Lease) Announce(self Participant) *Announcement {
 // a failed refresh just risks the holder aging past staleAfter and being
 // reaped as if the process had died, which only affects visibility.
 func (announcement *Announcement) Heartbeat() {
+	announcement.heartbeatAt(time.Now().UTC())
+}
+
+func (announcement *Announcement) heartbeatAt(now time.Time) {
 	if announcement == nil || len(announcement.paths) == 0 {
 		return
 	}
-	payload, err := json.Marshal(Holder{Participant: announcement.self, StartedAt: announcement.started, UpdatedAt: time.Now().UTC()})
+	payload, err := json.Marshal(Holder{Participant: announcement.self, StartedAt: announcement.started, UpdatedAt: now})
 	if err != nil {
 		return
 	}

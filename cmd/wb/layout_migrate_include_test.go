@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -21,7 +22,7 @@ func fetchableFixtureAt(t *testing.T, root, originName, clonePath, content strin
 	t.Helper()
 	origin := filepath.Join(root, originName)
 	if _, statErr := os.Stat(origin); statErr != nil {
-		runGit(t, root, "init", "--bare", "-b", "main", origin)
+		testenv.InitBareRemoteForTest(t, origin)
 	}
 	if err := os.MkdirAll(filepath.Dir(clonePath), 0o755); err != nil {
 		t.Fatal(err)

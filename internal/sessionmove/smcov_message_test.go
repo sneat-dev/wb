@@ -129,6 +129,7 @@ func smCovMsgWrite(t *testing.T, path string, raw []byte, mode os.FileMode) {
 }
 
 func TestSmCovMsgNewMessageID(t *testing.T) {
+	t.Parallel()
 	first, err := NewMessageID()
 	if err != nil {
 		t.Fatalf("NewMessageID: %v", err)
@@ -163,6 +164,7 @@ func TestSmCovMsgNewMessageID(t *testing.T) {
 }
 
 func TestSmCovMsgReceiptValidateBranches(t *testing.T) {
+	t.Parallel()
 	message := validMessage(validRequest())
 	raw, err := EncodeMessage(message)
 	if err != nil {
@@ -200,6 +202,7 @@ func TestSmCovMsgReceiptValidateBranches(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			mutated := receipt
 			test.mutate(&mutated)
 			got, err := EncodeMessageReceipt(mutated)
@@ -214,6 +217,7 @@ func TestSmCovMsgReceiptValidateBranches(t *testing.T) {
 }
 
 func TestSmCovMsgValidateMessageReceiptErrors(t *testing.T) {
+	t.Parallel()
 	message := validMessage(validRequest())
 	raw, err := EncodeMessage(message)
 	if err != nil {
@@ -226,6 +230,7 @@ func TestSmCovMsgValidateMessageReceiptErrors(t *testing.T) {
 	}
 
 	t.Run("invalid receipt", func(t *testing.T) {
+		t.Parallel()
 		broken := receipt
 		broken.PastedAt = time.Time{}
 		if err := ValidateMessageReceipt(broken, message, digest, receipt.TmuxName, receipt.PID); err == nil {
@@ -233,6 +238,7 @@ func TestSmCovMsgValidateMessageReceiptErrors(t *testing.T) {
 		}
 	})
 	t.Run("invalid message", func(t *testing.T) {
+		t.Parallel()
 		broken := message
 		broken.Kind = MessageKind("telepathy")
 		if err := ValidateMessageReceipt(receipt, broken, digest, receipt.TmuxName, receipt.PID); err == nil {
@@ -240,6 +246,7 @@ func TestSmCovMsgValidateMessageReceiptErrors(t *testing.T) {
 		}
 	})
 	t.Run("invalid digest", func(t *testing.T) {
+		t.Parallel()
 		if err := ValidateMessageReceipt(receipt, message, Digest("not-a-digest"), receipt.TmuxName, receipt.PID); err == nil {
 			t.Fatal("ValidateMessageReceipt accepted an invalid digest")
 		}
@@ -263,6 +270,7 @@ func TestSmCovMsgValidateMessageReceiptErrors(t *testing.T) {
 	}
 	for _, test := range mismatches {
 		t.Run("binding mismatch "+test.name, func(t *testing.T) {
+			t.Parallel()
 			mutated := receipt
 			test.receipt(&mutated)
 			if _, err := EncodeMessageReceipt(mutated); err != nil {
@@ -277,6 +285,7 @@ func TestSmCovMsgValidateMessageReceiptErrors(t *testing.T) {
 }
 
 func TestSmCovMsgValidateMessageForRequestErrors(t *testing.T) {
+	t.Parallel()
 	request := validRequest()
 	message := validMessage(request)
 	if err := ValidateMessageForRequest(message, request); err != nil {
@@ -284,6 +293,7 @@ func TestSmCovMsgValidateMessageForRequestErrors(t *testing.T) {
 	}
 
 	t.Run("invalid message", func(t *testing.T) {
+		t.Parallel()
 		broken := message
 		broken.Body = ""
 		if err := ValidateMessageForRequest(broken, request); err == nil {
@@ -291,6 +301,7 @@ func TestSmCovMsgValidateMessageForRequestErrors(t *testing.T) {
 		}
 	})
 	t.Run("invalid request", func(t *testing.T) {
+		t.Parallel()
 		broken := request
 		broken.SchemaVersion = RequestSchemaVersion + 1
 		if err := ValidateMessageForRequest(message, broken); err == nil {
@@ -309,6 +320,7 @@ func TestSmCovMsgValidateMessageForRequestErrors(t *testing.T) {
 	}
 	for _, test := range lineage {
 		t.Run("lineage mismatch "+test.name, func(t *testing.T) {
+			t.Parallel()
 			mutated := message
 			test.mutate(&mutated)
 			if err := ValidateMessageForRequest(mutated, request); !errors.Is(err, ErrHandoffConflict) {
@@ -318,6 +330,7 @@ func TestSmCovMsgValidateMessageForRequestErrors(t *testing.T) {
 	}
 
 	t.Run("message predates handoff", func(t *testing.T) {
+		t.Parallel()
 		mutated := message
 		mutated.SentAt = request.CreatedAt.Add(-time.Second)
 		if err := ValidateMessageForRequest(mutated, request); !errors.Is(err, ErrHandoffConflict) {
@@ -1161,6 +1174,7 @@ func TestSmCovMsgLoadMessageStateAtDirectErrors(t *testing.T) {
 }
 
 func TestSmCovMsgDecodeMessageRecordErrors(t *testing.T) {
+	t.Parallel()
 	base := MessageRecord{
 		SchemaVersion: MessageRecordSchemaVersion,
 		Direction:     MessageDirectionOutgoing,
@@ -1189,6 +1203,7 @@ func TestSmCovMsgDecodeMessageRecordErrors(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			record := base
 			test.mutate(&record)
 			decoded, err := decodeMessageRecord(smCovMsgMarshal(t, record))
@@ -1202,11 +1217,13 @@ func TestSmCovMsgDecodeMessageRecordErrors(t *testing.T) {
 	}
 
 	t.Run("malformed JSON", func(t *testing.T) {
+		t.Parallel()
 		if _, err := decodeMessageRecord([]byte("{not json")); err == nil || !strings.Contains(err.Error(), "decode message record") {
 			t.Fatalf("malformed record error = %v", err)
 		}
 	})
 	t.Run("unknown field", func(t *testing.T) {
+		t.Parallel()
 		raw := append([]byte(`{"schema_version":1,"direction":"outgoing","message_id":"message-123","message_digest":"`+string(base.MessageDigest)+`","handoff_id":"handoff-123","recorded_at":"2026-08-25T12:00:00Z",`), []byte(`"extra":true}`)...)
 		if _, err := decodeMessageRecord(raw); err == nil {
 			t.Fatal("decodeMessageRecord accepted an unknown field")
@@ -1215,6 +1232,7 @@ func TestSmCovMsgDecodeMessageRecordErrors(t *testing.T) {
 }
 
 func TestSmCovMsgDecodeMessagePasteIntentErrors(t *testing.T) {
+	t.Parallel()
 	base := MessagePasteIntent{
 		SchemaVersion:        MessagePasteIntentSchemaVersion,
 		MessageID:            "message-123",
@@ -1250,6 +1268,7 @@ func TestSmCovMsgDecodeMessagePasteIntentErrors(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			intent := base
 			test.mutate(&intent)
 			decoded, err := decodeMessagePasteIntent(smCovMsgMarshal(t, intent))
@@ -1263,6 +1282,7 @@ func TestSmCovMsgDecodeMessagePasteIntentErrors(t *testing.T) {
 	}
 
 	t.Run("malformed JSON", func(t *testing.T) {
+		t.Parallel()
 		if _, err := decodeMessagePasteIntent([]byte("{not json")); err == nil || !strings.Contains(err.Error(), "decode message paste intent") {
 			t.Fatalf("malformed intent error = %v", err)
 		}
@@ -1270,6 +1290,7 @@ func TestSmCovMsgDecodeMessagePasteIntentErrors(t *testing.T) {
 }
 
 func TestSmCovMsgValidatePasteIntentBranches(t *testing.T) {
+	t.Parallel()
 	request := validRequest()
 	message := validMessage(request)
 	raw, err := EncodeMessage(message)
@@ -1300,6 +1321,7 @@ func TestSmCovMsgValidatePasteIntentBranches(t *testing.T) {
 	}
 	for _, test := range invalid {
 		t.Run("invalid field "+test.name, func(t *testing.T) {
+			t.Parallel()
 			mutated := intent
 			test.mutate(&mutated)
 			if err := validatePasteIntent(mutated, state); err == nil || !strings.Contains(err.Error(), "message paste intent is invalid") {
@@ -1319,6 +1341,7 @@ func TestSmCovMsgValidatePasteIntentBranches(t *testing.T) {
 	}
 	for _, test := range mismatched {
 		t.Run("mismatch "+test.name, func(t *testing.T) {
+			t.Parallel()
 			mutated := intent
 			test.mutate(&mutated)
 			if err := validatePasteIntent(mutated, state); !errors.Is(err, ErrHandoffConflict) {
@@ -1337,6 +1360,7 @@ func TestSmCovMsgOpenMessageEntryAtErrors(t *testing.T) {
 	t.Cleanup(func() { _ = handoff.Close() })
 
 	t.Run("nil handoff authority", func(t *testing.T) {
+		t.Parallel()
 		directory, err := openMessageEntryAt(nil, MessageDirectionOutgoing, fixture.message.MessageID, false)
 		if err == nil || !strings.Contains(err.Error(), "handoff authority is required") {
 			t.Fatalf("nil handoff error = %v (directory=%v)", err, directory)
@@ -1344,6 +1368,7 @@ func TestSmCovMsgOpenMessageEntryAtErrors(t *testing.T) {
 	})
 
 	t.Run("invalid message id", func(t *testing.T) {
+		t.Parallel()
 		directory, err := openMessageEntryAt(handoff, MessageDirectionOutgoing, "", false)
 		if err == nil || !strings.Contains(err.Error(), "message_id") {
 			t.Fatalf("invalid message id error = %v (directory=%v)", err, directory)
@@ -1351,12 +1376,17 @@ func TestSmCovMsgOpenMessageEntryAtErrors(t *testing.T) {
 	})
 
 	t.Run("unsupported direction", func(t *testing.T) {
+		t.Parallel()
 		directory, err := openMessageEntryAt(handoff, MessageDirection("sideways"), fixture.message.MessageID, false)
 		if err == nil || !strings.Contains(err.Error(), "unsupported") {
 			t.Fatalf("unsupported direction error = %v (directory=%v)", err, directory)
 		}
 	})
 
+	// Left serial relative to each other: both act on the same
+	// (MessageDirectionOutgoing, fixture.message.MessageID) entry, and
+	// "creates then reopens" would otherwise race "missing entry without
+	// create" into finding the entry it expects absent.
 	t.Run("missing entry without create", func(t *testing.T) {
 		directory, err := openMessageEntryAt(handoff, MessageDirectionOutgoing, fixture.message.MessageID, false)
 		if err == nil || !strings.Contains(err.Error(), "open message") {
@@ -1393,6 +1423,7 @@ func TestSmCovMsgOpenMessageEntryAtErrors(t *testing.T) {
 }
 
 func TestSmCovMsgOpenSecureDirectoryAtBranches(t *testing.T) {
+	t.Parallel()
 	parentDir := t.TempDir()
 	parent, err := os.Open(parentDir)
 	if err != nil {
@@ -1401,6 +1432,7 @@ func TestSmCovMsgOpenSecureDirectoryAtBranches(t *testing.T) {
 	t.Cleanup(func() { _ = parent.Close() })
 
 	t.Run("missing directory without create", func(t *testing.T) {
+		t.Parallel()
 		directory, err := openSecureDirectoryAt(parent, "absent", false, "message outgoing")
 		if err == nil || !strings.Contains(err.Error(), "open message outgoing directory") {
 			t.Fatalf("missing directory error = %v (directory=%v)", err, directory)
@@ -1408,6 +1440,7 @@ func TestSmCovMsgOpenSecureDirectoryAtBranches(t *testing.T) {
 	})
 
 	t.Run("directory is not mode 0700", func(t *testing.T) {
+		t.Parallel()
 		path := filepath.Join(parentDir, "loose")
 		if err := os.Mkdir(path, 0o700); err != nil {
 			t.Fatalf("Mkdir: %v", err)
@@ -1422,6 +1455,7 @@ func TestSmCovMsgOpenSecureDirectoryAtBranches(t *testing.T) {
 	})
 
 	t.Run("regular file without create", func(t *testing.T) {
+		t.Parallel()
 		if err := os.WriteFile(filepath.Join(parentDir, "plain-file"), []byte("payload"), 0o600); err != nil {
 			t.Fatalf("WriteFile: %v", err)
 		}
@@ -1432,6 +1466,7 @@ func TestSmCovMsgOpenSecureDirectoryAtBranches(t *testing.T) {
 	})
 
 	t.Run("regular file with create", func(t *testing.T) {
+		t.Parallel()
 		if err := os.WriteFile(filepath.Join(parentDir, "create-file"), []byte("payload"), 0o600); err != nil {
 			t.Fatalf("WriteFile: %v", err)
 		}
@@ -1445,6 +1480,7 @@ func TestSmCovMsgOpenSecureDirectoryAtBranches(t *testing.T) {
 	})
 
 	t.Run("create success returns the created inode", func(t *testing.T) {
+		t.Parallel()
 		directory, err := openSecureDirectoryAt(parent, "created", true, "message entry")
 		if err != nil {
 			t.Fatalf("create directory: %v", err)
@@ -1467,6 +1503,7 @@ func TestSmCovMsgOpenSecureDirectoryAtBranches(t *testing.T) {
 	})
 
 	t.Run("create is idempotent", func(t *testing.T) {
+		t.Parallel()
 		first, err := openSecureDirectoryAt(parent, "idempotent", true, "message entry")
 		if err != nil {
 			t.Fatalf("first create: %v", err)

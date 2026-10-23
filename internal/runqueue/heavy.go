@@ -43,7 +43,7 @@ import (
 // that is below N/4, it waits instead, in strict FIFO order among heavy
 // waiters — replacing this design's earlier backfill-with-aging admission
 // for the small-machine budget-sum pool entirely; a focused job (see
-// Kind.IsHeavy, Admit) never touches any of this — it is always admitted
+// Classify, Admit) never touches any of this — it is always admitted
 // immediately and is invisible to k. Allocation is fixed at admission and
 // never revised for a job already running, because a running process's
 // GOMAXPROCS cannot be changed: a job admitted alone at 100% keeps that
@@ -217,6 +217,10 @@ func readHeavyHolders(projectsRoot string) []Holder {
 // forgets it itself, atomically with announcing the new holder, so no
 // window exists where a job is double-counted as both waiting and running.
 func admitHeavy(ctx context.Context, projectsRoot string, self Participant, ticket *Ticket) (*Lease, int, time.Duration, error) {
+	return admitHeavyWithLock(ctx, projectsRoot, self, ticket, tryLockHeavyAdmission)
+}
+
+func admitHeavyWithLock(ctx context.Context, projectsRoot string, self Participant, ticket *Ticket, tryLock func(string) (*os.File, bool, error)) (*Lease, int, time.Duration, error) {
 	started := time.Now()
 	for {
 		ticket.Heartbeat()
@@ -234,7 +238,7 @@ func admitHeavy(ctx context.Context, projectsRoot string, self Participant, tick
 			}
 			continue
 		}
-		lockFile, locked, err := tryLockHeavyAdmission(projectsRoot)
+		lockFile, locked, err := tryLock(projectsRoot)
 		if err != nil {
 			return nil, 0, time.Since(started), err
 		}

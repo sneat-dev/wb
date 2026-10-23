@@ -11,9 +11,12 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestDispatchDurablyCoalescesMatchingChangedRepositoriesWithoutRunningInline(t *testing.T) {
+	t.Parallel()
 	dispatcher, repository := testDispatcher(t)
 	run := false
 	dispatcher.Run = func(context.Context, Invocation) error { run = true; return nil }
@@ -39,6 +42,7 @@ func TestDispatchDurablyCoalescesMatchingChangedRepositoriesWithoutRunningInline
 }
 
 func TestDispatchCoalescesAcrossCallsAndKeepsLatestSHA(t *testing.T) {
+	t.Parallel()
 	dispatcher, repository := testDispatcher(t)
 	first := Event{Name: EventCheckoutUpdated, Repository: "github.com/acme/app", Checkout: repository, OldSHA: "a", NewSHA: "b", Cause: "pull"}
 	if _, err := dispatcher.Dispatch(context.Background(), []Event{first}); err != nil {
@@ -65,6 +69,7 @@ func TestDispatchCoalescesAcrossCallsAndKeepsLatestSHA(t *testing.T) {
 }
 
 func TestWorkerDrainsNewerEventQueuedWhilePriorRevisionRuns(t *testing.T) {
+	t.Parallel()
 	dispatcher, repository := testDispatcher(t)
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -101,13 +106,14 @@ func TestWorkerDrainsNewerEventQueuedWhilePriorRevisionRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 	mutex.Lock()
-	defer mutex.Unlock()
+	t.Cleanup(func() { mutex.Unlock() })
 	if strings.Join(newSHAs, ",") != "b,c" {
 		t.Fatalf("executed SHAs=%v, want [b c]", newSHAs)
 	}
 }
 
 func TestWorkerRecoversInterruptedClaim(t *testing.T) {
+	t.Parallel()
 	dispatcher, repository := testDispatcher(t)
 	event := Event{Name: EventCheckoutUpdated, Repository: "github.com/acme/app", Checkout: repository, OldSHA: "a", NewSHA: "b", Cause: "pull"}
 	if _, err := dispatcher.Dispatch(context.Background(), []Event{event}); err != nil {
@@ -132,6 +138,7 @@ func TestWorkerRecoversInterruptedClaim(t *testing.T) {
 }
 
 func TestDrainUsesBoundedParallelismAndPrivateBoundedDiagnostics(t *testing.T) {
+	t.Parallel()
 	dispatcher, repository := testDispatcher(t)
 	var active atomic.Int32
 	var maximum atomic.Int32
@@ -204,6 +211,7 @@ func TestDrainUsesBoundedParallelismAndPrivateBoundedDiagnostics(t *testing.T) {
 }
 
 func TestFailedReceiptCanBeRetriedAfterRepair(t *testing.T) {
+	t.Parallel()
 	dispatcher, repository := testDispatcher(t)
 	dispatcher.Run = func(context.Context, Invocation) error { return errors.New("broken index") }
 	event := Event{Name: EventCheckoutUpdated, Repository: "github.com/acme/app", Checkout: repository, OldSHA: "a", NewSHA: "b", Cause: "pull"}
@@ -231,13 +239,14 @@ func TestFailedReceiptCanBeRetriedAfterRepair(t *testing.T) {
 }
 
 func TestDispatchRefusesExecutableInsideCheckout(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	repository := filepath.Join(root, "checkout")
 	insideExecutable := filepath.Join(repository, "tools", "indexer")
 	if err := os.MkdirAll(filepath.Dir(insideExecutable), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(insideExecutable, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(insideExecutable, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	configured := filepath.Join(root, "trusted-bin", "indexer")
@@ -257,7 +266,61 @@ func TestDispatchRefusesExecutableInsideCheckout(t *testing.T) {
 	}
 }
 
+// TestDispatchWithFullyInjectedPathsNeverConsultsRealDefaultsOrLauncher
+// guards sneat-dev/wb#620: a Dispatcher that supplies every path and a fake
+// LaunchWorker must dispatch entirely through those injected values, never
+// falling back to defaults() re-resolving the real config/state/receipt
+// paths or the real detached-process launcher -- even though this runs
+// inside a go test binary. HOME and the XDG variables are set to a decoy
+// root with no wb.yaml: if a regression ever let defaults() override an
+// explicitly-set field, the dispatch would silently find no config there
+// and enqueue nothing, turning that regression into an assertion failure
+// here instead of a detached worker against the developer's real state.
+//
+//nolint:paralleltest // calls t.Setenv (HOME, XDG_CONFIG_HOME, XDG_STATE_HOME), which Go's testing package forbids combined with t.Parallel
+func TestDispatchWithFullyInjectedPathsNeverConsultsRealDefaultsOrLauncher(t *testing.T) {
+	decoyHome := t.TempDir()
+	t.Setenv("HOME", decoyHome)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(decoyHome, "xdg-config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(decoyHome, "xdg-state"))
+
+	dispatcher, repository := testDispatcher(t)
+	var launched []WorkerRequest
+	dispatcher.LaunchWorker = func(request WorkerRequest) error {
+		launched = append(launched, request)
+		return nil
+	}
+
+	report, err := dispatcher.Dispatch(context.Background(), []Event{
+		{Name: EventCheckoutUpdated, Repository: "github.com/acme/app", Checkout: repository, OldSHA: "a", NewSHA: "b", Cause: "pull"},
+	})
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if report.Enqueued != 1 {
+		t.Fatalf("enqueued = %d, want 1 (a defaults() regression would find no config at the decoy HOME and enqueue nothing)", report.Enqueued)
+	}
+	if len(launched) != 1 {
+		t.Fatalf("fake launcher calls = %d, want 1", len(launched))
+	}
+	if launched[0].ConfigPath != dispatcher.ConfigPath || launched[0].StateDir != dispatcher.StateDir || launched[0].ReceiptPath != dispatcher.ReceiptPath {
+		t.Fatalf("worker request = %+v, want the injected dispatcher paths (config=%q state=%q receipt=%q)",
+			launched[0], dispatcher.ConfigPath, dispatcher.StateDir, dispatcher.ReceiptPath)
+	}
+	for _, decoyPath := range []string{
+		filepath.Join(decoyHome, ".config", "wb", "wb.yaml"),
+		filepath.Join(decoyHome, "xdg-config", "wb", "wb.yaml"),
+		filepath.Join(decoyHome, "xdg-state", "wb"),
+		filepath.Join(decoyHome, ".local", "state", "wb"),
+	} {
+		if _, statErr := os.Stat(decoyPath); statErr == nil {
+			t.Fatalf("decoy default path %s exists; the real-path resolver was consulted", decoyPath)
+		}
+	}
+}
+
 func TestCheckRejectsGroupWritableExecutable(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := testDispatcher(t)
 	cfg, _, err := Load(dispatcher.ConfigPath)
 	if err != nil {
@@ -274,6 +337,7 @@ func TestCheckRejectsGroupWritableExecutable(t *testing.T) {
 }
 
 func TestRevalidateRejectsExecutableIdentitySwap(t *testing.T) {
+	t.Parallel()
 	dispatcher, repository := testDispatcher(t)
 	cfg, _, err := Load(dispatcher.ConfigPath)
 	if err != nil {
@@ -285,7 +349,7 @@ func TestRevalidateRejectsExecutableIdentitySwap(t *testing.T) {
 		t.Fatal(err)
 	}
 	replacement := invocation.Run + ".replacement"
-	if err := os.WriteFile(replacement, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(replacement, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Rename(replacement, invocation.Run); err != nil {
@@ -297,6 +361,7 @@ func TestRevalidateRejectsExecutableIdentitySwap(t *testing.T) {
 }
 
 func TestAppendReceiptKeepsConcurrentRecordsAsCompleteJSONLines(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "receipts.jsonl")
 	const writers = 32
 	var wait sync.WaitGroup
@@ -338,7 +403,7 @@ func testDispatcher(t *testing.T) (Dispatcher, string) {
 	if err := os.MkdirAll(filepath.Dir(executable), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(executable, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(executable, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	repository := filepath.Join(root, "checkout")

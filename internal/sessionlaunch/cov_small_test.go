@@ -10,6 +10,7 @@ import (
 )
 
 func TestSlCovHarnessSelectionAndNormalization(t *testing.T) {
+	t.Parallel()
 	if err := ValidateHarnessSelection(RuntimeCodex, ""); err != nil {
 		t.Fatalf("ValidateHarnessSelection(inherit) = %v", err)
 	}
@@ -40,6 +41,7 @@ func TestSlCovHarnessSelectionAndNormalization(t *testing.T) {
 }
 
 func TestSlCovCleanAbsoluteExecutableRejectsEveryNonExecutableShape(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	executable := slCovExecutable(t, root, "run")
 	plain := filepath.Join(root, "plain")
@@ -62,6 +64,7 @@ func TestSlCovCleanAbsoluteExecutableRejectsEveryNonExecutableShape(t *testing.T
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			got, err := cleanAbsoluteExecutable(test.path)
 			if test.want {
 				if err != nil || got != test.path {
@@ -77,6 +80,7 @@ func TestSlCovCleanAbsoluteExecutableRejectsEveryNonExecutableShape(t *testing.T
 }
 
 func TestSlCovValidatePlanExecutablesNamesTheInvalidSide(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	wb := slCovExecutable(t, root, "wb")
 	harness := slCovExecutable(t, root, "harness")
@@ -97,6 +101,7 @@ func TestSlCovValidatePlanExecutablesNamesTheInvalidSide(t *testing.T) {
 }
 
 func TestSlCovProveProcessDeadClassifiesEveryProbeOutcome(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		probe func(int) error
@@ -109,6 +114,7 @@ func TestSlCovProveProcessDeadClassifiesEveryProbeOutcome(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			err := proveProcessDead(dependencies{processStatus: test.probe}, 4242)
 			if test.want == "" {
 				if err != nil {
@@ -130,12 +136,14 @@ func TestSlCovProveProcessDeadClassifiesEveryProbeOutcome(t *testing.T) {
 }
 
 func TestSlCovProcessStatusObservesALiveProcess(t *testing.T) {
+	t.Parallel()
 	if err := processStatus(os.Getpid()); err != nil {
 		t.Fatalf("processStatus(self) = %v", err)
 	}
 }
 
 func TestSlCovParseAttemptIDBoundsEveryField(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		in   string
@@ -154,6 +162,7 @@ func TestSlCovParseAttemptIDBoundsEveryField(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			index, err := parseAttemptID(test.in)
 			if !test.ok {
 				if err == nil {
@@ -169,6 +178,7 @@ func TestSlCovParseAttemptIDBoundsEveryField(t *testing.T) {
 }
 
 func TestSlCovLaunchJSONEncodingRejectsUnsupportedAndNonStrictInput(t *testing.T) {
+	t.Parallel()
 	if _, err := encodeLaunchJSON(make(chan int)); err == nil {
 		t.Fatal("encodeLaunchJSON accepted a channel")
 	}
@@ -189,12 +199,13 @@ func TestSlCovLaunchJSONEncodingRejectsUnsupportedAndNonStrictInput(t *testing.T
 }
 
 func TestSlCovReadPrivateArtifactAtEnforcesPrivateRegularFileShape(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	directory, err := os.Open(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = directory.Close() }()
+	t.Cleanup(func() { _ = directory.Close() })
 	slCovWrite(t, filepath.Join(root, "good"), 0o600, "private")
 	slCovWrite(t, filepath.Join(root, "wide"), 0o644, "private")
 	if err := os.Mkdir(filepath.Join(root, "subdir"), 0o700); err != nil {
@@ -218,20 +229,21 @@ func TestSlCovReadPrivateArtifactAtEnforcesPrivateRegularFileShape(t *testing.T)
 	}
 }
 
-func TestSlCovValidatePrivateLaunchFileRejectsClosedDescriptorAndBadMode(t *testing.T) {
+func TestSlCovValidatePrivateLaunchFileRejectsInvalidDescriptorAndBadMode(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
-	closedPath := filepath.Join(root, "closed")
-	slCovWrite(t, closedPath, 0o600, "x")
-	closed, err := os.Open(closedPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	closedFD := int(closed.Fd())
-	if err := closed.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := validatePrivateLaunchFile(closedFD, "closed", 0); err == nil {
-		t.Fatal("validatePrivateLaunchFile accepted a closed descriptor")
+	// invalidFD must never be a real fd number this process actually opened
+	// and then closed: once closed, the OS is free to hand that exact
+	// number back out to any concurrent goroutine's own open() (fd numbers
+	// are a small, actively recycled, process-wide pool), so under
+	// t.Parallel() a sibling test can reuse it before this assertion runs,
+	// making validatePrivateLaunchFile observe a real, unrelated, valid fd
+	// instead of an invalid descriptor (task-21, #741). A fd number far
+	// outside any realistic table size is invalid by construction and
+	// immune to that race.
+	const invalidFD = 1 << 24
+	if err := validatePrivateLaunchFile(invalidFD, "closed", 0); err == nil {
+		t.Fatal("validatePrivateLaunchFile accepted an invalid descriptor")
 	}
 	wide := filepath.Join(root, "wide")
 	slCovWrite(t, wide, 0o644, "x")
@@ -239,7 +251,7 @@ func TestSlCovValidatePrivateLaunchFileRejectsClosedDescriptorAndBadMode(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = file.Close() }()
+	t.Cleanup(func() { _ = file.Close() })
 	if err := validatePrivateLaunchFile(int(file.Fd()), "wide", 0); err == nil {
 		t.Fatal("validatePrivateLaunchFile accepted mode 0644")
 	}
@@ -249,16 +261,14 @@ func TestSlCovValidatePrivateLaunchFileRejectsClosedDescriptorAndBadMode(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = goodFile.Close() }()
+	t.Cleanup(func() { _ = goodFile.Close() })
 	if err := validatePrivateLaunchFile(int(goodFile.Fd()), "good", 0); err != nil {
 		t.Fatalf("validatePrivateLaunchFile(good) = %v", err)
-	}
-	if _, err := fileForFD(-1, "negative"); err == nil {
-		t.Fatal("fileForFD accepted a negative descriptor")
 	}
 }
 
 func TestSlCovDefaultPrivateLauncherDependenciesAreWired(t *testing.T) {
+	t.Parallel()
 	deps := defaultPrivateLauncherDependencies()
 	if deps.pid == nil || deps.register == nil || deps.sleep == nil || deps.exec == nil ||
 		deps.verifyPinned == nil || deps.now == nil || deps.wbExecutable == nil {
@@ -276,6 +286,7 @@ func TestSlCovDefaultPrivateLauncherDependenciesAreWired(t *testing.T) {
 }
 
 func TestSlCovRunPrivateLauncherRejectsInvalidArgvWithExitOne(t *testing.T) {
+	t.Parallel()
 	if code := RunPrivateLauncher(nil); code != 1 {
 		t.Fatalf("RunPrivateLauncher(nil) = %d", code)
 	}
@@ -288,6 +299,7 @@ func TestSlCovRunPrivateLauncherRejectsInvalidArgvWithExitOne(t *testing.T) {
 }
 
 func TestSlCovLaunchAccessorsExposeDirectoryIdentity(t *testing.T) {
+	t.Parallel()
 	state, _ := slCovOpenState(t)
 	if directory, err := state.directory(""); err != nil || directory != state.launch {
 		t.Fatalf("state.directory(\"\") = %v %v", directory, err)
@@ -302,7 +314,7 @@ func TestSlCovLaunchAccessorsExposeDirectoryIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = attempt.Close() }()
+	t.Cleanup(func() { _ = attempt.Close() })
 	if directory, err := attempt.directory(""); err != nil || directory != attempt.root {
 		t.Fatalf("attempt.directory(\"\") = %v %v", directory, err)
 	}
@@ -330,6 +342,7 @@ func TestSlCovLaunchAccessorsExposeDirectoryIdentity(t *testing.T) {
 }
 
 func TestSlCovPublishLaunchArtifactRejectsOversizedPayload(t *testing.T) {
+	t.Parallel()
 	state, _ := slCovOpenState(t)
 	oversized := strings.Repeat("x", maxLaunchArtifactBytes+1)
 	if created, err := state.publish("", "plan.json", []byte(oversized)); err == nil || created {
@@ -338,6 +351,7 @@ func TestSlCovPublishLaunchArtifactRejectsOversizedPayload(t *testing.T) {
 }
 
 func TestSlCovLatestAttemptSignalsAbsentHistory(t *testing.T) {
+	t.Parallel()
 	state, _ := slCovOpenState(t)
 	if _, err := latestAttempt(state); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("latestAttempt on empty history = %v", err)
@@ -348,6 +362,7 @@ func TestSlCovLatestAttemptSignalsAbsentHistory(t *testing.T) {
 }
 
 func TestSlCovEqualHelpersDetectDivergence(t *testing.T) {
+	t.Parallel()
 	plan := slCovPlan("handoff-123")
 	if !equalLaunchPlan(plan, plan) {
 		t.Fatal("equalLaunchPlan rejected identical plans")
@@ -369,6 +384,7 @@ func TestSlCovEqualHelpersDetectDivergence(t *testing.T) {
 }
 
 func TestSlCovBoundedTmuxDetailTruncatesAndFlattens(t *testing.T) {
+	t.Parallel()
 	long := strings.Repeat("a", 4096)
 	got := boundedTmuxDetail([]byte("line one\r\nline two\n" + long))
 	if len(got) != 1024 {
@@ -383,6 +399,7 @@ func TestSlCovBoundedTmuxDetailTruncatesAndFlattens(t *testing.T) {
 }
 
 func TestSlCovDigestRoundTripMatchesRequestDigest(t *testing.T) {
+	t.Parallel()
 	plan := slCovPlan("handoff-123")
 	if plan.RequestDigest != slCovDigest("request") {
 		t.Fatalf("helper digest = %q", plan.RequestDigest)

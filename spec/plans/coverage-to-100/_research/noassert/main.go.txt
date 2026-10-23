@@ -1,0 +1,99 @@
+// This is a standalone research script kept as reference text (renamed
+// main.go.txt so it is not picked up as Go source by this module's build,
+// vet or coverage tooling). Rename it back to main.go to run it; see
+// ../README.md.
+package main
+
+import (
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+var assertNames = map[string]bool{"Error": true, "Errorf": true, "Fatal": true, "Fatalf": true, "Fail": true, "FailNow": true}
+
+func asserts(body ast.Node) bool {
+	found := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+			if assertNames[sel.Sel.Name] {
+				found = true
+				return false
+			}
+			if x, ok := sel.X.(*ast.Ident); ok && (x.Name == "t" || x.Name == "tt") && sel.Sel.Name == "Run" {
+				return true
+			}
+		}
+		// any call passing t (helper that may assert)
+		for _, a := range call.Args {
+			if id, ok := a.(*ast.Ident); ok && (id.Name == "t") {
+				if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+					if x, ok := sel.X.(*ast.Ident); ok && x.Name == "t" {
+						continue
+					}
+				}
+				found = true
+				return false
+			}
+		}
+		if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "panic" {
+			found = true
+		}
+		return true
+	})
+	return found
+}
+
+func main() {
+	root := os.Args[1]
+	type agg struct{ total, none int }
+	byKind := map[string]*agg{"coverage-lane files": {}, "other test files": {}}
+	var examples []string
+	filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || !strings.HasSuffix(p, "_test.go") {
+			return nil
+		}
+		fs := token.NewFileSet()
+		f, err := parser.ParseFile(fs, p, nil, 0)
+		if err != nil {
+			return nil
+		}
+		base := filepath.Base(p)
+		kind := "other test files"
+		if strings.Contains(strings.ToLower(base), "cov") {
+			kind = "coverage-lane files"
+		}
+		for _, d := range f.Decls {
+			fd, ok := d.(*ast.FuncDecl)
+			if !ok || fd.Recv != nil || !strings.HasPrefix(fd.Name.Name, "Test") || fd.Name.Name == "TestMain" {
+				continue
+			}
+			byKind[kind].total++
+			if !asserts(fd.Body) {
+				byKind[kind].none++
+				if len(examples) < 15 && kind == "coverage-lane files" {
+					rel, _ := filepath.Rel(root, p)
+					examples = append(examples, rel+":"+fmt.Sprint(fs.Position(fd.Pos()).Line)+" "+fd.Name.Name)
+				}
+			}
+		}
+		return nil
+	})
+	for k, v := range byKind {
+		fmt.Printf("%s: tests=%d without-any-assertion=%d (%.1f%%)\n", k, v.total, v.none, 100*float64(v.none)/float64(v.total))
+	}
+	for _, e := range examples {
+		fmt.Println("  ", e)
+	}
+}

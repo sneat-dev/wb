@@ -17,6 +17,8 @@ func FromRemoteSnapshot(source remotestate.Snapshot) machinesnapshot.Snapshot {
 		RemoteStore:  source.RemoteStore,
 		Repositories: hostedRepositories(source.KnownRepositories),
 		Worktrees:    make([]machinesnapshot.Worktree, 0, len(source.Worktrees)),
+		OS:           source.OS, Arch: source.Arch, CPUCount: source.CPUCount, BootTime: source.BootTime,
+		Agents: hostedAgents(source.Agents), AgentsTruncated: source.AgentsTruncated, Metrics: hostedMetrics(source.Metrics),
 	}
 	for _, sourceWorktree := range source.Worktrees {
 		result.Worktrees = append(result.Worktrees, machinesnapshot.Worktree{
@@ -47,6 +49,8 @@ func Entry(stored machinesnapshot.StoredSnapshot) remotestate.Entry {
 		RemoteStore:       stored.Snapshot.RemoteStore,
 		KnownRepositories: remoteRepositories(stored.Snapshot.Repositories),
 		Worktrees:         make([]remotestate.WorktreeState, 0, len(stored.Snapshot.Worktrees)),
+		OS:                stored.Snapshot.OS, Arch: stored.Snapshot.Arch, CPUCount: stored.Snapshot.CPUCount, BootTime: stored.Snapshot.BootTime,
+		Agents: remoteAgents(stored.Snapshot.Agents), AgentsTruncated: stored.Snapshot.AgentsTruncated, Metrics: remoteMetrics(stored.Snapshot.Metrics),
 	}
 	for _, worktree := range stored.Snapshot.Worktrees {
 		snapshot.Worktrees = append(snapshot.Worktrees, remotestate.WorktreeState{
@@ -97,4 +101,54 @@ func remotePullRequest(value *machinesnapshot.PullRequest) *remotestate.PullRequ
 		return nil
 	}
 	return &remotestate.PullRequestState{Number: value.Number, URL: value.URL, State: value.State}
+}
+
+// hostedAgents copies the closed agent fields; the copy is nil for none so the
+// hosted document omits the list.
+func hostedAgents(source []remotestate.AgentState) []machinesnapshot.Agent {
+	if len(source) == 0 {
+		return nil
+	}
+	result := make([]machinesnapshot.Agent, len(source))
+	for index, agent := range source {
+		result[index] = machinesnapshot.Agent{
+			Kind: agent.Kind, SessionID: agent.SessionID, RunID: agent.RunID, Runtime: agent.Runtime, Model: agent.Model,
+			State: agent.State, Activity: agent.Activity, Task: agent.Task, Repository: agent.Repository, StartedAt: agent.StartedAt,
+		}
+	}
+	return result
+}
+
+func remoteAgents(source []machinesnapshot.Agent) []remotestate.AgentState {
+	if len(source) == 0 {
+		return nil
+	}
+	result := make([]remotestate.AgentState, len(source))
+	for index, agent := range source {
+		result[index] = remotestate.AgentState{
+			Kind: agent.Kind, SessionID: agent.SessionID, RunID: agent.RunID, Runtime: agent.Runtime, Model: agent.Model,
+			State: agent.State, Activity: agent.Activity, Task: agent.Task, Repository: agent.Repository, StartedAt: agent.StartedAt,
+		}
+	}
+	return result
+}
+
+func hostedMetrics(source *remotestate.MetricsSample) *machinesnapshot.Metrics {
+	if source == nil {
+		return nil
+	}
+	return &machinesnapshot.Metrics{
+		CPUPercent: source.CPUPercent, Load1: source.Load1, MemoryUsedBytes: source.MemoryUsedBytes, MemoryTotalBytes: source.MemoryTotalBytes,
+		DiskFreeBytes: source.DiskFreeBytes, DiskTotalBytes: source.DiskTotalBytes, SampledAt: source.SampledAt,
+	}
+}
+
+func remoteMetrics(source *machinesnapshot.Metrics) *remotestate.MetricsSample {
+	if source == nil {
+		return nil
+	}
+	return &remotestate.MetricsSample{
+		CPUPercent: source.CPUPercent, Load1: source.Load1, MemoryUsedBytes: source.MemoryUsedBytes, MemoryTotalBytes: source.MemoryTotalBytes,
+		DiskFreeBytes: source.DiskFreeBytes, DiskTotalBytes: source.DiskTotalBytes, SampledAt: source.SampledAt,
+	}
 }

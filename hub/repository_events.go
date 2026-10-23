@@ -312,6 +312,8 @@ func translateWebhook(delivery WebhookDelivery) (routedRepositoryEvent, bool, st
 			return routedRepositoryEvent{}, false, "", err
 		}
 		return routedRepositoryEvent{event: event, installationID: payload.Installation.ID, repositoryID: payload.Repository.ID}, true, "", nil
+	case "workflow_run":
+		return routedRepositoryEvent{}, false, "workflow_run handled by harvester", nil
 	default:
 		return routedRepositoryEvent{}, false, "unsupported event", nil
 	}

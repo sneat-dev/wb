@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -13,333 +12,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/spf13/cobra"
-
-	"github.com/sneat-dev/wb/internal/hostload"
+	"github.com/sneat-dev/wb/internal/githubchecks"
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/quality"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/worktrees"
+	"github.com/spf13/cobra"
 )
-
-// cwWtMergeSaturateHost forces checkHostLoadAdmission to refuse: it pins a
-// positive admission floor and replaces the load reader with one that always
-// reports an absurdly high load, so the refusal is deterministic on every
-// platform instead of depending on the actual machine.
-func cwWtMergeSaturateHost(t *testing.T) {
-	t.Helper()
-	t.Setenv(hostload.EnvLoadFloor, "1")
-	previous := hostload.System
-	hostload.System = func() (float64, error) { return 10000, nil }
-	t.Cleanup(func() { hostload.System = previous })
-}
-
-// cwWtMergeHostloadReader swaps the package-level load reader for the body of
-// the test and restores it afterwards.
-func cwWtMergeHostloadReader(t *testing.T, reader hostload.Reader) {
-	t.Helper()
-	previous := hostload.System
-	hostload.System = reader
-	t.Cleanup(func() { hostload.System = previous })
-}
-
-func TestCwWtMergeValidateWorktreeMergeFlagsBranches(t *testing.T) {
-	cases := []struct {
-		name    string
-		flags   worktreeMergeFlags
-		wantErr string
-	}{
-		{
-			name:    "unsupported output format",
-			flags:   worktreeMergeFlags{format: "yaml", route: "auto", onFailure: "stop", timeout: time.Minute},
-			wantErr: "unsupported format",
-		},
-		{
-			name:    "unsupported route",
-			flags:   worktreeMergeFlags{format: "text", route: "teleport", onFailure: "stop", timeout: time.Minute},
-			wantErr: "unsupported --route",
-		},
-		{
-			name:    "unsupported on-failure",
-			flags:   worktreeMergeFlags{format: "text", route: "auto", onFailure: "explode", timeout: time.Minute},
-			wantErr: "unsupported --on-failure",
-		},
-		{
-			name:    "non-positive timeout",
-			flags:   worktreeMergeFlags{format: "text", route: "auto", onFailure: "stop", timeout: 0},
-			wantErr: "--timeout must be positive",
-		},
-		{
-			name:    "negative retry",
-			flags:   worktreeMergeFlags{format: "text", route: "auto", onFailure: "stop", timeout: time.Minute, retry: -1},
-			wantErr: "--retry must not be negative",
-		},
-		{
-			name:    "negative prepare timeout",
-			flags:   worktreeMergeFlags{format: "text", route: "auto", onFailure: "stop", timeout: time.Minute, prepareTimeout: -time.Second},
-			wantErr: "must not be negative",
-		},
-		{
-			name:    "negative check timeout",
-			flags:   worktreeMergeFlags{format: "text", route: "auto", onFailure: "stop", timeout: time.Minute, checkTimeout: -time.Second},
-			wantErr: "must not be negative",
-		},
-		{
-			name:    "negative shard attempt timeout",
-			flags:   worktreeMergeFlags{format: "text", route: "auto", onFailure: "stop", timeout: time.Minute, shardAttemptTimeout: -time.Second},
-			wantErr: "must not be negative",
-		},
-		{
-			name:    "take over lane without reason",
-			flags:   worktreeMergeFlags{format: "text", route: "auto", onFailure: "stop", timeout: time.Minute, takeOverLane: true, laneReason: "   "},
-			wantErr: "--take-over-lane requires --lane-reason",
-		},
-		{
-			name:    "stop before merge needs the pr route",
-			flags:   worktreeMergeFlags{format: "text", route: "auto", onFailure: "stop", timeout: time.Minute, stopBeforeMerge: true},
-			wantErr: "--stop-before-merge requires --route pr",
-		},
-		{
-			name:    "stop before merge cannot combine with cleanup",
-			flags:   worktreeMergeFlags{format: "text", route: "pr", onFailure: "stop", timeout: time.Minute, stopBeforeMerge: true, cleanup: true},
-			wantErr: "--stop-before-merge cannot be combined with --cleanup",
-		},
-	}
-	for _, testCase := range cases {
-		t.Run(testCase.name, func(t *testing.T) {
-			err := validateWorktreeMergeFlags(testCase.flags)
-			if err == nil {
-				t.Fatalf("validateWorktreeMergeFlags(%+v) = nil, want error containing %q", testCase.flags, testCase.wantErr)
-			}
-			if !strings.Contains(err.Error(), testCase.wantErr) {
-				t.Fatalf("validateWorktreeMergeFlags error = %q, want it to contain %q", err, testCase.wantErr)
-			}
-		})
-	}
-
-	t.Run("valid combinations", func(t *testing.T) {
-		valid := []worktreeMergeFlags{
-			{format: "text", route: "", timeout: time.Minute},
-			{format: "json", route: "auto", timeout: time.Minute},
-			{format: "text", route: "direct", onFailure: "revert", timeout: time.Minute},
-			{format: "json", route: "pr", timeout: time.Minute, stopBeforeMerge: true},
-			{format: "text", route: "auto", timeout: time.Minute, takeOverLane: true, laneReason: "taking over"},
-			{format: "text", route: "auto", timeout: time.Minute, prepareTimeout: time.Second, checkTimeout: time.Second, shardAttemptTimeout: time.Second},
-		}
-		for _, flags := range valid {
-			if err := validateWorktreeMergeFlags(flags); err != nil {
-				t.Fatalf("validateWorktreeMergeFlags(%+v) = %v, want nil", flags, err)
-			}
-		}
-	})
-}
-
-func TestCwWtMergeHostLoadAdmissionRecordBranches(t *testing.T) {
-	cwWtMergeHostloadReader(t, func() (float64, error) { return 4.25, nil })
-	record := hostLoadAdmissionRecord(3.5, "ci", true)
-	if record == nil {
-		t.Fatal("hostLoadAdmissionRecord with a working reader = nil, want a record")
-	}
-	if record.Load != 4.25 || record.Floor != 3.5 || !record.Overridden || record.SkippedReason != "ci" {
-		t.Fatalf("hostLoadAdmissionRecord = %+v, want load 4.25 floor 3.5 overridden ci", record)
-	}
-	if record.CheckedAt.IsZero() || record.CheckedAt.Location() != time.UTC {
-		t.Fatalf("hostLoadAdmissionRecord checked_at = %v, want a non-zero UTC instant", record.CheckedAt)
-	}
-
-	cwWtMergeHostloadReader(t, func() (float64, error) { return 0, errors.New("no loadavg here") })
-	if got := hostLoadAdmissionRecord(3.5, "", false); got != nil {
-		t.Fatalf("hostLoadAdmissionRecord with a failing reader = %+v, want nil", got)
-	}
-
-	cwWtMergeHostloadReader(t, nil)
-	if got := hostLoadAdmissionRecord(3.5, "", false); got != nil {
-		t.Fatalf("hostLoadAdmissionRecord with no reader = %+v, want nil", got)
-	}
-}
-
-func TestCwWtMergeCheckHostLoadAdmissionRefusal(t *testing.T) {
-	cwWtMergeSaturateHost(t)
-	record, err := checkHostLoadAdmission(worktreeMergeFlags{})
-	if err == nil {
-		t.Fatalf("checkHostLoadAdmission on a saturated host = %+v, nil; want a refusal", record)
-	}
-	if !strings.Contains(err.Error(), "wb worktree merge:") {
-		t.Fatalf("refusal error = %q, want it prefixed with the command name", err)
-	}
-
-	admission, err := checkHostLoadAdmission(worktreeMergeFlags{allowSaturatedHost: true})
-	if err != nil {
-		t.Fatalf("checkHostLoadAdmission(--allow-saturated-host) = %v, want nil", err)
-	}
-	if admission == nil || !admission.Overridden {
-		t.Fatalf("override admission record = %+v, want a record marked overridden", admission)
-	}
-	if admission.Floor != 1 {
-		t.Fatalf("override admission floor = %v, want 1", admission.Floor)
-	}
-}
-
-func TestCwWtMergeFinishWorktreeMergeProgressBranches(t *testing.T) {
-	command := &cobra.Command{Use: "cwWtMergeProgress"}
-	command.SetErr(&bytes.Buffer{})
-	command.SetOut(&bytes.Buffer{})
-
-	cases := []struct {
-		name    string
-		receipt orchestrate.WorktreeMergeReceipt
-		err     error
-	}{
-		{name: "failure keeps the receipt status", receipt: orchestrate.WorktreeMergeReceipt{Status: orchestrate.WorktreeMergeValidationFailed}, err: errors.New("boom")},
-		{name: "failure without a status reports failed", receipt: orchestrate.WorktreeMergeReceipt{}, err: errors.New("boom")},
-		{name: "success keeps the receipt status", receipt: orchestrate.WorktreeMergeReceipt{Status: orchestrate.WorktreeMergeComplete}},
-		{name: "success without a status reports completed", receipt: orchestrate.WorktreeMergeReceipt{}},
-		{name: "whitespace-only failure status reports failed", receipt: orchestrate.WorktreeMergeReceipt{Status: "   "}, err: errors.New("boom")},
-	}
-	for _, testCase := range cases {
-		t.Run(testCase.name, func(t *testing.T) {
-			campaign := newWorktreeMergeProgress(command, worktreeMergeFlags{})
-			finishWorktreeMergeProgress(campaign, testCase.receipt, testCase.err)
-			campaign.finish("again") // idempotent: a second finish must not panic
-		})
-	}
-}
-
-func TestCwWtMergeWriteWorktreeMergeReceiptBranches(t *testing.T) {
-	receipt := orchestrate.WorktreeMergeReceipt{
-		Status: orchestrate.WorktreeMergeComplete, Repository: "acme/app", Target: "main",
-		Candidate:   orchestrate.WorktreeMergeCandidate{SHA: strings.Repeat("a", 40)},
-		ReceiptPath: "/tmp/receipt.json", ResumeArgs: []string{"worktree", "merge", "land", "/tmp/receipt.json"},
-	}
-
-	t.Run("json encodes the receipt", func(t *testing.T) {
-		var out bytes.Buffer
-		if err := writeWorktreeMergeReceipt(&out, "json", receipt); err != nil {
-			t.Fatalf("writeWorktreeMergeReceipt json = %v, want nil", err)
-		}
-		var decoded orchestrate.WorktreeMergeReceipt
-		if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
-			t.Fatalf("decode json receipt output %q: %v", out.String(), err)
-		}
-		if decoded.Repository != "acme/app" || decoded.Candidate.SHA != receipt.Candidate.SHA {
-			t.Fatalf("decoded receipt = %+v, want repository acme/app and the candidate SHA", decoded)
-		}
-	})
-
-	t.Run("json reports an encode failure", func(t *testing.T) {
-		if err := writeWorktreeMergeReceipt(&cwWtFailWriter{}, "json", receipt); !errors.Is(err, errCwWtWrite) {
-			t.Fatalf("writeWorktreeMergeReceipt json with a failing writer = %v, want the injected failure", err)
-		}
-	})
-
-	t.Run("text names the resume command", func(t *testing.T) {
-		var out bytes.Buffer
-		if err := writeWorktreeMergeReceipt(&out, "text", receipt); err != nil {
-			t.Fatalf("writeWorktreeMergeReceipt text = %v, want nil", err)
-		}
-		for _, want := range []string{"status: complete", "repository: acme/app", "target: main", "candidate: " + receipt.Candidate.SHA, "receipt: /tmp/receipt.json", "resume: wb worktree merge land /tmp/receipt.json"} {
-			if !strings.Contains(out.String(), want) {
-				t.Fatalf("text receipt output %q missing %q", out.String(), want)
-			}
-		}
-	})
-
-	t.Run("text reports a write failure", func(t *testing.T) {
-		if err := writeWorktreeMergeReceipt(&cwWtFailWriter{}, "text", receipt); !errors.Is(err, errCwWtWrite) {
-			t.Fatalf("writeWorktreeMergeReceipt text with a failing writer = %v, want the injected failure", err)
-		}
-	})
-
-	t.Run("text records a host load admission", func(t *testing.T) {
-		withAdmission := receipt
-		withAdmission.HostLoadAdmission = &orchestrate.WorktreeMergeHostLoadAdmission{
-			Load: 9.5, Floor: 8, Overridden: true, CheckedAt: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
-		}
-		var out bytes.Buffer
-		if err := writeWorktreeMergeReceipt(&out, "text", withAdmission); err != nil {
-			t.Fatalf("writeWorktreeMergeReceipt with admission = %v, want nil", err)
-		}
-		want := "host_load_admission: load=9.50 floor=8.00 overridden=true checked_at=2026-01-02T03:04:05Z"
-		if !strings.Contains(out.String(), want) {
-			t.Fatalf("text receipt output %q missing %q", out.String(), want)
-		}
-	})
-
-	t.Run("text reports an admission write failure", func(t *testing.T) {
-		withAdmission := receipt
-		withAdmission.HostLoadAdmission = &orchestrate.WorktreeMergeHostLoadAdmission{Load: 1, Floor: 0, CheckedAt: time.Now().UTC()}
-		writer := &cwWtFailWriter{Allow: 1}
-		if err := writeWorktreeMergeReceipt(writer, "text", withAdmission); !errors.Is(err, errCwWtWrite) {
-			t.Fatalf("writeWorktreeMergeReceipt admission write failure = %v, want the injected failure", err)
-		}
-	})
-}
-
-func TestCwWtMergeHostLoadCheckSkippableBranches(t *testing.T) {
-	candidateSHA := strings.Repeat("b", 40)
-	cases := []struct {
-		name    string
-		receipt orchestrate.WorktreeMergeReceipt
-		want    bool
-	}{
-		{name: "complete", receipt: orchestrate.WorktreeMergeReceipt{Status: orchestrate.WorktreeMergeComplete}, want: true},
-		{name: "empty", receipt: orchestrate.WorktreeMergeReceipt{}, want: false},
-		{
-			name: "published and validated exact candidate",
-			receipt: orchestrate.WorktreeMergeReceipt{
-				Status: orchestrate.WorktreeMergeChecksPending, PullRequest: "https://example.test/pr/1",
-				Candidate:          orchestrate.WorktreeMergeCandidate{SHA: candidateSHA},
-				ValidationIdentity: &orchestrate.WorktreeMergeValidationIdentity{CandidateSHA: candidateSHA},
-				Validation:         quality.VerificationReport{Status: quality.StatusPassed},
-			},
-			want: true,
-		},
-		{
-			name: "published but a different candidate SHA",
-			receipt: orchestrate.WorktreeMergeReceipt{
-				Status: orchestrate.WorktreeMergeChecksPending, PullRequest: "https://example.test/pr/1",
-				Candidate:          orchestrate.WorktreeMergeCandidate{SHA: candidateSHA},
-				ValidationIdentity: &orchestrate.WorktreeMergeValidationIdentity{CandidateSHA: strings.Repeat("c", 40)},
-				Validation:         quality.VerificationReport{Status: quality.StatusPassed},
-			},
-			want: false,
-		},
-		{
-			name: "published but not yet passed",
-			receipt: orchestrate.WorktreeMergeReceipt{
-				Status: orchestrate.WorktreeMergeChecksPending, PullRequest: "https://example.test/pr/1",
-				Candidate:          orchestrate.WorktreeMergeCandidate{SHA: candidateSHA},
-				ValidationIdentity: &orchestrate.WorktreeMergeValidationIdentity{CandidateSHA: candidateSHA},
-				Validation:         quality.VerificationReport{Status: quality.StatusFailed},
-			},
-			want: false,
-		},
-		{
-			name: "published without a validation identity",
-			receipt: orchestrate.WorktreeMergeReceipt{
-				Status: orchestrate.WorktreeMergeChecksPending, PullRequest: "https://example.test/pr/1",
-				Candidate:  orchestrate.WorktreeMergeCandidate{SHA: candidateSHA},
-				Validation: quality.VerificationReport{Status: quality.StatusPassed},
-			},
-			want: false,
-		},
-		{
-			name: "published without a candidate SHA",
-			receipt: orchestrate.WorktreeMergeReceipt{
-				Status: orchestrate.WorktreeMergeChecksPending, PullRequest: "https://example.test/pr/1",
-				ValidationIdentity: &orchestrate.WorktreeMergeValidationIdentity{CandidateSHA: candidateSHA},
-				Validation:         quality.VerificationReport{Status: quality.StatusPassed},
-			},
-			want: false,
-		},
-	}
-	for _, testCase := range cases {
-		t.Run(testCase.name, func(t *testing.T) {
-			if got := hostLoadCheckSkippable(testCase.receipt, false, false, ""); got != testCase.want {
-				t.Fatalf("hostLoadCheckSkippable(%+v) = %t, want %t", testCase.receipt, got, testCase.want)
-			}
-		})
-	}
-}
 
 // cwWtMergeAckConstructor describes one recovery verb so the shared error-path
 // table can drive every constructor in-process.
@@ -349,45 +28,57 @@ type cwWtMergeAckConstructor struct {
 	args  func(receipt string) []string
 }
 
-func cwWtMergeAckConstructors() []cwWtMergeAckConstructor {
+func cwWtMergeAckConstructors(projects string) []cwWtMergeAckConstructor {
 	return []cwWtMergeAckConstructor{
-		{name: "acknowledge-missing-cleanup", build: newWorktreeMergeAcknowledgeMissingCleanupCmd, args: func(r string) []string { return []string{r} }},
-		{name: "adopt-published-candidate", build: newWorktreeMergeAdoptPublishedCandidateCmd, args: func(r string) []string { return []string{r, "https://example.test/pr/1"} }},
-		{name: "acknowledge-landed-failed", build: newWorktreeMergeAcknowledgeLandedFailedCmd, args: func(r string) []string { return []string{r} }},
-		{name: "acknowledge-stranded-landing", build: newWorktreeMergeAcknowledgeStrandedLandingCmd, args: func(r string) []string { return []string{r} }},
-		{name: "acknowledge-absorbed-conflict", build: newWorktreeMergeAcknowledgeAbsorbedConflictCmd, args: func(r string) []string { return []string{r} }},
-		{name: "acknowledge-retired-publication", build: newWorktreeMergeAcknowledgeRetiredPublicationCmd, args: func(r string) []string { return []string{r} }},
-		{name: "acknowledge-retired-unpublished-validation-failure", build: newWorktreeMergeAcknowledgeUnpublishedValidationFailureCmd, args: func(r string) []string { return []string{r} }},
-		{name: "acknowledge-receipt-collision", build: newWorktreeMergeAcknowledgeReceiptCollisionCmd, args: func(r string) []string { return []string{r} }},
-		{name: "supersede-validation-failed", build: newWorktreeMergeSupersedeValidationFailedCmd, args: func(r string) []string { return []string{r, r} }},
-		{name: "correct-self-supersession", build: newWorktreeMergeCorrectSelfSupersessionCmd, args: func(r string) []string { return []string{r, r} }},
-		{name: "prepare-published-forward-repair", build: newWorktreeMergePreparePublishedForwardRepairCmd, args: func(r string) []string { return []string{r, r} }},
-		{name: "prepare-conflict-replacement", build: newWorktreeMergePrepareConflictReplacementCmd, args: func(r string) []string { return []string{r, r} }},
-		{name: "seal-validation-failed", build: newWorktreeMergeSealValidationFailedCmd, args: func(r string) []string { return []string{r} }},
-	}
-}
-
-func TestCwWtMergeRecoveryCommandsRejectBadFormat(t *testing.T) {
-	projects := t.TempDir()
-	receipt := filepath.Join(projects, "receipt.json")
-	for _, constructor := range cwWtMergeAckConstructors() {
-		t.Run(constructor.name, func(t *testing.T) {
-			args := append(constructor.args(receipt), "--format", "yaml")
-			stdout, _, err := cwCovExec(t, projects, constructor.build, args...)
-			if err == nil {
-				t.Fatalf("%s --format yaml = nil error (stdout %q), want a format refusal", constructor.name, stdout)
-			}
-			if !strings.Contains(err.Error(), "unsupported format") {
-				t.Fatalf("%s --format yaml error = %q, want an unsupported-format refusal", constructor.name, err)
-			}
-		})
+		{name: "acknowledge-missing-cleanup", build: func() *cobra.Command {
+			return mergeChildForTest(&invocation{projectsRoot: projects}, "acknowledge-missing-cleanup")
+		}, args: func(r string) []string { return []string{r} }},
+		{name: "adopt-published-candidate", build: func() *cobra.Command {
+			return mergeChildForTest(&invocation{projectsRoot: projects}, "adopt-published-candidate")
+		}, args: func(r string) []string { return []string{r, "https://example.test/pr/1"} }},
+		{name: "acknowledge-landed-failed", build: func() *cobra.Command {
+			return mergeChildForTest(&invocation{projectsRoot: projects}, "acknowledge-landed-failed")
+		}, args: func(r string) []string { return []string{r} }},
+		{name: "acknowledge-stranded-landing", build: func() *cobra.Command {
+			return mergeChildForTest(&invocation{projectsRoot: projects}, "acknowledge-stranded-landing")
+		}, args: func(r string) []string { return []string{r} }},
+		{name: "acknowledge-retired-prepare-candidate", build: func() *cobra.Command {
+			return mergeChildForTest(&invocation{projectsRoot: projects}, "acknowledge-retired-prepare-candidate")
+		}, args: func(r string) []string { return []string{r} }},
+		{name: "acknowledge-absorbed-conflict", build: func() *cobra.Command {
+			return mergeChildForTest(&invocation{projectsRoot: projects}, "acknowledge-absorbed-conflict")
+		}, args: func(r string) []string { return []string{r} }},
+		{name: "acknowledge-retired-publication", build: func() *cobra.Command {
+			return mergeChildForTest(&invocation{projectsRoot: projects}, "acknowledge-retired-publication")
+		}, args: func(r string) []string { return []string{r} }},
+		{name: "acknowledge-retired-unpublished-validation-failure", build: func() *cobra.Command {
+			return mergeChildForTest(&invocation{projectsRoot: projects}, "acknowledge-retired-unpublished-validation-failure")
+		}, args: func(r string) []string { return []string{r} }},
+		{name: "acknowledge-receipt-collision", build: func() *cobra.Command {
+			return mergeChildForTest(&invocation{projectsRoot: projects}, "acknowledge-receipt-collision")
+		}, args: func(r string) []string { return []string{r} }},
+		{name: "supersede-validation-failed", build: func() *cobra.Command {
+			return mergeChildForTest(&invocation{projectsRoot: projects}, "supersede-validation-failed")
+		}, args: func(r string) []string { return []string{r, r} }},
+		{name: "correct-self-supersession", build: func() *cobra.Command {
+			return mergeChildForTest(&invocation{projectsRoot: projects}, "correct-self-supersession")
+		}, args: func(r string) []string { return []string{r, r} }},
+		{name: "prepare-published-forward-repair", build: func() *cobra.Command {
+			return mergeChildForTest(&invocation{projectsRoot: projects}, "prepare-published-forward-repair")
+		}, args: func(r string) []string { return []string{r, r} }},
+		{name: "prepare-conflict-replacement", build: func() *cobra.Command {
+			return mergeChildForTest(&invocation{projectsRoot: projects}, "prepare-conflict-replacement")
+		}, args: func(r string) []string { return []string{r, r} }},
+		{name: "seal-validation-failed", build: func() *cobra.Command {
+			return mergeChildForTest(&invocation{projectsRoot: projects}, "seal-validation-failed")
+		}, args: func(r string) []string { return []string{r} }},
 	}
 }
 
 func TestCwWtMergeRecoveryCommandsRejectBadAdmission(t *testing.T) {
 	projects := t.TempDir()
 	receipt := filepath.Join(projects, "receipt.json")
-	for _, constructor := range cwWtMergeAckConstructors() {
+	for _, constructor := range cwWtMergeAckConstructors(projects) {
 		t.Run(constructor.name, func(t *testing.T) {
 			args := append(constructor.args(receipt), "--apply", "--mode", "manual")
 			stdout, _, err := cwCovExec(t, projects, constructor.build, args...)
@@ -401,202 +92,9 @@ func TestCwWtMergeRecoveryCommandsRejectBadAdmission(t *testing.T) {
 	}
 }
 
-func TestCwWtMergeRecoveryCommandsFailOnMissingReceipt(t *testing.T) {
-	projects := t.TempDir()
-	receipt := filepath.Join(projects, "absent-receipt.json")
-	for _, constructor := range cwWtMergeAckConstructors() {
-		t.Run(constructor.name, func(t *testing.T) {
-			stdout, _, err := cwCovExec(t, projects, constructor.build, constructor.args(receipt)...)
-			if err == nil {
-				t.Fatalf("%s with a missing receipt = nil error (stdout %q), want a refusal", constructor.name, stdout)
-			}
-			if strings.Contains(err.Error(), "unsupported format") || strings.Contains(err.Error(), "--initiator") {
-				t.Fatalf("%s failed before reaching the backend: %v", constructor.name, err)
-			}
-		})
-	}
-}
-
-func TestCwWtMergeCombinedCommandErrorPaths(t *testing.T) {
-	projects := t.TempDir()
-
-	t.Run("bad format is refused before any work", func(t *testing.T) {
-		_, _, err := cwCovExec(t, projects, newWorktreeMergeCmd, "--format", "yaml", filepath.Join(projects, "nope"))
-		if err == nil || !strings.Contains(err.Error(), "unsupported format") {
-			t.Fatalf("combined --format yaml error = %v, want an unsupported-format refusal", err)
-		}
-	})
-
-	t.Run("saturated host refuses the run", func(t *testing.T) {
-		cwWtMergeSaturateHost(t)
-		source := filepath.Join(projects, "nope")
-		_, _, err := cwCovExec(t, projects, newWorktreeMergeCmd, source)
-		if err == nil || !strings.Contains(err.Error(), "refusing to admit more CPU-heavy work") {
-			t.Fatalf("combined on a saturated host error = %v, want a host-load refusal", err)
-		}
-	})
-
-	t.Run("unusable source fails the merge and writes no receipt", func(t *testing.T) {
-		source := filepath.Join(projects, "definitely-absent")
-		stdout, _, err := cwCovExec(t, projects, newWorktreeMergeCmd, source)
-		if err == nil {
-			t.Fatalf("combined with an absent source = nil error (stdout %q), want a refusal", stdout)
-		}
-		if !strings.Contains(stdout, "status:") {
-			t.Fatalf("combined stdout = %q, want a status line even on failure", stdout)
-		}
-	})
-}
-
-func TestCwWtMergePrepareCommandErrorPaths(t *testing.T) {
-	projects := t.TempDir()
-
-	t.Run("bad format is refused", func(t *testing.T) {
-		_, _, err := cwCovExec(t, projects, newWorktreeMergePrepareCmd, "--format", "yaml", filepath.Join(projects, "nope"))
-		if err == nil || !strings.Contains(err.Error(), "unsupported format") {
-			t.Fatalf("prepare --format yaml error = %v, want an unsupported-format refusal", err)
-		}
-	})
-
-	t.Run("saturated host refuses the prepare", func(t *testing.T) {
-		cwWtMergeSaturateHost(t)
-		_, _, err := cwCovExec(t, projects, newWorktreeMergePrepareCmd, filepath.Join(projects, "nope"))
-		if err == nil || !strings.Contains(err.Error(), "refusing to admit more CPU-heavy work") {
-			t.Fatalf("prepare on a saturated host error = %v, want a host-load refusal", err)
-		}
-	})
-
-	t.Run("absent source is refused", func(t *testing.T) {
-		stdout, _, err := cwCovExec(t, projects, newWorktreeMergePrepareCmd, filepath.Join(projects, "definitely-absent"))
-		if err == nil {
-			t.Fatalf("prepare with an absent source = nil error (stdout %q), want a refusal", stdout)
-		}
-	})
-}
-
-func TestCwWtMergeLandAndRevertCommandErrorPaths(t *testing.T) {
-	projects := t.TempDir()
-	absent := filepath.Join(projects, "absent-receipt.json")
-
-	t.Run("land rejects a bad format", func(t *testing.T) {
-		_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMergeLandCmd("land") }, "--format", "yaml", absent)
-		if err == nil || !strings.Contains(err.Error(), "unsupported format") {
-			t.Fatalf("land --format yaml error = %v, want an unsupported-format refusal", err)
-		}
-	})
-
-	t.Run("land on a saturated host refuses", func(t *testing.T) {
-		cwWtMergeSaturateHost(t)
-		// A readable receipt that names no worktrees gets past the live-link
-		// guard, so the host-load gate is the thing that refuses.
-		readable := filepath.Join(t.TempDir(), "empty-receipt.json")
-		if err := os.WriteFile(readable, []byte("{}\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMergeLandCmd("land") }, readable)
-		if err == nil || !strings.Contains(err.Error(), "refusing to admit more CPU-heavy work") {
-			t.Fatalf("land on a saturated host error = %v, want a host-load refusal", err)
-		}
-	})
-
-	t.Run("land fails on a missing receipt", func(t *testing.T) {
-		stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeMergeLandCmd("land") }, absent)
-		if err == nil {
-			t.Fatalf("land with a missing receipt = nil error (stdout %q), want a refusal", stdout)
-		}
-	})
-
-	t.Run("revert rejects a bad format", func(t *testing.T) {
-		_, _, err := cwCovExec(t, projects, newWorktreeMergeRevertCmd, "--format", "yaml", absent)
-		if err == nil || !strings.Contains(err.Error(), "unsupported format") {
-			t.Fatalf("revert --format yaml error = %v, want an unsupported-format refusal", err)
-		}
-	})
-
-	t.Run("revert on a saturated host refuses", func(t *testing.T) {
-		cwWtMergeSaturateHost(t)
-		_, _, err := cwCovExec(t, projects, newWorktreeMergeRevertCmd, absent)
-		if err == nil || !strings.Contains(err.Error(), "refusing to admit more CPU-heavy work") {
-			t.Fatalf("revert on a saturated host error = %v, want a host-load refusal", err)
-		}
-	})
-
-	t.Run("revert fails on a missing receipt", func(t *testing.T) {
-		stdout, _, err := cwCovExec(t, projects, newWorktreeMergeRevertCmd, absent)
-		if err == nil {
-			t.Fatalf("revert with a missing receipt = nil error (stdout %q), want a refusal", stdout)
-		}
-		if !strings.Contains(stdout, "status:") {
-			t.Fatalf("revert stdout = %q, want a status line even on failure", stdout)
-		}
-	})
-}
-
-func TestCwWtMergePrepareMergeOptionsAndLandMergeOptions(t *testing.T) {
-	previousRoot := projectsRoot
-	projectsRoot = filepath.Join(t.TempDir(), "projects")
-	t.Cleanup(func() { projectsRoot = previousRoot })
-
-	flags := worktreeMergeFlags{
-		target: "main", route: "pr", onFailure: "revert", format: "json", cleanup: true, allowUnfenced: true,
-		model: "m", runtime: "r", agentID: "a", cli: "c", provider: "p", timeout: time.Minute, retry: 2,
-		prepareTimeout: time.Second, checkTimeout: 2 * time.Second, shardAttemptTimeout: 3 * time.Second,
-		interval: 4 * time.Second, rebatchReceipt: "/tmp/r.json", progress: true, stopBeforeMerge: true,
-		takeOverLane: true, laneReason: "reason",
-	}
-	prepare := prepareMergeOptions(flags, []string{"/tmp/wt"}, nil, nil, nil)
-	if prepare.ProjectsRoot != projectsRoot || prepare.Target != "main" || prepare.Model != "m" || prepare.Retry != 2 {
-		t.Fatalf("prepareMergeOptions = %+v, want the flags carried through", prepare)
-	}
-	if len(prepare.Sources) != 1 || prepare.Sources[0] != "/tmp/wt" {
-		t.Fatalf("prepareMergeOptions sources = %v, want the source list carried through", prepare.Sources)
-	}
-	if prepare.RebatchReceipt != "/tmp/r.json" || prepare.ProgressRequested != true || prepare.ShardAttemptTimeout != 3*time.Second {
-		t.Fatalf("prepareMergeOptions = %+v, want the prepare-only flags carried through", prepare)
-	}
-	if !prepare.Lane.TakeOver || prepare.Lane.TakeoverReason != "reason" {
-		t.Fatalf("prepareMergeOptions lane = %+v, want the takeover request carried through", prepare.Lane)
-	}
-
-	land := landMergeOptions(flags, "/tmp/receipt.json", nil, nil, &bytes.Buffer{})
-	if land.Receipt != "/tmp/receipt.json" || !land.Cleanup || !land.AllowUnfenced || land.OnFailure != "revert" {
-		t.Fatalf("landMergeOptions = %+v, want the flags carried through", land)
-	}
-	if !land.StopBeforeMerge || land.CheckPollInterval != 4*time.Second || land.ShardAttemptTimeout != 3*time.Second {
-		t.Fatalf("landMergeOptions = %+v, want the land-only flags carried through", land)
-	}
-	if !land.Lane.TakeOver || land.Lane.TakeoverReason != "reason" {
-		t.Fatalf("landMergeOptions lane = %+v, want the takeover request carried through", land.Lane)
-	}
-}
-
-func TestCwWtMergeBindFlagsCoverBothJourneys(t *testing.T) {
-	var combined worktreeMergeFlags
-	combinedCmd := &cobra.Command{Use: "cwWtMergeCombined"}
-	bindWorktreeMergeFlags(combinedCmd, &combined, true, true, false)
-	for _, name := range []string{"target", "model", "agent-runtime", "cleanup", "route", "allow-unfenced", "on-failure", "check-interval", "timeout", "retry", "format", "progress", "allow-saturated-host", "take-over-lane", "lane-reason"} {
-		if combinedCmd.Flags().Lookup(name) == nil {
-			t.Fatalf("combined merge flags are missing --%s", name)
-		}
-	}
-	if combinedCmd.Flags().Lookup("cleanup").DefValue != "false" {
-		t.Fatalf("combined --cleanup default = %q, want false", combinedCmd.Flags().Lookup("cleanup").DefValue)
-	}
-
-	var landOnly worktreeMergeFlags
-	landCmd := &cobra.Command{Use: "cwWtMergeLand"}
-	bindWorktreeMergeFlags(landCmd, &landOnly, false, true, true)
-	if landCmd.Flags().Lookup("cleanup").DefValue != "true" {
-		t.Fatalf("land --cleanup default = %q, want true", landCmd.Flags().Lookup("cleanup").DefValue)
-	}
-	if landCmd.Flags().Lookup("target") != nil {
-		t.Fatal("land-only command unexpectedly exposes the prepare --target flag")
-	}
-}
-
 func TestCwWtMergeNewLandAliasMatchesWorktreeLand(t *testing.T) {
-	alias := newLandCmd()
-	direct := newWorktreeLandCmd()
+	alias := newLandCmd(&invocation{})
+	direct := newWorktreeLandCmd(&invocation{})
 	if alias.Use != direct.Use || alias.Short != direct.Short || alias.Long != direct.Long {
 		t.Fatalf("wb land contract = %q/%q, want it identical to wb worktree land %q/%q", alias.Use, alias.Short, direct.Use, direct.Short)
 	}
@@ -606,7 +104,7 @@ func TestCwWtMergeNewLandAliasMatchesWorktreeLand(t *testing.T) {
 }
 
 func TestCwWtMergeRootMergeCommandIsWired(t *testing.T) {
-	command := newWorktreeMergeCmd()
+	command := newWorktreeMergeCmd(&invocation{})
 	if command.Use != "merge <source-worktree...>" {
 		t.Fatalf("merge Use = %q, want the documented form", command.Use)
 	}
@@ -644,7 +142,9 @@ func cwWtMergeRewriteReceipt(t *testing.T, path string, receipt orchestrate.Work
 func TestCwWtMergeAcknowledgeUnpublishedValidationFailureOutput(t *testing.T) {
 	fixture := newCLIWorktreeMergeFixture(t, 1)
 
-	stdout, _, err := cwCovExec(t, fixture.projectsRoot, newWorktreeMergeAcknowledgeUnpublishedValidationFailureCmd, fixture.receiptPath)
+	stdout, _, err := cwCovExec(t, fixture.projectsRoot, func() *cobra.Command {
+		return mergeChildForTest(&invocation{projectsRoot: fixture.projectsRoot}, "acknowledge-retired-unpublished-validation-failure")
+	}, fixture.receiptPath)
 	if err != nil {
 		t.Fatalf("acknowledge-retired-unpublished-validation-failure dry run = %v, want nil", err)
 	}
@@ -664,7 +164,9 @@ func TestCwWtMergeAcknowledgeUnpublishedValidationFailureOutput(t *testing.T) {
 		t.Fatalf("dry run wrote an acknowledgement: %v", statErr)
 	}
 
-	jsonOut, _, err := cwCovExec(t, fixture.projectsRoot, newWorktreeMergeAcknowledgeUnpublishedValidationFailureCmd, fixture.receiptPath, "--format", "json")
+	jsonOut, _, err := cwCovExec(t, fixture.projectsRoot, func() *cobra.Command {
+		return mergeChildForTest(&invocation{projectsRoot: fixture.projectsRoot}, "acknowledge-retired-unpublished-validation-failure")
+	}, fixture.receiptPath, "--format", "json")
 	if err != nil {
 		t.Fatalf("acknowledge-retired-unpublished-validation-failure --format json = %v, want nil", err)
 	}
@@ -676,7 +178,9 @@ func TestCwWtMergeAcknowledgeUnpublishedValidationFailureOutput(t *testing.T) {
 		t.Fatalf("decoded acknowledgement = %+v, want the fixture receipt identity", decoded)
 	}
 
-	applied, _, err := cwCovExec(t, fixture.projectsRoot, newWorktreeMergeAcknowledgeUnpublishedValidationFailureCmd,
+	applied, _, err := cwCovExec(t, fixture.projectsRoot, func() *cobra.Command {
+		return mergeChildForTest(&invocation{projectsRoot: fixture.projectsRoot}, "acknowledge-retired-unpublished-validation-failure")
+	},
 		fixture.receiptPath, "--apply", "--actor", "cwWt operator", "--reason", "cwWt regression")
 	if err != nil {
 		t.Fatalf("acknowledge-retired-unpublished-validation-failure --apply = %v, want nil", err)
@@ -694,7 +198,9 @@ func TestCwWtMergeAcknowledgeLandedFailedOutput(t *testing.T) {
 	runCLIWorktreeGit(t, fixture.canonical, "update-ref", "refs/heads/main", fixture.receipt.Candidate.SHA)
 	runCLIWorktreeGit(t, fixture.canonical, "push", "origin", "main")
 
-	stdout, _, err := cwCovExec(t, fixture.projectsRoot, newWorktreeMergeAcknowledgeLandedFailedCmd, fixture.receiptPath)
+	stdout, _, err := cwCovExec(t, fixture.projectsRoot, func() *cobra.Command {
+		return mergeChildForTest(&invocation{projectsRoot: fixture.projectsRoot}, "acknowledge-landed-failed")
+	}, fixture.receiptPath)
 	if err != nil {
 		t.Fatalf("acknowledge-landed-failed dry run = %v, want nil", err)
 	}
@@ -710,7 +216,9 @@ func TestCwWtMergeAcknowledgeLandedFailedOutput(t *testing.T) {
 		}
 	}
 
-	applied, _, err := cwCovExec(t, fixture.projectsRoot, newWorktreeMergeAcknowledgeLandedFailedCmd,
+	applied, _, err := cwCovExec(t, fixture.projectsRoot, func() *cobra.Command {
+		return mergeChildForTest(&invocation{projectsRoot: fixture.projectsRoot}, "acknowledge-landed-failed")
+	},
 		fixture.receiptPath, "--apply", "--actor", "cwWt operator", "--reason", "cwWt regression")
 	if err != nil {
 		t.Fatalf("acknowledge-landed-failed --apply = %v, want nil", err)
@@ -738,7 +246,9 @@ func TestCwWtMergeSupersedeValidationFailedOutput(t *testing.T) {
 		runCLIWorktreeGit(t, replacement.WorktreeDir, "merge", "--no-edit", "origin/"+source.Branch)
 	}
 
-	stdout, _, err := cwCovExec(t, fixture.projectsRoot, newWorktreeMergeSupersedeValidationFailedCmd, fixture.receiptPath, replacement.WorktreeDir)
+	stdout, _, err := cwCovExec(t, fixture.projectsRoot, func() *cobra.Command {
+		return mergeChildForTest(&invocation{projectsRoot: fixture.projectsRoot}, "supersede-validation-failed")
+	}, fixture.receiptPath, replacement.WorktreeDir)
 	if err != nil {
 		t.Fatalf("supersede-validation-failed dry run = %v, want nil", err)
 	}
@@ -755,7 +265,9 @@ func TestCwWtMergeSupersedeValidationFailedOutput(t *testing.T) {
 		}
 	}
 
-	applied, _, err := cwCovExec(t, fixture.projectsRoot, newWorktreeMergeSupersedeValidationFailedCmd,
+	applied, _, err := cwCovExec(t, fixture.projectsRoot, func() *cobra.Command {
+		return mergeChildForTest(&invocation{projectsRoot: fixture.projectsRoot}, "supersede-validation-failed")
+	},
 		fixture.receiptPath, replacement.WorktreeDir, "--apply", "--actor", "cwWt operator", "--reason", "cwWt regression")
 	if err != nil {
 		t.Fatalf("supersede-validation-failed --apply = %v, want nil", err)
@@ -793,7 +305,9 @@ func TestCwWtMergeAcknowledgeAbsorbedConflictOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stdout, _, err := cwCovExec(t, fixture.projectsRoot, newWorktreeMergeAcknowledgeAbsorbedConflictCmd,
+	stdout, _, err := cwCovExec(t, fixture.projectsRoot, func() *cobra.Command {
+		return mergeChildForTest(&invocation{projectsRoot: fixture.projectsRoot}, "acknowledge-absorbed-conflict")
+	},
 		fixture.receiptPath, "--derived-path", "spec/cw-wt/README.md")
 	if err != nil {
 		t.Fatalf("acknowledge-absorbed-conflict dry run = %v, want nil", err)
@@ -812,7 +326,9 @@ func TestCwWtMergeAcknowledgeAbsorbedConflictOutput(t *testing.T) {
 		}
 	}
 
-	jsonOut, _, err := cwCovExec(t, fixture.projectsRoot, newWorktreeMergeAcknowledgeAbsorbedConflictCmd,
+	jsonOut, _, err := cwCovExec(t, fixture.projectsRoot, func() *cobra.Command {
+		return mergeChildForTest(&invocation{projectsRoot: fixture.projectsRoot}, "acknowledge-absorbed-conflict")
+	},
 		fixture.receiptPath, "--derived-path", "spec/cw-wt/README.md", "--format", "json")
 	if err != nil {
 		t.Fatalf("acknowledge-absorbed-conflict --format json = %v, want nil", err)
@@ -825,7 +341,9 @@ func TestCwWtMergeAcknowledgeAbsorbedConflictOutput(t *testing.T) {
 		t.Fatalf("decoded acknowledgement excused paths = %v, want the audited spec index", decoded.ExcusedDerivedPaths)
 	}
 
-	applied, _, err := cwCovExec(t, fixture.projectsRoot, newWorktreeMergeAcknowledgeAbsorbedConflictCmd,
+	applied, _, err := cwCovExec(t, fixture.projectsRoot, func() *cobra.Command {
+		return mergeChildForTest(&invocation{projectsRoot: fixture.projectsRoot}, "acknowledge-absorbed-conflict")
+	},
 		fixture.receiptPath, "--apply", "--actor", "cwWt operator", "--reason", "cwWt regression")
 	if err != nil {
 		t.Fatalf("acknowledge-absorbed-conflict --apply = %v, want nil", err)
@@ -850,7 +368,9 @@ func TestCwWtMergeAcknowledgeRetiredPublicationOutput(t *testing.T) {
 
 	cwWtMergeFakeGHPullRequest(t, retired.PullRequest, `{"state":"CLOSED","closedAt":"2026-01-02T03:04:05Z","mergedAt":"","mergeCommit":{"oid":""},"headRefName":"`+retired.Candidate.Branch+`","headRefOid":"`+retired.Candidate.SHA+`"}`)
 
-	stdout, _, err := cwCovExec(t, fixture.projectsRoot, newWorktreeMergeAcknowledgeRetiredPublicationCmd, fixture.receiptPath)
+	stdout, _, err := cwCovExec(t, fixture.projectsRoot, func() *cobra.Command {
+		return mergeChildForTest(&invocation{projectsRoot: fixture.projectsRoot}, "acknowledge-retired-publication")
+	}, fixture.receiptPath)
 	if err != nil {
 		t.Fatalf("acknowledge-retired-publication dry run = %v, want nil", err)
 	}
@@ -868,7 +388,9 @@ func TestCwWtMergeAcknowledgeRetiredPublicationOutput(t *testing.T) {
 		}
 	}
 
-	jsonOut, _, err := cwCovExec(t, fixture.projectsRoot, newWorktreeMergeAcknowledgeRetiredPublicationCmd, fixture.receiptPath, "--format", "json")
+	jsonOut, _, err := cwCovExec(t, fixture.projectsRoot, func() *cobra.Command {
+		return mergeChildForTest(&invocation{projectsRoot: fixture.projectsRoot}, "acknowledge-retired-publication")
+	}, fixture.receiptPath, "--format", "json")
 	if err != nil {
 		t.Fatalf("acknowledge-retired-publication --format json = %v, want nil", err)
 	}
@@ -880,7 +402,9 @@ func TestCwWtMergeAcknowledgeRetiredPublicationOutput(t *testing.T) {
 		t.Fatalf("decoded acknowledgement = %+v, want a CLOSED pull request bound to the candidate", decoded)
 	}
 
-	applied, _, err := cwCovExec(t, fixture.projectsRoot, newWorktreeMergeAcknowledgeRetiredPublicationCmd,
+	applied, _, err := cwCovExec(t, fixture.projectsRoot, func() *cobra.Command {
+		return mergeChildForTest(&invocation{projectsRoot: fixture.projectsRoot}, "acknowledge-retired-publication")
+	},
 		fixture.receiptPath, "--apply", "--actor", "cwWt operator", "--reason", "cwWt regression")
 	if err != nil {
 		t.Fatalf("acknowledge-retired-publication --apply = %v, want nil", err)
@@ -906,7 +430,7 @@ func cwWtMergeFakeGHPullRequest(t *testing.T, pullRequest, viewJSON string) {
 		"fi\n" +
 		"printf '%s\\n' '{}'\n" +
 		"exit 0\n"
-	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(binDir, "gh"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -918,7 +442,9 @@ func cwWtMergeFakeGHPullRequest(t *testing.T, pullRequest, viewJSON string) {
 func TestCwWtMergeSealValidationFailedOutput(t *testing.T) {
 	fixture := newCLIWorktreeMergeFixture(t, 1)
 
-	stdout, _, err := cwCovExec(t, fixture.projectsRoot, newWorktreeMergeSealValidationFailedCmd, fixture.receiptPath)
+	stdout, _, err := cwCovExec(t, fixture.projectsRoot, func() *cobra.Command {
+		return mergeChildForTest(&invocation{projectsRoot: fixture.projectsRoot}, "seal-validation-failed")
+	}, fixture.receiptPath)
 	if err != nil {
 		t.Fatalf("seal-validation-failed dry run = %v, want nil", err)
 	}
@@ -935,7 +461,9 @@ func TestCwWtMergeSealValidationFailedOutput(t *testing.T) {
 		}
 	}
 
-	jsonOut, _, err := cwCovExec(t, fixture.projectsRoot, newWorktreeMergeSealValidationFailedCmd, fixture.receiptPath,
+	jsonOut, _, err := cwCovExec(t, fixture.projectsRoot, func() *cobra.Command {
+		return mergeChildForTest(&invocation{projectsRoot: fixture.projectsRoot}, "seal-validation-failed")
+	}, fixture.receiptPath,
 		"--format", "json", "--model", "cwWt-model", "--agent-runtime", "cwWt-runtime", "--agent-id", "cwWt-agent", "--provider", "cwWt-provider", "--cli", "wb-cwwt")
 	if err != nil {
 		t.Fatalf("seal-validation-failed --format json = %v, want nil", err)
@@ -959,7 +487,7 @@ func TestCwWtMergeAcknowledgeMissingCleanupOutput(t *testing.T) {
 	landed.Cleanup = true
 	landed.LandingSHA = landed.Candidate.SHA
 	landed.CanonicalSync = "not_checked_out"
-	landed.Checks = orchestrate.PullRequestWaitResult{Status: orchestrate.PullRequestWaitPassed}
+	landed.Checks = githubchecks.PullRequestWaitResult{Status: githubchecks.PullRequestWaitPassed}
 	cwWtMergeRewriteReceipt(t, fixture.receiptPath, landed)
 
 	// Land the exact candidate on the remote target so the landing proof holds.
@@ -978,7 +506,9 @@ func TestCwWtMergeAcknowledgeMissingCleanupOutput(t *testing.T) {
 	runCLIWorktreeGit(t, fixture.canonical, "branch", "-D", source.Branch)
 	runCLIWorktreeGit(t, fixture.canonical, "branch", "-D", landed.Candidate.Branch)
 
-	stdout, _, err := cwCovExec(t, fixture.projectsRoot, newWorktreeMergeAcknowledgeMissingCleanupCmd, fixture.receiptPath)
+	stdout, _, err := cwCovExec(t, fixture.projectsRoot, func() *cobra.Command {
+		return mergeChildForTest(&invocation{projectsRoot: fixture.projectsRoot}, "acknowledge-missing-cleanup")
+	}, fixture.receiptPath)
 	if err != nil {
 		t.Fatalf("acknowledge-missing-cleanup dry run = %v, want nil", err)
 	}
@@ -995,7 +525,9 @@ func TestCwWtMergeAcknowledgeMissingCleanupOutput(t *testing.T) {
 		}
 	}
 
-	jsonOut, _, err := cwCovExec(t, fixture.projectsRoot, newWorktreeMergeAcknowledgeMissingCleanupCmd, fixture.receiptPath, "--format", "json")
+	jsonOut, _, err := cwCovExec(t, fixture.projectsRoot, func() *cobra.Command {
+		return mergeChildForTest(&invocation{projectsRoot: fixture.projectsRoot}, "acknowledge-missing-cleanup")
+	}, fixture.receiptPath, "--format", "json")
 	if err != nil {
 		t.Fatalf("acknowledge-missing-cleanup --format json = %v, want nil", err)
 	}
@@ -1058,7 +590,9 @@ func TestCwWtMergeAcknowledgeStrandedLandingOutput(t *testing.T) {
 		"exit 1",
 	}, "\n")+"\n")
 
-	stdout, _, err := cwCovExec(t, fixture.projectsRoot, newWorktreeMergeAcknowledgeStrandedLandingCmd, fixture.receiptPath)
+	stdout, _, err := cwCovExec(t, fixture.projectsRoot, func() *cobra.Command {
+		return mergeChildForTest(&invocation{projectsRoot: fixture.projectsRoot}, "acknowledge-stranded-landing")
+	}, fixture.receiptPath)
 	if err != nil {
 		t.Fatalf("acknowledge-stranded-landing dry run = %v, want nil", err)
 	}
@@ -1078,7 +612,9 @@ func TestCwWtMergeAcknowledgeStrandedLandingOutput(t *testing.T) {
 		}
 	}
 
-	jsonOut, _, err := cwCovExec(t, fixture.projectsRoot, newWorktreeMergeAcknowledgeStrandedLandingCmd, fixture.receiptPath, "--format", "json")
+	jsonOut, _, err := cwCovExec(t, fixture.projectsRoot, func() *cobra.Command {
+		return mergeChildForTest(&invocation{projectsRoot: fixture.projectsRoot}, "acknowledge-stranded-landing")
+	}, fixture.receiptPath, "--format", "json")
 	if err != nil {
 		t.Fatalf("acknowledge-stranded-landing --format json = %v, want nil", err)
 	}
@@ -1095,7 +631,7 @@ func TestCwWtMergeAcknowledgeStrandedLandingOutput(t *testing.T) {
 func cwWtMergeFakeGH(t *testing.T, script string) {
 	t.Helper()
 	binDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(binDir, "gh"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -1125,7 +661,9 @@ func TestCwWtMergeAdoptPublishedCandidateOutput(t *testing.T) {
 		"exit 1",
 	}, "\n")+"\n")
 
-	stdout, _, err := cwCovExec(t, fixture.projectsRoot, newWorktreeMergeAdoptPublishedCandidateCmd, fixture.receiptPath, "7")
+	stdout, _, err := cwCovExec(t, fixture.projectsRoot, func() *cobra.Command {
+		return mergeChildForTest(&invocation{projectsRoot: fixture.projectsRoot}, "adopt-published-candidate")
+	}, fixture.receiptPath, "7")
 	if err != nil {
 		t.Fatalf("adopt-published-candidate dry run = %v, want nil", err)
 	}
@@ -1142,7 +680,9 @@ func TestCwWtMergeAdoptPublishedCandidateOutput(t *testing.T) {
 		}
 	}
 
-	jsonOut, _, err := cwCovExec(t, fixture.projectsRoot, newWorktreeMergeAdoptPublishedCandidateCmd, fixture.receiptPath, "7", "--format", "json")
+	jsonOut, _, err := cwCovExec(t, fixture.projectsRoot, func() *cobra.Command {
+		return mergeChildForTest(&invocation{projectsRoot: fixture.projectsRoot}, "adopt-published-candidate")
+	}, fixture.receiptPath, "7", "--format", "json")
 	if err != nil {
 		t.Fatalf("adopt-published-candidate --format json = %v, want nil", err)
 	}
@@ -1154,7 +694,9 @@ func TestCwWtMergeAdoptPublishedCandidateOutput(t *testing.T) {
 		t.Fatalf("decoded adoption = %+v, want pull request 7 bound to the receipted candidate", decoded)
 	}
 
-	applied, _, err := cwCovExec(t, fixture.projectsRoot, newWorktreeMergeAdoptPublishedCandidateCmd,
+	applied, _, err := cwCovExec(t, fixture.projectsRoot, func() *cobra.Command {
+		return mergeChildForTest(&invocation{projectsRoot: fixture.projectsRoot}, "adopt-published-candidate")
+	},
 		fixture.receiptPath, "7", "--apply", "--actor", "cwWt operator", "--reason", "cwWt regression")
 	if err != nil {
 		t.Fatalf("adopt-published-candidate --apply = %v, want nil", err)
@@ -1211,7 +753,9 @@ func TestCwWtMergeAcknowledgeReceiptCollisionOutput(t *testing.T) {
 		"--expected-historical-refresh-source", sourceSHA,
 	}
 
-	stdout, _, err := cwCovExec(t, fixture.projectsRoot, newWorktreeMergeAcknowledgeReceiptCollisionCmd, args...)
+	stdout, _, err := cwCovExec(t, fixture.projectsRoot, func() *cobra.Command {
+		return mergeChildForTest(&invocation{projectsRoot: fixture.projectsRoot}, "acknowledge-receipt-collision")
+	}, args...)
 	if err != nil {
 		t.Fatalf("acknowledge-receipt-collision dry run = %v, want nil", err)
 	}
@@ -1228,7 +772,9 @@ func TestCwWtMergeAcknowledgeReceiptCollisionOutput(t *testing.T) {
 		}
 	}
 
-	jsonOut, _, err := cwCovExec(t, fixture.projectsRoot, newWorktreeMergeAcknowledgeReceiptCollisionCmd,
+	jsonOut, _, err := cwCovExec(t, fixture.projectsRoot, func() *cobra.Command {
+		return mergeChildForTest(&invocation{projectsRoot: fixture.projectsRoot}, "acknowledge-receipt-collision")
+	},
 		append(append([]string{}, args...), "--format", "json")...)
 	if err != nil {
 		t.Fatalf("acknowledge-receipt-collision --format json = %v, want nil", err)
@@ -1291,7 +837,9 @@ func TestCwWtMergePrepareConflictReplacementOutput(t *testing.T) {
 		"--expected-source-sha", strings.Join(expectedSources, ","),
 	)
 
-	stdout, _, err := cwCovExec(t, fixture.projectsRoot, newWorktreeMergePrepareConflictReplacementCmd, args...)
+	stdout, _, err := cwCovExec(t, fixture.projectsRoot, func() *cobra.Command {
+		return mergeChildForTest(&invocation{projectsRoot: fixture.projectsRoot}, "prepare-conflict-replacement")
+	}, args...)
 	if err != nil {
 		t.Fatalf("prepare-conflict-replacement dry run = %v, want nil", err)
 	}
@@ -1306,7 +854,9 @@ func TestCwWtMergePrepareConflictReplacementOutput(t *testing.T) {
 		}
 	}
 
-	jsonOut, _, err := cwCovExec(t, fixture.projectsRoot, newWorktreeMergePrepareConflictReplacementCmd,
+	jsonOut, _, err := cwCovExec(t, fixture.projectsRoot, func() *cobra.Command {
+		return mergeChildForTest(&invocation{projectsRoot: fixture.projectsRoot}, "prepare-conflict-replacement")
+	},
 		append(append([]string{}, args...), "--format", "json")...)
 	if err != nil {
 		t.Fatalf("prepare-conflict-replacement --format json = %v, want nil", err)
@@ -1379,7 +929,9 @@ func TestCwWtMergePreparePublishedForwardRepairOutput(t *testing.T) {
 		"--model", "cwWt-model", "--agent-runtime", "cwWt-runtime", "--agent-id", "cwWt-agent",
 	}
 
-	stdout, _, err := cwCovExec(t, fixture.projectsRoot, newWorktreeMergePreparePublishedForwardRepairCmd, args...)
+	stdout, _, err := cwCovExec(t, fixture.projectsRoot, func() *cobra.Command {
+		return mergeChildForTest(&invocation{projectsRoot: fixture.projectsRoot}, "prepare-published-forward-repair")
+	}, args...)
 	if err != nil {
 		t.Fatalf("prepare-published-forward-repair dry run = %v, want nil", err)
 	}
@@ -1395,7 +947,9 @@ func TestCwWtMergePreparePublishedForwardRepairOutput(t *testing.T) {
 		}
 	}
 
-	jsonOut, _, err := cwCovExec(t, fixture.projectsRoot, newWorktreeMergePreparePublishedForwardRepairCmd,
+	jsonOut, _, err := cwCovExec(t, fixture.projectsRoot, func() *cobra.Command {
+		return mergeChildForTest(&invocation{projectsRoot: fixture.projectsRoot}, "prepare-published-forward-repair")
+	},
 		append(append([]string{}, args...), "--format", "json")...)
 	if err != nil {
 		t.Fatalf("prepare-published-forward-repair --format json = %v, want nil", err)
@@ -1506,7 +1060,9 @@ func TestCwWtMergeCorrectSelfSupersessionOutput(t *testing.T) {
 		"--expected-immutable-claim-sha256", hex.EncodeToString(claimDigest[:]),
 	}
 
-	stdout, _, err := cwCovExec(t, fixture.projectsRoot, newWorktreeMergeCorrectSelfSupersessionCmd, args...)
+	stdout, _, err := cwCovExec(t, fixture.projectsRoot, func() *cobra.Command {
+		return mergeChildForTest(&invocation{projectsRoot: fixture.projectsRoot}, "correct-self-supersession")
+	}, args...)
 	if err != nil {
 		t.Fatalf("correct-self-supersession dry run = %v, want nil", err)
 	}
@@ -1522,7 +1078,9 @@ func TestCwWtMergeCorrectSelfSupersessionOutput(t *testing.T) {
 		}
 	}
 
-	jsonOut, _, err := cwCovExec(t, fixture.projectsRoot, newWorktreeMergeCorrectSelfSupersessionCmd,
+	jsonOut, _, err := cwCovExec(t, fixture.projectsRoot, func() *cobra.Command {
+		return mergeChildForTest(&invocation{projectsRoot: fixture.projectsRoot}, "correct-self-supersession")
+	},
 		append(append([]string{}, args...), "--format", "json")...)
 	if err != nil {
 		t.Fatalf("correct-self-supersession --format json = %v, want nil", err)

@@ -2,6 +2,7 @@ package worktrees
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -68,20 +69,81 @@ func ListActiveClaimSummaries(projectsRoot, filter string) ([]ActiveClaimSummary
 // listActiveClaimSummariesInHome is ListActiveClaimSummaries for exactly one
 // resolved home.
 func listActiveClaimSummariesInHome(home, filter string) ([]ActiveClaimSummary, error) {
+	result := make([]ActiveClaimSummary, 0)
+	err := walkActiveWorkLogClaims(home, func(_ *os.File, _ string, claim workLogClaim) {
+		if !filterMatches(filter, claim.Repository) {
+			return
+		}
+		result = append(result, ActiveClaimSummary{
+			Task: claim.Task, TaskSummary: claim.TaskSummary, Repository: claim.Repository,
+			Branch: claim.Branch, Owner: claim.AgentID, WBSessionID: claim.WBSessionID,
+			RecordedAt: claim.RecordedAt,
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// walkActiveWorkLogClaims is the one directory walk behind every reader of
+// the worklogs/<task>/runs/<run>/claims layout that only cares about a claim
+// still in its active (non-terminal) Work Log life —
+// ListActiveClaimSummaries and ListRegisteredPullRequestBindings, as of this
+// writing. Path enumeration, symlink rejection, static claim validation, and
+// the terminal-skip rule live here exactly once, so both callers' tests
+// exercise the same error branches instead of two independent, drifting
+// copies of them (herdr-session-transport Plan Task 6 review, M4).
+//
+// visit is called once per active claim, with the open, no-follow "claims"
+// directory descriptor the claim itself was read from — open so visit can
+// read a sidecar file beside it, as ListRegisteredPullRequestBindings does —
+// the claim's ID, and the decoded claim. visit performs no filesystem I/O
+// that can itself fail in a way the walk should abort for; a caller that
+// needs to skip a claim (an unmatched filter, a missing sidecar) simply
+// returns without recording it. A top-level filesystem error — reading a
+// directory, opening a private child — still aborts the whole walk and is
+// returned to ListActiveClaimSummaries/ListRegisteredPullRequestBindings'
+// own caller, exactly as it did before this extraction.
+func walkActiveWorkLogClaims(home string, visit func(claims *os.File, claimID string, claim workLogClaim)) error {
+	return walkActiveWorkLogClaimsWithReader(home, visit, readActiveDirectoryEntries)
+}
+
+// readActiveDirectoryEntries enumerates the held directory in lexical order.
+// Unlike lazy DirEntry.Info inspection, metadata errors other than a vanished
+// entry abort the walk, so failed identity checks cannot yield a partial inventory.
+func readActiveDirectoryEntries(directory *os.File) ([]os.DirEntry, error) {
+	// Readdir obtains FileInfo through descriptor-relative fstatat in Go 1.27.
+	// ReadDir's lazy DirEntry.Info would resolve this handle's diagnostic name.
+	infos, err := directory.Readdir(-1)
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]os.DirEntry, len(infos))
+	for i, info := range infos {
+		entries[i] = fs.FileInfoToDirEntry(info)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	return entries, nil
+}
+
+func walkActiveWorkLogClaimsWithReader(home string, visit func(claims *os.File, claimID string, claim workLogClaim), readDir func(*os.File) ([]os.DirEntry, error)) error {
 	worklogsRoot := filepath.Join(home, "worklogs")
-	efforts, err := os.ReadDir(worklogsRoot)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
 	worklogs, err := openDirectDirectoryNoFollow(worklogsRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer func() { _ = worklogs.Close() }()
-	result := make([]ActiveClaimSummary, 0)
+	efforts, err := readDir(worklogs)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
 	for _, effort := range efforts {
 		if !safeActiveDirectoryEntry(effort) || !validSafeSegment(effort.Name()) {
 			continue
@@ -96,28 +158,25 @@ func listActiveClaimSummariesInHome(home, filter string) ([]ActiveClaimSummary, 
 			continue
 		}
 		if openErr != nil {
-			return nil, openErr
+			return openErr
 		}
-		runsRoot := filepath.Join(worklogsRoot, effort.Name(), "runs")
-		runs, readErr := os.ReadDir(runsRoot)
+		runs, readErr := readDir(runsDir)
 		if errors.Is(readErr, os.ErrNotExist) {
 			_ = runsDir.Close()
 			continue
 		}
 		if readErr != nil {
 			_ = runsDir.Close()
-			return nil, readErr
+			return readErr
 		}
 		for _, run := range runs {
 			if !safeActiveDirectoryEntry(run) || !validSafeSegment(run.Name()) {
 				continue
 			}
-			runRoot := filepath.Join(runsRoot, run.Name())
 			runDir, runErr := openPrivateChild(runsDir, run.Name(), false)
 			if runErr != nil {
 				continue
 			}
-			claimsRoot := filepath.Join(runRoot, "claims")
 			claims, claimsErr := openPrivateChild(runDir, "claims", false)
 			if errors.Is(claimsErr, os.ErrNotExist) {
 				_ = runDir.Close()
@@ -126,21 +185,21 @@ func listActiveClaimSummariesInHome(home, filter string) ([]ActiveClaimSummary, 
 			if claimsErr != nil {
 				_ = runDir.Close()
 				_ = runsDir.Close()
-				return nil, claimsErr
+				return claimsErr
 			}
-			claimEntries, entriesErr := os.ReadDir(claimsRoot)
+			claimEntries, entriesErr := readDir(claims)
 			if entriesErr != nil {
 				_ = claims.Close()
 				_ = runDir.Close()
 				_ = runsDir.Close()
-				return nil, entriesErr
+				return entriesErr
 			}
 			terminals, terminalErr := openPrivateChild(runDir, "terminals", false)
 			if terminalErr != nil && !errors.Is(terminalErr, os.ErrNotExist) {
 				_ = claims.Close()
 				_ = runDir.Close()
 				_ = runsDir.Close()
-				return nil, terminalErr
+				return terminalErr
 			}
 			for _, entry := range claimEntries {
 				claimID := strings.TrimSuffix(entry.Name(), ".json")
@@ -159,14 +218,7 @@ func listActiveClaimSummariesInHome(home, filter string) ([]ActiveClaimSummary, 
 						continue
 					}
 				}
-				if !filterMatches(filter, claim.Repository) {
-					continue
-				}
-				result = append(result, ActiveClaimSummary{
-					Task: claim.Task, TaskSummary: claim.TaskSummary, Repository: claim.Repository,
-					Branch: claim.Branch, Owner: claim.AgentID, WBSessionID: claim.WBSessionID,
-					RecordedAt: claim.RecordedAt,
-				})
+				visit(claims, claimID, claim)
 			}
 			if terminals != nil {
 				_ = terminals.Close()
@@ -176,7 +228,7 @@ func listActiveClaimSummariesInHome(home, filter string) ([]ActiveClaimSummary, 
 		}
 		_ = runsDir.Close()
 	}
-	return result, nil
+	return nil
 }
 
 func safeActiveDirectoryEntry(entry os.DirEntry) bool {
@@ -193,9 +245,5 @@ func openDirectDirectoryNoFollow(path string) (*os.File, error) {
 		return nil, err
 	}
 	file := os.NewFile(uintptr(fd), "wb-active-private-directory")
-	if file == nil {
-		_ = unix.Close(fd)
-		return nil, errors.New("wrap active Work Log directory")
-	}
 	return file, nil
 }

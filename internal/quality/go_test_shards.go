@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/sneat-dev/wb/internal/filewrite"
 )
 
 var supportedGoTestName = regexp.MustCompile(`^(Test|Example|Fuzz)[A-Za-z0-9_]*$`)
@@ -61,7 +63,32 @@ func mergeCoverageProfiles(paths []string, output string) error {
 	mode := ""
 	blocks := map[string]coverageBlock{}
 	for _, path := range paths {
-		profileMode, profileBlocks, err := readCoverageProfile(path)
+		var conflict error
+		profileMode, err := scanCoverageProfile(path, func(incomingMode string, incoming coverageBlock) {
+			// A reader error must win over merge errors, so keep scanning after a
+			// conflict or mode mismatch without changing the private accumulator.
+			if conflict != nil || (mode != "" && incomingMode != mode) {
+				return
+			}
+			current, exists := blocks[incoming.location]
+			if exists && current.statements != incoming.statements {
+				conflict = fmt.Errorf("coverage block %s has statement count %d, want %d", incoming.location, incoming.statements, current.statements)
+				return
+			}
+			if !exists {
+				blocks[incoming.location] = incoming
+				return
+			}
+			switch incomingMode {
+			case "set":
+				if incoming.count > current.count {
+					current.count = incoming.count
+				}
+			case "count", "atomic":
+				current.count += incoming.count
+			}
+			blocks[incoming.location] = current
+		})
 		if err != nil {
 			return err
 		}
@@ -70,96 +97,103 @@ func mergeCoverageProfiles(paths []string, output string) error {
 		} else if profileMode != mode {
 			return fmt.Errorf("coverage mode mismatch: %s uses %q, want %q", path, profileMode, mode)
 		}
-		for _, incoming := range profileBlocks {
-			current, exists := blocks[incoming.location]
-			if exists && current.statements != incoming.statements {
-				return fmt.Errorf("coverage block %s has statement count %d, want %d", incoming.location, incoming.statements, current.statements)
-			}
-			if !exists {
-				blocks[incoming.location] = incoming
-				continue
-			}
-			switch mode {
-			case "set":
-				if incoming.count > current.count {
-					current.count = incoming.count
-				}
-			case "count", "atomic":
-				current.count += incoming.count
-			default:
-				return fmt.Errorf("unsupported coverage mode %q", mode)
-			}
-			blocks[incoming.location] = current
+		if conflict != nil {
+			return conflict
 		}
 	}
 	return writeCoverageProfileAtomically(output, mode, blocks)
 }
 
 func readCoverageProfile(path string) (string, []coverageBlock, error) {
+	var blocks []coverageBlock
+	mode, err := scanCoverageProfile(path, func(_ string, block coverageBlock) {
+		blocks = append(blocks, block)
+	})
+	if err != nil {
+		return "", nil, err
+	}
+	return mode, blocks, nil
+}
+
+func scanCoverageProfile(path string, visit func(string, coverageBlock)) (string, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return "", nil, fmt.Errorf("open coverage profile %s: %w", path, err)
+		return "", fmt.Errorf("open coverage profile %s: %w", path, err)
 	}
 	defer func() { _ = file.Close() }()
 
 	scanner := bufio.NewScanner(file)
 	if !scanner.Scan() {
 		if err := scanner.Err(); err != nil {
-			return "", nil, fmt.Errorf("read coverage profile %s: %w", path, err)
+			return "", fmt.Errorf("read coverage profile %s: %w", path, err)
 		}
-		return "", nil, fmt.Errorf("coverage profile %s is empty", path)
+		return "", fmt.Errorf("coverage profile %s is empty", path)
 	}
 	header := strings.Fields(scanner.Text())
 	if len(header) != 2 || header[0] != "mode:" {
-		return "", nil, fmt.Errorf("coverage profile %s has invalid mode header", path)
+		return "", fmt.Errorf("coverage profile %s has invalid mode header", path)
 	}
 	mode := header[1]
 	if mode != "set" && mode != "count" && mode != "atomic" {
-		return "", nil, fmt.Errorf("unsupported coverage mode %q in %s", mode, path)
+		return "", fmt.Errorf("unsupported coverage mode %q in %s", mode, path)
 	}
-	var blocks []coverageBlock
-	seen := map[string]bool{}
+	// Multi-package -coverpkg output can repeat a source block. Visit every
+	// occurrence so callers preserve counts without retaining duplicate rows.
 	for line := 2; scanner.Scan(); line++ {
 		fields := strings.Fields(scanner.Text())
 		if len(fields) != 3 {
-			return "", nil, fmt.Errorf("invalid coverage profile %s at line %d", path, line)
+			return "", fmt.Errorf("invalid coverage profile %s at line %d", path, line)
 		}
 		statements, statementErr := strconv.Atoi(fields[1])
 		count, countErr := strconv.ParseInt(fields[2], 10, 64)
 		if statementErr != nil || statements < 0 || countErr != nil || count < 0 {
-			return "", nil, fmt.Errorf("invalid coverage profile %s at line %d", path, line)
+			return "", fmt.Errorf("invalid coverage profile %s at line %d", path, line)
 		}
-		if seen[fields[0]] {
-			return "", nil, fmt.Errorf("duplicate coverage block %s in %s", fields[0], path)
-		}
-		seen[fields[0]] = true
-		blocks = append(blocks, coverageBlock{location: fields[0], statements: statements, count: count})
+		visit(mode, coverageBlock{location: fields[0], statements: statements, count: count})
 	}
 	if err := scanner.Err(); err != nil {
-		return "", nil, fmt.Errorf("read coverage profile %s: %w", path, err)
+		return "", fmt.Errorf("read coverage profile %s: %w", path, err)
 	}
-	return mode, blocks, nil
+	return mode, nil
 }
 
-func writeCoverageProfileAtomically(output, mode string, blocks map[string]coverageBlock) (err error) {
+func writeCoverageProfileAtomically(output, mode string, blocks map[string]coverageBlock) error {
+	return writeCoverageProfileAtomicallyInjected(output, mode, blocks, nil)
+}
+
+// writeCoverageProfileAtomicallyInjected is writeCoverageProfileAtomically's
+// test seam (task-9 PR-6): every production call site reaches it only
+// through writeCoverageProfileAtomically, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged. A test passes
+// its own Injector to reach a chmod/write/sync/close/rename failure branch
+// deterministically. The buffered fmt.Fprintf writes go through
+// bufio.NewWriter(filewrite.Writer(...)) (review-t9-pr6 B1): the whole
+// payload (mode plus the block map) is already in memory here, unlike
+// extractWorktreeMergeArchive's arbitrary-size tar.Reader stream, but the
+// mode/block Fprintf calls and the final Flush are still real writes to
+// our own temp file that a test needs to fault-inject, so
+// filewrite.Writer -- an io.Writer adapter, not a []byte-at-a-time
+// primitive -- makes them injectable without changing what bufio writes
+// or how its errors are wrapped.
+func writeCoverageProfileAtomicallyInjected(output, mode string, blocks map[string]coverageBlock, inj *filewrite.Injector) (err error) {
 	directory := filepath.Dir(output)
-	temporary, err := os.CreateTemp(directory, ".wb-coverage-merge-*.tmp")
+	temporary, err := filewrite.CreateTemp(directory, ".wb-coverage-merge-*.tmp", inj)
 	if err != nil {
 		return fmt.Errorf("create merged coverage profile beside %s: %w", output, err)
 	}
 	temporaryPath := temporary.Name()
 	defer func() {
 		if temporary != nil {
-			err = errors.Join(err, temporary.Close())
+			err = errors.Join(err, filewrite.Close(temporary, temporaryPath, inj))
 		}
 		if err != nil {
 			_ = os.Remove(temporaryPath)
 		}
 	}()
-	if err := temporary.Chmod(0o644); err != nil {
+	if err := filewrite.ChmodFile(temporary, 0o644, temporaryPath, inj); err != nil {
 		return fmt.Errorf("set merged coverage profile mode: %w", err)
 	}
-	writer := bufio.NewWriter(temporary)
+	writer := bufio.NewWriter(filewrite.Writer(temporary, temporaryPath, inj))
 	if _, err := fmt.Fprintf(writer, "mode: %s\n", mode); err != nil {
 		return err
 	}
@@ -177,14 +211,14 @@ func writeCoverageProfileAtomically(output, mode string, blocks map[string]cover
 	if err := writer.Flush(); err != nil {
 		return fmt.Errorf("flush merged coverage profile: %w", err)
 	}
-	if err := temporary.Sync(); err != nil {
+	if err := filewrite.Sync(temporary, temporaryPath, inj); err != nil {
 		return fmt.Errorf("sync merged coverage profile: %w", err)
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, temporaryPath, inj); err != nil {
 		return fmt.Errorf("close merged coverage profile: %w", err)
 	}
 	temporary = nil
-	if err := os.Rename(temporaryPath, output); err != nil {
+	if err := filewrite.Rename(temporaryPath, output, inj); err != nil {
 		return fmt.Errorf("publish merged coverage profile %s: %w", output, err)
 	}
 	return nil

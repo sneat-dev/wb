@@ -16,6 +16,7 @@ import (
 // failed Fetch (here: an unusable clone URL) instead of reading a stale or
 // missing working tree.
 func TestDQCovListAndStatusReportCloneFailure(t *testing.T) {
+	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "no-such-origin")
 	p := New(Options{ClonePath: filepath.Join(t.TempDir(), "p", "wb-state"), CloneURL: missing})
 
@@ -31,6 +32,7 @@ func TestDQCovListAndStatusReportCloneFailure(t *testing.T) {
 // holds a `.git` entry but has no readable origin configuration is reported as
 // an error, not silently treated as the store.
 func TestDQCovEnsureCloneReportsUnreadableOrigin(t *testing.T) {
+	t.Parallel()
 	p := New(Options{ClonePath: filepath.Join(t.TempDir(), "p", "wb-state"), CloneURL: "file:///nowhere"})
 	if err := os.MkdirAll(filepath.Join(p.opts.ClonePath, ".git"), 0o755); err != nil {
 		t.Fatal(err)
@@ -80,6 +82,7 @@ func TestDQCovPushReportsUpstreamCheckFailure(t *testing.T) {
 // TestDQCovPushReportsMissingRepository proves push invoked against a clone
 // path that does not exist fails at the upstream probe.
 func TestDQCovPushReportsMissingRepository(t *testing.T) {
+	t.Parallel()
 	p := New(Options{ClonePath: filepath.Join(t.TempDir(), "does", "not", "exist"), CloneURL: "file:///nowhere"})
 	if err := p.push(); err == nil {
 		t.Fatal("push against a missing repository succeeded, want an error")
@@ -89,6 +92,7 @@ func TestDQCovPushReportsMissingRepository(t *testing.T) {
 // TestDQCovScpHostPathRejectsNonScpForms proves the scp-like split refuses an
 // "@" with no following ":" and a candidate host that is not a bare hostname.
 func TestDQCovScpHostPathRejectsNonScpForms(t *testing.T) {
+	t.Parallel()
 	for _, in := range []string{"user@host", "user@ho/st:path", "@:path", "", "no-at-sign"} {
 		host, path, ok := scpHostPath(in)
 		if ok {
@@ -103,6 +107,7 @@ func TestDQCovScpHostPathRejectsNonScpForms(t *testing.T) {
 // TestDQCovProviderMethodsReportLockFailure proves every locked entry point
 // reports an uncreatable lock directory rather than proceeding unlocked.
 func TestDQCovProviderMethodsReportLockFailure(t *testing.T) {
+	t.Parallel()
 	p := New(Options{ClonePath: dqCovBlockedLockClonePath(t), CloneURL: "file:///nowhere"})
 	ctx := context.Background()
 	at := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)

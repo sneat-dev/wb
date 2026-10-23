@@ -94,12 +94,6 @@ func NewScanner(rules []Rule) *Scanner {
 	return &Scanner{rules: cloned}
 }
 
-// Rules returns every loaded rule, for diagnostics (e.g. `wb` printing what
-// a scan ran with). Callers must not mutate the result.
-func (s *Scanner) Rules() []Rule {
-	return s.rules
-}
-
 // Scan evaluates every rule against every segment and returns every match.
 // It never returns an error: an unusable rule was already dropped at load
 // time (see parseTOMLRuleset), so scanning itself cannot fail.

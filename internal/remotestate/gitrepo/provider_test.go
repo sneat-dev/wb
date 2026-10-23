@@ -14,6 +14,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/gitops"
 	"github.com/sneat-dev/wb/internal/remotestate"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // setGitIdentity gives every git command spawned by this test process an
@@ -22,12 +23,23 @@ import (
 // internal/console.Env, which wraps os.Environ), so t.Setenv here is enough
 // to make Provider.Publish's own commits succeed without any repo-local
 // config.
+//
+// It also disables every directly-started git subprocess's opportunistic
+// background maintenance (testenv.SetGitAutoMaintenanceOff; task-21,
+// decision 13), test-only, for the same class of "TempDir RemoveAll
+// cleanup: unlinkat .../objects: directory not empty" failure #711 fixed
+// for cmd/wb/remote_test.go's fixtures (CI run 35974438313's
+// TestDQCovClaimReportsUnreadableAfterLostRace). bareOrigin additionally
+// configures the bare origin directly, since receive-pack strips
+// GIT_CONFIG_* from a same-host push's server-side child process (#711's
+// review traced this directly), so this env-only config never reaches it.
 func setGitIdentity(t *testing.T) {
 	t.Helper()
 	t.Setenv("GIT_AUTHOR_NAME", "t")
 	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
 	t.Setenv("GIT_COMMITTER_NAME", "t")
 	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
+	testenv.SetGitAutoMaintenanceOff(t)
 }
 
 func gitIn(t *testing.T, dir string, args ...string) string {
@@ -50,6 +62,7 @@ func bareOrigin(t *testing.T) string {
 	setGitIdentity(t)
 	origin := t.TempDir()
 	gitIn(t, origin, "init", "-q", "--bare", "-b", "main")
+	testenv.ConfigureGitAutoMaintenanceOff(t, origin)
 	seed := filepath.Join(t.TempDir(), "seed")
 	gitIn(t, t.TempDir(), "clone", "-q", origin, seed)
 	gitIn(t, seed, "commit", "-q", "--allow-empty", "-m", "init")
@@ -177,7 +190,7 @@ if [ ! -f "$marker" ]; then
 fi
 exit 0
 `, promoteSHA)
-	if err := os.WriteFile(filepath.Join(hooksDir, "pre-receive"), []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(hooksDir, "pre-receive"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -196,7 +209,7 @@ func installRejectAlwaysPushHook(t *testing.T, origin string) {
 		t.Fatal(err)
 	}
 	script := "#!/bin/sh\nexit 1\n"
-	if err := os.WriteFile(filepath.Join(hooksDir, "pre-receive"), []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(hooksDir, "pre-receive"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -347,6 +360,7 @@ func TestPublishIntoEmptyStoreCreatesMain(t *testing.T) {
 	setGitIdentity(t)
 	origin := t.TempDir()
 	gitIn(t, origin, "init", "-q", "--bare", "-b", "main")
+	testenv.ConfigureGitAutoMaintenanceOff(t, origin)
 	p := machine(t, origin)
 	at := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
 
@@ -517,6 +531,7 @@ func TestStatusRefreshesOnceForMachinesAndClaims(t *testing.T) {
 // the configured remote.repo happens to use another), while still telling
 // genuinely different remotes apart.
 func TestSameRemoteEquivalence(t *testing.T) {
+	t.Parallel()
 	equal := [][2]string{
 		{"https://github.com/o/r", "git@github.com:o/r.git"},
 		{"ssh://git@github.com/o/r", "git@github.com:o/r"},
@@ -653,6 +668,7 @@ func TestEnsureCloneAcceptsInsteadOfRewrite(t *testing.T) {
 }
 
 func TestSameRemoteLocalPathsStayCaseSensitive(t *testing.T) {
+	t.Parallel()
 	if sameRemote("/tmp/Store", "/tmp/store") {
 		t.Fatal("local paths differing only in case must not compare equal on a case-sensitive filesystem")
 	}

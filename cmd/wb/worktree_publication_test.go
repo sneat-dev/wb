@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -27,12 +28,8 @@ func TestWorktreeGuardPublishedExitsWithFindingsAndNamesTheRemedy(t *testing.T) 
 	publicationGit(t, worktree, "add", "unpushed.txt")
 	publicationGit(t, worktree, "commit", "-m", "work that must not be lost")
 
-	previous := projectsRoot
-	projectsRoot = root
-	t.Cleanup(func() { projectsRoot = previous })
-
 	var stdout, stderr bytes.Buffer
-	command := newWorktreeGuardCmd()
+	command := newWorktreeGuardCmd(&invocation{projectsRoot: root})
 	command.SetArgs([]string{worktree, "--published"})
 	command.SetOut(&stdout)
 	command.SetErr(&stderr)
@@ -55,12 +52,8 @@ func TestWorktreeGuardPublishedConfirmsAPushedWorktree(t *testing.T) {
 	worktree, root := newPublicationWorktree(t, "guard-published-ok")
 	publicationGit(t, worktree, "push", "-u", "origin", "guard-published-ok")
 
-	previous := projectsRoot
-	projectsRoot = root
-	t.Cleanup(func() { projectsRoot = previous })
-
 	var stdout, stderr bytes.Buffer
-	command := newWorktreeGuardCmd()
+	command := newWorktreeGuardCmd(&invocation{projectsRoot: root})
 	command.SetArgs([]string{worktree, "--published"})
 	command.SetOut(&stdout)
 	command.SetErr(&stderr)
@@ -83,7 +76,7 @@ func newPublicationWorktree(t *testing.T, task string) (string, string) {
 	t.Setenv(wbhome.EnvMigrationCompat, "")
 
 	remote := filepath.Join(root, "remote.git")
-	publicationGit(t, root, "init", "--bare", "--initial-branch=main", remote)
+	testenv.InitBareRemoteForTest(t, remote)
 	projects := filepath.Join(root, "projects")
 	canonical := filepath.Join(projects, "acme", "app")
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {

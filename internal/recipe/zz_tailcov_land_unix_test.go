@@ -13,6 +13,7 @@ import (
 // worktree carries a symlink to a read-only file, so the read that plans the
 // change succeeds and only the write is refused.
 func TestTailCovLandTemplateSectionWriteFailureIsHard(t *testing.T) {
+	t.Parallel()
 	clone := newRemoteRepo(t)
 	readonly := filepath.Join(t.TempDir(), "readonly.md")
 	if err := os.WriteFile(readonly, []byte("# Project\n\nIntro.\n"), 0o444); err != nil {

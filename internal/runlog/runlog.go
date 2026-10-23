@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
+	"github.com/sneat-dev/wb/internal/provenance"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -59,6 +61,17 @@ type Event struct {
 	// receipts, which surface this alongside QueueWaitMS on stderr.
 	AdmittedAt *time.Time `json:"admitted_at,omitempty"`
 	ExitCode   *int       `json:"exit_code,omitempty"`
+
+	// Provenance fields (wb#631, SDLC logging-gap analysis 2026-09-18): IDs
+	// only, stamped by Begin from the environment at zero cost, never a
+	// prompt or response body. Additive and omitempty: EventSchemaVersion did
+	// not need to move for a purely additive field.
+	HarnessSessionID string `json:"harness_session_id,omitempty"`
+	Harness          string `json:"harness,omitempty"`
+	EffortLevel      string `json:"effort_level,omitempty"`
+	AgentID          string `json:"agent_id,omitempty"`
+	ToolUseID        string `json:"tool_use_id,omitempty"`
+	WBVersion        string `json:"wb_version,omitempty"`
 }
 
 // RecordAdmission adds scheduler evidence to the terminal event without
@@ -128,18 +141,20 @@ func Begin(cwd string, argv []string, now time.Time) (Recorder, error) {
 	} else {
 		now = now.UTC()
 	}
-	id, err := newOperationID()
-	if err != nil {
-		return Recorder{}, err
-	}
+	// crypto/rand.Read fills the identifier or terminates the process.
+	id := newOperationID()
+	fields := provenance.FromEnv()
 	event := Event{
-		SchemaVersion: EventSchemaVersion,
-		Timestamp:     now,
-		OperationID:   id,
-		State:         "requested",
-		Kind:          classify(argv),
-		ArgsSHA256:    digestArgs(argv),
-		ArgumentCount: len(argv),
+		SchemaVersion:    EventSchemaVersion,
+		Timestamp:        now,
+		OperationID:      id,
+		State:            "requested",
+		Kind:             classify(argv),
+		ArgsSHA256:       digestArgs(argv),
+		ArgumentCount:    len(argv),
+		HarnessSessionID: fields.HarnessSessionID, Harness: fields.Harness,
+		EffortLevel: fields.EffortLevel, AgentID: fields.AgentID,
+		ToolUseID: fields.ToolUseID, WBVersion: fields.WBVersion,
 	}
 	recorder := Recorder{OperationID: id, StartedAt: now, event: event}
 
@@ -184,6 +199,11 @@ func (recorder Recorder) Finish(exitCode int, userCPU, systemCPU time.Duration, 
 // Append writes one event under an exclusive file lock so concurrent commands
 // in the same worktree cannot interleave JSON bytes.
 func Append(path string, event Event) error {
+	return appendInjected(path, event, nil)
+}
+
+// appendInjected keeps write failures deterministic without changing process limits.
+func appendInjected(path string, event Event, inj *filewrite.Injector) error {
 	line, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("encode run event: %w", err)
@@ -200,7 +220,7 @@ func Append(path string, event Event) error {
 		return fmt.Errorf("lock run event log: %w", err)
 	}
 	defer func() { _ = unix.Flock(int(file.Fd()), unix.LOCK_UN) }()
-	if _, err := file.Write(append(line, '\n')); err != nil {
+	if err := filewrite.Write(file, append(line, '\n'), path, inj); err != nil {
 		return fmt.Errorf("append run event: %w", err)
 	}
 	return nil
@@ -328,12 +348,11 @@ func managedWorktree(cwd string) (string, worktrees.Manifest, bool) {
 	}
 }
 
-func newOperationID() (string, error) {
+func newOperationID() string {
 	value := make([]byte, 16)
-	if _, err := rand.Read(value); err != nil {
-		return "", fmt.Errorf("generate operation ID: %w", err)
-	}
-	return "wbo-" + hex.EncodeToString(value), nil
+	// Go 1.27 guarantees Read never returns an error.
+	_, _ = rand.Read(value)
+	return "wbo-" + hex.EncodeToString(value)
 }
 
 func digestArgs(argv []string) string {

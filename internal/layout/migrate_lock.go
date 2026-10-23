@@ -27,6 +27,10 @@ type migrationLock struct {
 // flock releases automatically if the holding process dies, so a crashed run
 // never strands the lock.
 func acquireMigrationLock(root string) (*migrationLock, error) {
+	return acquireMigrationLockWithFlock(root, unix.Flock)
+}
+
+func acquireMigrationLockWithFlock(root string, flock func(int, int) error) (*migrationLock, error) {
 	home, err := wbhome.EnsureRoot(root)
 	if err != nil {
 		return nil, err
@@ -40,7 +44,7 @@ func acquireMigrationLock(root string) (*migrationLock, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open migration lock %s: %w", path, err)
 	}
-	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+	if err := flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		_ = file.Close()
 		if errors.Is(err, unix.EWOULDBLOCK) {
 			return nil, fmt.Errorf("another `wb layout migrate --apply` is already running against %s (lock: %s); wait for it to finish", root, path)

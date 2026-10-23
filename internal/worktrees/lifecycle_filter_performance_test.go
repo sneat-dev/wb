@@ -3,13 +3,13 @@ package worktrees
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -70,6 +70,27 @@ func TestListWithFilterSkipsUnselectedGitCandidates(t *testing.T) {
 	t.Setenv(listFilterGitHelperLogEnv, logPath)
 	t.Setenv(wbhome.EnvOverride, projects)
 	t.Setenv(wbhome.EnvMigrationCompat, "")
+	// Two mechanisms read the real operator machine no matter what
+	// wbhome.EnvOverride says, and an operator machine that has ever used
+	// WB before its per-project layout existed trips both:
+	//
+	//   - wbhome.legacyUserLayout reads os.UserHomeDir() directly (real
+	//     $HOME) and, whenever that machine's $HOME/.wb/worktrees exists,
+	//     unconditionally adds it as a *read* layout -- so a real, unrelated
+	//     population of worktrees gets walked alongside the 240 synthetic
+	//     candidates above. os.UserHomeDir() honours $HOME on every
+	//     platform WB supports (unix; Go substitutes USERPROFILE on
+	//     Windows, which this override doesn't reach, but WB's supported
+	//     local runners are Darwin and Linux -- see internal/process).
+	//   - appendConfiguredSharedWorktreesLayout reads a global, per-operator
+	//     config file (~/.config/wb/worktrees.yaml, or
+	//     $XDG_CONFIG_HOME/wb/…), independent of wbhome.EnvOverride too.
+	//
+	// Point both at this test's own empty directory so no real machine
+	// state is ever found -- the real-HOME leak this test exists to rule
+	// out.
+	t.Setenv("HOME", root)
+	t.Setenv("XDG_CONFIG_HOME", root)
 
 	outcome, err := ListWithDiagnostics(context.Background(), ListOptions{
 		ProjectsRoot: projects,
@@ -170,24 +191,17 @@ func copyTestBinary(t *testing.T, target string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	input, err := os.Open(source)
+	content, err := os.ReadFile(source)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
-		if err := input.Close(); err != nil {
-			t.Errorf("close source test binary: %v", err)
-		}
-	}()
-	output, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o755)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := io.Copy(output, input); err != nil {
-		_ = output.Close()
-		t.Fatal(err)
-	}
-	if err := output.Close(); err != nil {
+	// testenv.WriteExecutableFile (not os.OpenFile+io.Copy) is required here:
+	// opening target directly for write leaves a writable fd on its inode
+	// while another goroutine's fork elsewhere in this parallel test binary
+	// may inherit it before its own exec, racing "text file busy"
+	// (golang/go#22315; task-21, #739) -- and target is itself about to be
+	// exec'd as a fake git helper by this same test.
+	if err := testenv.WriteExecutableFile(target, content, 0o755); err != nil {
 		t.Fatal(err)
 	}
 }

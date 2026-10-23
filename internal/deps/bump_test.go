@@ -11,39 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
-
-func TestBumpOperationIDIsIndependentOfEventOrder(t *testing.T) {
-	t.Parallel()
-	left := []ReleaseEvent{{Dependency: "example.com/b", Version: "v1.2.0"}, {Dependency: "example.com/a", Version: "v0.4.0"}}
-	right := []ReleaseEvent{left[1], left[0]}
-	if BumpOperationID(left) != BumpOperationID(right) {
-		t.Fatalf("operation IDs differ: %s != %s", BumpOperationID(left), BumpOperationID(right))
-	}
-}
-
-func TestBumpOperationIDForUsesTheEcosystemPrefixAndBumpOperationIDStaysGoOnly(t *testing.T) {
-	t.Parallel()
-	events := []ReleaseEvent{{Dependency: "@sneat/core", Version: "1.2.3"}}
-	goID := BumpOperationIDFor(EcosystemGo, events)
-	npmID := BumpOperationIDFor(EcosystemNPM, events)
-	if !strings.HasPrefix(goID, "deps-bump-go-") {
-		t.Fatalf("go operation id = %q", goID)
-	}
-	if !strings.HasPrefix(npmID, "deps-bump-npm-") {
-		t.Fatalf("npm operation id = %q", npmID)
-	}
-	if goID == npmID {
-		t.Fatalf("go and npm campaigns for the same events must not collide: %s", goID)
-	}
-	// BumpOperationID (no ecosystem parameter) is the pre-npm public API;
-	// every existing caller must keep getting exactly the Go-prefixed id.
-	if BumpOperationID(events) != goID {
-		t.Fatalf("BumpOperationID(events) = %q, want %q", BumpOperationID(events), goID)
-	}
-}
 
 func TestWaitForGoReleaseRequiresVersionNewerThanBaseline(t *testing.T) {
 	t.Parallel()
@@ -702,8 +673,9 @@ func TestBumpReportRoundTrip(t *testing.T) {
 // remote configured. The other repositories in the fleet must still be
 // planned; the broken one must show up as a discovery skip, not silently
 // vanish.
+//
+//nolint:paralleltest // legacy external-process fixture remains serial during runner migration
 func TestRunBumpSurvivesUnreadableCloneAcrossFleet(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	adapter := newBumpRepository(t, root, githubDir, "adapter", "module example.com/adapter\n\ngo 1.24\n\nrequire example.com/provider v0.1.0\n")
@@ -740,6 +712,9 @@ func TestRunBumpSurvivesUnreadableCloneAcrossFleet(t *testing.T) {
 
 func newBumpRepository(t *testing.T, root, githubDir, name, goMod string) Repository {
 	t.Helper()
+	// spec/plans/coverage-to-100 task-17: this fixture's real git repo now
+	// reaches orchestrate's runCommand through task-24's guarded runner.Real,
+	// so every caller needs the escape hatch once, here.
 	seed := filepath.Join(root, name+"-seed")
 	remote := filepath.Join(root, name+".git")
 	canonical := filepath.Join(githubDir, "acme", name)
@@ -751,6 +726,7 @@ func newBumpRepository(t *testing.T, root, githubDir, name, goMod string) Reposi
 	runTestGit(t, seed, "add", "-A")
 	runTestGit(t, seed, "commit", "-m", "initial")
 	runTestGit(t, root, "clone", "--bare", seed, remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -774,6 +750,9 @@ func newBumpRepository(t *testing.T, root, githubDir, name, goMod string) Reposi
 // exactly modeling one physical repository cloned into two directories.
 func seedBumpRemoteClone(t *testing.T, root, githubDir, owner, name, canonicalOwner, canonicalName string, files map[string]string) Repository {
 	t.Helper()
+	// spec/plans/coverage-to-100 task-17: this fixture's real git repo now
+	// reaches orchestrate's runCommand through task-24's guarded runner.Real,
+	// so every caller needs the escape hatch once, here.
 	remote := filepath.Join(root, "remotes", owner, name+".git")
 	if _, err := os.Stat(remote); os.IsNotExist(err) {
 		seed := filepath.Join(root, "seed-"+owner+"-"+name)
@@ -789,6 +768,7 @@ func seedBumpRemoteClone(t *testing.T, root, githubDir, owner, name, canonicalOw
 			t.Fatal(err)
 		}
 		runTestGit(t, root, "clone", "--bare", seed, remote)
+		testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	}
 	canonical := filepath.Join(githubDir, canonicalOwner, canonicalName)
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
@@ -872,5 +852,35 @@ func TestRunBumpFailsForGenuinelyUnrelatedModuleCollision(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "vendor-a/lib") || !strings.Contains(err.Error(), "vendor-b/lib") {
 		t.Fatalf("error must name both repositories; got %v", err)
+	}
+}
+
+func TestBumpOperationIDForUsesTheEcosystemPrefixAndBumpOperationIDStaysGoOnly(t *testing.T) {
+	t.Parallel()
+	events := []ReleaseEvent{{Dependency: "@sneat/core", Version: "1.2.3"}}
+	goID := BumpOperationIDFor(EcosystemGo, events)
+	npmID := BumpOperationIDFor(EcosystemNPM, events)
+	if !strings.HasPrefix(goID, "deps-bump-go-") {
+		t.Fatalf("go operation id = %q", goID)
+	}
+	if !strings.HasPrefix(npmID, "deps-bump-npm-") {
+		t.Fatalf("npm operation id = %q", npmID)
+	}
+	if goID == npmID {
+		t.Fatalf("go and npm campaigns for the same events must not collide: %s", goID)
+	}
+	// BumpOperationID (no ecosystem parameter) is the pre-npm public API;
+	// every existing caller must keep getting exactly the Go-prefixed id.
+	if BumpOperationID(events) != goID {
+		t.Fatalf("BumpOperationID(events) = %q, want %q", BumpOperationID(events), goID)
+	}
+}
+
+func TestBumpOperationIDIsIndependentOfEventOrder(t *testing.T) {
+	t.Parallel()
+	left := []ReleaseEvent{{Dependency: "example.com/b", Version: "v1.2.0"}, {Dependency: "example.com/a", Version: "v0.4.0"}}
+	right := []ReleaseEvent{left[1], left[0]}
+	if BumpOperationID(left) != BumpOperationID(right) {
+		t.Fatalf("operation IDs differ: %s != %s", BumpOperationID(left), BumpOperationID(right))
 	}
 }

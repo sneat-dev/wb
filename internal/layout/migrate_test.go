@@ -18,6 +18,7 @@ import (
 	"github.com/sneat-dev/wb/internal/daemon"
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessionpark"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -717,10 +718,10 @@ func TestMigrateBusyProcessRefusesAClone(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
+	t.Cleanup(func() {
 		_ = cmd.Process.Kill()
 		_, _ = cmd.Process.Wait()
-	}()
+	})
 
 	report, err := Migrate(context.Background(), root, MigrateOptions{Repositories: []string{"acme/busy"}})
 	if err != nil {
@@ -746,7 +747,7 @@ func TestMigrateApplyRejectsAConcurrentRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lock.release()
+	t.Cleanup(func() { lock.release() })
 
 	if _, err := Migrate(context.Background(), root, MigrateOptions{Apply: true}); err == nil {
 		t.Fatal("a concurrent --apply must fail while the lock is held")
@@ -1457,7 +1458,7 @@ func TestMigrateMovesCloneReferencedByParkedSessionAndResumeResolvesByIdentity(t
 	// (ls-remote, fetch) against that literal URL, while `remote get-url`
 	// itself never touches it.
 	sshScript := filepath.Join(t.TempDir(), "github-ssh")
-	if err := os.WriteFile(sshScript, []byte("#!/bin/sh\nexec git-upload-pack "+realRemote+"\n"), 0o700); err != nil { //nolint:gosec // an executable stub inside this test's own temporary directory.
+	if err := testenv.WriteExecutableFile(sshScript, []byte("#!/bin/sh\nexec git-upload-pack "+realRemote+"\n"), 0o700); err != nil { //nolint:gosec // an executable stub inside this test's own temporary directory.
 		t.Fatal(err)
 	}
 	t.Setenv("GIT_SSH_COMMAND", sshScript)

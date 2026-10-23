@@ -35,6 +35,7 @@ func lgCovLinkedResult(consumers ...ConsumerResult) Result {
 }
 
 func TestLgCovVerifyConsumersWithoutAVerifier(t *testing.T) {
+	t.Parallel()
 	engine := &Engine{}
 	result := lgCovLinkedResult(
 		ConsumerResult{Consumer: t.TempDir(), Links: []streams.Link{lgCovGoWorkLink("/library")}},
@@ -51,6 +52,7 @@ func TestLgCovVerifyConsumersWithoutAVerifier(t *testing.T) {
 }
 
 func TestLgCovVerifyConsumersReportsBothFailures(t *testing.T) {
+	t.Parallel()
 	verifier := &lgCovVerifier{
 		verifyErr:   errors.New("lint failed to run"),
 		baselineErr: errors.New("vet failed to run"),
@@ -74,6 +76,7 @@ func TestLgCovVerifyConsumersReportsBothFailures(t *testing.T) {
 }
 
 func TestLgCovVerifyConsumersSkipsUnlinkedConsumers(t *testing.T) {
+	t.Parallel()
 	verifier := &lgCovVerifier{
 		linked:   VerificationRun{Passed: true, Command: "go test -p 1 ./..."},
 		baseline: VerificationRun{Passed: true, Command: "GOWORK=off go build ./..."},
@@ -97,6 +100,7 @@ func TestLgCovVerifyConsumersSkipsUnlinkedConsumers(t *testing.T) {
 }
 
 func TestLgCovLibraryNameStatementAndActiveLinks(t *testing.T) {
+	t.Parallel()
 	if got := (Result{Library: "/library"}).libraryName(); got != "/library" {
 		t.Fatalf("libraryName = %q, want the library path when no repository is known", got)
 	}
@@ -127,6 +131,7 @@ func TestLgCovLibraryNameStatementAndActiveLinks(t *testing.T) {
 }
 
 func TestLgCovSummarizeRendersCommandsAndDetails(t *testing.T) {
+	t.Parallel()
 	report := quality.VerificationReport{
 		Status: quality.StatusFailed,
 		Results: []quality.VerificationEntry{
@@ -157,6 +162,7 @@ func TestLgCovSummarizeRendersCommandsAndDetails(t *testing.T) {
 // recognised module or manifest exercises its request construction and
 // summarisation without touching the network.
 func TestLgCovQualityVerifierRequestsBothProfiles(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	lgCovWriteFile(t, filepath.Join(dir, "backend", "go.mod"), "module example.test/backend\n\ngo 1.27\n")
 	lgCovWriteFile(t, filepath.Join(dir, "backend", "backend.go"), "package backend\n")

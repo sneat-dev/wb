@@ -32,6 +32,7 @@ func (f fixedPRLookup) OpenPullRequest(branch string) (open bool, known bool) {
 // open PR, the default branch, a tag, a deletion-only push, and a WB
 // checkpoint-ref push.
 func TestClassifyPushTierSixFoundationalScenarios(t *testing.T) {
+	t.Parallel()
 	lookup := fixedPRLookup{
 		open:  map[string]bool{"has-pr": true, "no-pr": false},
 		known: map[string]bool{"has-pr": true, "no-pr": true},
@@ -93,6 +94,7 @@ func TestClassifyPushTierSixFoundationalScenarios(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			got := ClassifyPushTier(test.updates, test.defaultBranch, lookup)
 			if got.Tier != test.wantTier {
 				t.Fatalf("tier = %d (%s), want %d", got.Tier, got.Reason, test.wantTier)
@@ -108,6 +110,7 @@ func TestClassifyPushTierSixFoundationalScenarios(t *testing.T) {
 }
 
 func TestClassifyPushTierUnknownPRStatusStaysAtTheFastLane(t *testing.T) {
+	t.Parallel()
 	// The founder's explicit constraint: an unresolvable PR status must never
 	// silently escalate to the 6-minute full tier. CI remains the real gate.
 	lookup := fixedPRLookup{known: map[string]bool{}}
@@ -120,6 +123,7 @@ func TestClassifyPushTierUnknownPRStatusStaysAtTheFastLane(t *testing.T) {
 }
 
 func TestClassifyPushTierNoLookupConfiguredStaysAtTheFastLane(t *testing.T) {
+	t.Parallel()
 	got := ClassifyPushTier([]RefUpdate{
 		{LocalRef: "refs/heads/feature", LocalSHA: fakeSHA('a'), RemoteRef: "refs/heads/feature", RemoteSHA: zeroSHA()},
 	}, "main", nil)
@@ -129,6 +133,7 @@ func TestClassifyPushTierNoLookupConfiguredStaysAtTheFastLane(t *testing.T) {
 }
 
 func TestClassifyPushTierMixedRefsTakeTheHighestRequirement(t *testing.T) {
+	t.Parallel()
 	lookup := fixedPRLookup{known: map[string]bool{"feature": true}, open: map[string]bool{"feature": false}}
 	got := ClassifyPushTier([]RefUpdate{
 		{LocalRef: "(delete)", LocalSHA: zeroSHA(), RemoteRef: "refs/heads/old", RemoteSHA: fakeSHA('a')},
@@ -141,6 +146,7 @@ func TestClassifyPushTierMixedRefsTakeTheHighestRequirement(t *testing.T) {
 }
 
 func TestClassifyPushTierEmptyUpdatesDefaultsToFullTier(t *testing.T) {
+	t.Parallel()
 	got := ClassifyPushTier(nil, "main", nil)
 	if got.Tier != TierPublication {
 		t.Fatalf("empty update list tier = %d, want %d (safe default)", got.Tier, TierPublication)
@@ -148,12 +154,14 @@ func TestClassifyPushTierEmptyUpdatesDefaultsToFullTier(t *testing.T) {
 }
 
 func TestParseRefUpdatesRejectsMalformedLines(t *testing.T) {
+	t.Parallel()
 	if _, err := ParseRefUpdates(strings.NewReader("only-one-field\n")); err == nil {
 		t.Fatal("expected an error for a malformed pushed-ref line")
 	}
 }
 
 func TestParseRefUpdatesSkipsBlankLines(t *testing.T) {
+	t.Parallel()
 	updates, err := ParseRefUpdates(strings.NewReader("\nrefs/heads/a " + zeroSHA() + " refs/heads/a " + fakeSHA('a') + "\n\n"))
 	if err != nil {
 		t.Fatal(err)
@@ -167,6 +175,7 @@ func TestParseRefUpdatesSkipsBlankLines(t *testing.T) {
 // wb already owns wins over a network round trip: with a fresh cache entry in
 // place, RunGH must never be invoked.
 func TestCachedGHPRLookupPrefersFreshCacheOverAskingGH(t *testing.T) {
+	t.Parallel()
 	called := false
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	lookup := &CachedGHPRLookup{
@@ -195,6 +204,7 @@ func TestCachedGHPRLookupPrefersFreshCacheOverAskingGH(t *testing.T) {
 // answer cannot hide a pull request created after the previous push. Positive
 // answers are monotonic enough to cache, but "no PR" must ask GitHub again.
 func TestCachedGHPRLookupRevalidatesFreshNegative(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	lookup := &CachedGHPRLookup{
@@ -221,6 +231,7 @@ func TestCachedGHPRLookupRevalidatesFreshNegative(t *testing.T) {
 // path: a cache miss triggers exactly one gh call, whose result is then
 // cached for next time.
 func TestCachedGHPRLookupFallsBackToGHOnCacheMiss(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	lookup := &CachedGHPRLookup{
@@ -248,6 +259,7 @@ func TestCachedGHPRLookupFallsBackToGHOnCacheMiss(t *testing.T) {
 // answer is reported as unknown, and is never poisoned into the cache, so the
 // very next push tries again instead of freezing on a bad answer.
 func TestCachedGHPRLookupNeverCachesAFailureOrTimeout(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	calls := 0
 	lookup := &CachedGHPRLookup{
@@ -274,15 +286,16 @@ func TestCachedGHPRLookupNeverCachesAFailureOrTimeout(t *testing.T) {
 
 func TestDetectDefaultBranchHonoursExplicitOverride(t *testing.T) {
 	t.Setenv(DefaultBranchEnv, "trunk")
-	if got := detectDefaultBranch(t.TempDir()); got != "trunk" {
-		t.Fatalf("detectDefaultBranch = %q, want %q", got, "trunk")
+	if got := DetectDefaultBranch(t.TempDir()); got != "trunk" {
+		t.Fatalf("DetectDefaultBranch = %q, want %q", got, "trunk")
 	}
 }
 
 func TestDetectDefaultBranchReturnsEmptyWhenUnresolvable(t *testing.T) {
+	t.Parallel()
 	repo := initRepo(t)
-	if got := detectDefaultBranch(repo); got != "" {
-		t.Fatalf("detectDefaultBranch = %q, want empty (no origin configured)", got)
+	if got := DetectDefaultBranch(repo); got != "" {
+		t.Fatalf("DetectDefaultBranch = %q, want empty (no origin configured)", got)
 	}
 }
 
@@ -297,6 +310,7 @@ func TestDetectDefaultBranchReturnsEmptyWhenUnresolvable(t *testing.T) {
 // exercised only by inspection and by the CLI-level integration test in
 // cmd/wb, not here.
 func TestClassifyPendingPushWithEmptyNonTerminalStdinDefaultsToFullTier(t *testing.T) {
+	t.Parallel()
 	got, err := ClassifyPendingPush(strings.NewReader(""), t.TempDir())
 	if err != nil {
 		t.Fatal(err)

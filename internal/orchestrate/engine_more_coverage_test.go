@@ -7,8 +7,11 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
+//nolint:paralleltest // legacy external-process fixture remains serial during runner migration
 func TestOrchCovEnsureCanonicalClonesAMissingRepository(t *testing.T) {
 	root := t.TempDir()
 	seed := filepath.Join(root, "seed")
@@ -20,6 +23,7 @@ func TestOrchCovEnsureCanonicalClonesAMissingRepository(t *testing.T) {
 	runEngineGit(t, seed, "add", "-A")
 	runEngineGit(t, seed, "commit", "-m", "initial")
 	runEngineGit(t, root, "clone", "--bare", seed, remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 
 	projectsRoot := filepath.Join(root, "projects")
 	canonical := filepath.Join(projectsRoot, "acme", "cloned")
@@ -37,8 +41,8 @@ func TestOrchCovEnsureCanonicalClonesAMissingRepository(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // legacy external-process fixture remains serial during runner migration
 func TestOrchCovEnsureCanonicalReportsAnUnclonableRepository(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	projectsRoot := filepath.Join(root, "projects")
 	canonical := filepath.Join(projectsRoot, "acme", "missing")
@@ -58,6 +62,7 @@ func TestOrchCovEnsureCanonicalReportsAFetchFailure(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // legacy external-process fixture remains serial during runner migration
 func TestOrchCovEnsureCanonicalRefreshesAStaleOriginHeadSymref(t *testing.T) {
 	root := t.TempDir()
 	seed := filepath.Join(root, "seed")
@@ -69,6 +74,7 @@ func TestOrchCovEnsureCanonicalRefreshesAStaleOriginHeadSymref(t *testing.T) {
 	runEngineGit(t, seed, "add", "-A")
 	runEngineGit(t, seed, "commit", "-m", "initial")
 	runEngineGit(t, root, "clone", "--bare", seed, remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 
 	// A clone assembled by `git init` + `git remote add` + fetch never gets
 	// the origin/HEAD symref a `git clone` would have set, which is exactly
@@ -96,12 +102,15 @@ func TestOrchCovEnsureCanonicalRefreshesAStaleOriginHeadSymref(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // legacy external-process fixture remains serial during runner migration
 func TestOrchCovEnsureCanonicalReportsAnUnresolvableDefaultBranch(t *testing.T) {
 	root := t.TempDir()
 	projectsRoot := filepath.Join(root, "projects")
 	canonical := filepath.Join(projectsRoot, "acme", "broken")
-	runEngineGit(t, root, "init", "--bare", filepath.Join(root, "empty.git"))
-	runEngineGit(t, root, "clone", filepath.Join(root, "empty.git"), canonical)
+	emptyRemote := filepath.Join(root, "empty.git")
+	runEngineGit(t, root, "init", "--bare", emptyRemote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, emptyRemote)
+	runEngineGit(t, root, "clone", emptyRemote, canonical)
 	if _, err := EnsureCanonical(context.Background(),
 		Repository{Slug: "acme/broken", Path: canonical, CloneURL: filepath.Join(root, "empty.git")}, canonical,
 		Options{GitHubDir: projectsRoot, Ref: "main", Timeout: time.Minute}); err == nil ||

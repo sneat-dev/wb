@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // fixture is one local clone under a temp projects root, backed by a real
@@ -37,6 +39,7 @@ func newFixture(t *testing.T, owner, name string) *fixture {
 
 	remote := filepath.Join(remotesRoot, owner, name+".git")
 	run(t, remotesRoot, "git", "clone", "-q", "--bare", seed, remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 
 	canonical := filepath.Join(projectsRoot, owner, name)
 	mustMkdirAll(t, filepath.Dir(canonical))
@@ -63,7 +66,7 @@ func (f *fixture) installFakeGh(stdout string, ok bool) {
 		"if [ \"$1 $2 $4 $5 $6\" != \"repo view --json isArchived --jq\" ]; then\n" +
 		"  echo \"unexpected gh command: $*\" >&2\n  exit 2\nfi\n" +
 		"printf '%s\\n' '" + stdout + "'\nexit " + exit + "\n"
-	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(content), 0o755); err != nil {
 		f.t.Fatal(err)
 	}
 	f.t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -92,10 +95,10 @@ func run(t *testing.T, dir, name string, args ...string) {
 	t.Helper()
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
+	cmd.Env = testenv.GitAutoMaintenanceOffEnv(append(os.Environ(),
 		"GIT_AUTHOR_NAME=wb-test", "GIT_AUTHOR_EMAIL=wb-test@example.test",
 		"GIT_COMMITTER_NAME=wb-test", "GIT_COMMITTER_EMAIL=wb-test@example.test",
-		"HOME="+os.Getenv("HOME"))
+		"HOME="+os.Getenv("HOME")))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("%s %v: %v\n%s", name, args, err, out)
 	}
@@ -332,6 +335,7 @@ func TestClean_RefusesUntrackedPlanDriftBeforeDeletion(t *testing.T) {
 }
 
 func TestPlanUntrackedRefusesSymlinkAndTraversal(t *testing.T) {
+	t.Parallel()
 	clone := t.TempDir()
 	mustWriteFile(t, filepath.Join(clone, "outside.txt"), "outside\n")
 	if err := os.Symlink("outside.txt", filepath.Join(clone, "linked.txt")); err != nil {
@@ -547,7 +551,43 @@ func TestClean_TerminalSiblingSealOverridesStaleClaimLifecycle(t *testing.T) {
 	}
 }
 
+// A PR binding sidecar sits beside its claim and names the same repository but
+// is not a claim: it must neither block pruning nor hide an active claim.
+func TestNonTerminalClaimsPassesOverPullRequestBindingSidecars(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	run := filepath.Join(root, ".wb", "worklogs", "some-task", "runs", "run-1")
+	claimDir, terminalDir := filepath.Join(run, "claims"), filepath.Join(run, "terminals")
+	for _, dir := range []string{claimDir, terminalDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeJSON := func(path string, value map[string]any) {
+		raw, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustWriteFile(t, path, string(raw))
+	}
+	claimID := "claim-789"
+	claim := map[string]any{"claim_id": claimID, "repository": "acme/widgets", "task": "some-task", "worktree": "/gone", "lifecycle": "active"}
+	writeJSON(filepath.Join(claimDir, claimID+".json"), claim)
+	writeJSON(filepath.Join(claimDir, claimID+".pull_request.json"), map[string]any{
+		"repository": "acme/widgets", "pull_request": 42, "url": "https://github.com/acme/widgets/pull/42", "recorded_at": "2026-10-21T00:00:00Z"})
+	blockers, err := nonTerminalClaims(root, "acme/widgets")
+	if err != nil || len(blockers) != 1 {
+		t.Fatalf("active claim with sidecar: blockers=%v, err=%v", blockers, err)
+	}
+	terminal := map[string]any{"claim_id": claimID, "repository": "acme/widgets", "task": "some-task", "worktree": "/gone", "lifecycle": "terminal"}
+	writeJSON(filepath.Join(terminalDir, claimID+".json"), terminal)
+	if blockers, err := nonTerminalClaims(root, "acme/widgets"); err != nil || len(blockers) != 0 {
+		t.Fatalf("terminal claim with sidecar: blockers=%v, err=%v", blockers, err)
+	}
+}
+
 func TestNonTerminalClaimsRefusesMalformedOrMismatchedTerminalSeal(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	home := filepath.Join(root, ".wb")
 	claimDir := filepath.Join(home, "worklogs", "some-task", "runs", "run-1", "claims")
@@ -637,7 +677,7 @@ func installMixedFakeGh(t *testing.T, failSlug string) {
 	content := "#!/bin/sh\nset -eu\n" +
 		"if [ \"$3\" = \"" + failSlug + "\" ]; then exit 1; fi\n" +
 		"printf 'true\\n'\n"
-	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(content), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -659,6 +699,7 @@ func newFixtureIn(t *testing.T, projectsRoot, owner, name string) *fixture {
 
 	remote := filepath.Join(remotesRoot, name+".git")
 	run(t, remotesRoot, "git", "clone", "-q", "--bare", seed, remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 
 	canonical := filepath.Join(projectsRoot, owner, name)
 	mustMkdirAll(t, filepath.Dir(canonical))

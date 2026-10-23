@@ -14,7 +14,17 @@ import (
 	"github.com/sneat-dev/wb/internal/sessionpark"
 )
 
-func TestRecordParkedTargetCompletedRejectsCustodySupersededAtCompletionBarrier(t *testing.T) {
+type parkedTargetCompletionFixture struct {
+	base      *sessionReceiveFixture
+	member    sessionpark.RemoteMember
+	request   sessionpark.RemoteRequest
+	digest    sessionmove.Digest
+	worktree  string
+	successor sessionlaunch.Result
+}
+
+func newParkedTargetCompletionFixture(t *testing.T, resumeID string) *parkedTargetCompletionFixture {
+	t.Helper()
 	base := newSessionReceiveFixture(t)
 	member := sessionpark.RemoteMember{
 		MemberID: "m-001-abcdef01", Repository: "acme/app", RepositoryRemote: base.remote,
@@ -22,7 +32,7 @@ func TestRecordParkedTargetCompletedRejectsCustodySupersededAtCompletionBarrier(
 		SourceWorkLogReference: "worklog:session-park/source-run/" + strings.Repeat("b", 64),
 	}
 	request := sessionpark.RemoteRequest{
-		SchemaVersion: sessionpark.RequestSchemaVersion, ResumeID: "resume-custody-race", ParkedSessionID: "park-custody-race",
+		SchemaVersion: sessionpark.RequestSchemaVersion, ResumeID: resumeID, ParkedSessionID: "park-" + resumeID,
 		SuccessorWBSessionID: "wbs-park-successor", PredecessorWBSessionID: "wbs-park-source",
 		SourceMachine: "laptop", TargetMachine: "target-vm", SourceRuntime: "codex", SourceModel: "gpt-5",
 		Continuation: "continue privately", Members: []sessionpark.RemoteMember{member}, CreatedAt: time.Unix(100, 0).UTC(),
@@ -59,12 +69,27 @@ func TestRecordParkedTargetCompletedRejectsCustodySupersededAtCompletionBarrier(
 		PID: record.PID, AttemptID: attemptID, AttemptIndex: 1, TmuxName: record.TmuxName,
 		Runtime: record.Runtime, Model: record.Model, WorktreeDir: worktree, PinnedCommit: member.Commit, StartedAt: startedAt,
 	}
+	return &parkedTargetCompletionFixture{base: base, member: member, request: request, digest: digest, worktree: worktree, successor: successor}
+}
+
+func TestRecordParkedTargetCompletedRejectsCustodySupersededAtCompletionBarrier(t *testing.T) {
+	fixture := newParkedTargetCompletionFixture(t, "resume-custody-race")
+	base, member, request := fixture.base, fixture.member, fixture.request
+	digest, worktree, successor := fixture.digest, fixture.worktree, fixture.successor
+	wrongMember := member
+	wrongMember.Commit = strings.Repeat("f", 40)
+	if _, err := RecordParkedTargetCompleted(ParkedTargetCompletionOptions{
+		ProjectsRoot: base.projectsRoot, Request: request, RequestDigest: digest, Member: wrongMember,
+		WorktreeDir: worktree, Successor: successor,
+	}); err == nil || !strings.Contains(err.Error(), "does not corroborate receipt member") {
+		t.Fatalf("mismatched parked claim error = %v", err)
+	}
 	// The test seam runs after the claim lock but before the journal barrier.
 	// In the vulnerable implementation this same contender was injected after
 	// the unlocked latest-owner read and completion still succeeded. The fixed
 	// path admits the contender first, then revalidates the full barrier while
 	// holding the journal lock and refuses stale completion authority.
-	_, err = RecordParkedTargetCompleted(ParkedTargetCompletionOptions{
+	_, err := RecordParkedTargetCompleted(ParkedTargetCompletionOptions{
 		ProjectsRoot: base.projectsRoot, Request: request, RequestDigest: digest, Member: member,
 		WorktreeDir: worktree, Successor: successor,
 		hooks: parkedTargetCompletionHooks{beforeCompletionBarrier: func() error {
@@ -82,5 +107,17 @@ func TestRecordParkedTargetCompletedRejectsCustodySupersededAtCompletionBarrier(
 	}
 	if eventByID(events, externalLocalEventID("park-target-completed-"+member.MemberID, digest, "")) != nil {
 		t.Fatal("completion was recorded after a competing owner superseded custody")
+	}
+}
+
+//nolint:paralleltest // newSessionReceiveFixture configures process-wide WB and Git fixture environment.
+func TestRecordParkedTargetCompletedRecordsValidatedMember(t *testing.T) {
+	fixture := newParkedTargetCompletionFixture(t, "resume-custody-complete")
+	event, err := RecordParkedTargetCompleted(ParkedTargetCompletionOptions{
+		ProjectsRoot: fixture.base.projectsRoot, Request: fixture.request, RequestDigest: fixture.digest,
+		Member: fixture.member, WorktreeDir: fixture.worktree, Successor: fixture.successor,
+	})
+	if err != nil || event.Result != "completed" {
+		t.Fatalf("parked completion = %#v, %v", event, err)
 	}
 }

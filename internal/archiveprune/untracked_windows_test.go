@@ -9,6 +9,7 @@ import (
 )
 
 func TestWindowsPlanUntrackedSimpleFile(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	const contents = "ordinary untracked file\n"
 	if err := os.WriteFile(filepath.Join(root, "plain.txt"), []byte(contents), 0o600); err != nil {

@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
+	"github.com/sneat-dev/wb/internal/worktreebranches"
 )
 
 // installReceiptFixture puts a deterministic fake gh on PATH that answers the
@@ -17,24 +20,10 @@ import (
 // path reads; branch names are deliberately irrelevant.
 func installReceiptFixture(t *testing.T, head, landingSHA string) {
 	t.Helper()
-	binDir := t.TempDir()
-	script := filepath.Join(binDir, "gh")
-	content := "#!/bin/sh\nset -eu\n" +
-		"if [ \"$1 $2\" != \"api --paginate\" ]; then echo \"unexpected gh command: $*\" >&2; exit 2; fi\n" +
-		"case \"$3\" in\n" +
-		"*\"$WB_TEST_RECEIPT_HEAD\"*) printf '%s\\n' \"$WB_TEST_RECEIPT_PULLS\";;\n" +
-		"*) printf '[]\\n';;\n" +
-		"esac\n"
-	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	payload := fmt.Sprintf(
 		`[{"number":7,"html_url":"https://example.test/pull/7","state":"closed","merged_at":"2026-08-01T10:00:00Z","merge_commit_sha":%q,"head":{"ref":"whatever","sha":%q},"base":{"ref":"main","sha":""}}]`,
 		landingSHA, head)
-	t.Setenv("WB_TEST_RECEIPT_HEAD", head)
-	t.Setenv("WB_TEST_RECEIPT_PULLS", payload)
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	installPullRequestResponses(t, payload, head)
 }
 
 // installPoisonedGitHubFixture makes every gh invocation fail loudly, so a
@@ -43,7 +32,7 @@ func installPoisonedGitHubFixture(t *testing.T) {
 	t.Helper()
 	binDir := t.TempDir()
 	script := filepath.Join(binDir, "gh")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\necho 'poisoned gh was invoked' >&2\nexit 7\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte("#!/bin/sh\necho 'poisoned gh was invoked' >&2\nexit 7\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -226,7 +215,7 @@ func TestBranchCleanupReceiptRecheckRefusesRevertBetweenPlanAndApply(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	results := planBranchCleanup(entries, sweep)
+	results := worktreebranches.PlanBranchCleanup(entries, sweep.branchPolicyOptions())
 	planned := false
 	for _, result := range results {
 		if result.Branch == "feature/landed" && result.Eligible {

@@ -22,6 +22,7 @@ func isolate(t *testing.T) {
 }
 
 func TestAvailableRatioIsZeroWhenTheVolumeIsUnknown(t *testing.T) {
+	t.Parallel()
 	// A zero total means the measurement failed. Reporting a ratio of 1 would
 	// read as "plenty of room" on exactly the machine that could not be read.
 	if got := (Filesystem{}).AvailableRatio(); got != 0 {
@@ -34,6 +35,7 @@ func TestAvailableRatioIsZeroWhenTheVolumeIsUnknown(t *testing.T) {
 }
 
 func TestCollectRequiresAProjectsRoot(t *testing.T) {
+	t.Parallel()
 	if _, err := Collect(context.Background(), Options{}); err == nil {
 		t.Fatal("empty projects root was accepted")
 	}
@@ -119,6 +121,7 @@ func TestCollectSkipSizesStillReportsTheFilesystem(t *testing.T) {
 }
 
 func TestFindingsReportLowHeadroomAgainstTheConfiguredFloor(t *testing.T) {
+	t.Parallel()
 	report := Report{Filesystem: Filesystem{
 		Path: "/", TotalBytes: 1000, AvailableBytes: 50,
 	}}
@@ -134,6 +137,7 @@ func TestFindingsReportLowHeadroomAgainstTheConfiguredFloor(t *testing.T) {
 }
 
 func TestFindingsReportOwnerlessScratch(t *testing.T) {
+	t.Parallel()
 	report := Report{
 		Filesystem: Filesystem{Path: "/", TotalBytes: 1000, AvailableBytes: 900},
 		Categories: []Category{{Name: "scratch", Kind: "scratch", UnsharedBytes: 4096}},
@@ -152,6 +156,7 @@ func TestFindingsReportOwnerlessScratch(t *testing.T) {
 // An unreadable root must reduce confidence in the total rather than silently
 // shrink it, or a partially measured machine reads as a tidy one.
 func TestFindingsFlagUnmeasuredRoots(t *testing.T) {
+	t.Parallel()
 	report := Report{
 		Filesystem: Filesystem{Path: "/", TotalBytes: 1000, AvailableBytes: 900},
 		Skipped:    []string{"/some/root: permission denied"},
@@ -163,6 +168,7 @@ func TestFindingsFlagUnmeasuredRoots(t *testing.T) {
 }
 
 func TestRenderLeadsWithHeadroomAndShowsBothFigures(t *testing.T) {
+	t.Parallel()
 	rendered := Render(Report{
 		Filesystem:      Filesystem{Path: "/vol", TotalBytes: 200, AvailableBytes: 100},
 		AttributedBytes: 64,

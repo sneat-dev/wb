@@ -61,6 +61,7 @@ func TestInventoryReportsEachCheckoutsPlacement(t *testing.T) {
 // layouts that must stay readable in place and must NOT be reported as the
 // central store.
 func TestListResultPlacementNamesEachRecognizedLayout(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name     string
 		layout   wbhome.Layout

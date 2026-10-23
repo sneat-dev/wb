@@ -9,9 +9,10 @@ If a bound expires, invoke the JSON `resume_args` again immediately.
 For a PR, WB proves that the exact candidate contains the freshly read target
 SHA and that a nonempty strict required-check policy makes freshness
 server-enforced. It does not wait for current target CI to become green; the PR
-may be its fix. Target movement requires reintegration. Merge-group/SHA
-observation is planned, so do not use this source-head receipt to bypass a merge
-queue.
+may be its fix. Target movement requires reintegration. On a merge-queue
+target this source-head receipt fails closed: land with `wb pr land`, which
+enqueues the exact head and observes the merge group, and never merge around
+the queue.
 
 `passed` means GitHub's required-check policy was read successfully, every
 required context was present, and the complete observed terminal set was

@@ -8,6 +8,7 @@ import (
 )
 
 func TestLoadReadsOnlyStrictHooksSectionFromWBConfig(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "wb.yaml")
 	raw := `remote:
   provider: git
@@ -50,6 +51,7 @@ hooks:
 }
 
 func TestLoadRejectsUnknownLifecycleHookField(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "wb.yaml")
 	raw := `hooks:
   version: 1
@@ -66,6 +68,7 @@ func TestLoadRejectsUnknownLifecycleHookField(t *testing.T) {
 }
 
 func TestLoadWithoutHooksIsNotConfigured(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "wb.yaml")
 	if err := os.WriteFile(path, []byte("remote:\n  provider: git\n"), 0o600); err != nil {
 		t.Fatal(err)

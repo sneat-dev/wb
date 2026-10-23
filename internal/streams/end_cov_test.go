@@ -10,6 +10,7 @@ import (
 )
 
 func TestEndReportsAMissingStream(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _ := newTestEngine(t)
 	if _, err := engine.End(context.Background(), EndOptions{Name: "absent"}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("End of a missing stream = %v, want ErrNotFound", err)
@@ -20,6 +21,7 @@ func TestEndReportsAMissingStream(t *testing.T) {
 // no worktree to remove; its lease is still released, which is what makes an
 // interrupted `stream start` retirable.
 func TestEndRetiresAMemberReservedButNeverPublished(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _ := newTestEngine(t)
 	if _, err := engine.Store.Create(Stream{
 		Name: "reserved", Phase: PhaseOpen,
@@ -52,6 +54,7 @@ func TestEndRetiresAMemberReservedButNeverPublished(t *testing.T) {
 // The absorption guard fails closed: a fetch that did not happen means the
 // check could not answer, and an unknown must refuse rather than pass.
 func TestEndFailsClosedWhenOriginCannotBeReRead(t *testing.T) {
+	t.Parallel()
 	engine, git, _, worktrees, stream := startedStream(t, "stale-origin", "acme/library")
 	member := stream.Members[0]
 	git.fetchErr[member.Worktree] = errors.New("origin unreachable")
@@ -70,9 +73,11 @@ func TestEndFailsClosedWhenOriginCannotBeReRead(t *testing.T) {
 }
 
 func TestEndFailsClosedOnUnreadableLeaseHeads(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("remote head", func(t *testing.T) {
+		t.Parallel()
 		engine, git, _, _, _ := startedStream(t, "remote-unreadable", "acme/library")
 		engine.Git = stCovGitRemoteHeadErr{fakeGit: git, err: errors.New("remote head unreadable")}
 		_, err := engine.End(ctx, EndOptions{Name: "remote-unreadable", Apply: true})
@@ -83,6 +88,7 @@ func TestEndFailsClosedOnUnreadableLeaseHeads(t *testing.T) {
 	})
 
 	t.Run("local head", func(t *testing.T) {
+		t.Parallel()
 		engine, git, _, _, stream := startedStream(t, "local-unreadable", "acme/library")
 		member := stream.Members[0]
 		git.remoteHeads[member.Worktree+" "+member.Branch] = "remote-sha"
@@ -96,6 +102,7 @@ func TestEndFailsClosedOnUnreadableLeaseHeads(t *testing.T) {
 }
 
 func TestEndReportsAFinalStateWriteFailure(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _, stream := startedStream(t, "write-fails", "acme/library")
 	stCovBlockStreamLock(t, engine.Store, stream.Name)
 	_, err := engine.End(context.Background(), EndOptions{Name: stream.Name, Apply: true})
@@ -123,9 +130,11 @@ func stCovSquashMember(t *testing.T, engine *Engine, hub *fakeHub) (Member, stri
 }
 
 func TestProvedSquashAbsorbedMemberReportsEveryUnreadableInput(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("pull request read", func(t *testing.T) {
+		t.Parallel()
 		engine, _, hub, _ := newTestEngine(t)
 		member, _ := stCovSquashMember(t, engine, hub)
 		engine.GitHub = stCovHubViewErr{fakeHub: hub, err: errors.New("view failed")}
@@ -135,6 +144,7 @@ func TestProvedSquashAbsorbedMemberReportsEveryUnreadableInput(t *testing.T) {
 	})
 
 	t.Run("dirty inspection", func(t *testing.T) {
+		t.Parallel()
 		engine, git, hub, _ := newTestEngine(t)
 		member, _ := stCovSquashMember(t, engine, hub)
 		engine.Git = stCovGitDirtyErr{fakeGit: git, err: errors.New("status failed")}
@@ -144,6 +154,7 @@ func TestProvedSquashAbsorbedMemberReportsEveryUnreadableInput(t *testing.T) {
 	})
 
 	t.Run("local head", func(t *testing.T) {
+		t.Parallel()
 		engine, git, hub, _ := newTestEngine(t)
 		member, worktree := stCovSquashMember(t, engine, hub)
 		git.currentBranch[worktree] = member.Branch
@@ -154,6 +165,7 @@ func TestProvedSquashAbsorbedMemberReportsEveryUnreadableInput(t *testing.T) {
 	})
 
 	t.Run("local stream ref read", func(t *testing.T) {
+		t.Parallel()
 		engine, git, hub, _ := newTestEngine(t)
 		member, worktree := stCovSquashMember(t, engine, hub)
 		git.currentBranch[worktree] = member.Branch
@@ -164,6 +176,7 @@ func TestProvedSquashAbsorbedMemberReportsEveryUnreadableInput(t *testing.T) {
 	})
 
 	t.Run("local stream ref absent", func(t *testing.T) {
+		t.Parallel()
 		engine, git, hub, _ := newTestEngine(t)
 		member, worktree := stCovSquashMember(t, engine, hub)
 		git.currentBranch[worktree] = member.Branch
@@ -174,6 +187,7 @@ func TestProvedSquashAbsorbedMemberReportsEveryUnreadableInput(t *testing.T) {
 	})
 
 	t.Run("ancestry", func(t *testing.T) {
+		t.Parallel()
 		engine, git, hub, _ := newTestEngine(t)
 		member, worktree := stCovSquashMember(t, engine, hub)
 		git.currentBranch[worktree] = member.Branch
@@ -186,6 +200,7 @@ func TestProvedSquashAbsorbedMemberReportsEveryUnreadableInput(t *testing.T) {
 	})
 
 	t.Run("remote head after the receipt", func(t *testing.T) {
+		t.Parallel()
 		engine, git, hub, _ := newTestEngine(t)
 		member, worktree := stCovSquashMember(t, engine, hub)
 		git.currentBranch[worktree] = member.Branch
@@ -199,6 +214,7 @@ func TestProvedSquashAbsorbedMemberReportsEveryUnreadableInput(t *testing.T) {
 	})
 
 	t.Run("proven receipt", func(t *testing.T) {
+		t.Parallel()
 		engine, git, hub, _ := newTestEngine(t)
 		member, worktree := stCovSquashMember(t, engine, hub)
 		git.currentBranch[worktree] = member.Branch
@@ -216,9 +232,11 @@ func TestProvedSquashAbsorbedMemberReportsEveryUnreadableInput(t *testing.T) {
 }
 
 func TestProvedAlreadyRetiredMemberReportsEveryUnreadableInput(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("worktree inspection fails", func(t *testing.T) {
+		t.Parallel()
 		engine, _, _, _ := newTestEngine(t)
 		blocker := filepath.Join(t.TempDir(), "regular-file")
 		if err := os.WriteFile(blocker, []byte("x\n"), 0o600); err != nil {
@@ -231,6 +249,7 @@ func TestProvedAlreadyRetiredMemberReportsEveryUnreadableInput(t *testing.T) {
 	})
 
 	t.Run("absent without a receipt", func(t *testing.T) {
+		t.Parallel()
 		engine, _, _, _ := newTestEngine(t)
 		member := Member{Worktree: filepath.Join(t.TempDir(), "gone"), Canonical: "/canon/app", Branch: "stream/x"}
 		if _, _, err := engine.provedAlreadyRetiredMember(ctx, member); err == nil || !strings.Contains(err.Error(), "absent without an exact recorded stream pull request") {
@@ -239,6 +258,7 @@ func TestProvedAlreadyRetiredMemberReportsEveryUnreadableInput(t *testing.T) {
 	})
 
 	t.Run("pull request read", func(t *testing.T) {
+		t.Parallel()
 		engine, _, hub, _ := newTestEngine(t)
 		engine.GitHub = stCovHubViewErr{fakeHub: hub, err: errors.New("view failed")}
 		member := Member{Worktree: filepath.Join(t.TempDir(), "gone"), Canonical: "/canon/app", Branch: "stream/x", Base: "main", PullRequest: 7}
@@ -248,6 +268,7 @@ func TestProvedAlreadyRetiredMemberReportsEveryUnreadableInput(t *testing.T) {
 	})
 
 	t.Run("fetch", func(t *testing.T) {
+		t.Parallel()
 		engine, git, hub, _ := newTestEngine(t)
 		member, _ := stCovSquashMember(t, engine, hub)
 		member.Worktree = filepath.Join(t.TempDir(), "gone")
@@ -258,6 +279,7 @@ func TestProvedAlreadyRetiredMemberReportsEveryUnreadableInput(t *testing.T) {
 	})
 
 	t.Run("remote head", func(t *testing.T) {
+		t.Parallel()
 		engine, git, hub, _ := newTestEngine(t)
 		member, _ := stCovSquashMember(t, engine, hub)
 		member.Worktree = filepath.Join(t.TempDir(), "gone")
@@ -268,6 +290,7 @@ func TestProvedAlreadyRetiredMemberReportsEveryUnreadableInput(t *testing.T) {
 	})
 
 	t.Run("local stream ref", func(t *testing.T) {
+		t.Parallel()
 		engine, git, hub, _ := newTestEngine(t)
 		member, _ := stCovSquashMember(t, engine, hub)
 		member.Worktree = filepath.Join(t.TempDir(), "gone")
@@ -279,6 +302,7 @@ func TestProvedAlreadyRetiredMemberReportsEveryUnreadableInput(t *testing.T) {
 }
 
 func TestEndReportsAnUnreadableAgentPullRequestList(t *testing.T) {
+	t.Parallel()
 	engine, _, hub, _, stream := startedStream(t, "pr-list-error", "acme/library")
 	member := stream.Members[0]
 	hub.targetingErr[member.Worktree+" "+member.Branch] = errors.New("gh list failed")
@@ -296,6 +320,7 @@ func TestEndReportsAnUnreadableAgentPullRequestList(t *testing.T) {
 }
 
 func TestEndPlansRetargetWithoutApplying(t *testing.T) {
+	t.Parallel()
 	engine, _, hub, _, stream := startedStream(t, "plan-retarget", "acme/library")
 	member := stream.Members[0]
 	hub.targeting[member.Worktree+" "+member.Branch] = []PullRequest{
@@ -317,9 +342,11 @@ func TestEndPlansRetargetWithoutApplying(t *testing.T) {
 }
 
 func TestEndReportsFailedRetargetAndClose(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("retarget failure", func(t *testing.T) {
+		t.Parallel()
 		engine, _, hub, _, stream := startedStream(t, "retarget-fails", "acme/library")
 		member := stream.Members[0]
 		hub.targeting[member.Worktree+" "+member.Branch] = []PullRequest{
@@ -336,6 +363,7 @@ func TestEndReportsFailedRetargetAndClose(t *testing.T) {
 	})
 
 	t.Run("close failure", func(t *testing.T) {
+		t.Parallel()
 		engine, _, hub, _, stream := startedStream(t, "close-fails", "acme/library")
 		member := stream.Members[0]
 		hub.targeting[member.Worktree+" "+member.Branch] = []PullRequest{
@@ -353,9 +381,11 @@ func TestEndReportsFailedRetargetAndClose(t *testing.T) {
 }
 
 func TestEndReportsFailedDraftPullRequestHandling(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("close failure", func(t *testing.T) {
+		t.Parallel()
 		engine, _, hub, _ := newTestEngine(t)
 		worktree := t.TempDir()
 		if _, err := engine.Store.Create(Stream{
@@ -380,6 +410,7 @@ func TestEndReportsFailedDraftPullRequestHandling(t *testing.T) {
 	})
 
 	t.Run("view failure", func(t *testing.T) {
+		t.Parallel()
 		engine, _, hub, _ := newTestEngine(t)
 		worktree := t.TempDir()
 		if _, err := engine.Store.Create(Stream{
@@ -407,6 +438,7 @@ func TestEndReportsFailedDraftPullRequestHandling(t *testing.T) {
 // A proof failure during retirement leaves the lease held and is reported
 // rather than silently removing the member.
 func TestEndReportsAProofFailureDuringRetirement(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _ := newTestEngine(t)
 	if _, err := engine.Store.Create(Stream{
 		Name: "proof-fails", Phase: PhaseOpen,
@@ -433,6 +465,7 @@ func TestEndReportsAProofFailureDuringRetirement(t *testing.T) {
 }
 
 func TestEndReportsAFailedRetiredBranchDeletion(t *testing.T) {
+	t.Parallel()
 	engine, git, hub, _ := newTestEngine(t)
 	canonical := t.TempDir()
 	member := Member{
@@ -463,6 +496,7 @@ func TestEndReportsAFailedRetiredBranchDeletion(t *testing.T) {
 }
 
 func TestEndReportsAFailedWorktreeRemoval(t *testing.T) {
+	t.Parallel()
 	engine, _, _, worktrees, stream := startedStream(t, "remove-fails", "acme/library")
 	member := stream.Members[0]
 	worktrees.removeErr[member.Repository] = errors.New("cleanup refused")

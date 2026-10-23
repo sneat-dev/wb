@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // fakeCall records one recorded invocation and the canned response to
@@ -75,7 +77,7 @@ func lookupFromMap(values map[string]string) EnvLookup {
 func fakeHerdrBinaryPath(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "herdr")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+	if err := testenv.WriteExecutableFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
 		t.Fatalf("write fake herdr binary: %v", err)
 	}
 	return path

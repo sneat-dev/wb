@@ -8,7 +8,13 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/cli/cmdci"
 )
+
+// ciWaitOutput is the JSON receipt wb ci wait prints. The command lives in
+// cmdci; this alias keeps the filter tests reading that same shape.
+type ciWaitOutput = cmdci.WaitOutput
 
 // This file covers sneat-dev/wb#627: --workflow/--check filters on
 // `wb ci wait` / `wb wait checks`. Fixtures reuse the same fake-`gh`

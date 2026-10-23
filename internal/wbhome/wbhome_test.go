@@ -313,6 +313,7 @@ func TestEnsureRootDoesNotOverwriteExistingReadme(t *testing.T) {
 }
 
 func TestEnsureHomeRefusesSymlinkedHome(t *testing.T) {
+	t.Parallel()
 	dir := resolvedTempDir(t)
 	real := filepath.Join(dir, "real")
 	if err := os.Mkdir(real, 0o755); err != nil {

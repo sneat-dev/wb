@@ -2,15 +2,19 @@ package orchestrate
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"github.com/sneat-dev/wb/internal/console"
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -124,14 +128,31 @@ func planKeptCommits(commits []SourceCommit, keep []string) (keepPlan, *landRefu
 // so nothing it does can touch the canonical clone or the lane's own checkout.
 func rewriteBranchForKeptCommits(
 	ctx context.Context,
+	git Git,
+	run runner.Runner,
 	canonical, repository, headRef, baseSHA string,
 	plan keepPlan,
-	view PullRequestView,
+	view githubchecks.PullRequestView,
 	commits []SourceCommit,
 	approvedBy, reason string,
 	buildCommand []string,
 ) ([]LandedCommit, string, *landRefusal, error) {
-	scratch, err := os.MkdirTemp("", "wb-pr-land-")
+	return rewriteBranchForKeptCommitsInTempDir(ctx, "", git, run, canonical, repository, headRef, baseSHA, plan, view, commits, approvedBy, reason, buildCommand)
+}
+
+func rewriteBranchForKeptCommitsInTempDir(
+	ctx context.Context,
+	tempDir string,
+	git Git,
+	run runner.Runner,
+	canonical, repository, headRef, baseSHA string,
+	plan keepPlan,
+	view githubchecks.PullRequestView,
+	commits []SourceCommit,
+	approvedBy, reason string,
+	buildCommand []string,
+) ([]LandedCommit, string, *landRefusal, error) {
+	scratch, err := os.MkdirTemp(tempDir, "wb-pr-land-")
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("create landing scratch directory: %w", err)
 	}
@@ -143,28 +164,28 @@ func rewriteBranchForKeptCommits(
 		// context that the cancellation cannot reach.
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
-		_, _ = runGit(cleanupCtx, canonical, "worktree", "remove", "--force", worktree)
+		_ = git.WorktreeRemoveForce(cleanupCtx, canonical, worktree)
 		_ = os.RemoveAll(scratch)
 	}()
-	if _, err := runGit(ctx, canonical, "worktree", "add", "--detach", worktree, baseSHA); err != nil {
+	if err := git.WorktreeAddDetached(ctx, canonical, worktree, baseSHA); err != nil {
 		return nil, "", nil, fmt.Errorf("prepare landing scratch worktree: %w", err)
 	}
 
 	landed := make([]LandedCommit, 0, len(commits))
 	for _, step := range plan.steps {
 		if step.aggregate {
-			args := []string{"cherry-pick", "--no-commit"}
+			shas := make([]string, 0, len(step.sources))
 			for _, source := range step.sources {
-				args = append(args, source.SHA)
+				shas = append(shas, source.SHA)
 			}
-			if _, err := runGit(ctx, worktree, args...); err != nil {
+			if err := git.CherryPickNoCommit(ctx, worktree, shas...); err != nil {
 				return nil, "", &landRefusal{
 					code:   LandRefusalMergeRejected,
 					reason: "the aggregated commits do not replay cleanly onto the base: " + err.Error(),
 				}, nil
 			}
 			message := view.Title + "\n\n" + aggregatedCommitMessage(view, step.sources, approvedBy, reason)
-			if _, err := runGit(ctx, worktree, "commit", "--no-verify", "-m", message); err != nil {
+			if err := git.CommitNoVerify(ctx, worktree, message); err != nil {
 				return nil, "", nil, fmt.Errorf("write the aggregated commit: %w", err)
 			}
 			for _, source := range step.sources {
@@ -173,7 +194,7 @@ func rewriteBranchForKeptCommits(
 			continue
 		}
 		source := step.sources[0]
-		if _, err := runGit(ctx, worktree, "cherry-pick", source.SHA); err != nil {
+		if err := git.CherryPick(ctx, worktree, source.SHA); err != nil {
 			return nil, "", &landRefusal{
 				code:   LandRefusalMergeRejected,
 				reason: "kept commit " + shortMergeRevision(source.SHA) + " does not replay cleanly onto the base: " + err.Error(),
@@ -181,7 +202,7 @@ func rewriteBranchForKeptCommits(
 		}
 		// A commit that does not build is not a place anyone can bisect to, so
 		// promoting it to its own place in the log is worse than aggregating it.
-		if refusal := buildAt(ctx, worktree, source, buildCommand); refusal != nil {
+		if refusal := buildAt(ctx, run, worktree, source, buildCommand); refusal != nil {
 			return nil, "", refusal, nil
 		}
 		// The SHA this scratch worktree produced is not the SHA that will land:
@@ -192,13 +213,11 @@ func rewriteBranchForKeptCommits(
 		landed = append(landed, LandedCommit{SourceSHA: source.SHA, Subject: source.Subject, Kept: true})
 	}
 
-	head, err := runGit(ctx, worktree, "rev-parse", "HEAD")
+	head, err := git.RevParse(ctx, worktree, "HEAD")
 	if err != nil {
 		return nil, "", nil, err
 	}
-	if _, err := runGit(ctx, worktree, "push",
-		"--force-with-lease=refs/heads/"+headRef+":"+view.Head.SHA,
-		"origin", "HEAD:refs/heads/"+headRef); err != nil {
+	if err := git.PushForceWithLeaseHead(ctx, worktree, headRef, view.Head.SHA); err != nil {
 		return nil, "", &landRefusal{
 			code: LandRefusalHeadMoved,
 			reason: "the rewritten branch could not be published under a lease on " +
@@ -210,7 +229,7 @@ func rewriteBranchForKeptCommits(
 }
 
 // buildAt runs the repository's own build at the current checkout.
-func buildAt(ctx context.Context, worktree string, source SourceCommit, buildCommand []string) *landRefusal {
+func buildAt(ctx context.Context, run runner.Runner, worktree string, source SourceCommit, buildCommand []string) *landRefusal {
 	command := buildCommand
 	if len(command) == 0 {
 		command = defaultBuildCommand(worktree)
@@ -227,14 +246,16 @@ func buildAt(ctx context.Context, worktree string, source SourceCommit, buildCom
 			command: "wb pr land … --keep-commits … --reason \"…\" --build-command \"<the repository's build>\"",
 		}
 	}
-	run := exec.CommandContext(ctx, command[0], command[1:]...)
-	run.Dir = worktree
-	run.Env = console.Env()
-	if output, err := run.CombinedOutput(); err != nil {
+	result, err := run.RunOpts(ctx, worktree, runner.RunOptions{Env: console.Env(), CaptureCombined: true}, command[0], command[1:]...)
+	if err != nil {
+		output := result.CombinedOutput
+		if output == "" {
+			output = result.Stdout + result.Stderr
+		}
 		return &landRefusal{
 			code: LandRefusalKeepDoesNotBuild,
 			reason: "kept commit " + shortMergeRevision(source.SHA) + " (" + source.Subject + ") does not build: " +
-				strings.TrimSpace(lastLines(string(output), 5)),
+				strings.TrimSpace(lastLines(output, 5)),
 			command: "wb pr land --keep-commits <a smaller set that excludes " + shortMergeRevision(source.SHA) + "> --reason \"…\"",
 		}
 	}
@@ -260,15 +281,69 @@ func lastLines(output string, count int) string {
 	return strings.Join(lines[len(lines)-count:], "\n")
 }
 
-func runGit(ctx context.Context, dir string, args ...string) (string, error) {
-	command := exec.CommandContext(ctx, "git", args...)
-	command.Dir = dir
-	command.Env = console.Env()
-	output, err := command.CombinedOutput()
+// runGitPushDeleteWithLease keeps a possibly credential-bearing push URL out
+// of the process arguments and every returned error. The temporary remote is
+// configured only in the child process environment, while the command and
+// diagnostics expose a stable non-secret name.
+func runGitPushDeleteWithLease(ctx context.Context, run runner.Runner, dir, remoteURL, remoteRef, expected string) (string, error) {
+	remoteName, err := unusedTemporaryGitRemoteName(ctx, run, dir)
 	if err != nil {
-		return "", fmt.Errorf("git %s: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
+		return "", err
 	}
-	return strings.TrimSpace(string(output)), nil
+	args := []string{"push", "--force-with-lease=" + remoteRef + ":" + expected, remoteName, ":" + remoteRef}
+	env := console.Env()
+	configCount := 0
+	for index := len(env) - 1; index >= 0; index-- {
+		if value, found := strings.CutPrefix(env[index], "GIT_CONFIG_COUNT="); found {
+			if parsed, parseErr := strconv.Atoi(value); parseErr == nil && parsed >= 0 {
+				configCount = parsed
+			}
+			break
+		}
+	}
+	env = append(env,
+		"GIT_CONFIG_COUNT="+strconv.Itoa(configCount+1),
+		"GIT_CONFIG_KEY_"+strconv.Itoa(configCount)+"=remote."+remoteName+".url",
+		"GIT_CONFIG_VALUE_"+strconv.Itoa(configCount)+"="+remoteURL,
+	)
+	result, err := run.RunOpts(ctx, dir, runner.RunOptions{Env: env, CaptureCombined: true}, "git", args...)
+	output := result.CombinedOutput
+	if output == "" {
+		output = result.Stdout + result.Stderr
+	}
+	redact := func(value string) string {
+		if remoteURL == "" {
+			return value
+		}
+		return strings.ReplaceAll(value, remoteURL, "<redacted-origin-push-url>")
+	}
+	detail := strings.TrimSpace(redact(output))
+	if err != nil {
+		return "", fmt.Errorf("git %s: %s: %s", strings.Join(args, " "), redact(err.Error()), detail)
+	}
+	return detail, nil
+}
+
+// unusedTemporaryGitRemoteName checks the candidate name through the same
+// injected runner as the push, without exposing the remote URL to argv.
+func unusedTemporaryGitRemoteName(ctx context.Context, run runner.Runner, dir string) (string, error) {
+	for attempt := 0; attempt < 3; attempt++ {
+		name := "wb-landing-" + rand.Text()
+		result, err := run.RunOpts(ctx, dir, runner.RunOptions{Env: console.Env(), CaptureCombined: true},
+			"git", "config", "--get-regexp", "^remote\\."+name+"\\.")
+		output := result.CombinedOutput
+		if output == "" {
+			output = result.Stdout + result.Stderr
+		}
+		if err == nil {
+			continue
+		}
+		if result.ExitCode == 1 && strings.TrimSpace(output) == "" {
+			return name, nil
+		}
+		return "", fmt.Errorf("check temporary Git remote name: %v: %s", err, strings.TrimSpace(output))
+	}
+	return "", fmt.Errorf("could not allocate an unused temporary Git remote name")
 }
 
 // locateBranchCheckout finds the canonical clone and the WB task for a branch.
@@ -292,7 +367,7 @@ func locateBranchCheckout(ctx context.Context, projectsRoot, repository, headRef
 func landKeepingCommits(
 	ctx context.Context,
 	options PullRequestLandOptions,
-	view PullRequestView,
+	view githubchecks.PullRequestView,
 	commits []SourceCommit,
 	number, approvedBy string,
 ) ([]LandedCommit, string, *landRefusal, error) {
@@ -318,15 +393,14 @@ func landKeepingCommits(
 			command: "wb pr land " + options.Repository + "#" + number,
 		}, nil
 	}
-	if _, err := runGit(ctx, canonical, "fetch", "origin",
-		view.Base.Ref, view.Head.Ref); err != nil {
+	if err := options.resolveGit().FetchRefs(ctx, canonical, "origin", view.Base.Ref, view.Head.Ref); err != nil {
 		return nil, "", nil, fmt.Errorf("fetch the branch before rewriting it: %w", err)
 	}
-	baseSHA, err := runGit(ctx, canonical, "rev-parse", "refs/remotes/origin/"+view.Base.Ref)
+	baseSHA, err := options.resolveGit().RevParse(ctx, canonical, "refs/remotes/origin/"+view.Base.Ref)
 	if err != nil {
 		return nil, "", nil, err
 	}
-	return rewriteBranchForKeptCommits(ctx, canonical, options.Repository, view.Head.Ref, baseSHA,
+	return rewriteBranchForKeptCommits(ctx, options.resolveGit(), options.resolveRunner(), canonical, options.Repository, view.Head.Ref, baseSHA,
 		plan, view, commits, approvedBy, options.Reason, options.BuildCommand)
 }
 
@@ -340,14 +414,14 @@ func landKeepingCommits(
 //
 // The aggregated sources all map to the one commit that absorbed them, which is
 // found by elimination: it is the landed commit no kept source claims.
-func MapLandedCommits(ctx context.Context, canonical, base, mergeBase string, landed []LandedCommit) ([]LandedCommit, error) {
-	newCommits, err := commitsBetween(ctx, canonical, mergeBase, base)
+func MapLandedCommits(ctx context.Context, git Git, run runner.Runner, canonical, base, mergeBase string, landed []LandedCommit) ([]LandedCommit, error) {
+	newCommits, err := commitsBetween(ctx, git, canonical, mergeBase, base)
 	if err != nil {
 		return landed, err
 	}
 	byPatch := map[string]string{}
 	for _, commit := range newCommits {
-		identity, identityErr := patchIdentity(ctx, canonical, commit)
+		identity, identityErr := patchIdentity(ctx, run, canonical, commit)
 		if identityErr != nil || identity == "" {
 			continue
 		}
@@ -358,7 +432,7 @@ func MapLandedCommits(ctx context.Context, canonical, base, mergeBase string, la
 		if !landed[index].Kept {
 			continue
 		}
-		identity, identityErr := patchIdentity(ctx, canonical, landed[index].SourceSHA)
+		identity, identityErr := patchIdentity(ctx, run, canonical, landed[index].SourceSHA)
 		if identityErr != nil || identity == "" {
 			continue
 		}
@@ -386,8 +460,8 @@ func MapLandedCommits(ctx context.Context, canonical, base, mergeBase string, la
 	return landed, nil
 }
 
-func commitsBetween(ctx context.Context, canonical, from, to string) ([]string, error) {
-	output, err := runGit(ctx, canonical, "rev-list", "--reverse", from+".."+to)
+func commitsBetween(ctx context.Context, git Git, canonical, from, to string) ([]string, error) {
+	output, err := git.RevListReverseRange(ctx, canonical, from, to)
 	if err != nil {
 		return nil, err
 	}
@@ -401,15 +475,22 @@ func commitsBetween(ctx context.Context, canonical, from, to string) ([]string, 
 }
 
 // patchIdentity is the content fingerprint of one commit.
-func patchIdentity(ctx context.Context, canonical, commit string) (string, error) {
-	command := exec.CommandContext(ctx, "sh", "-c",
+// patchIdentity runs its diff-tree/patch-id pipeline through the injected runner.Runner
+// (spec/plans/coverage-to-100 task-17) rather than exec.CommandContext
+// directly. The pipe stays inside the "sh -c" script argument -- exactly as
+// it did before -- so this is still one child process (sh), not two piped
+// through the runner; only how that one child is started has changed. It
+// calls RunOpts with an explicit console.Env(), matching the exec.CommandContext
+// call this replaced (which set command.Env = console.Env() itself): Run's
+// own default is an unmodified inherited environment, not byte-identical to
+// what this call site did before (coverage-to-100 rule 1).
+func patchIdentity(ctx context.Context, run runner.Runner, canonical, commit string) (string, error) {
+	result, err := run.RunOpts(ctx, "", runner.RunOptions{Env: console.Env()}, "sh", "-c",
 		"git -C "+shellQuote(canonical)+" diff-tree -p --no-color "+shellQuote(commit)+" | git patch-id --stable")
-	command.Env = console.Env()
-	output, err := command.Output()
 	if err != nil {
 		return "", fmt.Errorf("patch identity of %s: %w", shortMergeRevision(commit), err)
 	}
-	fields := strings.Fields(string(output))
+	fields := strings.Fields(result.Stdout)
 	if len(fields) == 0 {
 		return "", nil
 	}

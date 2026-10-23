@@ -12,6 +12,7 @@ import (
 )
 
 func TestWindowsTrustAcceptsPrivateExecutableAndRejectsScript(t *testing.T) {
+	t.Parallel()
 	executable := filepath.Join(t.TempDir(), "indexer.exe")
 	if err := os.WriteFile(executable, []byte("test"), 0o600); err != nil {
 		t.Fatal(err)

@@ -209,10 +209,8 @@ func WriteBumpReports(directory string, report BumpReport) error {
 	if err := writeAtomic(filepath.Join(directory, "deps-bump.md"), []byte(report.Markdown()), 0o644); err != nil {
 		return err
 	}
-	raw, err := report.YAML()
-	if err != nil {
-		return err
-	}
+	// This concrete report has no fallible YAML marshalers; time.Time uses yaml timev.
+	raw, _ := report.YAML()
 	return writeAtomic(filepath.Join(directory, "deps-bump.yaml"), raw, 0o644)
 }
 

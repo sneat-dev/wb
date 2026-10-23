@@ -13,6 +13,7 @@ import (
 // local branch and the lease used for the next force-with-lease push are both
 // stale.
 func TestSyncFastForwardsAnEligibleMemberToTheFetchedRemoteStreamHead(t *testing.T) {
+	t.Parallel()
 	engine, git, _, _, _ := newTestEngine()
 	options := baseOptions()
 	git.heads[options.Branch] = "local-before"
@@ -43,6 +44,7 @@ func TestSyncFastForwardsAnEligibleMemberToTheFetchedRemoteStreamHead(t *testing
 // when the local and fetched stream heads diverge, sync must leave resolution
 // to the stream owner rather than rebasing local work onto a remote change.
 func TestSyncRefusesToResolveADivergedRemoteStreamBranch(t *testing.T) {
+	t.Parallel()
 	engine, git, _, _, _ := newTestEngine()
 	git.fastForwardErr = errors.New("stream/checkout and origin/stream/checkout diverged")
 
@@ -61,6 +63,7 @@ func TestSyncRefusesToResolveADivergedRemoteStreamBranch(t *testing.T) {
 // explicit sync must be able to rebase and publish that still-local branch.
 // There is no remote lease to persist until that first push has succeeded.
 func TestSyncAllowsTheFirstPushWhenTheRemoteStreamBranchIsAbsent(t *testing.T) {
+	t.Parallel()
 	engine, git, _, _, _ := newTestEngine()
 	options := baseOptions()
 	options.PushTrigger = TriggerExplicit
@@ -84,6 +87,7 @@ func TestSyncAllowsTheFirstPushWhenTheRemoteStreamBranchIsAbsent(t *testing.T) {
 // writes nothing for it; a second library still below target does get its one
 // commit; and a second run produces no new commits at all.
 func TestSyncWritesNoBumpRenovateAlreadyLanded(t *testing.T) {
+	t.Parallel()
 	engine, git, bumper, _, _ := newTestEngine()
 	options := baseOptions()
 	options.Libraries = []Library{
@@ -141,6 +145,7 @@ func TestSyncWritesNoBumpRenovateAlreadyLanded(t *testing.T) {
 // A bump whose apply changes nothing on disk must not leave an empty commit:
 // that would make a re-run non-idempotent.
 func TestABumpThatChangesNothingWritesNoCommit(t *testing.T) {
+	t.Parallel()
 	engine, git, bumper, _, _ := newTestEngine()
 	options := baseOptions()
 	options.Libraries = []Library{{Name: "L", Target: "v2.0.0", Ecosystem: "go"}}
@@ -162,6 +167,7 @@ func TestABumpThatChangesNothingWritesNoCommit(t *testing.T) {
 // rebased, and the conflict names the branch, its agent and the paths while the
 // others are still reported.
 func TestSyncReportsConflictsPerAgentBranch(t *testing.T) {
+	t.Parallel()
 	engine, git, _, _, _ := newTestEngine()
 	options := baseOptions()
 	options.AgentBranches = []AgentBranch{
@@ -206,6 +212,7 @@ func TestSyncReportsConflictsPerAgentBranch(t *testing.T) {
 // Sync refuses by default while a branch is under review, because rebasing it
 // invalidates the review that pinned its patch set.
 func TestSyncRefusesWhileABranchIsUnderReview(t *testing.T) {
+	t.Parallel()
 	engine, git, _, _, _ := newTestEngine()
 	options := baseOptions()
 	options.AgentBranches = []AgentBranch{{Branch: "agent/one", Agent: "wbs-1", InReview: true}}
@@ -232,6 +239,7 @@ func TestSyncRefusesWhileABranchIsUnderReview(t *testing.T) {
 // commits and zero pushes; a sync with no trigger says the remote was left
 // untouched; --push without --reason is refused naming the four triggers.
 func TestTenBumpsAreTenLocalCommitsAndZeroPushes(t *testing.T) {
+	t.Parallel()
 	engine, git, bumper, verifier, _ := newTestEngine()
 	options := baseOptions()
 	options.Verify = true
@@ -282,6 +290,7 @@ func TestTenBumpsAreTenLocalCommitsAndZeroPushes(t *testing.T) {
 }
 
 func TestPushWithoutAReasonIsRefusedNamingTheFourTriggers(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _, _ := newTestEngine()
 	options := baseOptions()
 	options.PushTrigger = TriggerExplicit
@@ -297,6 +306,7 @@ func TestPushWithoutAReasonIsRefusedNamingTheFourTriggers(t *testing.T) {
 }
 
 func TestAnUnrecognisedPushTriggerIsRefusedListingAllFour(t *testing.T) {
+	t.Parallel()
 	_, err := JustifyPush("because-i-said-so", "")
 	var refusal *Refusal
 	if !errors.As(err, &refusal) || refusal.Code != RefusalUnjustifiedPush {
@@ -312,6 +322,7 @@ func TestAnUnrecognisedPushTriggerIsRefusedListingAllFour(t *testing.T) {
 // Every justified push writes an event carrying its trigger and reason, so
 // pushes per stream can be counted after the fact.
 func TestAJustifiedPushRecordsItsTriggerAndReason(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _, events := newTestEngine()
 	options := baseOptions()
 	options.PushTrigger = TriggerLanding
@@ -335,6 +346,7 @@ func TestAJustifiedPushRecordsItsTriggerAndReason(t *testing.T) {
 // A dirty worktree is refused: sync rebases and commits, so it will not run
 // over uncommitted work.
 func TestSyncRefusesADirtyWorktree(t *testing.T) {
+	t.Parallel()
 	engine, git, _, _, _ := newTestEngine()
 	git.clean = false
 	_, err := engine.Sync(context.Background(), baseOptions())
@@ -345,6 +357,7 @@ func TestSyncRefusesADirtyWorktree(t *testing.T) {
 }
 
 func TestBelowIsTheIdempotenceComparison(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		required, target string
 		want             bool
@@ -370,6 +383,7 @@ func TestBelowIsTheIdempotenceComparison(t *testing.T) {
 // result.Push and eventing success without pushing reported an effect that did
 // not exist.
 func TestAJustifiedPushActuallyPushesUnderALease(t *testing.T) {
+	t.Parallel()
 	engine, git, _, _, events := newTestEngine()
 	options := baseOptions()
 	options.PushTrigger = TriggerExplicit
@@ -407,6 +421,7 @@ func TestAJustifiedPushActuallyPushesUnderALease(t *testing.T) {
 
 // A push that FAILS is reported as a failure, and no push is claimed.
 func TestAFailedPushIsReportedAndNotClaimed(t *testing.T) {
+	t.Parallel()
 	engine, git, _, _, events := newTestEngine()
 	git.pushErr = errors.New("stale info: remote ref moved")
 	options := baseOptions()
@@ -432,6 +447,7 @@ func TestAFailedPushIsReportedAndNotClaimed(t *testing.T) {
 // sync found it in — a half-applied manifest would make the next sync refuse
 // as dirty and tell the operator to commit it.
 func TestAFailedBumpFailsTheRunAndRestoresTheWorktree(t *testing.T) {
+	t.Parallel()
 	engine, git, bumper, _, _ := newTestEngine()
 	options := baseOptions()
 	options.Libraries = []Library{{Name: "L", Target: "v2.0.0", Ecosystem: "go"}}
@@ -460,6 +476,7 @@ func TestAFailedBumpFailsTheRunAndRestoresTheWorktree(t *testing.T) {
 // SF-1. An unreadable version is reported as unreadable, not as
 // "already-at-target": no commit either way, but only one of those is true.
 func TestAnUnreadableVersionIsReportedAsUnreadable(t *testing.T) {
+	t.Parallel()
 	engine, _, bumper, _, _ := newTestEngine()
 	options := baseOptions()
 	options.Libraries = []Library{{Name: "L", Target: "v2.0.0", Ecosystem: "go"}}
@@ -480,7 +497,9 @@ func TestAnUnreadableVersionIsReportedAsUnreadable(t *testing.T) {
 // MF-3. EVERY exit writes exactly one terminal event, including the failure
 // paths that previously wrote none.
 func TestEveryExitWritesExactlyOneTerminalEvent(t *testing.T) {
+	t.Parallel()
 	t.Run("stream conflict", func(t *testing.T) {
+		t.Parallel()
 		engine, git, _, _, events := newTestEngine()
 		git.conflicts["stream/checkout"] = []string{"backend/handler.go"}
 		if _, err := engine.Sync(context.Background(), baseOptions()); err != nil {
@@ -489,6 +508,7 @@ func TestEveryExitWritesExactlyOneTerminalEvent(t *testing.T) {
 		assertOneTerminalEvent(t, events, "findings")
 	})
 	t.Run("agent conflict", func(t *testing.T) {
+		t.Parallel()
 		engine, git, _, _, events := newTestEngine()
 		options := baseOptions()
 		options.AgentBranches = []AgentBranch{{Branch: "agent/one", Agent: "wbs-1"}}
@@ -499,6 +519,7 @@ func TestEveryExitWritesExactlyOneTerminalEvent(t *testing.T) {
 		assertOneTerminalEvent(t, events, "findings")
 	})
 	t.Run("failed bump", func(t *testing.T) {
+		t.Parallel()
 		engine, _, bumper, _, events := newTestEngine()
 		options := baseOptions()
 		options.Libraries = []Library{{Name: "L", Target: "v2.0.0", Ecosystem: "go"}}
@@ -510,6 +531,7 @@ func TestEveryExitWritesExactlyOneTerminalEvent(t *testing.T) {
 		assertOneTerminalEvent(t, events, "findings")
 	})
 	t.Run("review-in-progress refusal", func(t *testing.T) {
+		t.Parallel()
 		engine, _, _, _, events := newTestEngine()
 		options := baseOptions()
 		options.AgentBranches = []AgentBranch{{Branch: "agent/one", InReview: true}}
@@ -522,6 +544,7 @@ func TestEveryExitWritesExactlyOneTerminalEvent(t *testing.T) {
 		}
 	})
 	t.Run("dirty-worktree refusal", func(t *testing.T) {
+		t.Parallel()
 		engine, git, _, _, events := newTestEngine()
 		git.clean = false
 		if _, err := engine.Sync(context.Background(), baseOptions()); err == nil {
@@ -533,6 +556,7 @@ func TestEveryExitWritesExactlyOneTerminalEvent(t *testing.T) {
 		}
 	})
 	t.Run("success", func(t *testing.T) {
+		t.Parallel()
 		engine, _, _, _, events := newTestEngine()
 		if _, err := engine.Sync(context.Background(), baseOptions()); err != nil {
 			t.Fatal(err)

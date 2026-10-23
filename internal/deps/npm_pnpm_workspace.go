@@ -1,7 +1,6 @@
 package deps
 
 import (
-	"fmt"
 	"strings"
 )
 
@@ -210,8 +209,6 @@ func scanPnpmWorkspaceRefs(contents []byte) []pnpmWorkspaceRef {
 					Line: index, Section: section, CatalogName: catalogName, Key: line.key, Value: line.value,
 					quote: line.quote, comment: line.comment,
 				})
-			} else if line.indent <= catalogIndent {
-				catalogName, catalogIndent = "", -1
 			}
 		}
 	}
@@ -230,9 +227,7 @@ func applyPnpmWorkspaceOverride(contents []byte, dependency, version string) ([]
 		if ref.Key != dependency {
 			continue
 		}
-		if ref.Line < 0 || ref.Line >= len(rawLines) {
-			return nil, nil, fmt.Errorf("pnpm-workspace.yaml: override line index out of range")
-		}
+		// The scanner indexes these same immutable raw lines.
 		parsedLine := parsePnpmWorkspaceLine(rawLines[ref.Line])
 		lineEnding := lineEndingOf(rawLines[ref.Line])
 		indent := strings.Repeat(" ", parsedLine.indent)

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/buildinfo"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // custodyWorktree is a real Git checkout, because the local work log manages
@@ -26,6 +27,7 @@ func custodyWorktree(t *testing.T) string {
 	if out, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v: %s", err, out)
 	}
+	testenv.ConfigureGitAutoMaintenanceOff(t, dir)
 	return dir
 }
 

@@ -25,83 +25,46 @@ jobs:
     timeout-minutes: 2
     outputs:
       required: ${{ steps.decide.outputs.required }}
+      contract_required: ${{ steps.decide.outputs.contract_required }}
     steps:
-      # Everything Go builds, embeds or reads in tests from its own paths. A
-      # pull request that touches none of it (spec/, docs/ prose, hub/web
-      # sources, …) skips Go validation and runs only go-contract-inputs, which
-      # covers the inputs no path list can: spec/ files named by
-      # ai/capabilities.json, agents/ prose, and every tracked file name that
-      # enters the Go module archive. Only pull requests are scoped, and a
-      # scoped run publishes no validation receipt, so the merge to main always
-      # validates in full.
-      - uses: dorny/paths-filter@v4
-        id: changes
-        if: github.event_name == 'pull_request'
+      - name: Checkout source and comparison history
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
-          filters: |
-            required:
-              - '**/*.go'
-              - '**/go.mod'
-              - '**/go.sum'
-              - 'go.work'
-              - 'go.work.sum'
-              - 'vendor/**'
-              - 'cmd/**'
-              - 'internal/**'
-              - 'api/**'
-              - 'ai/**'
-              - 'agents/**'
-              - 'skills'
-              - 'hub/web/dist/**'
-              - 'proto/**'
-              - 'examples/**'
-              - '.wb/**'
-              - '.github/**'
-              - '.claude-plugin/**'
-              - '.codex-plugin/**'
-              - 'docs/cli-flag-matrix.md'
-              - 'README.md'
-              - '.goreleaser.yml'
-              - '.golangci.*'
-              - '.gitattributes'
+          fetch-depth: 0
       - name: Decide
         id: decide
-        if: github.event_name == 'pull_request'
         env:
-          FILTERED: ${{ steps.changes.outputs.required }}
-          CHANGED_FILES: ${{ github.event.pull_request.changed_files }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          EVENT_SHA: ${{ github.sha }}
         run: |
-          set -eu
-          case "$FILTERED" in
-            true|false) ;;
-            *) echo "Go scope filter returned '$FILTERED', want true or false" >&2; exit 1 ;;
-          esac
-          # GitHub lists at most 3000 files of a pull request; beyond that the
-          # filter cannot see every path, so validate.
-          if [ "$FILTERED" = true ] || [ "$CHANGED_FILES" -ge 3000 ]; then
-            echo required=true >> "$GITHUB_OUTPUT"
+          if [ "$EVENT_NAME" = pull_request ]; then
+            bash .github/scripts/go-scope.sh "$EVENT_NAME" "$PR_BASE_SHA" "$PR_HEAD_SHA" "$REF" "$GITHUB_OUTPUT"
           else
-            echo required=false >> "$GITHUB_OUTPUT"
+            bash .github/scripts/go-scope.sh "$EVENT_NAME" "$PUSH_BEFORE_SHA" "$EVENT_SHA" "$REF" "$GITHUB_OUTPUT"
           fi
 
   go-contract-inputs:
     name: Check non-Go contract inputs
     needs: go-scope
-    if: github.event_name == 'pull_request' && needs.go-scope.outputs.required == 'false'
+    if: needs.go-scope.outputs.contract_required == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
           cache: true
       - name: Test the Go contracts over non-Go files
         run: >-
           go test ./cmd/wb -count=1
-          -run '^(TestModuleArchiveIncludesCmdWBEmbedInputs|TestCapabilityManifestKeepsImplementationHelpAndSkillsInOne|TestWBMergeSkillIsOnePortableContract)$'
+          -run '^(TestModuleArchiveIncludesCmdWBEmbedInputs|TestCapabilityManifestKeepsImplementationHelpAndSkillsInOne|TestWBMergeSkillIsOnePortableContract|TestWBChangeCompletionContractIsSharedAcrossHarnesses|TestPublicInstallDocumentationMatchesReleaseContract|TestAgentSkillsCoverPublicCommands)$'
 
   windows-scope:
     name: Decide native Windows coverage
@@ -111,8 +74,8 @@ jobs:
       required: ${{ steps.changes.outputs.required }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
-      - uses: dorny/paths-filter@v4
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: changes
         with:
           filters: |
@@ -121,6 +84,10 @@ jobs:
               - 'cmd/wb/**'
               - 'api/githubapp/**'
               - 'internal/session/**'
+              - 'internal/filewrite/**'
+              - 'internal/unixcompat/**'
+              - 'internal/orchestrate/pr_update.go'
+              - 'internal/orchestrate/pr_update*_test.go'
               - 'go.mod'
               - 'go.sum'
               - '.github/workflows/go-ci.yml'
@@ -134,7 +101,7 @@ jobs:
       reason: ${{ steps.verify.outputs.reason }}
     steps:
       - name: Checkout landed source
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: Select an exact trusted pull-request receipt
         id: select
         env:
@@ -145,7 +112,7 @@ jobs:
         # An expired or transiently unavailable artifact must take the ordinary
         # full-validation path; it is not an authorization failure.
         continue-on-error: true
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: wb-ci-validation-receipt
           run-id: ${{ steps.select.outputs.run_id }}
@@ -171,7 +138,7 @@ jobs:
       # Resolve publication policy first. An ineligible PR still runs all
       # validation jobs; only publication depends on the eligible output.
       - name: Checkout eligibility source and history
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
       - name: Determine eligible publication ref
@@ -189,15 +156,15 @@ jobs:
     name: Check formatting and dependencies
     needs: [release-eligibility, validation-reuse, go-scope]
     if: >-
-      (github.event_name != 'pull_request' || needs.go-scope.outputs.required == 'true') &&
+      needs.go-scope.outputs.required == 'true' &&
       (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
           cache: true
@@ -217,41 +184,50 @@ jobs:
     name: Build and vet
     needs: [release-eligibility, validation-reuse, go-scope]
     if: >-
-      (github.event_name != 'pull_request' || needs.go-scope.outputs.required == 'true') &&
+      needs.go-scope.outputs.required == 'true' &&
       (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
           cache: true
+      - name: Check strict coverage profile gate
+        run: python3 .github/scripts/test-coverage-strict.py
       - name: go vet
         run: go vet ./...
       - name: go build
         run: go build ./...
+      - name: go build (macOS, no cgo)
+        # No job runs tests on macOS, so the cgo-free macOS machine-metrics reader
+        # (gopsutil through purego) is only build- and vet-checked here; its tests
+        # run on the founder's Mac.
+        run: |
+          CGO_ENABLED=0 GOOS=darwin go build ./...
+          CGO_ENABLED=0 GOOS=darwin go vet ./internal/cockpit/machinemetrics
 
   lint:
     name: Lint (golangci-lint)
     needs: [release-eligibility, validation-reuse, go-scope]
     if: >-
-      (github.event_name != 'pull_request' || needs.go-scope.outputs.required == 'true') &&
+      needs.go-scope.outputs.required == 'true' &&
       (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
           cache: true
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v9
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           # v2.12.2's analysis dependencies panic on Go 1.27's
           # embedded-selector literals. Pin upstream source with the fixes
@@ -260,10 +236,10 @@ jobs:
           install-mode: goinstall
 
   coverage:
-    name: Tests and coverage (8 shards)
+    name: Tests and scoped coverage
     needs: [release-eligibility, validation-reuse, go-scope]
     if: >-
-      (github.event_name != 'pull_request' || needs.go-scope.outputs.required == 'true') &&
+      needs.go-scope.outputs.required == 'true' &&
       (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')
     runs-on: ubuntu-latest
     # The merged package set uses real repositories and worktrees. Keep the
@@ -275,37 +251,83 @@ jobs:
     # this job budget stay at their raised size regardless, so setup and
     # failure diagnostic upload remain outside the inner budget and a timeout
     # still leaves evidence.
-    timeout-minutes: 45
+    # Raised from 20m/45m on 2026-10-21 (founder decision): a change under
+    # .wb/ selects the whole module, and its default and e2e variants run in
+    # sequence inside one --timeout, which ran out in the last orchestrate
+    # shard. The baseline and head measurements each get 30m.
+    timeout-minutes: 70
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          # The merge-base ratchet needs full history to resolve the base
+          # commit and diff against it; the eligibility job at :176 already
+          # does this for the same reason.
+          fetch-depth: 0
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
           cache: true
-      - name: Test with merged coverage threshold
-        run: >-
-          go run ./cmd/wb coverage .
-          --coverage-profile profile.cov
-          --report-dir coverage-diagnostics
-          --minimum=88
-          --format json
-          --non-interactive
-          --timeout 35m
+      - name: Test changed packages and affected dependents with coverage ratchets
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          target="$BASE_SHA"
+          if [ "$EVENT_NAME" != pull_request ]; then
+            target="$PUSH_BEFORE_SHA"
+            if [ -z "$target" ] || [[ "$target" =~ ^0+$ ]]; then
+              target=$(git rev-parse HEAD^)
+            fi
+          fi
+          go run ./cmd/wb coverage . \
+            --changed --affected-packages --target "$target" \
+            --baseline-timeout 30m --timeout 30m --include-e2e \
+            --coverage-profile profile.cov --report-dir coverage-diagnostics \
+            --format json --non-interactive
+      - name: Require zero uncovered statements in the selected coverage scope
+        if: ${{ success() || failure() }}
+        run: |
+          set -euo pipefail
+          mkdir -p coverage-diagnostics
+          python3 .github/scripts/coverage-strict.py profile.cov --scope selected \
+            --ratchet coverage-diagnostics/coverage-ratchet.json --head "$(git rev-parse HEAD)" \
+            | tee coverage-diagnostics/coverage-strict.json
+      - name: wb ci audit --strict against the PR base branch
+        if: ${{ (success() || failure()) && github.event_name == 'pull_request' }}
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          ACCEPT_INTEGRATION: ${{ github.event.pull_request.number == 773 && github.head_ref == 'cov/integration' && github.base_ref == 'main' }}
+        run: |
+          if [ "$ACCEPT_INTEGRATION" = true ]; then
+            echo 'One-time PR #773 integration acceptance: run strict local audit; cross-branch pending-list debt is recorded in the coverage plan.'
+            go run ./cmd/wb ci audit . --strict --non-interactive
+          else
+            go run ./cmd/wb ci audit . --target "$BASE_REF" --strict --non-interactive
+          fi
       - name: Upload coverage diagnostics on failure
         if: ${{ failure() }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wb-coverage-diagnostics
           path: coverage-diagnostics
           if-no-files-found: warn
           retention-days: 14
       - name: Upload coverage profile
-        uses: actions/upload-artifact@v7
+        if: ${{ success() || failure() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wb-go-coverage
-          path: profile.cov
+          path: |
+            profile.cov
+            coverage-diagnostics/coverage-ratchet.json
           if-no-files-found: error
           retention-days: 14
 
@@ -313,15 +335,15 @@ jobs:
     name: Race tests
     needs: [release-eligibility, validation-reuse, go-scope]
     if: >-
-      (github.event_name != 'pull_request' || needs.go-scope.outputs.required == 'true') &&
+      needs.go-scope.outputs.required == 'true' &&
       (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
           cache: true
@@ -342,25 +364,60 @@ jobs:
           ./internal/fleetsync/...
           ./internal/runqueue/...
 
+  e2e:
+    name: E2E tier (real git)
+    needs: [release-eligibility, validation-reuse, go-scope]
+    # spec/plans/coverage-to-100/README.md task-24: the e2e tier is a
+    # required job on every PR (founder decision 19). The coverage job also
+    # measures this tier under the later native-coverage authorization; this
+    # independent job remains its pass/fail contract.
+    # It follows the same go-scope/validation-reuse condition as source,
+    # static, lint, and race.
+    if: >-
+      needs.go-scope.outputs.required == 'true' &&
+      (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')
+    runs-on: ubuntu-latest
+    # Match the existing combined-coverage native attempt budget; leave setup
+    # and failure reporting outside the per-package test deadline.
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: go test -tags e2e (real-git journeys and adapter contract tests)
+        run: >-
+          go test -tags e2e -count=1 -timeout 20m -run '^Test(E2E|Contract)' ./...
+
   windows:
     name: Native Windows compile and test
     needs: [windows-scope, validation-reuse, go-scope]
     if: >-
       needs.windows-scope.outputs.required == 'true' &&
-      (github.event_name != 'pull_request' || needs.go-scope.outputs.required == 'true') &&
+      needs.go-scope.outputs.required == 'true' &&
       (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')
     runs-on: windows-latest
     timeout-minutes: 8
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
           cache: true
       - name: Compile all Go packages for Windows
         run: go build ./...
+      - name: go vet (Windows)
+        # go build above only compiles production code; go vet also compiles
+        # every package's test files, so this is the one step that would
+        # have caught a _test.go file using a POSIX-only symbol (e.g.
+        # golang.org/x/sys/unix, syscall.Kill) without needing every package
+        # named in an allow-list below.
+        run: go vet ./...
       - name: Test Windows-safe portability primitives
         run: >-
           go test ./internal/session
@@ -373,6 +430,10 @@ jobs:
         run: >-
           go test ./internal/unixcompat ./internal/archiveprune ./cmd/wb
           -run '^(TestOpenNoFollowTransfersSingleHandleOwnership|TestFstatIdentityMatchesFstatat|TestWindowsPlanUntrackedSimpleFile|TestWindowsDaemon)'
+      - name: Test native Windows atomic receipt publication
+        run: >-
+          go test ./internal/filewrite ./internal/orchestrate ./internal/unixcompat -count=1 -json
+          -run '^(TestWindowsAtomicPublicationAndDirectoryFaults|TestWindowsImmutablePublicationRefusesWithoutReplacingWinner|TestWindowsPortableSentinelsMatchNativeErrors|TestWindowsPRUpdateReceiptPublication|TestWindowsSyncDirectoryValidatesHandles|TestSyncDirFsyncsTheDirectory|TestSyncDirHonoursAnInjectedFailure|TestSyncDirReportsARealFailureOnAClosedDirectory|TestSyncReportsARealFailureOnAClosedFile)$'
       - name: Test GitHub App provider contract
         run: go test ./api/githubapp -count=1
 
@@ -381,10 +442,12 @@ jobs:
     # status check in branch protection when changing it.
     name: Required checks passed
     if: ${{ always() }}
-    needs: [release-eligibility, validation-reuse, go-scope, go-contract-inputs, source, static, lint, coverage, race, windows]
+    needs: [release-eligibility, validation-reuse, go-scope, go-contract-inputs, source, static, lint, coverage, race, e2e, windows]
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:
+      - name: Checkout aggregate policy
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: Summarize required check results (no build or tests)
         env:
           ELIGIBILITY_RESULT: ${{ needs.release-eligibility.result }}
@@ -393,69 +456,16 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           GO_SCOPE_RESULT: ${{ needs.go-scope.result }}
           GO_REQUIRED: ${{ needs.go-scope.outputs.required }}
+          CONTRACT_REQUIRED: ${{ needs.go-scope.outputs.contract_required }}
           CONTRACT_RESULT: ${{ needs.go-contract-inputs.result }}
           SOURCE_RESULT: ${{ needs.source.result }}
           STATIC_RESULT: ${{ needs.static.result }}
           LINT_RESULT: ${{ needs.lint.result }}
           COVERAGE_RESULT: ${{ needs.coverage.result }}
           RACE_RESULT: ${{ needs.race.result }}
+          E2E_RESULT: ${{ needs.e2e.result }}
           WINDOWS_RESULT: ${{ needs.windows.result }}
-        run: |
-          set -eu
-          if [ "$REUSE_JOB_RESULT" != "success" ]; then
-            echo "Validation reuse decision concluded: $REUSE_JOB_RESULT" >&2
-            exit 1
-          fi
-          if [ "$GO_SCOPE_RESULT" != "success" ]; then
-            echo "Go validation scope decision concluded: $GO_SCOPE_RESULT" >&2
-            exit 1
-          fi
-          spec_only=false
-          if [ "$EVENT_NAME" = "pull_request" ]; then
-            case "$GO_REQUIRED" in
-              true) ;;
-              false) spec_only=true ;;
-              *) echo "Go validation scope is '$GO_REQUIRED', want true or false" >&2; exit 1 ;;
-            esac
-          fi
-          if [ "$spec_only" = "true" ]; then
-            expected_contract=success
-          else
-            expected_contract=skipped
-          fi
-          if [ "$CONTRACT_RESULT" != "$expected_contract" ]; then
-            echo "Required check 'Non-Go contract inputs' concluded: $CONTRACT_RESULT; expected $expected_contract" >&2
-            exit 1
-          fi
-          if [ "$REUSE_RESULT" = "true" ] || [ "$spec_only" = "true" ]; then
-            expected=skipped
-          else
-            expected=success
-          fi
-          for check in "Eligibility:$ELIGIBILITY_RESULT" "Formatting and dependencies:$SOURCE_RESULT" "Build and vet:$STATIC_RESULT" "Lint:$LINT_RESULT" "Tests and coverage:$COVERAGE_RESULT" "Race tests:$RACE_RESULT"; do
-            name=${check%%:*}
-            result=${check#*:}
-            if [ "$name" = "Eligibility" ]; then
-              expected_for_check=success
-            else
-              expected_for_check=$expected
-            fi
-            if [ "$result" != "$expected_for_check" ]; then
-              echo "Required check '$name' concluded: $result; expected $expected_for_check" >&2
-              exit 1
-            fi
-          done
-          if [ "$WINDOWS_RESULT" != "success" ] && [ "$WINDOWS_RESULT" != "skipped" ]; then
-            echo "Required check 'Native Windows compile and test' concluded: $WINDOWS_RESULT" >&2
-            exit 1
-          fi
-          if [ "$REUSE_RESULT" = "true" ]; then
-            echo "Reused exact trusted pull-request validation."
-          elif [ "$spec_only" = "true" ]; then
-            echo "No Go-relevant file changed; Go validation was not required."
-          else
-            echo "All required checks passed. This job only combines their results."
-          fi
+        run: bash .github/scripts/go-ci-required.sh
 
   validation-receipt:
     name: Publish validation receipt
@@ -469,7 +479,7 @@ jobs:
     timeout-minutes: 2
     steps:
       - name: Checkout tested source
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: Write exact validation receipt
         env:
           PULL_NUMBER: ${{ github.event.pull_request.number }}
@@ -478,7 +488,7 @@ jobs:
           RUN_ID: ${{ github.run_id }}
         run: .github/scripts/ci-reuse-receipt.sh ci-validation-receipt.json
       - name: Upload validation receipt
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wb-ci-validation-receipt
           path: ci-validation-receipt.json
@@ -491,21 +501,26 @@ jobs:
       ${{
         !cancelled() &&
         needs.test.result == 'success' &&
+        needs.go-scope.outputs.required == 'true' &&
         needs.release-eligibility.result == 'success' &&
         needs.release-eligibility.outputs.eligible == 'true'
       }}
-    needs: [test, release-eligibility]
+    needs: [test, release-eligibility, go-scope]
     # Serialize publication without cancelling a signing/notarization run.
     concurrency:
       group: wb-release-${{ github.ref }}
       cancel-in-progress: false
     # Resolve smoke-test metadata alongside the artifact build, then verify
     # published artifacts and Homebrew installs in parallel after promotion.
-    uses: strongo/cicd/.github/workflows/release.yml@19adc5f9e479df1861aea3ee9e1037c746628e4c
+    uses: strongo/cicd/.github/workflows/release.yml@5d96b1f3fbb3f12bb1e2762ff5ba54ccb9506504
     permissions:
       contents: write
     with:
       go_version: '1.27'
+      # .goreleaser.yml before-hooks build hub/web and cockpit/web with pnpm;
+      # Angular 22 needs Node ^22.22.3 || ^24.15.0 (cockpit/web engines), the
+      # same major cockpit-web.yml verifies on.
+      node_version: '24.15.0'
       allow_major_version_bump: false
       # A CLI-changing merge without a conventional terminal title must still
       # produce a patch release.

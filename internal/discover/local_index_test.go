@@ -9,6 +9,7 @@ import (
 )
 
 func TestScanLocalIndexedReusesUnchangedObservation(t *testing.T) {
+	t.Parallel()
 	projectsRoot := t.TempDir()
 	mustIndexedRepository(t, projectsRoot, "acme", "widgets")
 	cachePath := filepath.Join(t.TempDir(), "fleet-inventory.json")
@@ -32,6 +33,7 @@ func TestScanLocalIndexedReusesUnchangedObservation(t *testing.T) {
 }
 
 func TestScanLocalIndexedInvalidatesChangedOrganization(t *testing.T) {
+	t.Parallel()
 	projectsRoot := t.TempDir()
 	organization := filepath.Join(projectsRoot, "acme")
 	mustIndexedRepository(t, projectsRoot, "acme", "one")
@@ -56,6 +58,7 @@ func TestScanLocalIndexedInvalidatesChangedOrganization(t *testing.T) {
 }
 
 func TestFreshScanRemainsMutationAuthority(t *testing.T) {
+	t.Parallel()
 	projectsRoot := t.TempDir()
 	repository := mustIndexedRepository(t, projectsRoot, "acme", "widgets")
 	cachePath := filepath.Join(t.TempDir(), "fleet-inventory.json")
@@ -84,6 +87,7 @@ func TestFreshScanRemainsMutationAuthority(t *testing.T) {
 }
 
 func TestScanLocalIndexedRecoversCorruptCache(t *testing.T) {
+	t.Parallel()
 	projectsRoot := t.TempDir()
 	mustIndexedRepository(t, projectsRoot, "acme", "widgets")
 	cachePath := filepath.Join(t.TempDir(), "fleet-inventory.json")
@@ -103,6 +107,7 @@ func TestScanLocalIndexedRecoversCorruptCache(t *testing.T) {
 }
 
 func TestScanLocalIndexedExpiresObservation(t *testing.T) {
+	t.Parallel()
 	projectsRoot := t.TempDir()
 	mustIndexedRepository(t, projectsRoot, "acme", "widgets")
 	cachePath := filepath.Join(t.TempDir(), "fleet-inventory.json")

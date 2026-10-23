@@ -10,6 +10,7 @@ import (
 )
 
 func TestSanitizeEnvOverrideWinsOverAmbientDuplicate(t *testing.T) {
+	t.Parallel()
 	base := []string{"GOWORK=/ambient/go.work", "PATH=/bin", "HOME=/home/alex"}
 	result := SanitizeEnv(base, "GOWORK=off")
 
@@ -35,6 +36,7 @@ func TestSanitizeEnvOverrideWinsOverAmbientDuplicate(t *testing.T) {
 }
 
 func TestSanitizeEnvStripsAgentVarsFromBaseButNotFromOverrides(t *testing.T) {
+	t.Parallel()
 	base := []string{"WB_AGENT_ID=session-123", "WB_AGENT_PID=42", "PATH=/bin"}
 	result := SanitizeEnv(base)
 
@@ -59,6 +61,7 @@ func TestSanitizeEnvStripsAgentVarsFromBaseButNotFromOverrides(t *testing.T) {
 }
 
 func TestSanitizeEnvPreservesFirstSeenOrderForStableOutput(t *testing.T) {
+	t.Parallel()
 	base := []string{"A=1", "B=2", "C=3"}
 	result := SanitizeEnv(base, "B=20", "D=4")
 	want := []string{"A=1", "B=20", "C=3", "D=4"}
@@ -73,6 +76,7 @@ func TestSanitizeEnvPreservesFirstSeenOrderForStableOutput(t *testing.T) {
 }
 
 func TestInspectFindsGoWorkAncestorsGoworkAndAgentVars(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "go.work"), []byte("go 1.26\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -109,6 +113,7 @@ func TestInspectFindsGoWorkAncestorsGoworkAndAgentVars(t *testing.T) {
 }
 
 func TestInspectEmptyWhenNothingObserved(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir() // no go.work anywhere in this fresh directory
 	inputs := Inspect([]string{"PATH=/bin", "HOME=/home"}, root)
 	if !inputs.Empty() {
@@ -120,6 +125,7 @@ func TestInspectEmptyWhenNothingObserved(t *testing.T) {
 }
 
 func TestGoEnvOverridesOffByDefaultAndOffOnError(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	// No go.work anywhere in this ancestry: always GOWORK=off.
 	overrides := GoEnvOverrides(root)
@@ -129,6 +135,7 @@ func TestGoEnvOverridesOffByDefaultAndOffOnError(t *testing.T) {
 }
 
 func TestTracksOwnGoWorkTrueOnlyWhenCommittedAndUnchanged(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
@@ -180,6 +187,7 @@ func TestTracksOwnGoWorkTrueOnlyWhenCommittedAndUnchanged(t *testing.T) {
 // --show-toplevel` and check nested/go.work relative to it, not assume
 // go.work's own directory is the git root.
 func TestTracksOwnGoWorkResolvesGitTopLevelAboveGoWorkDirectory(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
@@ -224,6 +232,7 @@ func TestTracksOwnGoWorkResolvesGitTopLevelAboveGoWorkDirectory(t *testing.T) {
 }
 
 func TestTracksOwnGoWorkResolvesSymlinkedRepositoryRoot(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
@@ -262,6 +271,7 @@ func TestTracksOwnGoWorkResolvesSymlinkedRepositoryRoot(t *testing.T) {
 // yield GOWORK=off rather than erroring or panicking when `git rev-parse
 // --show-toplevel` finds no repository.
 func TestTracksOwnGoWorkFalseOutsideAnyGitRepository(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,28 +22,52 @@ import (
 const secureHookRunTestHelperArgument = "--wb-hook-run-test-helper"
 
 func TestMain(m *testing.M) {
-	if len(os.Args) > 1 && os.Args[1] == SecureCleanupGitHelperArgument {
-		os.Exit(RunSecureCleanupGitHelper(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == secureHookRunTestHelperArgument {
-		os.Exit(runSecureHookTestHelper(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == SecureStageGitHelperArgument {
-		os.Exit(RunSecureStageGitHelper(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == SecureCanonicalGitHelperArgument {
-		os.Exit(RunSecureCanonicalGitHelper(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == SecureStageCanonicalGitHelperArgument {
-		os.Exit(RunSecureStageCanonicalGitHelper(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == SecureRenameGitHelperArgument {
-		os.Exit(RunSecureRenameGitHelper(os.Args[2:]))
+	if len(os.Args) > 1 {
+		if helper, known := SecureGitHelperForArgument(os.Args[1]); known {
+			os.Exit(helper(os.Args[2:]))
+		}
+		if os.Args[1] == secureHookRunTestHelperArgument {
+			os.Exit(runSecureHookTestHelper(os.Args[2:]))
+		}
 	}
 	// See internal/testenv: strip inherited WB_AGENT_* and pin GOWORK=off
 	// before any worktrees test (relocate, autoregister, worklog, ...) runs.
 	testenv.IsolateProcess()
+	// Disable git's detached gc/maintenance for every git this binary
+	// starts, including production git against t.TempDir() fixtures, so no
+	// background writer can race TempDir cleanup (task-21).
+	testenv.GitAutoMaintenanceOffProcess()
 	os.Exit(m.Run())
+}
+
+func TestSecureGitHelperForArgumentSelectsExactHandler(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		argument string
+		helper   func([]string) int
+	}{
+		{SecureCleanupGitHelperArgument, RunSecureCleanupGitHelper},
+		{SecureStageGitHelperArgument, RunSecureStageGitHelper},
+		{SecureCanonicalGitHelperArgument, RunSecureCanonicalGitHelper},
+		{SecureCanonicalPolicyGitHelperArgument, RunSecureCanonicalPolicyGitHelper},
+		{SecureStageCanonicalGitHelperArgument, RunSecureStageCanonicalGitHelper},
+		{SecureRenameGitHelperArgument, RunSecureRenameGitHelper},
+	}
+	for _, tc := range cases {
+		t.Run(tc.argument, func(t *testing.T) {
+			t.Parallel()
+			got, known := SecureGitHelperForArgument(tc.argument)
+			if !known || got == nil || reflect.ValueOf(got).Pointer() != reflect.ValueOf(tc.helper).Pointer() {
+				t.Fatalf("helper for %q was not the expected handler; known=%t", tc.argument, known)
+			}
+		})
+	}
+	for _, argument := range []string{"", "--unknown-helper", secureHookRunTestHelperArgument} {
+		got, known := SecureGitHelperForArgument(argument)
+		if got != nil || known {
+			t.Fatalf("unexpected worktrees helper for %q; known=%t", argument, known)
+		}
+	}
 }
 
 func runSecureHookTestHelper(args []string) int {
@@ -326,7 +351,7 @@ func TestAcquireRepositoryRegistrationLockConcurrentFirstOpen(t *testing.T) {
 		for _, repository := range canonical {
 			go func(repository *canonicalRepository) {
 				<-start
-				lock, err := acquireRepositoryRegistrationLock(repository)
+				lock, err := acquireRepositoryRegistrationLock(repository, time.Now, time.Sleep)
 				if err == nil {
 					err = lock.release()
 				}
@@ -1244,6 +1269,7 @@ func TestGitEnvironmentUsesOnlyScopedGitAndTemporaryDirectories(t *testing.T) {
 }
 
 func TestCleanupGitEnvironmentPinsCanonicalWorkTreeForHooks(t *testing.T) {
+	t.Parallel()
 	environment := gitEnvironmentWithHeldGitDirAndWorkTree("/retained/git", "/retained/repository")
 	values := map[string]string{}
 	for _, entry := range environment {
@@ -1563,7 +1589,7 @@ func TestCreateResolvesGitBeforeEnteringStageDirectory(t *testing.T) {
 	}
 	workingDirectory := t.TempDir()
 	trustedGit := filepath.Join(workingDirectory, "git")
-	if err := os.WriteFile(trustedGit, []byte("#!/bin/sh\nexec \"$WB_TEST_REAL_GIT\" \"$@\"\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(trustedGit, []byte("#!/bin/sh\nexec \"$WB_TEST_REAL_GIT\" \"$@\"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	originalDirectory, err := os.Getwd()
@@ -1586,7 +1612,7 @@ func TestCreateResolvesGitBeforeEnteringStageDirectory(t *testing.T) {
 		afterSecureStageValidation: func() {
 			fakeGit := filepath.Join(testStageRoot(t, operationRoot), "git")
 			contents := "#!/bin/sh\ntouch \"" + fakeWasRun + "\"\nexit 99\n"
-			if writeErr := os.WriteFile(fakeGit, []byte(contents), 0o755); writeErr != nil {
+			if writeErr := testenv.WriteExecutableFile(fakeGit, []byte(contents), 0o755); writeErr != nil {
 				t.Fatalf("write staged fake git: %v", writeErr)
 			}
 		}, WorkLog: WorkLogOptions{Model: "unknown"},
@@ -1814,15 +1840,26 @@ func TestCreateResumeIsExplicitAndPreservesChanges(t *testing.T) {
 	}
 }
 
-func TestGuardRejectsFeatureBranchesAndChangesInCanonicalClone(t *testing.T) {
+// A canonical clone on a feature branch is a normal state (sneat-dev/wb#824):
+// the branch alone never refuses. Uncommitted work still does, on any branch.
+func TestGuardAcceptsAnyBranchInACanonicalCloneAndRejectsChanges(t *testing.T) {
 	fixture := newGitFixture(t)
 	if result, err := Guard(context.Background(), fixture.canonical, GuardOptions{ProjectsRoot: fixture.projectsRoot}); err != nil || result.Kind != "canonical" {
 		t.Fatalf("clean main guard = %#v, %v", result, err)
 	}
 
 	gitTest(t, fixture.canonical, "switch", "-c", "feature")
-	if _, err := Guard(context.Background(), fixture.canonical, GuardOptions{ProjectsRoot: fixture.projectsRoot}); err == nil || !strings.Contains(err.Error(), "wb worktree create") {
-		t.Fatalf("feature guard error = %v", err)
+	if result, err := Guard(context.Background(), fixture.canonical, GuardOptions{ProjectsRoot: fixture.projectsRoot}); err != nil || result.Kind != "canonical" || result.Branch != "feature" {
+		t.Fatalf("clean feature-branch guard = %#v, %v", result, err)
+	}
+	if err := os.WriteFile(filepath.Join(fixture.canonical, "dirty-feature.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Guard(context.Background(), fixture.canonical, GuardOptions{ProjectsRoot: fixture.projectsRoot}); err == nil || !strings.Contains(err.Error(), "must remain clean") {
+		t.Fatalf("dirty feature-branch guard error = %v", err)
+	}
+	if err := os.Remove(filepath.Join(fixture.canonical, "dirty-feature.txt")); err != nil {
+		t.Fatal(err)
 	}
 	gitTest(t, fixture.canonical, "switch", "main")
 	if err := os.WriteFile(filepath.Join(fixture.canonical, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
@@ -1884,11 +1921,13 @@ func TestGuardCanonicalFreshnessReportsOfflineExplicitly(t *testing.T) {
 }
 
 func TestCanonicalFreshnessReportsFetchFailureAndTargetDrift(t *testing.T) {
+	t.Parallel()
 	const local = "1111111111111111111111111111111111111111"
 	const fetched = "2222222222222222222222222222222222222222"
 	const moved = "3333333333333333333333333333333333333333"
 
 	t.Run("fetch failure", func(t *testing.T) {
+		t.Parallel()
 		result := inspectCanonicalFreshnessWith(context.Background(), "/repo", "main", func(_ context.Context, _ string, args ...string) (string, error) {
 			if len(args) >= 2 && args[0] == "rev-parse" && args[1] == "HEAD" {
 				return local + "\n", nil
@@ -1908,6 +1947,7 @@ func TestCanonicalFreshnessReportsFetchFailureAndTargetDrift(t *testing.T) {
 	})
 
 	t.Run("target drift", func(t *testing.T) {
+		t.Parallel()
 		result := inspectCanonicalFreshnessWith(context.Background(), "/repo", "main", func(_ context.Context, _ string, args ...string) (string, error) {
 			switch args[0] {
 			case "rev-parse":
@@ -2233,7 +2273,7 @@ func TestGuardAllowsInteractiveRebaseAmend(t *testing.T) {
 	gitTest(t, worktree, "fetch", "origin", "main")
 	gitTest(t, worktree, "config", "rebase.abbreviateCommands", "true")
 	sequenceEditor := filepath.Join(t.TempDir(), "sequence-editor")
-	if err := os.WriteFile(sequenceEditor, []byte("#!/bin/sh\nsed 's/^p /e /' \"$1\" > \"$1.wb\" && mv \"$1.wb\" \"$1\"\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(sequenceEditor, []byte("#!/bin/sh\nsed 's/^p /e /' \"$1\" > \"$1.wb\" && mv \"$1.wb\" \"$1\"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if output, rebaseErr := gitTestRunEnv(worktree, []string{"GIT_SEQUENCE_EDITOR=" + sequenceEditor}, "rebase", "-i", "origin/main"); rebaseErr != nil {
@@ -2426,6 +2466,11 @@ func newGitFixtureAt(t *testing.T, root, home string) *gitFixture {
 
 func newGitFixtureAtRepository(t *testing.T, root, home, repository string) *gitFixture {
 	t.Helper()
+	return newGitFixtureAtRepositoryWithConfig(t, root, home, repository, seedFreshFixtureGitConfig)
+}
+
+func newGitFixtureAtRepositoryWithConfig(t *testing.T, root, home, repository string, configure func(*testing.T, string, bool)) *gitFixture {
+	t.Helper()
 	// The suite's fixtures were written against the repository-local layout.
 	// Selecting that machine-local store mode explicitly keeps each test
 	// exercising the layout it describes; the central default, its literal host
@@ -2437,19 +2482,58 @@ func newGitFixtureAtRepository(t *testing.T, root, home, repository string) *git
 	mustWriteBranchConfig(t, filepath.Join(configHome, "wb", "worktrees.yaml"), "version: 1\nworktrees:\n  store: repository-local\n")
 	remote := filepath.Join(root, "remote.git")
 	gitTest(t, root, "init", "--bare", "--initial-branch=main", remote)
+	// The bare remote is pushed to below: git strips GIT_CONFIG_* from the
+	// environment it hands its server-side receive-pack child, so the env
+	// vars gitTest sets never reach it -- the repository's own config must
+	// carry the disabled settings directly (testenv.ConfigureGitAutoMaintenanceOff).
+	configure(t, remote, true)
 	projectsRoot := filepath.Join(root, "projects")
 	canonical := filepath.Join(projectsRoot, "acme", repository)
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	gitTest(t, root, "clone", remote, canonical)
-	configureGitUser(t, canonical)
+	configure(t, canonical, false)
 	if err := os.WriteFile(filepath.Join(canonical, "README.md"), []byte("# app\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// The canonical checkout is where production worktree code (Create,
+	// Guard, and the rest) spawns its own git subprocesses directly -- those
+	// don't inherit gitTest's per-command env override -- so the disabled
+	// settings must live in the repository's own config, not only in the
+	// test process's environment.
 	gitTest(t, canonical, "add", "README.md")
 	gitTest(t, canonical, "commit", "-m", "initial")
 	gitTest(t, canonical, "push", "-u", "origin", "main")
+	return resolvedGitFixture(t, projectsRoot, canonical, remote, home)
+}
+
+// seedFreshFixtureGitConfig configures only repositories just created by the
+// fixture, before any other Git operation can use them. Existing repositories
+// continue to use ConfigureGitAutoMaintenanceOff's normal Git config path.
+func seedFreshFixtureGitConfig(t *testing.T, directory string, bare bool) {
+	t.Helper()
+	config := filepath.Join(directory, "config")
+	settings := "\n[gc]\n\tauto = 0\n[maintenance]\n\tauto = false\n[receive]\n\tautogc = false\n"
+	if !bare {
+		config = filepath.Join(directory, ".git", "config")
+		settings += "[user]\n\tname = WB Test\n\temail = wb@example.test\n"
+	}
+	file, err := os.OpenFile(config, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString(settings); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func resolvedGitFixture(t *testing.T, projectsRoot, canonical, remote, home string) *gitFixture {
+	t.Helper()
 	var err error
 	projectsRoot, err = filepath.EvalSymlinks(projectsRoot)
 	if err != nil {
@@ -2474,11 +2558,13 @@ func (fixture *gitFixture) pushRemoteCommit(t *testing.T, message string) {
 	t.Helper()
 	clone := filepath.Join(filepath.Dir(fixture.projectsRoot), "remote-writer")
 	command := exec.Command("git", "clone", fixture.remote, clone)
+	command.Env = testenv.GitAutoMaintenanceOffEnv(os.Environ())
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("clone remote writer: %v\n%s", err, output)
 	}
 	for _, pair := range [][2]string{{"user.name", "WB Test"}, {"user.email", "wb@example.test"}} {
 		command = exec.Command("git", "-C", clone, "config", pair[0], pair[1])
+		command.Env = testenv.GitAutoMaintenanceOffEnv(os.Environ())
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Fatalf("configure remote writer: %v\n%s", err, output)
 		}
@@ -2488,6 +2574,7 @@ func (fixture *gitFixture) pushRemoteCommit(t *testing.T, message string) {
 	}
 	for _, args := range [][]string{{"add", "remote.txt"}, {"commit", "-m", message}, {"push", "origin", "main"}} {
 		command = exec.Command("git", append([]string{"-C", clone}, args...)...)
+		command.Env = testenv.GitAutoMaintenanceOffEnv(os.Environ())
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
 		}
@@ -2532,6 +2619,7 @@ func TestCreateResumeRecoversTaskBoundLocalStage(t *testing.T) {
 func gitTest(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	command := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	command.Env = testenv.GitAutoMaintenanceOffEnv(os.Environ())
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
 	}
@@ -2539,13 +2627,14 @@ func gitTest(t *testing.T, dir string, args ...string) {
 
 func gitTestRun(dir string, args ...string) (string, error) {
 	command := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	command.Env = testenv.GitAutoMaintenanceOffEnv(os.Environ())
 	output, err := command.CombinedOutput()
 	return string(output), err
 }
 
 func gitTestRunEnv(dir string, environment []string, args ...string) (string, error) {
 	command := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	command.Env = append(os.Environ(), environment...)
+	command.Env = testenv.GitAutoMaintenanceOffEnv(append(os.Environ(), environment...))
 	output, err := command.CombinedOutput()
 	return string(output), err
 }
@@ -2553,6 +2642,7 @@ func gitTestRunEnv(dir string, environment []string, args ...string) (string, er
 func gitTestOutput(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	command := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	command.Env = testenv.GitAutoMaintenanceOffEnv(os.Environ())
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)

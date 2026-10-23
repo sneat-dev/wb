@@ -94,3 +94,54 @@ func TestCloneMoveRelocationLetsClaimResolveAfterMove(t *testing.T) {
 		t.Fatal("claim must not resolve at its now-nonexistent original path")
 	}
 }
+
+func TestReconcileClonePlacementRepairsManuallyMovedNestedWorktree(t *testing.T) {
+	t.Parallel()
+	projectsRoot := t.TempDir()
+	legacy := filepath.Join(projectsRoot, "acme", "app")
+	if err := os.MkdirAll(legacy, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, legacy, "init", "-b", "main")
+	gitTest(t, legacy, "config", "user.email", "wb@example.test")
+	gitTest(t, legacy, "config", "user.name", "WB Test")
+	if err := os.WriteFile(filepath.Join(legacy, "README.md"), []byte("nested checkout\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, legacy, "add", "README.md")
+	gitTest(t, legacy, "commit", "-m", "initial")
+	nested := filepath.Join(legacy, ".worktrees", "feature")
+	gitTest(t, legacy, "worktree", "add", "-b", "feature", nested)
+	destination := filepath.Join(projectsRoot, "github.com", "acme", "app")
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(legacy, destination); err != nil {
+		t.Fatal(err)
+	}
+	movedNested := filepath.Join(destination, ".worktrees", "feature")
+	beforePointer, err := readWorktreeCommonDir(movedNested)
+	if err != nil || filepath.Clean(beforePointer) == filepath.Join(destination, ".git") {
+		t.Fatalf("manual move unexpectedly repaired linked pointer: %q, %v", beforePointer, err)
+	}
+	ctx := context.Background()
+	status, _, err := ReconcileClonePlacement(ctx, destination, legacy, false)
+	if err != nil || status != "needs_repair" {
+		t.Fatalf("dry-run reconciliation = (%q, %v), want needs_repair", status, err)
+	}
+	stillStale, err := readWorktreeCommonDir(movedNested)
+	if err != nil || stillStale != beforePointer {
+		t.Fatalf("dry run changed linked pointer: before=%q after=%q err=%v", beforePointer, stillStale, err)
+	}
+	status, _, err = ReconcileClonePlacement(ctx, destination, legacy, true)
+	if err != nil || status != "repaired" {
+		t.Fatalf("applied reconciliation = (%q, %v), want repaired", status, err)
+	}
+	if err := VerifyClonePlacement(ctx, destination, []string{movedNested}); err != nil {
+		t.Fatalf("repaired checkout did not pass registration and Git status verification: %v", err)
+	}
+	status, _, err = ReconcileClonePlacement(ctx, destination, legacy, false)
+	if err != nil || status != "verified" {
+		t.Fatalf("recheck after repair = (%q, %v), want verified", status, err)
+	}
+}

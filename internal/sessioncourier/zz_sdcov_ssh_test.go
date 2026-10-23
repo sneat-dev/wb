@@ -13,6 +13,7 @@ import (
 )
 
 func TestSDCovNewSSHDelivererConstructorBranches(t *testing.T) {
+	t.Parallel()
 	executable := testExecutable(t)
 	missing := filepath.Join(t.TempDir(), "missing-ssh")
 	plain := filepath.Join(t.TempDir(), "plain-ssh")
@@ -74,6 +75,7 @@ func TestSDCovNewSSHDelivererConstructorBranches(t *testing.T) {
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			deliverer, err := newSSHDeliverer(test.config, test.lookPath, test.runner)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("newSSHDeliverer error = %v, want containing %q", err, test.want)
@@ -86,9 +88,11 @@ func TestSDCovNewSSHDelivererConstructorBranches(t *testing.T) {
 }
 
 func TestSDCovSSHDelivererFailureDiagnosticBranches(t *testing.T) {
+	t.Parallel()
 	_, raw := courierTestRequest(t)
 
 	t.Run("cancelled delivery context", func(t *testing.T) {
+		t.Parallel()
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		runner := &fakeCommandRunner{err: errors.New("signal: killed")}
@@ -102,6 +106,7 @@ func TestSDCovSSHDelivererFailureDiagnosticBranches(t *testing.T) {
 		}
 	})
 	t.Run("silent failure", func(t *testing.T) {
+		t.Parallel()
 		runner := &fakeCommandRunner{err: errors.New("exit status 255")}
 		deliverer := newTestSSHDeliverer(t, sessionmove.SSHConfig{Host: "target"}, runner)
 		_, err := deliverer.Deliver(context.Background(), raw)
@@ -110,6 +115,7 @@ func TestSDCovSSHDelivererFailureDiagnosticBranches(t *testing.T) {
 		}
 	})
 	t.Run("stderr failure", func(t *testing.T) {
+		t.Parallel()
 		runner := &fakeCommandRunner{err: errors.New("exit status 255"), stderr: []byte("Host key verification failed.\n")}
 		deliverer := newTestSSHDeliverer(t, sessionmove.SSHConfig{Host: "target"}, runner)
 		_, err := deliverer.Deliver(context.Background(), raw)
@@ -120,6 +126,7 @@ func TestSDCovSSHDelivererFailureDiagnosticBranches(t *testing.T) {
 }
 
 func TestSDCovBoundedBufferHonoursLimit(t *testing.T) {
+	t.Parallel()
 	var buffer boundedBuffer
 	buffer.limit = 4
 
@@ -144,6 +151,7 @@ func TestSDCovBoundedBufferHonoursLimit(t *testing.T) {
 }
 
 func TestSDCovTruncateUTF8DropsPartialRune(t *testing.T) {
+	t.Parallel()
 	value := "aaa\u00e9" // five bytes: 61 61 61 c3 a9
 	if got := truncateUTF8(value, 100); got != value {
 		t.Fatalf("truncateUTF8 short value = %q, want %q", got, value)
@@ -159,6 +167,7 @@ func TestSDCovTruncateUTF8DropsPartialRune(t *testing.T) {
 // TestSDCovSanitizeDiagnosticBoundsMultibyteTail proves the truncation path
 // keeps UTF-8 validity when a multi-byte rune straddles the byte cap.
 func TestSDCovSanitizeDiagnosticBoundsMultibyteTail(t *testing.T) {
+	t.Parallel()
 	raw := []byte(strings.Repeat("\u00e9", maxSSHDiagnosticBytes))
 	diagnostic := sanitizeDiagnostic(raw, false)
 	if len(diagnostic) > maxSSHDiagnosticBytes {
@@ -175,6 +184,7 @@ func TestSDCovSanitizeDiagnosticBoundsMultibyteTail(t *testing.T) {
 }
 
 func TestSDCovTruncatedBoundedBufferReportsExceededDiagnostic(t *testing.T) {
+	t.Parallel()
 	_, raw := courierTestRequest(t)
 	stderr := bytes.Repeat([]byte("y"), maxSSHStderrBytes+1)
 	runner := &fakeCommandRunner{stderr: stderr, err: errors.New("exit status 255")}

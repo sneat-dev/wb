@@ -12,6 +12,7 @@ import (
 // whether to run a language toolchain must not have the whole check fail
 // because one directory lacked permission.
 func TestTailCovHasExtTreatsWalkErrorsAsNoMatch(t *testing.T) {
+	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
 	found, err := HasExt(missing, ".go")
 	if err != nil {
@@ -26,6 +27,7 @@ func TestTailCovHasExtTreatsWalkErrorsAsNoMatch(t *testing.T) {
 // of the same contract: a directory the process cannot list is skipped, and a
 // readable match elsewhere in the tree is still found.
 func TestTailCovHasExtKeepsWalkingPastAnUnreadableDirectory(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	blocked := filepath.Join(root, "a-blocked")
 	if err := os.Mkdir(blocked, 0o700); err != nil {

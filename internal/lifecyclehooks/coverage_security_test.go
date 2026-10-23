@@ -10,6 +10,7 @@ import (
 )
 
 func TestHkCovValidateTrustedConfigRejectsNonRegularFiles(t *testing.T) {
+	t.Parallel()
 	if _, err := validateTrustedConfig(filepath.Join(t.TempDir(), "absent.yaml")); err == nil {
 		t.Fatal("expected missing config to fail")
 	}
@@ -30,6 +31,7 @@ func TestHkCovValidateTrustedConfigRejectsNonRegularFiles(t *testing.T) {
 }
 
 func TestHkCovValidateControlPathsResolveFailures(t *testing.T) {
+	t.Parallel()
 	checkout := t.TempDir()
 
 	resolveCheckout := Dispatcher{ConfigPath: "/tmp/wb.yaml", StateDir: "/tmp/state", ReceiptPath: "/tmp/receipts.jsonl"}
@@ -51,6 +53,7 @@ func TestHkCovValidateControlPathsResolveFailures(t *testing.T) {
 }
 
 func TestHkCovResolveWithMissingTailStopsAtFilesystemRoot(t *testing.T) {
+	t.Parallel()
 	missing := func(string) (string, error) { return "", fs.ErrNotExist }
 	resolved, err := resolveWithMissingTail("/a/b/c", missing)
 	if err != nil || resolved != filepath.Clean("/a/b/c") {
@@ -59,6 +62,7 @@ func TestHkCovResolveWithMissingTailStopsAtFilesystemRoot(t *testing.T) {
 }
 
 func TestHkCovVerifyCheckoutFailures(t *testing.T) {
+	t.Parallel()
 	if _, _, err := verifyCheckout(Event{Checkout: filepath.Join(t.TempDir(), "absent")}); err == nil || !strings.Contains(err.Error(), "resolve checkout") {
 		t.Fatalf("missing checkout error=%v", err)
 	}
@@ -80,6 +84,7 @@ func TestHkCovVerifyCheckoutFailures(t *testing.T) {
 }
 
 func TestHkCovValidatePrivateDirectoryRejectsUnusablePaths(t *testing.T) {
+	t.Parallel()
 	if err := validatePrivateDirectory(filepath.Join(t.TempDir(), "absent"), "purpose"); err == nil {
 		t.Fatal("expected missing directory to fail")
 	}
@@ -99,6 +104,7 @@ func TestHkCovValidatePrivateDirectoryRejectsUnusablePaths(t *testing.T) {
 }
 
 func TestHkCovEnsureTrustedParentRejectsFileParent(t *testing.T) {
+	t.Parallel()
 	blocker := hkCovWriteFile(t, filepath.Join(t.TempDir(), "blocker"), "x", 0o600)
 	if err := ensureTrustedParent(filepath.Join(blocker, "child", "file.json"), "purpose"); err == nil {
 		t.Fatal("expected parent creation failure")
@@ -106,6 +112,7 @@ func TestHkCovEnsureTrustedParentRejectsFileParent(t *testing.T) {
 }
 
 func TestHkCovValidateTrustedDataFileRejectsUntrustedPaths(t *testing.T) {
+	t.Parallel()
 	blocker := hkCovWriteFile(t, filepath.Join(t.TempDir(), "blocker"), "x", 0o600)
 	if _, _, err := validateTrustedDataFile(filepath.Join(blocker, "child"), "purpose"); err == nil {
 		t.Fatal("expected non-directory Lstat failure")
@@ -138,6 +145,7 @@ func TestHkCovValidateTrustedDataFileRejectsUntrustedPaths(t *testing.T) {
 }
 
 func TestHkCovValidateControlPathsAcceptsOutsideCheckout(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	checkout := hkCovCheckout(t, root)
 	dispatcher := Dispatcher{

@@ -1,0 +1,96 @@
+// This is a standalone research script kept as reference text (renamed
+// main.go.txt so it is not picked up as Go source by this module's build,
+// vet or coverage tooling). Rename it back to main.go to run it; see
+// ../README.md.
+package main
+
+import (
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+)
+
+type st struct{ varSeams, funcFields, ifaces, funcs, bigFuncs int }
+
+func main() {
+	root := os.Args[1]
+	res := map[string]*st{}
+	filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") || strings.Contains(p, "/gen/") {
+			return nil
+		}
+		rel, _ := filepath.Rel(root, filepath.Dir(p))
+		s := res[rel]
+		if s == nil {
+			s = &st{}
+			res[rel] = s
+		}
+		fs := token.NewFileSet()
+		f, err := parser.ParseFile(fs, p, nil, 0)
+		if err != nil {
+			return nil
+		}
+		for _, d := range f.Decls {
+			switch d := d.(type) {
+			case *ast.GenDecl:
+				for _, sp := range d.Specs {
+					switch sp := sp.(type) {
+					case *ast.ValueSpec:
+						if d.Tok != token.VAR {
+							continue
+						}
+						for _, v := range sp.Values {
+							switch v := v.(type) {
+							case *ast.FuncLit:
+								s.varSeams++
+							case *ast.SelectorExpr:
+								if x, ok := v.X.(*ast.Ident); ok && x.Name != "" && v.Sel.IsExported() {
+									s.varSeams++
+								}
+							case *ast.Ident:
+								if len(v.Name) > 0 && v.Name[0] >= 'a' && v.Name[0] <= 'z' && v.Name != "nil" && v.Name != "true" && v.Name != "false" {
+									s.varSeams++
+								}
+							}
+						}
+						if ft, ok := sp.Type.(*ast.FuncType); ok && ft != nil {
+							s.varSeams++
+						}
+					case *ast.TypeSpec:
+						if stt, ok := sp.Type.(*ast.StructType); ok {
+							for _, fl := range stt.Fields.List {
+								if _, ok := fl.Type.(*ast.FuncType); ok {
+									s.funcFields += max(1, len(fl.Names))
+								}
+							}
+						}
+						if _, ok := sp.Type.(*ast.InterfaceType); ok {
+							s.ifaces++
+						}
+					}
+				}
+			case *ast.FuncDecl:
+				s.funcs++
+				if d.Body != nil && fs.Position(d.Body.End()).Line-fs.Position(d.Body.Pos()).Line > 150 {
+					s.bigFuncs++
+				}
+			}
+		}
+		return nil
+	})
+	keys := make([]string, 0, len(res))
+	for k := range res {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool { return res[keys[i]].funcs > res[keys[j]].funcs })
+	fmt.Println("pkg funcs varSeams funcFields interfaces funcs>150lines")
+	for _, k := range keys[:12] {
+		s := res[k]
+		fmt.Println(k, s.funcs, s.varSeams, s.funcFields, s.ifaces, s.bigFuncs)
+	}
+}

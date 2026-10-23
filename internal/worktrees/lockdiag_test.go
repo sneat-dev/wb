@@ -18,6 +18,7 @@ func writeLock(t *testing.T, taskRoot, contents string) {
 }
 
 func TestDiagnoseTaskLockClassifiesOwner(t *testing.T) {
+	t.Parallel()
 	// A PID that cannot be running: allocate one, reap it, and confirm.
 	dead := deadPID(t)
 
@@ -37,6 +38,7 @@ func TestDiagnoseTaskLockClassifiesOwner(t *testing.T) {
 		{"padded pid rejected", "operation=task\npid=007\n", LockOwnerUnreadable, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			root := filepath.Join(t.TempDir(), "task")
 			writeLock(t, root, tc.contents)
 			state, pid := diagnoseTaskLock(root, "task")
@@ -48,6 +50,7 @@ func TestDiagnoseTaskLockClassifiesOwner(t *testing.T) {
 }
 
 func TestDiagnoseTaskLockAbsentLock(t *testing.T) {
+	t.Parallel()
 	root := filepath.Join(t.TempDir(), "task")
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatal(err)
@@ -61,6 +64,7 @@ func TestDiagnoseTaskLockAbsentLock(t *testing.T) {
 // is what sent an operator to `rm -f` on WB-internal state when an audited
 // `--resume-interrupted` recovery existed the whole time.
 func TestLockedReasonNamesTheRemedyOnlyWhenRecoverable(t *testing.T) {
+	t.Parallel()
 	cmd := resumeInterruptedCommand("my-task")
 	if cmd != "wb worktree cleanup my-task --resume-interrupted" {
 		t.Fatalf("resumeInterruptedCommand = %q", cmd)

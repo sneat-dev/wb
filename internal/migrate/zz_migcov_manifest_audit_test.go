@@ -6,12 +6,14 @@ import (
 )
 
 func TestMigCovGoManifestDependenciesRejectsBrokenManifest(t *testing.T) {
+	t.Parallel()
 	if _, err := goManifestDependencies("go.mod", []byte("this is not a go.mod\n")); err == nil {
 		t.Fatal("goManifestDependencies() accepted an unparseable manifest")
 	}
 }
 
 func TestMigCovGoManifestDependenciesRecordsVersionsAndReplacements(t *testing.T) {
+	t.Parallel()
 	contents := []byte(`module example.com/app
 
 go 1.24
@@ -43,6 +45,7 @@ replace example.com/unrequired => ../unrequired
 }
 
 func TestMigCovDependencyVersionActionCoversEveryTransition(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name                        string
 		before, after               bool
@@ -57,6 +60,7 @@ func TestMigCovDependencyVersionActionCoversEveryTransition(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			if got := dependencyVersionAction(test.before, test.after, test.versionBefore, test.versionAfter); got != test.want {
 				t.Fatalf("dependencyVersionAction() = %q, want %q", got, test.want)
 			}
@@ -65,6 +69,7 @@ func TestMigCovDependencyVersionActionCoversEveryTransition(t *testing.T) {
 }
 
 func TestMigCovDependencyDecisionReasonExplainsEveryOutcome(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		decision   GoDependencyDecision
@@ -180,6 +185,7 @@ func TestMigCovDependencyDecisionReasonExplainsEveryOutcome(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			got := dependencyDecisionReason(test.decision, test.campaign)
 			if test.wantReason == "" {
 				if got != "" {
@@ -198,6 +204,7 @@ func TestMigCovDependencyDecisionReasonExplainsEveryOutcome(t *testing.T) {
 }
 
 func TestMigCovAuditGoDependencyDecisionsRejectsBrokenBeforeAndAfter(t *testing.T) {
+	t.Parallel()
 	valid := []byte("module example.com/app\n\ngo 1.24\n\nrequire example.com/dep v1.0.0\n")
 	if _, err := auditGoDependencyDecisions(t.TempDir(), "local_verification", []byte("nonsense\n"), valid, nil, nil, true); err == nil {
 		t.Fatal("auditGoDependencyDecisions() accepted an unparseable before manifest")
@@ -208,6 +215,7 @@ func TestMigCovAuditGoDependencyDecisionsRejectsBrokenBeforeAndAfter(t *testing.
 }
 
 func TestMigCovAuditGoDependencyDecisionsCoversEveryCandidateSource(t *testing.T) {
+	t.Parallel()
 	before := []byte("module example.com/app\n\ngo 1.24\n\nrequire example.com/kept v1.0.0\n")
 	after := []byte("module example.com/app\n\ngo 1.24\n\nrequire example.com/kept v1.0.0\n\nrequire example.com/new v0.1.0\n\nreplace example.com/kept => ../kept\n")
 	decisions, err := auditGoDependencyDecisions(

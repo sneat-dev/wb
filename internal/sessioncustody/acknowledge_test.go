@@ -15,9 +15,11 @@ import (
 )
 
 func TestAcknowledgeRepairsEveryReceiptGatedCrashBoundary(t *testing.T) {
+	t.Parallel()
 	crash := errors.New("simulated crash")
 	for _, stage := range []string{"receipt", "address", "seal", "completed"} {
 		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
 			fixture := newCustodyFixture(t)
 			ensureCalls := 0
 			sealCalls := 0
@@ -123,6 +125,7 @@ func TestAcknowledgeRepairsEveryReceiptGatedCrashBoundary(t *testing.T) {
 }
 
 func TestAcknowledgeRequiresPreAdmittedExactSourceAggregate(t *testing.T) {
+	t.Parallel()
 	fixture := newCustodyFixture(t)
 	emptyStore := sessionmove.NewStore(filepath.Join(t.TempDir(), sessionmove.DirName))
 	options := fixture.options
@@ -137,12 +140,14 @@ func TestAcknowledgeRequiresPreAdmittedExactSourceAggregate(t *testing.T) {
 }
 
 func TestAcknowledgeRefusesPostLockPathSwapWithoutMutatingDecoy(t *testing.T) {
+	t.Parallel()
 	for _, swapRoot := range []bool{false, true} {
 		name := "handoff"
 		if swapRoot {
 			name = "root"
 		}
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			fixture := newCustodyFixture(t)
 			retained := ""
 			options := fixture.options
@@ -194,6 +199,7 @@ func TestAcknowledgeRefusesPostLockPathSwapWithoutMutatingDecoy(t *testing.T) {
 }
 
 func TestAcknowledgeRepairsSourceOfferBeforeReceiptProcessing(t *testing.T) {
+	t.Parallel()
 	fixture := newCustodyFixture(t)
 	ensureCalls := 0
 	options := fixture.options
@@ -222,6 +228,7 @@ func TestAcknowledgeRepairsSourceOfferBeforeReceiptProcessing(t *testing.T) {
 }
 
 func TestAcknowledgeRefusesReceiptWhenSourceOfferRepairFails(t *testing.T) {
+	t.Parallel()
 	fixture := newCustodyFixture(t)
 	blocked := errors.New("source offer repair blocked")
 	options := fixture.options
@@ -245,6 +252,7 @@ func TestAcknowledgeRefusesReceiptWhenSourceOfferRepairFails(t *testing.T) {
 }
 
 func TestAcknowledgeRefusesReceiptConflictBeforeSourceSeal(t *testing.T) {
+	t.Parallel()
 	fixture := newCustodyFixture(t)
 	firstOptions := fixture.options
 	firstOptions.SealWorkLog = successfulSeal(fixture)

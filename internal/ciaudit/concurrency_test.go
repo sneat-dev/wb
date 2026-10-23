@@ -18,6 +18,7 @@ func writeWorkflow(t *testing.T, root, name, contents string) {
 }
 
 func TestStreamConcurrencyRecognizesACancellingRefKeyedGroup(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	writeWorkflow(t, root, "ci.yml", `name: CI
 on:
@@ -53,6 +54,7 @@ jobs:
 // queues an unrelated branch behind the stream instead of cancelling the
 // stream's own superseded run, so it must not count as cancellation.
 func TestStreamConcurrencyRejectsAGroupThatIsNotRefKeyed(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	writeWorkflow(t, root, "ci.yml", `name: CI
 on: [pull_request]
@@ -78,6 +80,7 @@ jobs:
 }
 
 func TestStreamConcurrencyRejectsAGroupWithoutCancelInProgress(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	writeWorkflow(t, root, "ci.yml", `name: CI
 on: [pull_request]
@@ -102,6 +105,7 @@ jobs:
 // level, must not read as repository-wide cancellation. A text match would
 // report the nested value as present.
 func TestStreamConcurrencyIgnoresAJobLevelDeclarationAtTheTopLevel(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	writeWorkflow(t, root, "ci.yml", `name: CI
 on: [pull_request]
@@ -126,6 +130,7 @@ jobs:
 // YAML 1.1 folds a bare `on:` key to the boolean true; the trigger read must
 // survive that rather than silently reporting no triggers.
 func TestStreamConcurrencyReadsTriggersDespiteTheYAMLOnKeyFolding(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	writeWorkflow(t, root, "ci.yaml", "name: CI\non:\n  pull_request:\n    branches: [main]\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo\n")
 	reports, err := StreamConcurrency(root)
@@ -138,6 +143,7 @@ func TestStreamConcurrencyReadsTriggersDespiteTheYAMLOnKeyFolding(t *testing.T) 
 }
 
 func TestStreamConcurrencyOnARepositoryWithNoWorkflowsIsEmpty(t *testing.T) {
+	t.Parallel()
 	reports, err := StreamConcurrency(t.TempDir())
 	if err != nil || len(reports) != 0 {
 		t.Fatalf("reports = %#v, err = %v; want an empty result", reports, err)
@@ -145,6 +151,7 @@ func TestStreamConcurrencyOnARepositoryWithNoWorkflowsIsEmpty(t *testing.T) {
 }
 
 func TestStreamConcurrencyAcceptsAScalarConcurrencyDeclaration(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	writeWorkflow(t, root, "ci.yml", "name: CI\non: [pull_request]\nconcurrency: ci-${{ github.ref }}\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo\n")
 	reports, err := StreamConcurrency(root)
@@ -159,6 +166,7 @@ func TestStreamConcurrencyAcceptsAScalarConcurrencyDeclaration(t *testing.T) {
 // The evidence behind "CI owns it" must be the invocation, not the word: a
 // mechanism named in a comment or a job name is not proof that it runs.
 func TestWorkflowMechanismsMatchInvocationsNotMentions(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	writeWorkflow(t, root, "ci.yml", `name: CI
 on: [pull_request]
@@ -202,6 +210,7 @@ jobs:
 }
 
 func TestWorkflowMechanismsOnAMissingWorkflowIsEmpty(t *testing.T) {
+	t.Parallel()
 	mechanisms, err := WorkflowMechanisms(t.TempDir(), ".github/workflows/absent.yml")
 	if err != nil || len(mechanisms) != 0 {
 		t.Fatalf("mechanisms = %#v, err = %v", mechanisms, err)

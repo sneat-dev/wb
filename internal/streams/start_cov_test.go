@@ -10,6 +10,7 @@ import (
 )
 
 func TestRefusalErrorAndTheRefusedHelper(t *testing.T) {
+	t.Parallel()
 	if got := (&Refusal{Message: "plain refusal"}).Error(); got != "plain refusal" {
 		t.Fatalf("refusal without sanctions = %q", got)
 	}
@@ -28,6 +29,7 @@ func TestRefusalErrorAndTheRefusedHelper(t *testing.T) {
 }
 
 func TestStartRefusesUsageErrors(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _ := newTestEngine(t)
 	ctx := context.Background()
 
@@ -46,6 +48,7 @@ func TestStartRefusesUsageErrors(t *testing.T) {
 }
 
 func TestStartReportsAnUnreadableExistingRecord(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _ := newTestEngine(t)
 	if err := os.MkdirAll(engine.Store.Dir("broken"), 0o700); err != nil {
 		t.Fatal(err)
@@ -63,6 +66,7 @@ func TestStartReportsAnUnreadableExistingRecord(t *testing.T) {
 }
 
 func TestStartReportsAnUnresolvableDefaultBranch(t *testing.T) {
+	t.Parallel()
 	engine, git, _, _ := newTestEngine(t)
 	engine.Git = stCovGitDefaultBranchErr{fakeGit: git, err: errors.New("no origin")}
 	_, err := engine.Start(context.Background(), StartOptions{Name: "no-base", Repositories: []string{"acme/app"}}, nil)
@@ -72,6 +76,7 @@ func TestStartReportsAnUnresolvableDefaultBranch(t *testing.T) {
 }
 
 func TestStartReportsAWorktreeCreationFailure(t *testing.T) {
+	t.Parallel()
 	engine, _, _, worktrees := newTestEngine(t)
 	worktrees.createErr = errors.New("worktree creation refused")
 
@@ -85,6 +90,7 @@ func TestStartReportsAWorktreeCreationFailure(t *testing.T) {
 }
 
 func TestStartReportsACheckoutRecordFailure(t *testing.T) {
+	t.Parallel()
 	engine, _, _, worktrees := newTestEngine(t)
 	engine.Worktrees = &stCovLockingWorktrees{
 		fakeWorktrees: worktrees,
@@ -101,9 +107,11 @@ func TestStartReportsACheckoutRecordFailure(t *testing.T) {
 // one. These subtests drive that window from the hooks checker, which runs
 // between the two.
 func TestStartReDecidesUnderTheStoreLock(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("name claimed during preflight", func(t *testing.T) {
+		t.Parallel()
 		engine, _, _, _ := newTestEngine(t)
 		engine.HooksCheck = func(string) ([]string, error) {
 			_, err := engine.Store.Create(Stream{Name: "race", Phase: PhaseOpen})
@@ -117,6 +125,7 @@ func TestStartReDecidesUnderTheStoreLock(t *testing.T) {
 	})
 
 	t.Run("record became unreadable", func(t *testing.T) {
+		t.Parallel()
 		engine, _, _, _ := newTestEngine(t)
 		engine.HooksCheck = func(string) ([]string, error) {
 			if err := os.MkdirAll(engine.Store.Dir("race-unreadable"), 0o700); err != nil {
@@ -134,6 +143,7 @@ func TestStartReDecidesUnderTheStoreLock(t *testing.T) {
 	})
 
 	t.Run("repository claimed during preflight", func(t *testing.T) {
+		t.Parallel()
 		engine, _, _, _ := newTestEngine(t)
 		engine.HooksCheck = func(string) ([]string, error) {
 			_, err := engine.Store.Create(Stream{
@@ -153,6 +163,7 @@ func TestStartReDecidesUnderTheStoreLock(t *testing.T) {
 	})
 
 	t.Run("reservation cannot be written", func(t *testing.T) {
+		t.Parallel()
 		engine, _, _, _ := newTestEngine(t)
 		engine.HooksCheck = func(string) ([]string, error) {
 			if err := os.MkdirAll(engine.Store.Root, 0o700); err != nil {
@@ -168,6 +179,7 @@ func TestStartReDecidesUnderTheStoreLock(t *testing.T) {
 }
 
 func TestMemberBasePrefersExplicitThenInputs(t *testing.T) {
+	t.Parallel()
 	if got := memberBase("release", nil, "acme/app"); got != "release" {
 		t.Fatalf("memberBase with an explicit base = %q", got)
 	}
@@ -181,6 +193,7 @@ func TestMemberBasePrefersExplicitThenInputs(t *testing.T) {
 }
 
 func TestRecordCheckoutFillsInThePublishedCoordinates(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _ := newTestEngine(t)
 	if _, err := engine.Store.Create(Stream{
 		Name: "fill", Phase: PhaseOpen,
@@ -203,6 +216,7 @@ func TestRecordCheckoutFillsInThePublishedCoordinates(t *testing.T) {
 }
 
 func TestJoinRefusesUsageAndMissingStreams(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _ := newTestEngine(t)
 	ctx := context.Background()
 
@@ -218,6 +232,7 @@ func TestJoinRefusesUsageAndMissingStreams(t *testing.T) {
 }
 
 func TestJoinRefusesAnEndedStream(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _ := newTestEngine(t)
 	ended := engine.Store.Now()
 	if _, err := engine.Store.Create(Stream{Name: "over", Phase: PhaseEnded, EndedAt: &ended}); err != nil {
@@ -234,6 +249,7 @@ func TestJoinRefusesAnEndedStream(t *testing.T) {
 }
 
 func TestJoinReturnsEarlyForAReservedMember(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _ := newTestEngine(t)
 	if _, err := engine.Store.Create(Stream{
 		Name: "reserved-join", Phase: PhaseOpen,
@@ -258,6 +274,7 @@ func stCovJoinStream(t *testing.T, engine *Engine, name string, member Member) {
 }
 
 func TestJoinReportsAPublishFailureForAnExistingMember(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _ := newTestEngine(t)
 	worktree := t.TempDir()
 	stCovJoinStream(t, engine, "join-publish", Member{
@@ -273,6 +290,7 @@ func TestJoinReportsAPublishFailureForAnExistingMember(t *testing.T) {
 }
 
 func TestJoinReportsARecordedPullRequestTitleFailure(t *testing.T) {
+	t.Parallel()
 	engine, _, hub, _ := newTestEngine(t)
 	worktree := t.TempDir()
 	stCovJoinStream(t, engine, "join-title", Member{
@@ -291,6 +309,7 @@ func TestJoinReportsARecordedPullRequestTitleFailure(t *testing.T) {
 }
 
 func TestJoinReportsAnUnresolvableDefaultBranch(t *testing.T) {
+	t.Parallel()
 	engine, git, _, _ := newTestEngine(t)
 	engine.Git = stCovGitDefaultBranchErr{fakeGit: git, err: errors.New("no origin")}
 	stCovJoinStream(t, engine, "join-base", Member{Repository: "acme/library", Role: RoleLibrary, Worktree: t.TempDir()})
@@ -302,6 +321,7 @@ func TestJoinReportsAnUnresolvableDefaultBranch(t *testing.T) {
 }
 
 func TestJoinRefusesWhenTheJoiningRepositoryIsNotReady(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _ := newTestEngine(t)
 	stCovJoinStream(t, engine, "join-preflight", Member{Repository: "acme/library", Role: RoleLibrary, Worktree: t.TempDir()})
 	engine.HooksCheck = func(string) ([]string, error) { return []string{"hook missing"}, nil }
@@ -314,6 +334,7 @@ func TestJoinRefusesWhenTheJoiningRepositoryIsNotReady(t *testing.T) {
 }
 
 func TestJoinRefusesARepositoryClaimedByAnotherStream(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _ := newTestEngine(t)
 	stCovJoinStream(t, engine, "join-claim", Member{Repository: "acme/library", Role: RoleLibrary, Worktree: t.TempDir()})
 	if _, err := engine.Store.Create(Stream{
@@ -334,9 +355,11 @@ func TestJoinRefusesARepositoryClaimedByAnotherStream(t *testing.T) {
 }
 
 func TestJoinReportsAPlanOrCreationFailure(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("plan", func(t *testing.T) {
+		t.Parallel()
 		engine, _, _, worktrees := newTestEngine(t)
 		stCovJoinStream(t, engine, "join-plan", Member{Repository: "acme/library", Role: RoleLibrary, Worktree: t.TempDir()})
 		worktrees.planErr = errors.New("cannot plan")
@@ -347,6 +370,7 @@ func TestJoinReportsAPlanOrCreationFailure(t *testing.T) {
 	})
 
 	t.Run("create", func(t *testing.T) {
+		t.Parallel()
 		engine, _, _, worktrees := newTestEngine(t)
 		stCovJoinStream(t, engine, "join-create", Member{Repository: "acme/library", Role: RoleLibrary, Worktree: t.TempDir()})
 		worktrees.createErr = errors.New("cannot create")
@@ -357,6 +381,7 @@ func TestJoinReportsAPlanOrCreationFailure(t *testing.T) {
 	})
 
 	t.Run("checkout record", func(t *testing.T) {
+		t.Parallel()
 		engine, _, _, worktrees := newTestEngine(t)
 		stCovJoinStream(t, engine, "join-record", Member{Repository: "acme/library", Role: RoleLibrary, Worktree: t.TempDir()})
 		engine.Worktrees = &stCovLockingWorktrees{
@@ -373,6 +398,7 @@ func TestJoinReportsAPlanOrCreationFailure(t *testing.T) {
 // A member that a concurrent join added during preflight is not duplicated:
 // the locked update sees it and leaves it alone.
 func TestJoinDoesNotDuplicateAMemberAddedDuringPreflight(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _ := newTestEngine(t)
 	if _, err := engine.Store.Create(Stream{Name: "join-race", Phase: PhaseOpen}); err != nil {
 		t.Fatal(err)
@@ -402,6 +428,7 @@ func TestJoinDoesNotDuplicateAMemberAddedDuringPreflight(t *testing.T) {
 }
 
 func TestPublishMemberReportsABaseMismatch(t *testing.T) {
+	t.Parallel()
 	engine, _, hub, _ := newTestEngine(t)
 	worktree := t.TempDir()
 	stCovJoinStream(t, engine, "publish-base", Member{
@@ -426,6 +453,7 @@ func TestPublishMemberReportsABaseMismatch(t *testing.T) {
 }
 
 func TestPublishMemberReportsALegacyTitleRepairFailure(t *testing.T) {
+	t.Parallel()
 	engine, _, hub, _ := newTestEngine(t)
 	worktree := t.TempDir()
 	const name = "publish-title"
@@ -449,6 +477,7 @@ func TestPublishMemberReportsALegacyTitleRepairFailure(t *testing.T) {
 }
 
 func TestRefuseSecondStreamReportsAnUnreadableStore(t *testing.T) {
+	t.Parallel()
 	blocked := OpenAt(filepath.Join(t.TempDir(), "store-file"))
 	if _, err := os.Create(blocked.Root); err != nil {
 		t.Fatal(err)
@@ -460,6 +489,7 @@ func TestRefuseSecondStreamReportsAnUnreadableStore(t *testing.T) {
 }
 
 func TestJoinReportsAFailedTitleReconciliation(t *testing.T) {
+	t.Parallel()
 	engine, _, hub, _ := newTestEngine(t)
 	worktree := t.TempDir()
 	stCovJoinStream(t, engine, "join-reconcile", Member{
@@ -475,6 +505,7 @@ func TestJoinReportsAFailedTitleReconciliation(t *testing.T) {
 }
 
 func TestJoinReportsAFailedReceiptWriteForADiscoveredPullRequest(t *testing.T) {
+	t.Parallel()
 	engine, _, hub, _ := newTestEngine(t)
 	worktree := t.TempDir()
 	stCovJoinStream(t, engine, "join-receipt", Member{
@@ -497,6 +528,7 @@ func TestJoinReportsAFailedReceiptWriteForADiscoveredPullRequest(t *testing.T) {
 // A push that lands but whose result cannot be recorded leaves the member
 // unpublished, and start reports the failure rather than claiming success.
 func TestStartReportsAPublishFailure(t *testing.T) {
+	t.Parallel()
 	engine, _, hub, _ := newTestEngine(t)
 	engine.GitHub = &stCovLockingCreateHub{
 		fakeHub: hub,
@@ -509,6 +541,7 @@ func TestStartReportsAPublishFailure(t *testing.T) {
 }
 
 func TestJoinReportsAPublishFailureForANewMember(t *testing.T) {
+	t.Parallel()
 	engine, _, hub, _ := newTestEngine(t)
 	stCovJoinStream(t, engine, "join-publish-fail", Member{Repository: "acme/library", Role: RoleLibrary, Worktree: t.TempDir()})
 	engine.GitHub = &stCovLockingCreateHub{

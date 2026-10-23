@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/api/githubapp/repositoryevent"
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/runqueue"
 )
 
@@ -478,6 +479,15 @@ func (queue *Queue) heartbeat(ctx context.Context, id string, done <-chan struct
 }
 
 func (queue *Queue) persist(item *job) error {
+	return queue.persistInjected(item, nil)
+}
+
+// persistInjected is persist's test seam (task-9 PR-8): every production
+// call site reaches it only through persist, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged. A test passes
+// its own Injector to reach the create/chmod/write/sync/close/rename/
+// dir-sync failure branches deterministically.
+func (queue *Queue) persistInjected(item *job, inj *filewrite.Injector) error {
 	if queue.beforePersist != nil {
 		if err := queue.beforePersist(item); err != nil {
 			return err
@@ -489,31 +499,31 @@ func (queue *Queue) persist(item *job) error {
 	}
 	name := eventFileName(item.Event.ID)
 	path := filepath.Join(queue.directory, name+".json")
-	temporary, err := os.CreateTemp(queue.directory, ".job-*")
+	temporary, err := filewrite.CreateTemp(queue.directory, ".job-*", inj)
 	if err != nil {
 		return err
 	}
 	tempName := temporary.Name()
 	defer func() { _ = os.Remove(tempName) }()
-	if err := temporary.Chmod(0o600); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.ChmodFile(temporary, 0o600, tempName, inj); err != nil {
+		_ = filewrite.Close(temporary, tempName, inj)
 		return err
 	}
-	if _, err := temporary.Write(append(raw, '\n')); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.Write(temporary, append(raw, '\n'), tempName, inj); err != nil {
+		_ = filewrite.Close(temporary, tempName, inj)
 		return err
 	}
-	if err := temporary.Sync(); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.Sync(temporary, tempName, inj); err != nil {
+		_ = filewrite.Close(temporary, tempName, inj)
 		return err
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, tempName, inj); err != nil {
 		return err
 	}
-	if err := os.Rename(tempName, path); err != nil {
+	if err := filewrite.Rename(tempName, path, inj); err != nil {
 		return err
 	}
-	return syncDirectory(queue.directory)
+	return syncDirectoryInjected(queue.directory, inj)
 }
 
 func (queue *Queue) notifyLocked() {

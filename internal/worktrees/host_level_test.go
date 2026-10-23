@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -30,42 +31,6 @@ func TestClonePathInvertsToRemoteURL(t *testing.T) {
 	origin := gitTestOutput(t, canonical, "remote", "get-url", "origin")
 	if strings.Contains(origin, "github.com") {
 		t.Fatalf("fixture origin unexpectedly names the forge, so the test would prove nothing: %q", origin)
-	}
-}
-
-// TestExpectedRemoteURLInvertsTheFleetSlugs proves the inverse holds for
-// multi-segment hosted paths and for the owner/repository pairs actually
-// present in this fleet, including an explicit-port forge.
-func TestExpectedRemoteURLInvertsTheFleetSlugs(t *testing.T) {
-	root := t.TempDir()
-	for _, slug := range []string{
-		"github.com/dal-go/dalgo",
-		"github.com/sneat-dev/wb",
-		"github.com/sneat-co/backstage",
-		"gitlab.example.test/sneat-dev/wb",
-		"github.com:8443/acme/app",
-	} {
-		got, err := ExpectedRemoteURL(root, filepath.Join(root, filepath.FromSlash(slug)))
-		if err != nil {
-			t.Fatalf("ExpectedRemoteURL(%q): %v", slug, err)
-		}
-		if want := "https://" + slug; got != want {
-			t.Fatalf("ExpectedRemoteURL(%q) = %q, want %q", slug, got, want)
-		}
-	}
-}
-
-// TestExpectedRemoteURLRefusesALegacyFirstLevel encodes the finding half of
-// projects-root-layout#ac:clone-path-inverts-to-url at this boundary: the
-// legacy two-level placement this fleet still uses has no literal hostname, so
-// WB refuses to invent a remote for it. `wb layout audit` reports it as a
-// layout finding.
-func TestExpectedRemoteURLRefusesALegacyFirstLevel(t *testing.T) {
-	root := t.TempDir()
-	for _, legacy := range []string{"sneat-dev/wb", "dal-go/dalgo", "acme/app"} {
-		if remote, err := ExpectedRemoteURL(root, filepath.Join(root, filepath.FromSlash(legacy))); err == nil {
-			t.Fatalf("ExpectedRemoteURL(%q) invented %q for a first level that is not a hostname", legacy, remote)
-		}
 	}
 }
 
@@ -123,6 +88,7 @@ func TestUnqualifiedCoordinateStaysOnALegacyClone(t *testing.T) {
 // one case the flat legacy root could not represent: the same owner/repository
 // on two forges.
 func TestCanonicalRepositoryPathPrefersTheHostLevelAndRefusesAmbiguity(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	legacy := newLegacyClone(t, root, "acme", "app")
 	if got, err := CanonicalRepositoryPath(root, "acme/app"); err != nil || got != legacy {
@@ -157,6 +123,7 @@ func TestGuardAcceptsACanonicalCloneAtTheHostLevel(t *testing.T) {
 // TestCanonicalCoordinatesRecognizeBothPlacements pins the boundary-aware
 // interpretation of a canonical clone path.
 func TestCanonicalCoordinatesRecognizeBothPlacements(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	for _, test := range []struct {
 		relative string
@@ -186,6 +153,7 @@ func TestCanonicalCoordinatesRecognizeBothPlacements(t *testing.T) {
 // TestSplitRepositoryAddressAcceptsTheLiteralHostLevel pins the extended
 // coordinate parser: an optional literal hostname, then owner/repository.
 func TestSplitRepositoryAddressAcceptsTheLiteralHostLevel(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		repository string
 		host       string
@@ -276,6 +244,7 @@ func seedCloneAt(t *testing.T, root, dest string) string {
 	}
 	remote := filepath.Join(remoteHolder, "remote.git")
 	gitTest(t, root, "init", "--bare", "--initial-branch=main", remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -328,6 +297,7 @@ func TestHostLevelCloneLocalWorktreesAreDiscoverable(t *testing.T) {
 // check: a lifecycle backlog written before the host level existed must keep
 // validating, and a host-qualified coordinate must require its own host.
 func TestCanonicalDirMatchesRepositoryAcceptsBothPlacements(t *testing.T) {
+	t.Parallel()
 	root := filepath.Join(string(filepath.Separator), "projects")
 	for _, test := range []struct {
 		repository string
@@ -390,6 +360,44 @@ func TestCentralStoreInventoryAcceptsAPortHostedForgeLevel(t *testing.T) {
 	for _, diagnostic := range outcome.Diagnostics {
 		if strings.Contains(diagnostic.Message, "invalid owner") {
 			t.Fatalf("a port-hosted forge level was rejected as an invalid owner: %+v", diagnostic)
+		}
+	}
+}
+
+// TestExpectedRemoteURLInvertsTheFleetSlugs proves the inverse holds for
+// multi-segment hosted paths and for the owner/repository pairs actually
+// present in this fleet, including an explicit-port forge.
+func TestExpectedRemoteURLInvertsTheFleetSlugs(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	for _, slug := range []string{
+		"github.com/dal-go/dalgo",
+		"github.com/sneat-dev/wb",
+		"github.com/sneat-co/backstage",
+		"gitlab.example.test/sneat-dev/wb",
+		"github.com:8443/acme/app",
+	} {
+		got, err := ExpectedRemoteURL(root, filepath.Join(root, filepath.FromSlash(slug)))
+		if err != nil {
+			t.Fatalf("ExpectedRemoteURL(%q): %v", slug, err)
+		}
+		if want := "https://" + slug; got != want {
+			t.Fatalf("ExpectedRemoteURL(%q) = %q, want %q", slug, got, want)
+		}
+	}
+}
+
+// TestExpectedRemoteURLRefusesALegacyFirstLevel encodes the finding half of
+// projects-root-layout#ac:clone-path-inverts-to-url at this boundary: the
+// legacy two-level placement this fleet still uses has no literal hostname, so
+// WB refuses to invent a remote for it. `wb layout audit` reports it as a
+// layout finding.
+func TestExpectedRemoteURLRefusesALegacyFirstLevel(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	for _, legacy := range []string{"sneat-dev/wb", "dal-go/dalgo", "acme/app"} {
+		if remote, err := ExpectedRemoteURL(root, filepath.Join(root, filepath.FromSlash(legacy))); err == nil {
+			t.Fatalf("ExpectedRemoteURL(%q) invented %q for a first level that is not a hostname", legacy, remote)
 		}
 	}
 }

@@ -1,361 +1,44 @@
 package main
 
 import (
-	"encoding/json"
-	"fmt"
-	"strings"
-	"time"
+	"context"
+	"errors"
+	"io"
+	"os"
 
+	"github.com/sneat-dev/wb/internal/cli/cmdpr"
 	"github.com/sneat-dev/wb/internal/console"
+	"github.com/sneat-dev/wb/internal/landingcontext"
+	"github.com/sneat-dev/wb/internal/lifecyclehooks"
 	"github.com/sneat-dev/wb/internal/orchestrate"
-	"github.com/sneat-dev/wb/internal/streams"
 	"github.com/spf13/cobra"
 )
 
-func newPRCmd() *cobra.Command {
-	command := &cobra.Command{
-		Use:   "pr",
-		Short: "Land and inspect pull requests as one deterministic operation",
-	}
-	command.AddCommand(newPRCreateCmd())
-	command.AddCommand(newPRLandCmd())
-	return command
+func newPRCmd(inv *invocation) *cobra.Command {
+	return cmdpr.New(newCLIRuntime(inv), prDependencies())
 }
 
-func newPRLandCmd() *cobra.Command {
-	var format, approvedBy, subject, reason, laneReason, mergeMethod, reviewComment, reviewCommentFile string
-	var keepCommits []string
-	var keep, allowUnfenced, nonInteractive, takeOverLane bool
-	var pollInterval, totalTimeout time.Duration
-	var noUpdateBranch, noAutoMerge bool
-	command := &cobra.Command{
-		Use:   "land <owner/repository#number>",
-		Short: "Verify, land, and tidy up after one pull request",
-		Long: `Land one pull request and leave nothing behind.
-
-This replaces the sequence an operator or an agent otherwise runs by hand —
-view the pull request, poll its checks until they settle, merge it, verify the
-merge reached the base, delete the branch, retire the worktree — with one verb
-that performs and verifies all of it. Every one of those steps is a place the
-hand-run sequence goes wrong, and one of them is measured: the merge stage of
-'wb worktree merge' broke on the installed gh, so operators used raw
-'gh pr merge', and the opt-in cleanup that should have retired the worktree
-never ran. Sixty abandoned checkouts followed.
-
-Every GitHub call goes through 'gh api' with an endpoint, and pagination
-follows GitHub's own link header, so nothing here needs a newer gh than the one
-installed.
-
-CLEANUP IS THE DEFAULT. The task's worktree is retired and its claim released
-unless --keep is passed. An opt-in cleanup is a cleanup that does not happen.
-
-MERGE COMMIT IS THE DEFAULT. It keeps the reviewed commits and records the pull
-request boundary without rewriting either. Use --merge-method squash when one
-aggregated commit is intentional; WB then builds its subject and body from the
-pull request and source commits rather than accepting an accidental first
-commit message. Explicit --merge-method rebase remains available.
-
---keep-commits <sha>[,<sha>...] is the explicit squash hybrid and therefore
-requires --merge-method squash plus --reason "<text>". wb rebuilds the branch so
-those commits land as their own commits, in order, with the rest squashed into
-one aggregated commit that records the reason. Each kept commit must build on
-its own; one that does not is refused, naming a smaller set, because a commit
-that does not build is not a place anyone can bisect to.
-
-AUTO-MERGE IS ARMED FIRST. Before waiting on anything, wb arms GitHub
-auto-merge with the chosen merge method and WB's own commit message, pinned to
-the head it observed, so the pull request lands even if this process, its
-session or its host dies while the checks run — provided the target does not
-move again first: GitHub does not bring a behind branch up to date by itself,
-so a pull request left behind waits for the next 'wb pr land'. CI is the gate: a
-failed check refuses this invocation but auto-merge stays armed, so whoever
-pushes the fix gets it landed as soon as the required checks pass. Put any gate
-that must hold (an AI review, say) in the CI workflow. --no-auto-merge opts out.
-
-BEHIND IS NOT A REFUSAL. On a target that requires branches to be up to date, a
-candidate behind the target is brought up to date through GitHub's
-update-branch (with the observed head as a compare-and-swap), and the checks are
-waited on again, inside one --timeout budget. A target that moves again while
-the checks run is caught up again. Auto-merge is not armed where it would skip
-one of this verb's guards: with --keep-commits, or on a target without a strict
-up-to-date policy unless --allow-unfenced is explicit. A conflicting update refuses with
-update-branch-conflict. --no-update-branch refuses a behind candidate instead.
-
-REVIEW. A mechanical dependency bump — a diff touching only go.mod, go.sum,
-package.json dependency fields, pnpm-lock.yaml, pnpm-workspace.yaml — lands on
-its batch verification with no review ledger entry. The classification is made from the diff,
-never from the title, author or labels: a bot-titled bump that
-also edits a source file is not mechanical, and is refused without
---approved-by <review-file-or-comment-url>.
-
-LANDING LANE. Only one live WB session may drive 'wb pr land' or
-'wb worktree merge' toward a given (repository, target) at a time. A
-different live session already landing here is refused, naming that session,
-its pid, and the receipt it is driving; ask it to hand off with
-'wb session recall <id>', or force the issue with
---take-over-lane --lane-reason "<text>" (the reason is recorded on the lane
-and the receipt). A session whose registry entry is gone is taken over
-automatically with a printed note; a live session is never taken over
-implicitly, no matter how old its heartbeat looks.
-
-Exit codes: 0 landed, 1 the work is not ready (checks red or pending, landing
-unverified), 2 a guard refused.`,
-		Example: `# Land a green dependency bump, retiring its worktree
-wb pr land sneat-co/sneat-go#1041
-
-# Land a reviewed change
-wb pr land sneat-co/sneat-go#1041 --approved-by review-sneat-go-1041.md
-
-# Keep one commit in its own place in the history
-wb pr land sneat-co/sneat-go#1041 --approved-by review.md \
-  --merge-method squash --keep-commits 4f2a1c9 \
-  --reason "the migration must be revertable on its own"
-
-# Machine-readable envelope
-wb pr land sneat-co/sneat-go#1041 --format json`,
-		Args: cobra.ExactArgs(1),
-		RunE: func(command *cobra.Command, args []string) error {
-			if err := requireOutputFormat(format, "text", "json"); err != nil {
-				return err
-			}
-			if len(splitCommaSeparated(keepCommits)) > 0 && (!command.Flags().Changed("merge-method") || mergeMethod != "squash") {
-				return usageError("--keep-commits requires explicit --merge-method squash")
-			}
-			if takeOverLane && strings.TrimSpace(laneReason) == "" {
-				return usageError("--take-over-lane requires --lane-reason <text>")
-			}
-			if strings.TrimSpace(reviewComment) != "" && strings.TrimSpace(reviewCommentFile) != "" {
-				return usageError("--review-comment and --review-comment-file are mutually exclusive")
-			}
-			repository, number, err := splitPullRequestSelector(args[0])
-			if err != nil {
-				return &exitError{code: exitUsage, message: err.Error()}
-			}
-			interactive := console.Interactive(command.ErrOrStderr(), nonInteractive)
-			progress := newCIWaitProgress(progressOutput(command.ErrOrStderr(), interactive), true)
-			progress.start(repository, number, "", "")
-			// The landing guard runs before anything else, including the
-			// GitHub read: a worktree of this repository still building against
-			// an unpublished tree makes every check observation meaningless.
-			progress.live.update("pr land: local link preflight: " + repository + ": started")
-			if err := refuseLinkedRepositoryWorktrees(repository); err != nil {
-				progress.finishOperation("pr land: local link preflight: failed: " + err.Error())
-				return err
-			}
-			progress.live.update("pr land: local link preflight: " + repository + ": completed")
-			events, streamName := landingEventLog(repository)
-			result, err := orchestrate.LandPullRequest(command.Context(), orchestrate.PullRequestLandOptions{
-				Repository:          repository,
-				PullRequest:         number,
-				ProjectsRoot:        projectsRoot,
-				Keep:                keep,
-				ApprovedBy:          approvedBy,
-				ReviewComment:       reviewComment,
-				ReviewCommentFile:   reviewCommentFile,
-				MergeMethod:         mergeMethod,
-				MergeMethodExplicit: command.Flags().Changed("merge-method"),
-				Subject:             subject,
-				KeepCommits:         splitCommaSeparated(keepCommits),
-				Reason:              reason,
-				AllowUnfenced:       allowUnfenced,
-				Slice:               totalTimeout,
-				NoUpdateBranch:      noUpdateBranch,
-				NoAutoMerge:         noAutoMerge,
-				CheckPollInterval:   pollInterval,
-				Progress:            progress.report,
-				OperationProgress:   progress.operationReporter("pr land"),
-				Events:              events,
-				Stream:              streamName,
-				Lane:                landingLaneGuardRequest("wb pr land", laneReason, takeOverLane),
-				CheckoutUpdated:     lifecycleCheckoutUpdated(command.ErrOrStderr()),
-			})
-			if err != nil {
-				progress.fail(err)
-				return err
-			}
-			progress.finishOperation("pr land: " + string(result.Outcome))
-			if format == "json" {
-				encoder := json.NewEncoder(command.OutOrStdout())
-				encoder.SetIndent("", "  ")
-				if err := encoder.Encode(result); err != nil {
-					return err
-				}
-			} else if err := printPullRequestLand(command, result); err != nil {
-				return err
-			}
-			// The savings footer is an interactive courtesy: under
-			// --non-interactive the same figures are in the envelope, and a
-			// script must not have to strip prose to read them.
-			if format == "text" && !nonInteractive && console.IsTerminal(command.OutOrStdout()) {
-				if _, err := fmt.Fprintln(command.OutOrStdout(), result.FooterLine()); err != nil {
-					return err
-				}
-			}
-			switch result.ExitCode() {
-			case 0:
-				return nil
-			case exitUsage:
-				return &exitError{code: exitUsage, message: result.Reason + "; resolve with: " + result.SanctionedCommand}
-			default:
-				return &exitError{code: exitFindings, message: result.Reason}
-			}
+func prDependencies() cmdpr.Dependencies {
+	return cmdpr.Dependencies{Create: orchestrate.CreatePullRequest, Update: orchestrate.UpdatePullRequest, Land: orchestrate.LandPullRequest,
+		CheckRepository: func(root, repository string) error {
+			return landingGuardError(landingcontext.CheckRepository(root, repository))
+		}, Events: landingcontext.Events,
+		Lane: func(root, command, reason string, takeOver bool) orchestrate.LaneGuardRequest {
+			return landingcontext.LaneRequest(root, command, reason, takeOver, os.Getpid())
 		},
-	}
-	command.Flags().BoolVar(&keep, "keep", false, "retain the task's worktree and claim instead of retiring them")
-	command.Flags().StringVar(&approvedBy, "approved-by", "", "the recorded review that authorized a non-mechanical change: a review file, a comment URL, \"ci\", or a reviewer identity {model}[@{harness}[@{session}]] (needs --review-comment/--review-comment-file)")
-	command.Flags().StringVar(&reviewComment, "review-comment", "", "the review text; required with a reviewer-identity --approved-by; mutually exclusive with --review-comment-file")
-	command.Flags().StringVar(&reviewCommentFile, "review-comment-file", "", "path to the review text; required with a reviewer-identity --approved-by; mutually exclusive with --review-comment")
-	command.Flags().StringVar(&subject, "subject", "", "override the squash commit subject; used with --merge-method squash")
-	command.Flags().StringSliceVar(&keepCommits, "keep-commits", nil, "source commits that must land separately; requires explicit --merge-method squash and --reason")
-	command.Flags().StringVar(&reason, "reason", "", "why the kept commits stand alone; required with --keep-commits")
-	command.Flags().StringVar(&mergeMethod, "merge-method", "merge", "merge (default), squash, or rebase")
-	command.Flags().BoolVar(&noUpdateBranch, "no-update-branch", false, "refuse a candidate that is behind the target instead of bringing it up to date")
-	command.Flags().BoolVar(&noAutoMerge, "no-auto-merge", false, "do not arm GitHub auto-merge; a wait that runs out of budget leaves the pull request for someone to land later")
-	command.Flags().BoolVar(&allowUnfenced, "allow-unfenced", false, "land on observed checks where the target has no server-enforced strict up-to-date policy")
-	command.Flags().DurationVar(&pollInterval, "poll-interval", orchestrate.DefaultCheckPollInterval, "interval between check observations")
-	command.Flags().DurationVar(&totalTimeout, "timeout", defaultCIWaitSlice, "total foreground wait budget; WB uses bounded resumable CI observation slices internally")
-	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
-	command.Flags().BoolVar(&nonInteractive, "non-interactive", false, "never use a terminal UI, and suppress the savings footer")
-	addLandingLaneTakeoverFlag(command, &takeOverLane)
-	command.Flags().StringVar(&laneReason, "lane-reason", "", "required with --take-over-lane: why a landing lane held by a different session is being taken over")
-	setDiscoveryTerms(command, "land merge pull request pr squash aggregate keep commits cleanup worktree claim checks green approve review bump take over lane")
-	return markLandingGuard(command, landingGuardByPullRequest)
+		CheckoutUpdated: func(out io.Writer) func(context.Context, orchestrate.CheckoutUpdate) {
+			return landingcontext.CheckoutUpdated(out, lifecyclehooks.Dispatch)
+		}, SuggestCloses: landingcontext.SuggestCloses,
+		Interactive: func(out io.Writer, nonInteractive bool) bool { return console.Interactive(out, nonInteractive) }, IsTerminal: func(out io.Writer) bool { return console.IsTerminal(out) }, Integration: cmdpr.DefaultIntegrationDependencies()}
+}
+func newIntegrationCmd(inv *invocation) *cobra.Command {
+	return cmdpr.NewIntegration(newCLIRuntime(inv), cmdpr.DefaultIntegrationDependencies())
 }
 
-// splitPullRequestSelector reads owner/repository#number, the way an operator
-// already writes a pull request when talking about one.
-func splitPullRequestSelector(selector string) (repository, number string, err error) {
-	value := strings.TrimSpace(selector)
-	repository, rest, found := strings.Cut(value, "#")
-	if !found {
-		if url := strings.TrimSpace(value); strings.Contains(url, "/pull/") {
-			repository, urlErr := orchestrate.RepositoryFromPullRequestURL(url)
-			if urlErr != nil {
-				return "", "", urlErr
-			}
-			number, numberErr := orchestrate.PullRequestNumber(url)
-			return repository, number, numberErr
-		}
-		return "", "", fmt.Errorf("selector %q must be owner/repository#number or a pull request URL", selector)
+func landingGuardError(err error) error {
+	var refusal *landingcontext.Refusal
+	if errors.As(err, &refusal) {
+		return &exitError{code: exitUsage, message: refusal.Message}
 	}
-	repository = strings.TrimSpace(repository)
-	if strings.Count(repository, "/") != 1 || strings.HasPrefix(repository, "/") || strings.HasSuffix(repository, "/") {
-		return "", "", fmt.Errorf("selector %q must name owner/repository before the #", selector)
-	}
-	number, err = orchestrate.PullRequestNumber(rest)
-	return repository, number, err
+	return err
 }
-
-func splitCommaSeparated(values []string) []string {
-	split := make([]string, 0, len(values))
-	for _, value := range values {
-		for _, part := range strings.Split(value, ",") {
-			if trimmed := strings.TrimSpace(part); trimmed != "" {
-				split = append(split, trimmed)
-			}
-		}
-	}
-	return split
-}
-
-func printPullRequestLand(command *cobra.Command, result orchestrate.PullRequestLandResult) error {
-	out := command.OutOrStdout()
-	classification := "needs review"
-	if result.Mechanical {
-		classification = "mechanical bump"
-	}
-	if _, err := fmt.Fprintf(out, "%s#%d %s (%s)\n", result.Repository, result.PullRequest, result.Title, classification); err != nil {
-		return err
-	}
-	switch result.Outcome {
-	case orchestrate.LandSuccess:
-		if _, err := fmt.Fprintf(out, "landed %s on %s\n", shortSHAForDisplay(result.MergeSHA), result.BaseRef); err != nil {
-			return err
-		}
-		if result.BranchDeleted {
-			if _, err := fmt.Fprintf(out, "retired origin/%s\n", result.HeadRef); err != nil {
-				return err
-			}
-		}
-		for _, task := range result.CleanedTasks {
-			if _, err := fmt.Fprintf(out, "retired worktree for task %s\n", task); err != nil {
-				return err
-			}
-		}
-		if result.Kept {
-			if _, err := fmt.Fprintln(out, "kept the worktree (--keep)"); err != nil {
-				return err
-			}
-		}
-		if result.Reviewer != "" {
-			if _, err := fmt.Fprintf(out, "reviewer: %s (head %s)\n", result.Reviewer, shortSHAForDisplay(result.ReviewedHeadSHA)); err != nil {
-				return err
-			}
-		}
-		if result.Evidence["review"] != "" {
-			if _, err := fmt.Fprintf(out, "finding: %s\n", result.Evidence["review"]); err != nil {
-				return err
-			}
-		}
-		if len(result.Closes) > 0 || result.Evidence["closes"] != "" {
-			if _, err := fmt.Fprintf(out, "%s\n", result.Evidence["closes"]); err != nil {
-				return err
-			}
-		}
-		for _, commit := range result.Commits {
-			if !commit.Kept {
-				continue
-			}
-			if _, err := fmt.Fprintf(out, "kept commit %s %s\n", shortSHAForDisplay(commit.SourceSHA), commit.Subject); err != nil {
-				return err
-			}
-		}
-	default:
-		if _, err := fmt.Fprintf(out, "%s: %s\n", result.Outcome, result.Reason); err != nil {
-			return err
-		}
-		if result.RefusalCode != "" {
-			if _, err := fmt.Fprintf(out, "refusal: %s\n", result.RefusalCode); err != nil {
-				return err
-			}
-		}
-		if result.SanctionedCommand != "" {
-			if _, err := fmt.Fprintf(out, "resolve with: %s\n", result.SanctionedCommand); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func shortSHAForDisplay(sha string) string {
-	if len(sha) > 12 {
-		return sha[:12]
-	}
-	return sha
-}
-
-// landingEventLog resolves where this landing's event belongs.
-//
-// A landing inside a stream belongs to that stream's log, which is what makes
-// `wb report stream` able to show the landing beside the work that produced it.
-// A landing outside every stream still writes an event — the analytics exist to
-// measure verbs, not only streams — into the fleet log.
-func landingEventLog(repository string) (streams.EventAppender, string) {
-	store, err := streams.Open(projectsRoot)
-	if err != nil {
-		return streams.DiscardEvents{}, ""
-	}
-	if stream, found, _, streamErr := store.RepositoryStream(repository); streamErr == nil && found {
-		return store.EventLog(stream.Name), stream.Name
-	}
-	// Outside every stream the event still belongs somewhere: the analytics
-	// exist to measure verbs, not only streams, and a landing that leaves no
-	// record is a landing the report cannot count.
-	return store.EventLog(fleetEventLogName), ""
-}
-
-// fleetEventLogName is the log for verbs that ran outside any stream. It is a
-// name no stream can take: stream names are validated as path segments and
-// cannot contain a dot.
-const fleetEventLogName = ".fleet"

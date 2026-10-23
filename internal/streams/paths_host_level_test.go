@@ -11,6 +11,7 @@ import (
 // <root>/{host}/{org}/{repo}; a flat join would name a path nothing is at, and
 // every readiness check for that member would degrade to unknown.
 func TestCanonicalPathFollowsTheMachinePlacement(t *testing.T) {
+	t.Parallel()
 	hostRoot := t.TempDir()
 	hosted := filepath.Join(hostRoot, "github.com", "acme", "app")
 	if err := os.MkdirAll(filepath.Join(hosted, ".git"), 0o755); err != nil {

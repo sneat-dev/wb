@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -101,6 +102,60 @@ func TestPrepareWorktreeMergeAdmitsSameSessionLandingLane(t *testing.T) {
 	}
 }
 
+// Regression for sneat-dev/wb#538: taking over the session-level lane does
+// not authorize reusing a non-terminal merge receipt that belongs to a
+// different explicit source. The receipt identity remains bound to source A
+// and no candidate for source B is published as if it came from A.
+func TestPrepareWorktreeMergeTakeoverRefusesDifferentReceiptSource(t *testing.T) {
+	fixture := newEngineFixture(t)
+	sourceA := createMergeSource(t, fixture, "lane-takeover-source-a", "feature/lane-takeover-a", "a.txt", "a\n")
+	sourceB := createMergeSource(t, fixture, "lane-takeover-source-b", "feature/lane-takeover-b", "b.txt", "b\n")
+
+	receiptA, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir,
+		Sources:      []string{sourceA.WorktreeDir},
+		Target:       "main",
+		Model:        "test-model",
+		AgentRuntime: "test",
+		Lane: LaneGuardRequest{
+			Owner: landinglane.Owner{WBSessionID: "wbs-source-a", PID: os.Getpid(), Command: "wb worktree merge"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("prepare source A: %v", err)
+	}
+	original, err := os.ReadFile(receiptA.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	received, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir,
+		Sources:      []string{sourceB.WorktreeDir},
+		Target:       "main",
+		Model:        "test-model",
+		AgentRuntime: "test",
+		Lane: LaneGuardRequest{
+			Owner:          landinglane.Owner{WBSessionID: "wbs-source-b", PID: os.Getpid(), Command: "wb worktree merge"},
+			TakeOver:       true,
+			TakeoverReason: "explicitly continue source B",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "still owned by non-terminal receipt") {
+		t.Fatalf("source B takeover error = %v, want explicit receipt-owner refusal", err)
+	}
+	if received.ReceiptPath != receiptA.ReceiptPath || !sameWorktreeMergeSources(received.Sources, receiptA.Sources) {
+		t.Fatalf("takeover returned a different receipt identity: got %+v want %+v", received, receiptA)
+	}
+	unchanged, readErr := os.ReadFile(receiptA.ReceiptPath)
+	if readErr != nil || string(unchanged) != string(original) {
+		t.Fatalf("source A receipt changed during source B takeover: err=%v", readErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(fixture.repository.CloneURL, "refs", "heads", receiptA.Candidate.Branch)); !os.IsNotExist(statErr) {
+		t.Fatalf("source A candidate branch was published during source B takeover: %v", statErr)
+	}
+}
+
 // TestPrepareWorktreeMergeReleasesLaneOnEarlyFailure proves the finding-2
 // fix: an error path after the lane is acquired but before a receipt is
 // created must release the lane immediately, rather than leaving it to clear
@@ -171,6 +226,7 @@ func TestPrepareWorktreeMergeReleasesLaneOnEarlyFailure(t *testing.T) {
 // (proving the ticker really ran, not merely that liveness alone happened to
 // carry the refusal).
 func TestStartLandingLaneHeartbeatKeepsLiveOwnerLaneAcrossASimulatedLongWait(t *testing.T) {
+	t.Parallel()
 	// startLandingLaneHeartbeat takes a *projectsRoot* (like every other
 	// orchestrate-level lane helper) and resolves the actual WB home from it
 	// via wbhome.Root, exactly as acquireLandingLane/releaseLandingLane do.
@@ -233,6 +289,7 @@ func TestStartLandingLaneHeartbeatKeepsLiveOwnerLaneAcrossASimulatedLongWait(t *
 // wbSessionID) must not panic or write anything, exactly like
 // acquireLandingLane/releaseLandingLane's own no-op contract.
 func TestStartLandingLaneHeartbeatNoOpsWithoutASession(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	stop := startLandingLaneHeartbeat(home, "acme/app", "main", "", time.Millisecond)
 	stop()

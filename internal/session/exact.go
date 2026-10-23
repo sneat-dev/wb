@@ -14,11 +14,31 @@ import (
 
 const maxExactSessionRecordBytes = 64 << 10
 
+type exactRecordIO struct {
+	stat   func(*os.File, *unix.Stat_t) error
+	read   func(*os.File) ([]byte, error)
+	rewind func(*os.File) (int64, error)
+}
+
+func nativeExactRecordIO() exactRecordIO {
+	return exactRecordIO{
+		stat: func(file *os.File, stat *unix.Stat_t) error { return unix.Fstat(int(file.Fd()), stat) },
+		read: func(file *os.File) ([]byte, error) {
+			return io.ReadAll(io.LimitReader(file, maxExactSessionRecordBytes+1))
+		},
+		rewind: func(file *os.File) (int64, error) { return file.Seek(0, io.SeekStart) },
+	}
+}
+
 // LookupExact reads one live registration through no-follow descriptors and
 // proves that the filename, payload PID, and current process all agree. It is
 // used at the tmux delivery boundary where a path-following convenience read
 // would let a swapped record redirect message bytes.
 func LookupExact(dir string, pid int) (Record, bool, error) {
+	return lookupExactWithIO(dir, pid, nativeExactRecordIO())
+}
+
+func lookupExactWithIO(dir string, pid int, access exactRecordIO) (Record, bool, error) {
 	if pid <= 0 {
 		return Record{}, false, fmt.Errorf("exact session lookup requires a positive PID")
 	}
@@ -30,14 +50,11 @@ func LookupExact(dir string, pid int) (Record, bool, error) {
 	if err != nil {
 		return Record{}, false, fmt.Errorf("open exact session directory: %w", err)
 	}
+	// Successful native Open owns a valid descriptor; NewFile cannot return nil.
 	directory := os.NewFile(uintptr(directoryFD), "wb-session-exact-directory")
-	if directory == nil {
-		_ = unix.Close(directoryFD)
-		return Record{}, false, fmt.Errorf("wrap exact session directory")
-	}
 	defer func() { _ = directory.Close() }()
 	var directoryStat unix.Stat_t
-	if err := unix.Fstat(directoryFD, &directoryStat); err != nil || directoryStat.Mode&unix.S_IFMT != unix.S_IFDIR {
+	if err := access.stat(directory, &directoryStat); err != nil || directoryStat.Mode&unix.S_IFMT != unix.S_IFDIR {
 		if err != nil {
 			return Record{}, false, fmt.Errorf("inspect exact session directory: %w", err)
 		}
@@ -50,20 +67,16 @@ func LookupExact(dir string, pid int) (Record, bool, error) {
 		return Record{}, false, fmt.Errorf("open exact session record: %w", err)
 	}
 	file := os.NewFile(uintptr(fd), "wb-session-exact-record")
-	if file == nil {
-		_ = unix.Close(fd)
-		return Record{}, false, fmt.Errorf("wrap exact session record")
-	}
 	defer func() { _ = file.Close() }()
 	var before unix.Stat_t
-	if err := unix.Fstat(fd, &before); err != nil || before.Mode&unix.S_IFMT != unix.S_IFREG ||
+	if err := access.stat(file, &before); err != nil || before.Mode&unix.S_IFMT != unix.S_IFREG ||
 		before.Mode&0o777 != 0o644 || before.Nlink != 1 || before.Size < 0 || before.Size > maxExactSessionRecordBytes {
 		if err != nil {
 			return Record{}, false, fmt.Errorf("inspect exact session record: %w", err)
 		}
 		return Record{}, false, fmt.Errorf("exact session record is not one single-link bounded regular mode 0644 file")
 	}
-	raw, err := io.ReadAll(io.LimitReader(file, maxExactSessionRecordBytes+1))
+	raw, err := access.read(file)
 	if err != nil || len(raw) > maxExactSessionRecordBytes {
 		if err != nil {
 			return Record{}, false, fmt.Errorf("read exact session record: %w", err)
@@ -73,15 +86,15 @@ func LookupExact(dir string, pid int) (Record, bool, error) {
 	if int64(len(raw)) != before.Size {
 		return Record{}, false, fmt.Errorf("exact session record size changed while read")
 	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
+	if _, err := access.rewind(file); err != nil {
 		return Record{}, false, fmt.Errorf("rewind exact session record: %w", err)
 	}
-	verification, err := io.ReadAll(io.LimitReader(file, maxExactSessionRecordBytes+1))
+	verification, err := access.read(file)
 	if err != nil {
 		return Record{}, false, fmt.Errorf("verify exact session record: %w", err)
 	}
 	var after unix.Stat_t
-	if err := unix.Fstat(fd, &after); err != nil || before.Dev != after.Dev || before.Ino != after.Ino ||
+	if err := access.stat(file, &after); err != nil || before.Dev != after.Dev || before.Ino != after.Ino ||
 		before.Mode != after.Mode || before.Nlink != after.Nlink || before.Size != after.Size || !bytes.Equal(raw, verification) {
 		if err != nil {
 			return Record{}, false, fmt.Errorf("reinspect exact session record: %w", err)

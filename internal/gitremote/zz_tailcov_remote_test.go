@@ -11,6 +11,7 @@ import (
 // diagnostic for that specific reason — not merely any error — without ever
 // echoing the rejected spelling back into the diagnostic.
 func TestTailCovParseRejectsEveryMalformedRemoteShape(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		raw    string
@@ -32,6 +33,7 @@ func TestTailCovParseRejectsEveryMalformedRemoteShape(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			remote, err := Parse(tc.raw)
 			if err == nil {
 				t.Fatalf("Parse(%q) = %#v, want rejection", tc.raw, remote)

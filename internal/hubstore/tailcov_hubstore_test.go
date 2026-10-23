@@ -69,6 +69,7 @@ func tailCovWriteAccessConfig(t *testing.T, projectPath, manifest, policy string
 // exists, a missing manifest is an error, and Open must surface it instead of
 // quietly handing back an unenforced store.
 func TestTailCovInGitDBRefusesABrokenAccessManifest(t *testing.T) {
+	t.Parallel()
 	path := t.TempDir()
 	tailCovWriteAccessConfig(t, path, "", "")
 
@@ -100,6 +101,7 @@ func TestTailCovInGitDBRefusesABrokenAccessManifest(t *testing.T) {
 // Open has to refuse such a database rather than return a store that cannot
 // declare its collections.
 func TestTailCovInGitDBRefusesADatabaseWithoutSchemaManagement(t *testing.T) {
+	t.Parallel()
 	path := t.TempDir()
 	tailCovWriteAccessConfig(t, path, tailCovAccessManifest, tailCovAccessPolicy)
 

@@ -8,6 +8,7 @@ import (
 )
 
 func TestGoSelectorRewriteRemovesOnlyUnusedSourceImport(t *testing.T) {
+	t.Parallel()
 	step := Step{
 		Kind:      "selector.rewrite",
 		Import:    "example.com/old/dal",
@@ -38,6 +39,7 @@ func TestGoSelectorRewriteRemovesOnlyUnusedSourceImport(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			updated, changed, err := transformGo([]byte(test.source), test.name+".go", step)
 			if err != nil {
 				t.Fatal(err)
@@ -57,8 +59,10 @@ func TestGoSelectorRewriteRemovesOnlyUnusedSourceImport(t *testing.T) {
 }
 
 func TestRemoveUnusedGoImportPreservesBlankAndDotImports(t *testing.T) {
+	t.Parallel()
 	for _, importName := range []string{"_", "."} {
 		t.Run(importName, func(t *testing.T) {
+			t.Parallel()
 			fset := token.NewFileSet()
 			source := "package p\nimport " + importName + " \"example.com/sideeffect\"\n"
 			file, err := parser.ParseFile(fset, "sideeffect.go", source, parser.ParseComments)
@@ -73,6 +77,7 @@ func TestRemoveUnusedGoImportPreservesBlankAndDotImports(t *testing.T) {
 }
 
 func TestGoCompositeFieldRenameIsLimitedToTypedStructLiterals(t *testing.T) {
+	t.Parallel()
 	step := Step{Kind: "composite_field.rename", Language: "go", From: "RecordWithID", To: "WithID"}
 	source := `package p
 

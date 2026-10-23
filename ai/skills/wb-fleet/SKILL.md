@@ -18,6 +18,7 @@ Choose one command that answers the question:
 | Fleet inventory and attention counts | `wb fleet stats` | [status.md](references/status.md) |
 | Find local changes, stashes, conflicts, or unpushed commits | `wb fleet status` | [status.md](references/status.md) |
 | Inventory every visible open remote pull request | `wb fleet prs` | [status.md](references/status.md) |
+| Audit or safely migrate GitHub default branches | `wb fleet default-branch` | [default-branch.md](references/default-branch.md) |
 | Audit or clean non-canonical clone placement | `wb layout audit` / `wb layout clean` | [layout.md](references/layout.md) |
 | Delete a local clone whose repository is archived on GitHub, only when nothing would be lost | `wb archive clean` | [archive.md](references/archive.md) |
 | Inspect one repository checkout | `wb repo status` | [status.md](references/status.md) |
@@ -29,6 +30,8 @@ Choose one command that answers the question:
 | Reserve a task fleet-wide before starting work | `wb remote claim <task>` | [remote.md](references/remote.md) |
 | Give up a task claim | `wb remote release <task>` | [remote.md](references/remote.md) |
 | See who holds every task claim | `wb remote claims` | [remote.md](references/remote.md) |
+| Admit a peer, or join a hub as one | `wb peers invite` / `wb peers join` | [peers.md](references/peers.md) |
+| List, inspect, block or unblock a peer | `wb peers list` / `get` / `block` / `unblock` / `disconnect` | [peers.md](references/peers.md) |
 
 Do not run overlapping `verify` and `check` commands unless they answer
 different questions. Start with one repository; add `--fleet` and a filter

@@ -14,6 +14,7 @@ import (
 // be found where it is and pulled — never read as uncloned and cloned again as
 // a flat duplicate beside it.
 func TestSyncDoesNotRecloneAnExistingHostLevelClone(t *testing.T) {
+	t.Parallel()
 	remote := newRemote(t)
 	root := t.TempDir()
 	hosted := filepath.Join(root, "github.com", "acme", "widgets")
@@ -80,6 +81,7 @@ func TestSyncClonesIntoTheHostLevelNamedByTheCloneURL(t *testing.T) {
 // TestSyncKeepsALocalRemoteCloneAtTheLegacyPlacement guards the other side of
 // the rule: a clone URL naming no literal forge must not invent a host level.
 func TestSyncKeepsALocalRemoteCloneAtTheLegacyPlacement(t *testing.T) {
+	t.Parallel()
 	remote := newRemote(t)
 	root := t.TempDir()
 	repo := discover.Repo{Org: "acme", Name: "widgets", CloneURL: remote, Remote: true}

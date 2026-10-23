@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/gitops"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
@@ -90,10 +91,6 @@ func planUntracked(root string, reported []string) ([]UntrackedEntry, error) {
 		return nil, fmt.Errorf("open clone root: %w", err)
 	}
 	rootFile := os.NewFile(uintptr(rootFD), root)
-	if rootFile == nil {
-		_ = unix.Close(rootFD)
-		return nil, fmt.Errorf("wrap clone root descriptor")
-	}
 	defer func() { _ = rootFile.Close() }()
 
 	roots, err := untrackedRoots(reported)
@@ -161,6 +158,10 @@ func collectPathAt(root *os.File, rootPath, relative string, entries *[]Untracke
 }
 
 func collectEntryAt(parent *os.File, rootPath, relative, name string, entries *[]UntrackedEntry, depth int) error {
+	return collectEntryAtWithNames(parent, rootPath, relative, name, entries, depth, directoryNames)
+}
+
+func collectEntryAtWithNames(parent *os.File, rootPath, relative, name string, entries *[]UntrackedEntry, depth int, listNames func(*os.File, string) ([]string, error)) error {
 	var stat unix.Stat_t
 	if err := unix.Fstatat(int(parent.Fd()), name, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 		return fmt.Errorf("inspect untracked path %s: %w", relative, err)
@@ -185,13 +186,13 @@ func collectEntryAt(parent *os.File, rootPath, relative, name string, entries *[
 			return err
 		}
 		defer func() { _ = child.Close() }()
-		names, err := directoryNames(child, relative)
+		names, err := listNames(child, relative)
 		if err != nil {
 			return err
 		}
 		for _, childName := range names {
 			childRelative := relative + "/" + childName
-			if err := collectEntryAt(child, rootPath, childRelative, childName, entries, depth+1); err != nil {
+			if err := collectEntryAtWithNames(child, rootPath, childRelative, childName, entries, depth+1, listNames); err != nil {
 				return err
 			}
 		}
@@ -216,10 +217,6 @@ func openParentAt(root *os.File, rootPath, relative string) (*os.File, string, e
 		return nil, "", fmt.Errorf("open clone root for %s: %w", relative, err)
 	}
 	parent := os.NewFile(uintptr(parentFD), rootPath)
-	if parent == nil {
-		_ = unix.Close(parentFD)
-		return nil, "", fmt.Errorf("wrap clone root for %s", relative)
-	}
 	for _, part := range parts[:len(parts)-1] {
 		var stat unix.Stat_t
 		if err := unix.Fstatat(int(parent.Fd()), part, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
@@ -241,17 +238,21 @@ func openParentAt(root *os.File, rootPath, relative string) (*os.File, string, e
 }
 
 func openDirectoryAt(parent *os.File, path, name string, expected unix.Stat_t) (*os.File, error) {
+	return openDirectoryAtWithStat(parent, path, name, expected, statOpenedFile)
+}
+
+func statOpenedFile(file *os.File, stat *unix.Stat_t) error {
+	return unix.Fstat(int(file.Fd()), stat)
+}
+
+func openDirectoryAtWithStat(parent *os.File, path, name string, expected unix.Stat_t, inspect func(*os.File, *unix.Stat_t) error) (*os.File, error) {
 	fd, err := unix.Openat(int(parent.Fd()), name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open untracked directory %s: %w", path, err)
 	}
 	file := os.NewFile(uintptr(fd), path)
-	if file == nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("wrap untracked directory %s", path)
-	}
 	var actual unix.Stat_t
-	if err := unix.Fstat(fd, &actual); err != nil {
+	if err := inspect(file, &actual); err != nil {
 		_ = file.Close()
 		return nil, fmt.Errorf("inspect opened untracked directory %s: %w", path, err)
 	}
@@ -263,42 +264,42 @@ func openDirectoryAt(parent *os.File, path, name string, expected unix.Stat_t) (
 }
 
 func hashFileAt(parent *os.File, relative, name string, expected unix.Stat_t) (string, error) {
+	return hashFileAtWithIO(parent, relative, name, expected, statOpenedFile, io.Copy)
+}
+
+func hashFileAtWithIO(parent *os.File, relative, name string, expected unix.Stat_t, inspect func(*os.File, *unix.Stat_t) error, copyContent func(io.Writer, io.Reader) (int64, error)) (string, error) {
 	fd, err := unix.Openat(int(parent.Fd()), name, unix.O_RDONLY|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return "", fmt.Errorf("open untracked file %s: %w", relative, err)
 	}
 	file := os.NewFile(uintptr(fd), relative)
-	if file == nil {
-		_ = unix.Close(fd)
-		return "", fmt.Errorf("wrap untracked file %s", relative)
-	}
 	defer func() { _ = file.Close() }()
 	var actual unix.Stat_t
-	if err := unix.Fstat(fd, &actual); err != nil {
+	if err := inspect(file, &actual); err != nil {
 		return "", fmt.Errorf("inspect opened untracked file %s: %w", relative, err)
 	}
 	if actual.Dev != expected.Dev || actual.Ino != expected.Ino || actual.Size != expected.Size {
 		return "", fmt.Errorf("untracked file %s was replaced while planning", relative)
 	}
 	hash := sha256.New()
-	if _, err := io.Copy(hash, file); err != nil {
+	if _, err := copyContent(hash, file); err != nil {
 		return "", fmt.Errorf("hash untracked file %s: %w", relative, err)
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func directoryNames(directory *os.File, path string) ([]string, error) {
+	return directoryNamesWithRead(directory, path, func(file *os.File) ([]string, error) { return file.Readdirnames(-1) })
+}
+
+func directoryNamesWithRead(directory *os.File, path string, readNames func(*os.File) ([]string, error)) ([]string, error) {
 	fd, err := unix.Openat(int(directory.Fd()), ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, fmt.Errorf("list untracked directory %s: %w", path, err)
 	}
 	listing := os.NewFile(uintptr(fd), path)
-	if listing == nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("wrap listing descriptor for %s", path)
-	}
 	defer func() { _ = listing.Close() }()
-	names, err := listing.Readdirnames(-1)
+	names, err := readNames(listing)
 	if err != nil {
 		return nil, fmt.Errorf("list untracked directory %s: %w", path, err)
 	}
@@ -307,6 +308,12 @@ func directoryNames(directory *os.File, path string) ([]string, error) {
 }
 
 func deleteExactUntracked(ctx context.Context, root string, planned []UntrackedEntry) error {
+	return deleteExactUntrackedWithOpen(ctx, root, planned, func(path string) (int, error) {
+		return unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	})
+}
+
+func deleteExactUntrackedWithOpen(ctx context.Context, root string, planned []UntrackedEntry, openRoot func(string) (int, error)) error {
 	if len(planned) == 0 {
 		return fmt.Errorf("%w: empty plan", errUntrackedPlanDrift)
 	}
@@ -323,15 +330,11 @@ func deleteExactUntracked(ctx context.Context, root string, planned []UntrackedE
 		return fmt.Errorf("%w: paths, descriptors, or file content changed after the dry-run itemization", errUntrackedPlanDrift)
 	}
 
-	rootFD, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	rootFD, err := openRoot(root)
 	if err != nil {
 		return fmt.Errorf("open clone root for deletion: %w", err)
 	}
 	rootFile := os.NewFile(uintptr(rootFD), root)
-	if rootFile == nil {
-		_ = unix.Close(rootFD)
-		return fmt.Errorf("wrap clone root deletion descriptor")
-	}
 	defer func() { _ = rootFile.Close() }()
 
 	manifest := make(map[string]UntrackedEntry, len(planned))
@@ -375,6 +378,10 @@ func samePlan(want, got []UntrackedEntry) bool {
 }
 
 func removeExactPathAt(root *os.File, rootPath, relative string, manifest map[string]UntrackedEntry, depth int) error {
+	return removeExactPathAtWithNames(root, rootPath, relative, manifest, depth, directoryNames)
+}
+
+func removeExactPathAtWithNames(root *os.File, rootPath, relative string, manifest map[string]UntrackedEntry, depth int, listNames func(*os.File, string) ([]string, error)) error {
 	if depth > untrackedMaxDepth {
 		return fmt.Errorf("%w: untracked path %s nests too deeply", errUntrackedPlanDrift, relative)
 	}
@@ -410,7 +417,7 @@ func removeExactPathAt(root *os.File, rootPath, relative string, manifest map[st
 	if err != nil {
 		return fmt.Errorf("%w: %v", errUntrackedPlanDrift, err)
 	}
-	names, err := directoryNames(child, relative)
+	names, err := listNames(child, relative)
 	if err != nil {
 		_ = child.Close()
 		return err
@@ -424,7 +431,7 @@ func removeExactPathAt(root *os.File, rootPath, relative string, manifest map[st
 	}
 	_ = child.Close()
 	for _, childName := range names {
-		if err := removeExactPathAt(root, rootPath, relative+"/"+childName, manifest, depth+1); err != nil {
+		if err := removeExactPathAtWithNames(root, rootPath, relative+"/"+childName, manifest, depth+1, listNames); err != nil {
 			return err
 		}
 	}
@@ -461,42 +468,56 @@ func writeArchiveCleanReceipt(projectsRoot string, receipt archiveCleanReceipt) 
 }
 
 func overwriteArchiveCleanReceipt(path string, receipt archiveCleanReceipt) error {
+	return overwriteArchiveCleanReceiptInjected(path, receipt, nil)
+}
+
+// overwriteArchiveCleanReceiptInjected is overwriteArchiveCleanReceipt's
+// test seam (task-9 PR-8): every production call site reaches it only
+// through overwriteArchiveCleanReceipt, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged. A test
+// passes its own Injector to reach the create/chmod/write/sync/close/
+// rename/dir-sync failure branches deterministically.
+func overwriteArchiveCleanReceiptInjected(path string, receipt archiveCleanReceipt, inj *filewrite.Injector) error {
+	return overwriteArchiveCleanReceiptWithOpen(path, receipt, inj, os.Open)
+}
+
+func overwriteArchiveCleanReceiptWithOpen(path string, receipt archiveCleanReceipt, inj *filewrite.Injector, openDirectory func(string) (*os.File, error)) error {
 	raw, err := json.MarshalIndent(receipt, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode archive-clean receipt: %w", err)
 	}
 	raw = append(raw, '\n')
 	directory := filepath.Dir(path)
-	temp, err := os.CreateTemp(directory, ".archive-clean-receipt-*")
+	temp, err := filewrite.CreateTemp(directory, ".archive-clean-receipt-*", inj)
 	if err != nil {
 		return fmt.Errorf("create archive-clean receipt: %w", err)
 	}
 	tempName := temp.Name()
 	defer func() { _ = os.Remove(tempName) }()
-	if err := temp.Chmod(0o600); err != nil {
-		_ = temp.Close()
+	if err := filewrite.ChmodFile(temp, 0o600, tempName, inj); err != nil {
+		_ = filewrite.Close(temp, tempName, inj)
 		return fmt.Errorf("protect archive-clean receipt: %w", err)
 	}
-	if _, err := temp.Write(raw); err != nil {
-		_ = temp.Close()
+	if err := filewrite.Write(temp, raw, tempName, inj); err != nil {
+		_ = filewrite.Close(temp, tempName, inj)
 		return fmt.Errorf("write archive-clean receipt: %w", err)
 	}
-	if err := temp.Sync(); err != nil {
-		_ = temp.Close()
+	if err := filewrite.Sync(temp, tempName, inj); err != nil {
+		_ = filewrite.Close(temp, tempName, inj)
 		return fmt.Errorf("sync archive-clean receipt: %w", err)
 	}
-	if err := temp.Close(); err != nil {
+	if err := filewrite.Close(temp, tempName, inj); err != nil {
 		return fmt.Errorf("close archive-clean receipt: %w", err)
 	}
-	if err := os.Rename(tempName, path); err != nil {
+	if err := filewrite.Rename(tempName, path, inj); err != nil {
 		return fmt.Errorf("publish archive-clean receipt: %w", err)
 	}
-	dir, err := os.Open(directory)
+	dir, err := openDirectory(directory)
 	if err != nil {
 		return fmt.Errorf("open archive-clean receipt directory: %w", err)
 	}
 	defer func() { _ = dir.Close() }()
-	if err := dir.Sync(); err != nil {
+	if err := filewrite.SyncDir(dir, inj); err != nil {
 		return fmt.Errorf("sync archive-clean receipt directory: %w", err)
 	}
 	return nil

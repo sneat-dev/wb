@@ -16,6 +16,7 @@ func (alwaysOpenPR) OpenPullRequest(string) (bool, bool) { return true, true }
 // stream test precedes the publication test. The lookup below returns "open"
 // for every branch precisely to prove that ordering.
 func TestPushToAStreamBranchRunsNoLocalVerification(t *testing.T) {
+	t.Parallel()
 	classification := ClassifyPushTier([]RefUpdate{{
 		LocalRef: "refs/heads/stream/checkout", LocalSHA: "abc",
 		RemoteRef: "refs/heads/stream/checkout", RemoteSHA: "def",
@@ -35,6 +36,7 @@ func TestPushToAStreamBranchRunsNoLocalVerification(t *testing.T) {
 // The other half of the same AC: a push to any other branch runs the current
 // full profile, unchanged.
 func TestPushToANonStreamBranchKeepsTheCurrentProfile(t *testing.T) {
+	t.Parallel()
 	classification := ClassifyPushTier([]RefUpdate{{
 		LocalRef: "refs/heads/feature/x", LocalSHA: "abc",
 		RemoteRef: "refs/heads/feature/x", RemoteSHA: "def",
@@ -48,6 +50,7 @@ func TestPushToANonStreamBranchKeepsTheCurrentProfile(t *testing.T) {
 // is a path prefix, and a substring match would silently disable verification
 // on an ordinary feature branch.
 func TestABranchThatMerelyMentionsStreamIsNotAStreamBranch(t *testing.T) {
+	t.Parallel()
 	classification := ClassifyPushTier([]RefUpdate{{
 		RemoteRef: "refs/heads/feature/stream-thing", LocalSHA: "abc", RemoteSHA: "def",
 		LocalRef: "refs/heads/feature/stream-thing",
@@ -60,6 +63,7 @@ func TestABranchThatMerelyMentionsStreamIsNotAStreamBranch(t *testing.T) {
 // A push that mixes a stream branch with the default branch is still a
 // publication push: the stream exemption never lowers the overall decision.
 func TestAMixedPushKeepsTheHighestTier(t *testing.T) {
+	t.Parallel()
 	classification := ClassifyPushTier([]RefUpdate{
 		{RemoteRef: "refs/heads/stream/checkout", LocalRef: "refs/heads/stream/checkout", LocalSHA: "a", RemoteSHA: "b"},
 		{RemoteRef: "refs/heads/main", LocalRef: "refs/heads/main", LocalSHA: "c", RemoteSHA: "d"},
@@ -71,6 +75,7 @@ func TestAMixedPushKeepsTheHighestTier(t *testing.T) {
 
 // A skip must still say why, so "fast" is never indistinguishable from "hung".
 func TestASkippedPushExplainsItself(t *testing.T) {
+	t.Parallel()
 	classification := ClassifyPushTier([]RefUpdate{{
 		RemoteRef: "refs/heads/stream/x", LocalRef: "refs/heads/stream/x", LocalSHA: "a", RemoteSHA: "b",
 	}}, "main", nil)
@@ -82,6 +87,7 @@ func TestASkippedPushExplainsItself(t *testing.T) {
 // REQ: commit-hook-is-fast-and-scoped — every built-in commit hook is scoped to
 // the files changed in that commit and never runs a test suite.
 func TestBuiltInCommitHooksAreScopedAndRunNoTests(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{BuiltinGoPreCommit, BuiltinNodePreCommit} {
 		template, ok := builtinTemplate(name)
 		if !ok {
@@ -101,6 +107,7 @@ func TestBuiltInCommitHooksAreScopedAndRunNoTests(t *testing.T) {
 // The Node commit hook must not fail a repository for lacking a tool it did not
 // install, and must not run at all where there is no package.json.
 func TestNodeCommitHookIsInertWithoutAPackageManifestOrTooling(t *testing.T) {
+	t.Parallel()
 	template, ok := builtinTemplate(BuiltinNodePreCommit)
 	if !ok {
 		t.Fatal("no built-in node pre-commit template")
@@ -119,6 +126,7 @@ func TestNodeCommitHookIsInertWithoutAPackageManifestOrTooling(t *testing.T) {
 // The node profile must actually install the commit hook, or the scoping above
 // is unreachable.
 func TestNodeProfileInstallsACommitHook(t *testing.T) {
+	t.Parallel()
 	definition, ok := builtinProfileDefinitions()["node"]
 	if !ok {
 		t.Fatal("no built-in node profile")

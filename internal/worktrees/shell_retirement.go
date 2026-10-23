@@ -64,6 +64,11 @@ func RetireTaskShells(ctx context.Context, options RetireShellsOptions) (RetireS
 	if err != nil {
 		return RetireShellsOutcome{}, err
 	}
+	return retireResolvedTaskShells(ctx, options, resolution)
+}
+
+// retireResolvedTaskShells keeps the resolved read inventory fixed throughout the sweep.
+func retireResolvedTaskShells(ctx context.Context, options RetireShellsOptions, resolution wbhome.Resolution) (RetireShellsOutcome, error) {
 	seenRoots := map[string]bool{}
 	var results []RetiredShell
 	for _, layout := range resolution.Read {
@@ -150,7 +155,22 @@ func inspectTaskShell(worktreesRoot, task string) RetiredShell {
 // already reclaimed and holds that exact lock itself — lockHeldByThisCall
 // tells the check to treat that one expected `.lock` as ignorable residue
 // rather than mistaking its own lock for someone else's live operation.
+type shellInspectionPhase string
+
+const (
+	shellAfterTaskEnumeration        shellInspectionPhase = "after_task_enumeration"
+	shellBeforeOwnerInspection       shellInspectionPhase = "before_owner_inspection"
+	shellAfterOwnerEnumeration       shellInspectionPhase = "after_owner_enumeration"
+	shellBeforeRepositoryEnumeration shellInspectionPhase = "before_repository_enumeration"
+)
+
+type shellInspectionObserver func(shellInspectionPhase, string)
+
 func taskShellIsEmpty(taskPath, task string, lockHeldByThisCall bool) (bool, string) {
+	return taskShellIsEmptyObserved(taskPath, task, lockHeldByThisCall, nil)
+}
+
+func taskShellIsEmptyObserved(taskPath, task string, lockHeldByThisCall bool, observe shellInspectionObserver) (bool, string) {
 	taskInfo, err := os.Lstat(taskPath)
 	if err != nil {
 		return false, fmt.Sprintf("stat task directory: %v", err)
@@ -164,6 +184,9 @@ func taskShellIsEmpty(taskPath, task string, lockHeldByThisCall bool) (bool, str
 		return false, fmt.Sprintf("read task directory: %v", err)
 	}
 
+	if observe != nil {
+		observe(shellAfterTaskEnumeration, taskPath)
+	}
 	var ownerDirs []string
 	for _, entry := range entries {
 		name := entry.Name()
@@ -200,6 +223,9 @@ func taskShellIsEmpty(taskPath, task string, lockHeldByThisCall bool) (bool, str
 	}
 
 	for _, owner := range ownerDirs {
+		if observe != nil {
+			observe(shellBeforeOwnerInspection, filepath.Join(taskPath, owner))
+		}
 		empty, err := ownerDirectoryIsProvablyEmpty(filepath.Join(taskPath, owner))
 		if err != nil {
 			return false, fmt.Sprintf("inspect %s/%s: %v", task, owner, err)
@@ -220,6 +246,10 @@ func taskShellIsEmpty(taskPath, task string, lockHeldByThisCall bool) (bool, str
 // repository directory that still holds something, most importantly a real
 // `.git` — is conservatively "not empty" so it is left untouched.
 func ownerDirectoryIsProvablyEmpty(ownerPath string) (bool, error) {
+	return ownerDirectoryIsProvablyEmptyObserved(ownerPath, nil)
+}
+
+func ownerDirectoryIsProvablyEmptyObserved(ownerPath string, observe shellInspectionObserver) (bool, error) {
 	info, err := os.Lstat(ownerPath)
 	if err != nil {
 		return false, err
@@ -231,6 +261,9 @@ func ownerDirectoryIsProvablyEmpty(ownerPath string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	if observe != nil {
+		observe(shellAfterOwnerEnumeration, ownerPath)
+	}
 	for _, entry := range entries {
 		repositoryPath := filepath.Join(ownerPath, entry.Name())
 		repositoryInfo, err := os.Lstat(repositoryPath)
@@ -239,6 +272,9 @@ func ownerDirectoryIsProvablyEmpty(ownerPath string) (bool, error) {
 		}
 		if repositoryInfo.Mode()&os.ModeSymlink != 0 || !repositoryInfo.IsDir() {
 			return false, nil
+		}
+		if observe != nil {
+			observe(shellBeforeRepositoryEnumeration, repositoryPath)
 		}
 		children, err := os.ReadDir(repositoryPath)
 		if err != nil {
@@ -259,6 +295,21 @@ func ownerDirectoryIsProvablyEmpty(ownerPath string) (bool, error) {
 // construction that no operation holds it. Everything is rechecked fresh
 // under that lock before anything is removed.
 func applyTaskShellRetirement(result *RetiredShell) {
+	applyTaskShellRetirementWithHooks(result, taskShellRetirementHooks{})
+}
+
+type taskShellRetirementHooks struct {
+	afterLock              func()
+	afterRecheck           func()
+	beforeStageRemoval     func(string)
+	beforeOwnerRead        func(string)
+	beforeRepositoryRemove func(string)
+	beforeOwnerRemove      func(string)
+	beforeLockRelease      func()
+	beforeTaskRemove       func()
+}
+
+func applyTaskShellRetirementWithHooks(result *RetiredShell, hooks taskShellRetirementHooks) {
 	task, err := acquireCleanupTaskAt(result.WorktreesRoot, result.Task)
 	if err != nil {
 		result.Error = err.Error()
@@ -285,6 +336,9 @@ func applyTaskShellRetirement(result *RetiredShell) {
 		}
 		task.close()
 	}()
+	if hooks.afterLock != nil {
+		hooks.afterLock()
+	}
 
 	// Recheck under the lock: nothing may have changed between the read-only
 	// scan above and acquiring exclusive access, but this is the same
@@ -295,6 +349,9 @@ func applyTaskShellRetirement(result *RetiredShell) {
 	if !eligible {
 		result.Reason = reason
 		return
+	}
+	if hooks.afterRecheck != nil {
+		hooks.afterRecheck()
 	}
 
 	entries, err := os.ReadDir(result.Path)
@@ -309,6 +366,9 @@ func applyTaskShellRetirement(result *RetiredShell) {
 		}
 		if isRetiredWorktreeStagingDirectory(name) {
 			mutationStarted = true
+			if hooks.beforeStageRemoval != nil {
+				hooks.beforeStageRemoval(filepath.Join(result.Path, name))
+			}
 			if rmErr := os.Remove(filepath.Join(result.Path, name)); rmErr != nil {
 				result.Error = fmt.Sprintf("remove empty retired stage: %v", rmErr)
 				return
@@ -317,16 +377,26 @@ func applyTaskShellRetirement(result *RetiredShell) {
 		}
 		mutationStarted = true
 		ownerPath := filepath.Join(result.Path, name)
+		if hooks.beforeOwnerRead != nil {
+			hooks.beforeOwnerRead(ownerPath)
+		}
 		repositoryEntries, err := os.ReadDir(ownerPath)
 		if err != nil {
 			result.Error = fmt.Sprintf("re-read owner directory %s: %v", ownerPath, err)
 			return
 		}
 		for _, repository := range repositoryEntries {
-			if rmErr := os.Remove(filepath.Join(ownerPath, repository.Name())); rmErr != nil {
+			repositoryPath := filepath.Join(ownerPath, repository.Name())
+			if hooks.beforeRepositoryRemove != nil {
+				hooks.beforeRepositoryRemove(repositoryPath)
+			}
+			if rmErr := os.Remove(repositoryPath); rmErr != nil {
 				result.Error = fmt.Sprintf("remove empty repository directory: %v", rmErr)
 				return
 			}
+		}
+		if hooks.beforeOwnerRemove != nil {
+			hooks.beforeOwnerRemove(ownerPath)
 		}
 		if rmErr := os.Remove(ownerPath); rmErr != nil {
 			result.Error = fmt.Sprintf("remove empty owner directory: %v", rmErr)
@@ -334,6 +404,9 @@ func applyTaskShellRetirement(result *RetiredShell) {
 		}
 	}
 
+	if hooks.beforeLockRelease != nil {
+		hooks.beforeLockRelease()
+	}
 	if err := task.lock.release(); err != nil {
 		result.Error = fmt.Sprintf("quarantine reclaimed operation lock: %v", err)
 		return
@@ -350,6 +423,9 @@ func applyTaskShellRetirement(result *RetiredShell) {
 	// way that is recorded as an unapplied error rather than a false
 	// "retired", and the directory — whatever is now in it — is left
 	// exactly as-is for the next sweep or an operator to inspect.
+	if hooks.beforeTaskRemove != nil {
+		hooks.beforeTaskRemove()
+	}
 	if rmErr := os.Remove(result.Path); rmErr != nil {
 		result.Error = fmt.Sprintf("remove empty task directory: %v", rmErr)
 		return

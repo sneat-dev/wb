@@ -1,0 +1,1050 @@
+package integration
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/sneat-dev/wb/internal/secretscan"
+	"github.com/sneat-dev/wb/internal/session"
+	"github.com/sneat-dev/wb/internal/sessioncourier"
+	"github.com/sneat-dev/wb/internal/sessioncustody"
+	"github.com/sneat-dev/wb/internal/sessionlaunch"
+	"github.com/sneat-dev/wb/internal/sessionmove"
+	"github.com/sneat-dev/wb/internal/sessionreceive"
+	"github.com/sneat-dev/wb/internal/sessionrun"
+	"github.com/sneat-dev/wb/internal/worktrees"
+)
+
+type delivererFunc func(context.Context, []byte) (sessionreceive.Result, error)
+
+func (f delivererFunc) Deliver(ctx context.Context, raw []byte) (sessionreceive.Result, error) {
+	return f(ctx, raw)
+}
+
+func TestSessionMoveCommandCheckpointsThenDeliversThroughSSH(t *testing.T) {
+	t.Parallel()
+	source := session.Record{
+		PID: 123, WBSessionID: "wbs-source", Machine: "laptop", Runtime: "codex",
+		Model: "gpt-5", StartedAt: time.Now().UTC(),
+	}
+	var captured worktrees.SessionCheckpointOptions
+	store := sessionmove.NewStore(t.TempDir())
+	var delivered []byte
+	acknowledgements := 0
+	deps := sessionrun.MoveDependencies{
+		DefaultConfigPath: func() string { return "/unused/default.yaml" },
+		LoadConfig: func(path string) (sessionmove.Config, error) {
+			if path != "/tmp/wb.yaml" {
+				t.Fatalf("config path = %q", path)
+			}
+			return sessionmove.Config{Targets: map[string]sessionmove.TargetConfig{
+				"hetzner-vm1": {
+					Machine: "hetzner-vm1", DefaultCourier: sessionmove.CourierSSH,
+					SSH: &sessionmove.SSHConfig{Host: "hetzner-vm1"},
+				},
+			}}, nil
+		},
+		ResolveSource: func(_ string) (session.Record, bool, error) { return source, true, nil },
+		Store:         func(string) (sessionmove.Store, error) { return store, nil },
+		NewDeliverer: func(sessionmove.TargetConfig, sessionmove.Courier, sessioncourier.SynchestraOptions) (sessioncourier.Deliverer, error) {
+			return delivererFunc(func(_ context.Context, raw []byte) (sessionreceive.Result, error) {
+				delivered = append([]byte(nil), raw...)
+				request, err := sessionmove.DecodeRequest(raw)
+				if err != nil {
+					return sessionreceive.Result{}, err
+				}
+				return completedMoveTestDelivery(t, request, raw, true), nil
+			}), nil
+		},
+		Checkpoint: func(_ context.Context, options worktrees.SessionCheckpointOptions) (worktrees.SessionCheckpointResult, error) {
+			captured = options
+			request := completeMoveTestRequest(sessionmove.Request{
+				SchemaVersion: sessionmove.RequestSchemaVersion, HandoffID: "handoff-123", SuccessorWBSessionID: "wbs-successor",
+				PredecessorWBSessionID: "wbs-source", SourceMachine: "laptop", TargetMachine: "hetzner-vm1",
+				RepositoryRemote: "/tmp/acme/app.git", Branch: "feature/session", SourceWorkCommit: strings.Repeat("b", 40),
+				BundleCommit: strings.Repeat("a", 40), HandoverPath: ".wb/handoffs/handoff-123.md",
+				HandoverDigest: sessionmove.DigestBytes([]byte("handover")), SourceRuntime: "codex", SourceModel: "gpt-5",
+				RequestedHarness: "claude-code", CreatedAt: time.Now().UTC(),
+			})
+			raw, err := sessionmove.EncodeRequest(request)
+			if err != nil {
+				return worktrees.SessionCheckpointResult{}, err
+			}
+			digest := sessionmove.DigestBytes(raw)
+			if _, err := store.Admit(raw, digest); err != nil {
+				return worktrees.SessionCheckpointResult{}, err
+			}
+			return worktrees.SessionCheckpointResult{Request: request, Digest: digest, RequestBytes: raw}, nil
+		},
+		Acknowledge: func(_ context.Context, options sessioncustody.Options) (sessioncustody.Result, error) {
+			acknowledgements++
+			if options.SourceSession != source {
+				t.Fatalf("acknowledgement source = %#v", options.SourceSession)
+			}
+			return completedMoveTestAcknowledgement(t, options), nil
+		},
+	}
+
+	command := moveCommand("", deps)
+	command.SetArgs([]string{
+		"--to", "hetzner-vm1", "--via", "ssh", "--config", "/tmp/wb.yaml",
+		"--handover-file", "-", "--summary", "source summary",
+		"--validation", "go test ./...", "--remaining", "receive on target",
+		"--harness", "claude-code", "--format", "json", "/repo/worktree",
+	})
+	command.SetIn(strings.NewReader("agent-authored continuation\n"))
+	var output bytes.Buffer
+	command.SetOut(&output)
+	if err := command.Execute(); err != nil {
+		t.Fatalf("session move: %v", err)
+	}
+	if captured.ProjectsRoot != "" || captured.Worktree != "/repo/worktree" || captured.SourceSession.WBSessionID != "wbs-source" ||
+		captured.TargetMachine != "hetzner-vm1" || captured.RequestedHarness != "claude-code" ||
+		captured.Handover.Summary != "source summary" || captured.Handover.ValidationEvidence != "go test ./..." ||
+		captured.Handover.RemainingWork != "receive on target" || string(captured.Handover.Body) != "agent-authored continuation\n" {
+		t.Fatalf("checkpoint options = %#v", captured)
+	}
+	var rendered sessionrun.MoveResult
+	if err := json.Unmarshal(output.Bytes(), &rendered); err != nil {
+		t.Fatalf("decode output %q: %v", output.String(), err)
+	}
+	if rendered.Phase != string(sessionmove.PhaseCompleted) || rendered.Courier != sessionmove.CourierSSH || rendered.SourceActive ||
+		rendered.Request.HandoffID != "handoff-123" || rendered.Receipt == nil || rendered.Address == nil || acknowledgements != 1 {
+		t.Fatalf("output = %#v", rendered)
+	}
+	if !bytes.Equal(delivered, mustEncodeMoveTestRequest(t, rendered.Request)) {
+		t.Fatal("courier did not receive exact checkpoint bytes")
+	}
+}
+
+func TestSessionMoveSameMachineUsesLoopbackCourier(t *testing.T) {
+	t.Parallel()
+	source := session.Record{
+		PID: 123, WBSessionID: "wbs-source", Machine: "laptop", Runtime: "codex",
+		Model: "gpt-5", StartedAt: time.Now().UTC(),
+	}
+	var captured worktrees.SessionCheckpointOptions
+	store := sessionmove.NewStore(t.TempDir())
+	var delivered []byte
+	sshFactory := false
+	deps := sessionrun.MoveDependencies{
+		DefaultConfigPath: func() string { return "/unused/default.yaml" },
+		LoadConfig: func(string) (sessionmove.Config, error) {
+			t.Fatal("local loopback must not load session_move targets")
+			return sessionmove.Config{}, nil
+		},
+		LocalMachine:  func() (string, error) { return "laptop", nil },
+		ResolveSource: func(_ string) (session.Record, bool, error) { return source, true, nil },
+		Store:         func(string) (sessionmove.Store, error) { return store, nil },
+		NewDeliverer: func(sessionmove.TargetConfig, sessionmove.Courier, sessioncourier.SynchestraOptions) (sessioncourier.Deliverer, error) {
+			sshFactory = true
+			return nil, errors.New("ssh factory must not run for loopback")
+		},
+		LoopbackDeliverer: func(sessionmove.Store) sessioncourier.Deliverer {
+			return delivererFunc(func(_ context.Context, raw []byte) (sessionreceive.Result, error) {
+				delivered = append([]byte(nil), raw...)
+				request, err := sessionmove.DecodeRequest(raw)
+				if err != nil {
+					return sessionreceive.Result{}, err
+				}
+				return completedMoveTestDelivery(t, request, raw, true), nil
+			})
+		},
+		Checkpoint: func(_ context.Context, options worktrees.SessionCheckpointOptions) (worktrees.SessionCheckpointResult, error) {
+			captured = options
+			request := completeMoveTestRequest(sessionmove.Request{
+				SchemaVersion: sessionmove.RequestSchemaVersion, HandoffID: "handoff-loopback", SuccessorWBSessionID: "wbs-successor",
+				PredecessorWBSessionID: "wbs-source", SourceMachine: "laptop", TargetMachine: "laptop",
+				RepositoryRemote: "/tmp/acme/app.git", Branch: "feature/session", SourceWorkCommit: strings.Repeat("b", 40),
+				BundleCommit: strings.Repeat("a", 40), HandoverPath: ".wb/handoffs/handoff-loopback.md",
+				HandoverDigest: sessionmove.DigestBytes([]byte("handover")), SourceRuntime: "codex", SourceModel: "gpt-5",
+				RequestedHarness: "claude-code", RequestedModel: "opus", CreatedAt: time.Now().UTC(),
+			})
+			raw, err := sessionmove.EncodeRequest(request)
+			if err != nil {
+				return worktrees.SessionCheckpointResult{}, err
+			}
+			digest := sessionmove.DigestBytes(raw)
+			if _, err := store.Admit(raw, digest); err != nil {
+				return worktrees.SessionCheckpointResult{}, err
+			}
+			return worktrees.SessionCheckpointResult{Request: request, Digest: digest, RequestBytes: raw}, nil
+		},
+		Acknowledge: func(_ context.Context, options sessioncustody.Options) (sessioncustody.Result, error) {
+			return completedMoveTestAcknowledgement(t, options), nil
+		},
+	}
+
+	command := moveCommand("", deps)
+	command.SetArgs([]string{
+		"--handover-file", "-", "--harness", "claude", "--model", "opus", "--format", "json",
+	})
+	command.SetIn(strings.NewReader("continue locally\n"))
+	var output bytes.Buffer
+	command.SetOut(&output)
+	if err := command.Execute(); err != nil {
+		t.Fatalf("session move: %v", err)
+	}
+	if sshFactory {
+		t.Fatal("loopback move used a remote courier factory")
+	}
+	if captured.TargetMachine != "laptop" || captured.RequestedHarness != "claude-code" || captured.RequestedModel != "opus" {
+		t.Fatalf("checkpoint options = %#v", captured)
+	}
+	var rendered sessionrun.MoveResult
+	if err := json.Unmarshal(output.Bytes(), &rendered); err != nil {
+		t.Fatalf("decode output %q: %v", output.String(), err)
+	}
+	if rendered.Courier != sessionmove.CourierLoopback || rendered.Request.TargetMachine != "laptop" {
+		t.Fatalf("output = %#v", rendered)
+	}
+	if !bytes.Equal(delivered, mustEncodeMoveTestRequest(t, rendered.Request)) {
+		t.Fatal("loopback courier did not receive exact checkpoint bytes")
+	}
+}
+
+// TestSessionMoveLoopbackCourierConstructsTheRealDelivererWhenNotOverridden
+// proves session_move.go:260 (the real sessioncourier.LoopbackDeliverer
+// construction) is reached: every other loopback test in this file injects
+// deps.LoopbackDeliverer, so this exact branch of the default dependencies
+// was never taken. It reuses TestSessionMoveSameMachineUsesLoopbackCourier's
+// fixture but leaves loopbackDeliverer nil, so the command falls through to
+// the real deliverer and calls its real, in-process Deliver.
+func TestSessionMoveLoopbackCourierConstructsTheRealDelivererWhenNotOverridden(t *testing.T) {
+	t.Parallel()
+	source := session.Record{
+		PID: 123, WBSessionID: "wbs-source", Machine: "laptop", Runtime: "codex",
+		Model: "gpt-5", StartedAt: time.Now().UTC(),
+	}
+	store := sessionmove.NewStore(t.TempDir())
+	sshFactory := false
+	deps := sessionrun.MoveDependencies{
+		DefaultConfigPath: func() string { return "/unused/default.yaml" },
+		LoadConfig: func(string) (sessionmove.Config, error) {
+			t.Fatal("local loopback must not load session_move targets")
+			return sessionmove.Config{}, nil
+		},
+		LocalMachine:  func() (string, error) { return "laptop", nil },
+		ResolveSource: func(_ string) (session.Record, bool, error) { return source, true, nil },
+		Store:         func(string) (sessionmove.Store, error) { return store, nil },
+		NewDeliverer: func(sessionmove.TargetConfig, sessionmove.Courier, sessioncourier.SynchestraOptions) (sessioncourier.Deliverer, error) {
+			sshFactory = true
+			return nil, errors.New("ssh factory must not run for loopback")
+		},
+		Checkpoint: func(_ context.Context, options worktrees.SessionCheckpointOptions) (worktrees.SessionCheckpointResult, error) {
+			request := completeMoveTestRequest(sessionmove.Request{
+				SchemaVersion: sessionmove.RequestSchemaVersion, HandoffID: "handoff-loopback-real", SuccessorWBSessionID: "wbs-successor",
+				PredecessorWBSessionID: "wbs-source", SourceMachine: "laptop", TargetMachine: "laptop",
+				RepositoryRemote: "/tmp/acme/app.git", Branch: "feature/session", SourceWorkCommit: strings.Repeat("b", 40),
+				BundleCommit: strings.Repeat("a", 40), HandoverPath: ".wb/handoffs/handoff-loopback-real.md",
+				HandoverDigest: sessionmove.DigestBytes([]byte("handover")), SourceRuntime: "codex", SourceModel: "gpt-5",
+				RequestedHarness: "claude-code", RequestedModel: "opus", CreatedAt: time.Now().UTC(),
+			})
+			raw, err := sessionmove.EncodeRequest(request)
+			if err != nil {
+				return worktrees.SessionCheckpointResult{}, err
+			}
+			digest := sessionmove.DigestBytes(raw)
+			if _, err := store.Admit(raw, digest); err != nil {
+				return worktrees.SessionCheckpointResult{}, err
+			}
+			return worktrees.SessionCheckpointResult{Request: request, Digest: digest, RequestBytes: raw}, nil
+		},
+		Acknowledge: func(_ context.Context, options sessioncustody.Options) (sessioncustody.Result, error) {
+			return completedMoveTestAcknowledgement(t, options), nil
+		},
+	}
+
+	command := moveCommand("", deps)
+	command.SetArgs([]string{
+		"--handover-file", "-", "--harness", "claude", "--model", "opus", "--format", "json",
+	})
+	command.SetIn(strings.NewReader("continue locally\n"))
+	var output bytes.Buffer
+	command.SetOut(&output)
+	// The real loopback deliverer calls the real sessionreceive.Receive
+	// against this checkpoint's fabricated request. With no real projects
+	// root behind it, Receive genuinely cannot derive a target worktree -
+	// that specific, deep failure (rather than "not configured" or a panic)
+	// is exactly what proves the real deliverer was constructed and invoked.
+	err := command.Execute()
+	if err == nil || !strings.Contains(err.Error(), "derive deterministic target worktree") {
+		t.Fatalf("session move with the real loopback deliverer = %v, want Receive's own target-worktree refusal", err)
+	}
+	if sshFactory {
+		t.Fatal("loopback move used a remote courier factory")
+	}
+}
+
+// TestSessionMoveResumeLoopbackCourierConstructsTheRealDelivererWhenNotOverridden
+// proves session_move.go:387 - runSessionMoveResume's own real
+// sessioncourier.LoopbackDeliverer construction, a separate branch from the
+// non-resume one session_move.go:260 covers - is reached. Every resume test
+// in this file routes over SSH; this one pre-persists a loopback route with
+// no receipt yet, so resume takes the loopback delivery branch with
+// deps.LoopbackDeliverer left nil.
+func TestSessionMoveResumeLoopbackCourierConstructsTheRealDelivererWhenNotOverridden(t *testing.T) {
+	t.Parallel()
+	store := sessionmove.NewStore(t.TempDir())
+	source := session.Record{PID: 11, WBSessionID: "wbs-source", Machine: "laptop", Runtime: "codex", StartedAt: time.Now().UTC()}
+	request := completeMoveTestRequest(sessionmove.Request{SchemaVersion: sessionmove.RequestSchemaVersion, HandoffID: "handoff-resume-loopback",
+		SuccessorWBSessionID: "wbs-successor", PredecessorWBSessionID: source.WBSessionID, SourceMachine: source.Machine,
+		TargetMachine: "laptop", RepositoryRemote: "/tmp/acme/app.git", Branch: "feature/resume-loopback",
+		SourceWorkCommit: strings.Repeat("a", 40), BundleCommit: strings.Repeat("b", 40),
+		HandoverPath: ".wb/handoffs/handoff-resume-loopback.md", HandoverDigest: sessionmove.DigestBytes([]byte("handover")),
+		SourceRuntime: "codex", SourceModel: "gpt-5", CreatedAt: time.Now().UTC()})
+	raw := mustEncodeMoveTestRequest(t, request)
+	digest := sessionmove.DigestBytes(raw)
+	if _, err := store.Admit(raw, digest); err != nil {
+		t.Fatal(err)
+	}
+	route := sessionmove.Route{HandoffID: request.HandoffID, RequestDigest: digest, TargetMachine: request.TargetMachine, Courier: sessionmove.CourierLoopback}
+	if _, _, err := store.SaveRoute(route); err != nil {
+		t.Fatal(err)
+	}
+
+	deps := sessionrun.MoveDependencies{
+		DefaultConfigPath: func() string { return "/unused/default.yaml" },
+		LoadConfig: func(string) (sessionmove.Config, error) {
+			t.Fatal("an already-persisted loopback route must not reload session_move targets")
+			return sessionmove.Config{}, nil
+		},
+		LocalMachine:  func() (string, error) { return "laptop", nil },
+		ResolveSource: func(_ string) (session.Record, bool, error) { return source, true, nil },
+		Store:         func(string) (sessionmove.Store, error) { return store, nil },
+		NewDeliverer: func(sessionmove.TargetConfig, sessionmove.Courier, sessioncourier.SynchestraOptions) (sessioncourier.Deliverer, error) {
+			t.Fatal("ssh factory must not run for a loopback route")
+			return nil, nil
+		},
+		Acknowledge: func(_ context.Context, options sessioncustody.Options) (sessioncustody.Result, error) {
+			return completedMoveTestAcknowledgement(t, options), nil
+		},
+	}
+	command := moveCommand("", deps)
+	command.SetArgs([]string{"--resume", request.HandoffID, "--format", "json"})
+	// The real loopback deliverer calls the real sessionreceive.Receive with
+	// no real projects root behind it; that specific, deep refusal (rather
+	// than a panic or a "not configured" usage error) is what proves the
+	// real deliverer was constructed and invoked.
+	err := command.Execute()
+	if err == nil || !strings.Contains(err.Error(), "derive deterministic target worktree") {
+		t.Fatalf("session move --resume with the real loopback deliverer = %v, want Receive's own target-worktree refusal", err)
+	}
+}
+
+func TestSessionMoveCommandUsesSynchestraWithSameReceiptAndLineageContract(t *testing.T) {
+	t.Parallel()
+	source := session.Record{
+		PID: 321, WBSessionID: "wbs-source", Machine: "laptop", Runtime: "codex",
+		Model: "gpt-5", StartedAt: time.Now().UTC(),
+	}
+	store := sessionmove.NewStore(t.TempDir())
+	var delivered []byte
+	deps := sessionrun.MoveDependencies{
+		DefaultConfigPath: func() string { return "/tmp/wb.yaml" },
+		LoadConfig: func(string) (sessionmove.Config, error) {
+			return sessionmove.Config{Targets: map[string]sessionmove.TargetConfig{
+				"hetzner-vm1": {
+					Machine: "hetzner-vm1", DefaultCourier: sessionmove.CourierSynchestra,
+					Synchestra: &sessionmove.SynchestraConfig{Runner: "hetzner-vm1"},
+				},
+			}}, nil
+		},
+		ResolveSource: func(_ string) (session.Record, bool, error) { return source, true, nil },
+		Store:         func(string) (sessionmove.Store, error) { return store, nil },
+		Checkpoint: func(_ context.Context, _ worktrees.SessionCheckpointOptions) (worktrees.SessionCheckpointResult, error) {
+			request := completeMoveTestRequest(sessionmove.Request{
+				SchemaVersion: sessionmove.RequestSchemaVersion, HandoffID: "handoff-synchestra",
+				SuccessorWBSessionID: "wbs-successor", PredecessorWBSessionID: source.WBSessionID,
+				SourceMachine: source.Machine, TargetMachine: "hetzner-vm1", RepositoryRemote: "/tmp/acme/app.git",
+				Branch: "feature/session", SourceWorkCommit: strings.Repeat("b", 40), BundleCommit: strings.Repeat("a", 40),
+				HandoverPath: ".wb/handoffs/handoff-synchestra.md", HandoverDigest: sessionmove.DigestBytes([]byte("handover")),
+				SourceRuntime: source.Runtime, SourceModel: source.Model, CreatedAt: time.Now().UTC(),
+			})
+			raw := mustEncodeMoveTestRequest(t, request)
+			digest := sessionmove.DigestBytes(raw)
+			if _, err := store.Admit(raw, digest); err != nil {
+				return worktrees.SessionCheckpointResult{}, err
+			}
+			return worktrees.SessionCheckpointResult{Request: request, Digest: digest, RequestBytes: raw}, nil
+		},
+		NewDeliverer: func(target sessionmove.TargetConfig, courier sessionmove.Courier, options sessioncourier.SynchestraOptions) (sessioncourier.Deliverer, error) {
+			if courier != sessionmove.CourierSynchestra || target.Synchestra == nil || target.Synchestra.Runner != "hetzner-vm1" || options.Dispatch != nil || options.SaveDispatch == nil {
+				t.Fatalf("Synchestra factory inputs: target=%#v courier=%q options=%#v", target, courier, options)
+			}
+			return delivererFunc(func(_ context.Context, raw []byte) (sessionreceive.Result, error) {
+				delivered = append([]byte(nil), raw...)
+				request, err := sessionmove.DecodeRequest(raw)
+				if err != nil {
+					return sessionreceive.Result{}, err
+				}
+				if err := options.SaveDispatch(sessionmove.SynchestraDispatch{
+					HandoffID: request.HandoffID, RequestDigest: sessionmove.DigestBytes(raw), Runner: target.Synchestra.Runner,
+					InvocationID: request.HandoffID, Handler: sessionmove.SynchestraSessionAcceptHandler, DispatchID: "dsp_synchestra",
+				}); err != nil {
+					return sessionreceive.Result{}, err
+				}
+				return completedMoveTestDelivery(t, request, raw, true), nil
+			}), nil
+		},
+		Acknowledge: func(_ context.Context, options sessioncustody.Options) (sessioncustody.Result, error) {
+			return completedMoveTestAcknowledgement(t, options), nil
+		},
+	}
+	command := moveCommand("", deps)
+	command.SetArgs([]string{
+		"--to", "hetzner-vm1", "--via", "synchestra", "--handover-file", "-", "--format", "json",
+	})
+	command.SetIn(strings.NewReader("continue on the runner\n"))
+	var output bytes.Buffer
+	command.SetOut(&output)
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var rendered sessionrun.MoveResult
+	if err := json.Unmarshal(output.Bytes(), &rendered); err != nil {
+		t.Fatal(err)
+	}
+	if rendered.Courier != sessionmove.CourierSynchestra || rendered.SourceActive || rendered.Receipt == nil || rendered.Address == nil ||
+		rendered.Receipt.HandoffID != "handoff-synchestra" || rendered.Receipt.SuccessorWBSessionID != "wbs-successor" ||
+		rendered.Address.PredecessorWBSessionID != source.WBSessionID || rendered.Address.Route.Courier != sessionmove.CourierSynchestra ||
+		rendered.Address.Route.Synchestra == nil || rendered.Address.Route.Synchestra.Runner != "hetzner-vm1" {
+		t.Fatalf("Synchestra move output = %#v", rendered)
+	}
+	if !bytes.Equal(delivered, mustEncodeMoveTestRequest(t, rendered.Request)) {
+		t.Fatal("Synchestra did not receive the exact checkpoint bytes")
+	}
+	dispatch, err := store.LoadSynchestraDispatch("handoff-synchestra")
+	if err != nil || dispatch.InvocationID != "handoff-synchestra" || dispatch.DispatchID != "dsp_synchestra" {
+		t.Fatalf("durable Synchestra dispatch = %#v err=%v", dispatch, err)
+	}
+}
+
+func TestSessionMoveCommandPreflightsSynchestraBeforeCheckpoint(t *testing.T) {
+	t.Parallel()
+	preflightErr := errors.New("synchestra executable is unavailable")
+	checkpointed := false
+	deps := sessionrun.MoveDependencies{
+		DefaultConfigPath: func() string { return "/tmp/wb.yaml" },
+		LoadConfig: func(string) (sessionmove.Config, error) {
+			return sessionmove.Config{Targets: map[string]sessionmove.TargetConfig{
+				"hetzner-vm1": {
+					Machine: "hetzner-vm1", DefaultCourier: sessionmove.CourierSynchestra,
+					Synchestra: &sessionmove.SynchestraConfig{Runner: "hetzner-vm1"},
+				},
+			}}, nil
+		},
+		ResolveSource: func(_ string) (session.Record, bool, error) {
+			return session.Record{PID: 321, WBSessionID: "wbs-source", Runtime: "codex"}, true, nil
+		},
+		NewDeliverer: func(target sessionmove.TargetConfig, courier sessionmove.Courier, options sessioncourier.SynchestraOptions) (sessioncourier.Deliverer, error) {
+			if courier != sessionmove.CourierSynchestra || target.Synchestra == nil || options.SaveDispatch == nil || options.Dispatch != nil {
+				t.Fatalf("Synchestra preflight inputs: target=%#v courier=%q options=%#v", target, courier, options)
+			}
+			return nil, preflightErr
+		},
+		Checkpoint: func(context.Context, worktrees.SessionCheckpointOptions) (worktrees.SessionCheckpointResult, error) {
+			checkpointed = true
+			return worktrees.SessionCheckpointResult{}, errors.New("must not checkpoint")
+		},
+	}
+	command := moveCommand("", deps)
+	command.SetArgs([]string{"--to", "hetzner-vm1", "--via", "synchestra", "--handover-file", "-"})
+	command.SetIn(strings.NewReader("continue on the runner\n"))
+	if err := command.Execute(); !errors.Is(err, preflightErr) {
+		t.Fatalf("error = %v, want %v", err, preflightErr)
+	}
+	if checkpointed {
+		t.Fatal("Synchestra preflight failure reached checkpoint mutation")
+	}
+}
+
+func TestSessionMoveCommandRefusesMissingSessionAndEmptyHandoverBeforeCheckpoint(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		resolve  func() (session.Record, bool, error)
+		handover string
+		want     string
+	}{
+		{
+			name:     "missing registered session",
+			resolve:  func() (session.Record, bool, error) { return session.Record{}, false, nil },
+			handover: "continue\n",
+			want:     "live registered source session",
+		},
+		{
+			name: "empty handover",
+			resolve: func() (session.Record, bool, error) {
+				return session.Record{PID: 123, WBSessionID: "wbs-source", Machine: "laptop", Runtime: "codex", StartedAt: time.Now()}, true, nil
+			},
+			want: "handover must not be empty",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			called := false
+			deps := sessionrun.MoveDependencies{
+				DefaultConfigPath: func() string { return "/tmp/wb.yaml" },
+				LoadConfig: func(string) (sessionmove.Config, error) {
+					return sessionmove.Config{Targets: map[string]sessionmove.TargetConfig{
+						"target": {Machine: "target", DefaultCourier: sessionmove.CourierSSH, SSH: &sessionmove.SSHConfig{Host: "target"}},
+					}}, nil
+				},
+				ResolveSource: func(string) (session.Record, bool, error) { return test.resolve() },
+				NewDeliverer: func(sessionmove.TargetConfig, sessionmove.Courier, sessioncourier.SynchestraOptions) (sessioncourier.Deliverer, error) {
+					return delivererFunc(func(context.Context, []byte) (sessionreceive.Result, error) { return sessionreceive.Result{}, nil }), nil
+				},
+				Checkpoint: func(context.Context, worktrees.SessionCheckpointOptions) (worktrees.SessionCheckpointResult, error) {
+					called = true
+					return worktrees.SessionCheckpointResult{}, errors.New("must not run")
+				},
+			}
+			command := moveCommand("", deps)
+			command.SetArgs([]string{"--to", "target", "--handover-file", "-"})
+			command.SetIn(strings.NewReader(test.handover))
+			if err := command.Execute(); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want containing %q", err, test.want)
+			}
+			if called {
+				t.Fatal("checkpoint called after refusal")
+			}
+		})
+	}
+}
+
+func TestSessionMoveResumeReusesExactRequestAndImmutableSSHRoute(t *testing.T) {
+	t.Parallel()
+	store := sessionmove.NewStore(t.TempDir())
+	source := session.Record{PID: 11, WBSessionID: "wbs-source", Machine: "laptop", Runtime: "codex", StartedAt: time.Now().UTC()}
+	request := completeMoveTestRequest(sessionmove.Request{SchemaVersion: sessionmove.RequestSchemaVersion, HandoffID: "handoff-resume",
+		SuccessorWBSessionID: "wbs-target", PredecessorWBSessionID: source.WBSessionID, SourceMachine: source.Machine,
+		TargetMachine: "hetzner-vm1", RepositoryRemote: "/tmp/acme/app.git", Branch: "feature/resume",
+		SourceWorkCommit: strings.Repeat("a", 40), BundleCommit: strings.Repeat("b", 40),
+		HandoverPath: ".wb/handoffs/handoff-resume.md", HandoverDigest: sessionmove.DigestBytes([]byte("handover")),
+		SourceRuntime: "codex", SourceModel: "gpt-5", CreatedAt: time.Now().UTC()})
+	raw := mustEncodeMoveTestRequest(t, request)
+	digest := sessionmove.DigestBytes(raw)
+	calls, checkpoints := 0, 0
+	var delivered [][]byte
+	var routedHosts []string
+	deps := sessionrun.MoveDependencies{
+		DefaultConfigPath: func() string { return "/tmp/wb.yaml" },
+		LoadConfig: func(string) (sessionmove.Config, error) {
+			return sessionmove.Config{Targets: map[string]sessionmove.TargetConfig{"hetzner-vm1": {
+				Machine: "hetzner-vm1", DefaultCourier: sessionmove.CourierSSH,
+				SSH: &sessionmove.SSHConfig{Host: "hetzner-vm1", WBPath: "/home/ai/go/bin/wb"},
+			}}}, nil
+		},
+		ResolveSource: func(_ string) (session.Record, bool, error) { return source, true, nil },
+		Store:         func(string) (sessionmove.Store, error) { return store, nil },
+		Checkpoint: func(context.Context, worktrees.SessionCheckpointOptions) (worktrees.SessionCheckpointResult, error) {
+			checkpoints++
+			if _, err := store.Admit(raw, digest); err != nil {
+				return worktrees.SessionCheckpointResult{}, err
+			}
+			return worktrees.SessionCheckpointResult{Request: request, Digest: digest, RequestBytes: raw}, nil
+		},
+		NewDeliverer: func(target sessionmove.TargetConfig, _ sessionmove.Courier, _ sessioncourier.SynchestraOptions) (sessioncourier.Deliverer, error) {
+			routedHosts = append(routedHosts, target.SSH.Host)
+			return delivererFunc(func(_ context.Context, got []byte) (sessionreceive.Result, error) {
+				calls++
+				delivered = append(delivered, append([]byte(nil), got...))
+				if calls == 1 {
+					return sessionreceive.Result{}, errors.New("connection lost after remote start")
+				}
+				return completedMoveTestDelivery(t, request, got, true), nil
+			}), nil
+		},
+		Acknowledge: func(_ context.Context, options sessioncustody.Options) (sessioncustody.Result, error) {
+			return completedMoveTestAcknowledgement(t, options), nil
+		},
+	}
+	first := moveCommand("", deps)
+	first.SetArgs([]string{"--to", "hetzner-vm1", "--via", "ssh", "--handover-file", "-"})
+	first.SetIn(strings.NewReader("continue"))
+	if err := first.Execute(); err == nil || !strings.Contains(err.Error(), "--resume handoff-resume") {
+		t.Fatalf("first error = %v", err)
+	}
+
+	// A changed config must not redirect the accepted handoff. Resume loads the
+	// immutable route and does not call loadConfig again.
+	deps.LoadConfig = func(string) (sessionmove.Config, error) {
+		return sessionmove.Config{}, errors.New("changed config must be ignored")
+	}
+	second := moveCommand("", deps)
+	second.SetArgs([]string{"--resume", request.HandoffID, "--via", "ssh", "--format", "json"})
+	var output bytes.Buffer
+	second.SetOut(&output)
+	if err := second.Execute(); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if checkpoints != 1 || calls != 2 || len(routedHosts) != 2 || routedHosts[0] != "hetzner-vm1" || routedHosts[1] != "hetzner-vm1" {
+		t.Fatalf("checkpoints=%d calls=%d routes=%v", checkpoints, calls, routedHosts)
+	}
+	if !bytes.Equal(delivered[0], raw) || !bytes.Equal(delivered[1], raw) {
+		t.Fatal("resume changed exact request bytes")
+	}
+}
+
+func TestSessionMoveResumeRepairsDurableReceiptWithoutRedelivery(t *testing.T) {
+	t.Parallel()
+	store := sessionmove.NewStore(t.TempDir())
+	source := session.Record{PID: 11, WBSessionID: "wbs-source", Machine: "laptop", Runtime: "codex", StartedAt: time.Now().UTC()}
+	request := completeMoveTestRequest(sessionmove.Request{
+		SchemaVersion: sessionmove.RequestSchemaVersion, HandoffID: "handoff-local-receipt",
+		SuccessorWBSessionID: "wbs-target", PredecessorWBSessionID: source.WBSessionID,
+		SourceMachine: source.Machine, TargetMachine: "hetzner-vm1", RepositoryRemote: "/tmp/acme/app.git",
+		Branch: "feature/resume", SourceWorkCommit: strings.Repeat("a", 40), BundleCommit: strings.Repeat("b", 40),
+		HandoverPath: ".wb/handoffs/handoff-local-receipt.md", HandoverDigest: sessionmove.DigestBytes([]byte("handover")),
+		SourceRuntime: "codex", CreatedAt: time.Now().UTC(),
+	})
+	raw := mustEncodeMoveTestRequest(t, request)
+	digest := sessionmove.DigestBytes(raw)
+	if _, err := store.Admit(raw, digest); err != nil {
+		t.Fatal(err)
+	}
+	route := sessionmove.Route{HandoffID: request.HandoffID, RequestDigest: digest, TargetMachine: request.TargetMachine,
+		Courier: sessionmove.CourierSSH, SSH: &sessionmove.SSHConfig{Host: "hetzner-vm1"}}
+	if _, _, err := store.SaveRoute(route); err != nil {
+		t.Fatal(err)
+	}
+	receipt := *completedMoveTestDelivery(t, request, raw, false).Receipt
+	lock, err := store.AcquireExecutionLock(context.Background(), request.HandoffID, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.SaveReceiptUnderLock(lock, request.HandoffID, digest, receipt); err != nil {
+		_ = lock.Close()
+		t.Fatal(err)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	deliveries := 0
+	deps := sessionrun.MoveDependencies{
+		ResolveSource: func(_ string) (session.Record, bool, error) { return source, true, nil },
+		Store:         func(string) (sessionmove.Store, error) { return store, nil },
+		NewDeliverer: func(sessionmove.TargetConfig, sessionmove.Courier, sessioncourier.SynchestraOptions) (sessioncourier.Deliverer, error) {
+			deliveries++
+			return nil, errors.New("durable local receipt must skip courier")
+		},
+		Acknowledge: func(_ context.Context, options sessioncustody.Options) (sessioncustody.Result, error) {
+			if options.Receipt != receipt {
+				t.Fatalf("acknowledged receipt = %#v", options.Receipt)
+			}
+			return completedMoveTestAcknowledgement(t, options), nil
+		},
+	}
+	command := moveCommand("", deps)
+	command.SetArgs([]string{"--resume", request.HandoffID, "--format", "json"})
+	var output bytes.Buffer
+	command.SetOut(&output)
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if deliveries != 0 {
+		t.Fatalf("courier deliveries = %d, want 0", deliveries)
+	}
+	var rendered sessionrun.MoveResult
+	if err := json.Unmarshal(output.Bytes(), &rendered); err != nil {
+		t.Fatal(err)
+	}
+	if rendered.SourceActive || rendered.Phase != string(sessionmove.PhaseCompleted) || rendered.Successor != nil || rendered.Receipt == nil {
+		t.Fatalf("resume output = %#v", rendered)
+	}
+}
+
+func TestSessionMoveRejectsUnsupportedHarnessBeforeCheckpoint(t *testing.T) {
+	t.Parallel()
+	checkpointed := false
+	deps := sessionrun.MoveDependencies{
+		DefaultConfigPath: func() string { return "/tmp/wb.yaml" },
+		LoadConfig: func(string) (sessionmove.Config, error) {
+			return sessionmove.Config{Targets: map[string]sessionmove.TargetConfig{
+				"target": {Machine: "target", DefaultCourier: sessionmove.CourierSSH, SSH: &sessionmove.SSHConfig{Host: "target"}},
+			}}, nil
+		},
+		ResolveSource: func(_ string) (session.Record, bool, error) {
+			return session.Record{PID: 1, WBSessionID: "wbs-source", Runtime: "codex"}, true, nil
+		},
+		NewDeliverer: func(sessionmove.TargetConfig, sessionmove.Courier, sessioncourier.SynchestraOptions) (sessioncourier.Deliverer, error) {
+			return delivererFunc(func(context.Context, []byte) (sessionreceive.Result, error) { return sessionreceive.Result{}, nil }), nil
+		},
+		Checkpoint: func(context.Context, worktrees.SessionCheckpointOptions) (worktrees.SessionCheckpointResult, error) {
+			checkpointed = true
+			return worktrees.SessionCheckpointResult{}, nil
+		},
+	}
+	command := moveCommand("", deps)
+	command.SetArgs([]string{"--to", "target", "--harness", "shell", "--handover-file", "-"})
+	command.SetIn(strings.NewReader("continue"))
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "unsupported") {
+		t.Fatalf("error = %v", err)
+	}
+	if checkpointed {
+		t.Fatal("unsupported harness reached checkpoint mutation")
+	}
+}
+
+func TestSessionMoveReportsExactResumeAfterRoutePersistenceFailure(t *testing.T) {
+	t.Parallel()
+	request := completeMoveTestRequest(sessionmove.Request{
+		SchemaVersion: sessionmove.RequestSchemaVersion, HandoffID: "handoff-route-failure",
+		SuccessorWBSessionID: "wbs-successor", PredecessorWBSessionID: "wbs-source",
+		SourceMachine: "laptop", TargetMachine: "hetzner-vm1", RepositoryRemote: "/tmp/acme/app.git",
+		Branch: "feature/session", SourceWorkCommit: strings.Repeat("a", 40), BundleCommit: strings.Repeat("b", 40),
+		HandoverPath: ".wb/handoffs/handoff-route-failure.md", HandoverDigest: sessionmove.DigestBytes([]byte("handover")),
+		SourceRuntime: "codex", CreatedAt: time.Now().UTC(),
+	})
+	raw := mustEncodeMoveTestRequest(t, request)
+	invalidStoreRoot := t.TempDir() + "/not-a-directory"
+	if err := os.WriteFile(invalidStoreRoot, []byte("file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	delivered := false
+	deps := sessionrun.MoveDependencies{
+		DefaultConfigPath: func() string { return "/tmp/wb.yaml" },
+		LoadConfig: func(string) (sessionmove.Config, error) {
+			return sessionmove.Config{Targets: map[string]sessionmove.TargetConfig{"hetzner-vm1": {
+				Machine: "hetzner-vm1", DefaultCourier: sessionmove.CourierSSH,
+				SSH: &sessionmove.SSHConfig{Host: "hetzner-vm1"},
+			}}}, nil
+		},
+		ResolveSource: func(_ string) (session.Record, bool, error) {
+			return session.Record{PID: 1, WBSessionID: "wbs-source", Machine: "laptop", Runtime: "codex"}, true, nil
+		},
+		Checkpoint: func(context.Context, worktrees.SessionCheckpointOptions) (worktrees.SessionCheckpointResult, error) {
+			return worktrees.SessionCheckpointResult{Request: request, Digest: sessionmove.DigestBytes(raw), RequestBytes: raw}, nil
+		},
+		Store: func(string) (sessionmove.Store, error) { return sessionmove.NewStore(invalidStoreRoot), nil },
+		NewDeliverer: func(sessionmove.TargetConfig, sessionmove.Courier, sessioncourier.SynchestraOptions) (sessioncourier.Deliverer, error) {
+			return delivererFunc(func(context.Context, []byte) (sessionreceive.Result, error) {
+				delivered = true
+				return sessionreceive.Result{}, nil
+			}), nil
+		},
+	}
+	command := moveCommand("", deps)
+	command.SetArgs([]string{"--to", "hetzner-vm1", "--handover-file", "-"})
+	command.SetIn(strings.NewReader("continue"))
+	err := command.Execute()
+	if err == nil || !strings.Contains(err.Error(), request.HandoffID) ||
+		!strings.Contains(err.Error(), "wb session move --resume "+request.HandoffID) {
+		t.Fatalf("error = %v, want exact resumable handoff guidance", err)
+	}
+	if delivered {
+		t.Fatal("courier ran before immutable route was persisted")
+	}
+}
+
+func TestSessionMoveReportsExactResumeAfterDurableCheckpointEvidenceFailure(t *testing.T) {
+	t.Parallel()
+	const handoffID = "handoff-checkpoint-evidence-failure"
+	delivered := false
+	deps := sessionrun.MoveDependencies{
+		DefaultConfigPath: func() string { return "/tmp/wb.yaml" },
+		LoadConfig: func(string) (sessionmove.Config, error) {
+			return sessionmove.Config{Targets: map[string]sessionmove.TargetConfig{"hetzner-vm1": {
+				Machine: "hetzner-vm1", DefaultCourier: sessionmove.CourierSSH,
+				SSH: &sessionmove.SSHConfig{Host: "hetzner-vm1"},
+			}}}, nil
+		},
+		ResolveSource: func(_ string) (session.Record, bool, error) {
+			return session.Record{PID: 1, WBSessionID: "wbs-source", Machine: "laptop", Runtime: "codex"}, true, nil
+		},
+		Checkpoint: func(context.Context, worktrees.SessionCheckpointOptions) (worktrees.SessionCheckpointResult, error) {
+			return worktrees.SessionCheckpointResult{Request: sessionmove.Request{HandoffID: handoffID}},
+				errors.New("source owner evidence interrupted")
+		},
+		NewDeliverer: func(sessionmove.TargetConfig, sessionmove.Courier, sessioncourier.SynchestraOptions) (sessioncourier.Deliverer, error) {
+			return delivererFunc(func(context.Context, []byte) (sessionreceive.Result, error) {
+				delivered = true
+				return sessionreceive.Result{}, errors.New("must not deliver")
+			}), nil
+		},
+	}
+	command := moveCommand("", deps)
+	command.SetArgs([]string{"--to", "hetzner-vm1", "--handover-file", "-"})
+	command.SetIn(strings.NewReader("continue"))
+	err := command.Execute()
+	if err == nil || !strings.Contains(err.Error(), "wb session move --resume "+handoffID) ||
+		!strings.Contains(err.Error(), "finish source checkpoint evidence") {
+		t.Fatalf("error = %v", err)
+	}
+	if delivered {
+		t.Fatal("courier ran after incomplete source checkpoint evidence")
+	}
+}
+
+func TestSessionMoveRefusesCourierSuccessWithoutCompletionReceipt(t *testing.T) {
+	t.Parallel()
+	store := sessionmove.NewStore(t.TempDir())
+	request := completeMoveTestRequest(sessionmove.Request{
+		SchemaVersion: sessionmove.RequestSchemaVersion, HandoffID: "handoff-missing-successor",
+		SuccessorWBSessionID: "wbs-successor", PredecessorWBSessionID: "wbs-source",
+		SourceMachine: "laptop", TargetMachine: "hetzner-vm1", RepositoryRemote: "/tmp/acme/app.git",
+		Branch: "feature/session", SourceWorkCommit: strings.Repeat("a", 40), BundleCommit: strings.Repeat("b", 40),
+		HandoverPath: ".wb/handoffs/handoff-missing-successor.md", HandoverDigest: sessionmove.DigestBytes([]byte("handover")),
+		SourceRuntime: "codex", CreatedAt: time.Now().UTC(),
+	})
+	raw := mustEncodeMoveTestRequest(t, request)
+	digest := sessionmove.DigestBytes(raw)
+	deps := sessionrun.MoveDependencies{
+		DefaultConfigPath: func() string { return "/tmp/wb.yaml" },
+		LoadConfig: func(string) (sessionmove.Config, error) {
+			return sessionmove.Config{Targets: map[string]sessionmove.TargetConfig{"hetzner-vm1": {
+				Machine: "hetzner-vm1", DefaultCourier: sessionmove.CourierSSH,
+				SSH: &sessionmove.SSHConfig{Host: "hetzner-vm1"},
+			}}}, nil
+		},
+		ResolveSource: func(_ string) (session.Record, bool, error) {
+			return session.Record{PID: 1, WBSessionID: "wbs-source", Machine: "laptop", Runtime: "codex"}, true, nil
+		},
+		Checkpoint: func(context.Context, worktrees.SessionCheckpointOptions) (worktrees.SessionCheckpointResult, error) {
+			if _, err := store.Admit(raw, digest); err != nil {
+				return worktrees.SessionCheckpointResult{}, err
+			}
+			return worktrees.SessionCheckpointResult{Request: request, Digest: digest, RequestBytes: raw}, nil
+		},
+		Store: func(string) (sessionmove.Store, error) { return store, nil },
+		NewDeliverer: func(sessionmove.TargetConfig, sessionmove.Courier, sessioncourier.SynchestraOptions) (sessioncourier.Deliverer, error) {
+			return delivererFunc(func(context.Context, []byte) (sessionreceive.Result, error) {
+				return sessionreceive.Result{Request: request, Digest: digest, Phase: sessionmove.PhaseSuccessorStarted}, nil
+			}), nil
+		},
+	}
+	command := moveCommand("", deps)
+	command.SetArgs([]string{"--to", "hetzner-vm1", "--handover-file", "-"})
+	command.SetIn(strings.NewReader("continue"))
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "no durable completion receipt") ||
+		!strings.Contains(err.Error(), "--resume "+request.HandoffID) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func mustEncodeMoveTestRequest(t *testing.T, request sessionmove.Request) []byte {
+	t.Helper()
+	raw, err := sessionmove.EncodeRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func completeMoveTestRequest(request sessionmove.Request) sessionmove.Request {
+	if request.WorkLogReference == "" {
+		request.WorkLogReference = "worklog:effort/run-1/" + strings.Repeat("1", 64)
+	}
+	message, nextAction := sessionmove.NormalizeSourceOfferContent("session checkpoint ready", "continue from the handover")
+	request.SourceOfferMessage = message
+	request.SourceOfferNextAction = nextAction
+	request.SourceOfferDigest = sessionmove.DigestSourceOffer(message, nextAction)
+	return request
+}
+
+func completedMoveTestDelivery(t *testing.T, request sessionmove.Request, raw []byte, includeSuccessor bool) sessionreceive.Result {
+	t.Helper()
+	digest := sessionmove.DigestBytes(raw)
+	targetReference, err := sessionmove.ExpectedTargetWorkLogReference(request, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := request.RequestedHarness
+	if runtime == "" {
+		runtime = request.SourceRuntime
+	}
+	model := ""
+	if runtime == request.SourceRuntime {
+		model = request.SourceModel
+	}
+	startedAt := request.CreatedAt.Add(time.Second).UTC()
+	receipt := sessionmove.Receipt{
+		SchemaVersion: sessionmove.ReceiptSchemaVersion, HandoffID: request.HandoffID, RequestDigest: digest,
+		SuccessorWBSessionID: request.SuccessorWBSessionID, PredecessorWBSessionID: request.PredecessorWBSessionID,
+		TargetMachine: request.TargetMachine, TmuxName: "wb-session-" + request.SuccessorWBSessionID,
+		Runtime: runtime, Model: model, TargetWorkLogReference: targetReference.String(),
+		AttemptID: "000001-" + strings.Repeat("a", 32), AttemptIndex: 1, PID: 123,
+		PinnedCommit: request.BundleCommit, StartedAt: startedAt,
+	}
+	result := sessionreceive.Result{Request: request, Digest: digest, Phase: sessionmove.PhaseCompleted, Receipt: &receipt}
+	if includeSuccessor {
+		result.Successor = &sessionlaunch.Result{
+			HandoffID: request.HandoffID, WBSessionID: request.SuccessorWBSessionID,
+			PredecessorWBSessionID: request.PredecessorWBSessionID, TargetMachine: request.TargetMachine,
+			PID: receipt.PID, AttemptID: receipt.AttemptID, AttemptIndex: receipt.AttemptIndex,
+			TmuxName: receipt.TmuxName, Runtime: receipt.Runtime, Model: receipt.Model,
+			TargetWorkLogRef: receipt.TargetWorkLogReference, WorktreeDir: "/target/worktree",
+			PinnedCommit: request.BundleCommit, StartedAt: startedAt,
+		}
+	}
+	return result
+}
+
+func completedMoveTestAcknowledgement(t *testing.T, options sessioncustody.Options) sessioncustody.Result {
+	t.Helper()
+	route, err := options.Store.LoadRoute(options.Request.HandoffID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt := options.Receipt
+	address := sessionmove.SuccessorAddress{
+		SchemaVersion:        sessionmove.SuccessorAddressSchemaVersion,
+		SuccessorWBSessionID: receipt.SuccessorWBSessionID, PredecessorWBSessionID: receipt.PredecessorWBSessionID,
+		HandoffID: receipt.HandoffID, RequestDigest: receipt.RequestDigest,
+		SourceMachine: options.Request.SourceMachine, TargetMachine: receipt.TargetMachine,
+		SourceWorkLogReference: options.Request.WorkLogReference, TargetWorkLogReference: receipt.TargetWorkLogReference,
+		TmuxName: receipt.TmuxName, Runtime: receipt.Runtime, Model: receipt.Model, NativeHarnessID: receipt.NativeHarnessID,
+		AttemptID: receipt.AttemptID, AttemptIndex: receipt.AttemptIndex, PID: receipt.PID,
+		PinnedCommit: receipt.PinnedCommit, StartedAt: receipt.StartedAt, Route: route,
+	}
+	return sessioncustody.Result{
+		Receipt: receipt, Address: address,
+		WorkLog: worktrees.ExternalSourceSealResult{
+			SourceWorkLogReference: options.Request.WorkLogReference,
+			TargetWorkLogReference: receipt.TargetWorkLogReference,
+			SealedAt:               receipt.StartedAt.Add(time.Second),
+		},
+	}
+}
+
+// fakeAWSAccessKeyID returns a fixture value shaped exactly like an AWS
+// access key ID, built from split literal fragments so the shape never
+// appears contiguously in this repository's own source text -- it must not
+// be able to trip a source-text secret scanner (this repository's own gate,
+// or GitHub push protection) on this repository. It is provably synthetic:
+// fixed filler characters, never a value that was ever live anywhere.
+func fakeAWSAccessKeyID() string { return "AKIA" + "ABCDEFGHIJKLMNOP" }
+
+// withDeterministicSecretScanner points the package-level secret scanner
+// loader at the real embedded gitleaks-derived ruleset only, ignoring
+// whatever extra rules file might exist on the host running the test, so
+// these tests are hermetic.
+
+func minimalWorkingSessionMoveDeps(t *testing.T, source session.Record, checkpoint func(context.Context, worktrees.SessionCheckpointOptions) (worktrees.SessionCheckpointResult, error)) sessionrun.MoveDependencies {
+	t.Helper()
+	store := sessionmove.NewStore(t.TempDir())
+	return sessionrun.MoveDependencies{
+		DefaultConfigPath: func() string { return "/unused/default.yaml" },
+		LoadConfig: func(string) (sessionmove.Config, error) {
+			return sessionmove.Config{Targets: map[string]sessionmove.TargetConfig{
+				"hetzner-vm1": {Machine: "hetzner-vm1", DefaultCourier: sessionmove.CourierSSH, SSH: &sessionmove.SSHConfig{Host: "hetzner-vm1"}},
+			}}, nil
+		},
+		ResolveSource: func(_ string) (session.Record, bool, error) { return source, true, nil },
+		Store:         func(string) (sessionmove.Store, error) { return store, nil },
+		NewDeliverer: func(sessionmove.TargetConfig, sessionmove.Courier, sessioncourier.SynchestraOptions) (sessioncourier.Deliverer, error) {
+			return delivererFunc(func(_ context.Context, raw []byte) (sessionreceive.Result, error) {
+				request, err := sessionmove.DecodeRequest(raw)
+				if err != nil {
+					return sessionreceive.Result{}, err
+				}
+				return completedMoveTestDelivery(t, request, raw, true), nil
+			}), nil
+		},
+		Checkpoint: checkpoint,
+		Acknowledge: func(_ context.Context, options sessioncustody.Options) (sessioncustody.Result, error) {
+			return completedMoveTestAcknowledgement(t, options), nil
+		},
+	}
+}
+
+// TestSessionMoveRefusesHandoverContainingNamedSecretPattern proves
+// invariant 1 (fail closed) and invariant 5 (scan before the write, not just
+// before commit) end to end through the real CLI command: a handover
+// carrying a named secret shape must never reach CreateSessionCheckpoint,
+// which is the first place session move touches Git or the durable store.
+func TestSessionMoveRefusesHandoverContainingNamedSecretPattern(t *testing.T) {
+	t.Parallel()
+	source := session.Record{PID: 123, WBSessionID: "wbs-source", Machine: "laptop", Runtime: "codex", Model: "gpt-5", StartedAt: time.Now().UTC()}
+	checkpointCalled := false
+	deps := minimalWorkingSessionMoveDeps(t, source, func(context.Context, worktrees.SessionCheckpointOptions) (worktrees.SessionCheckpointResult, error) {
+		checkpointCalled = true
+		return worktrees.SessionCheckpointResult{}, nil
+	})
+	command := moveCommand("", deps)
+	command.SetArgs([]string{"--to", "hetzner-vm1", "--handover-file", "-"})
+	command.SetIn(strings.NewReader("leftover debug line: AWS_ACCESS_KEY_ID=" + fakeAWSAccessKeyID() + "\n"))
+	var stderr bytes.Buffer
+	command.SetErr(&stderr)
+	err := command.Execute()
+	if err == nil {
+		t.Fatal("expected a refusal, got nil error")
+	}
+	if !strings.Contains(err.Error(), "aws-access-token") || !strings.Contains(err.Error(), "--override-secret") {
+		t.Fatalf("refusal error = %v", err)
+	}
+	if strings.Contains(err.Error(), fakeAWSAccessKeyID()) {
+		t.Fatalf("refusal echoed the matched secret: %v", err)
+	}
+	if checkpointCalled {
+		t.Fatal("checkpoint must never run when the handover is refused for a named secret pattern")
+	}
+}
+
+// TestSessionMoveAcceptsOverriddenSecretFindingAndLogsAdvisory proves the
+// override contract: the exact finding key printed by a refusal, and only
+// that exact key, lets the move proceed, and the acknowledgement is logged
+// as a visible advisory rather than silently dropped.
+func TestSessionMoveAcceptsOverriddenSecretFindingAndLogsAdvisory(t *testing.T) {
+	t.Parallel()
+	secretLine := "leftover debug line: AWS_ACCESS_KEY_ID=" + fakeAWSAccessKeyID()
+	empty := ""
+	scanner, _, err := secretscan.LoadDefault(secretscan.LoadOptions{EnvExtraRulesPath: &empty})
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocking := scanner.Scan(secretscan.Segment{Name: "handover-body", Content: []byte(secretLine)}).Blocking(nil)
+	if len(blocking) != 1 {
+		t.Fatalf("expected exactly one blocking finding to override, got %+v", blocking)
+	}
+	overrideKey := blocking[0].Key()
+
+	source := session.Record{PID: 123, WBSessionID: "wbs-source", Machine: "laptop", Runtime: "codex", Model: "gpt-5", StartedAt: time.Now().UTC()}
+	store := sessionmove.NewStore(t.TempDir())
+	checkpointCalled := false
+	deps := minimalWorkingSessionMoveDeps(t, source, func(_ context.Context, options worktrees.SessionCheckpointOptions) (worktrees.SessionCheckpointResult, error) {
+		checkpointCalled = true
+		request := completeMoveTestRequest(sessionmove.Request{
+			SchemaVersion: sessionmove.RequestSchemaVersion, HandoffID: "handoff-override", SuccessorWBSessionID: "wbs-successor",
+			PredecessorWBSessionID: "wbs-source", SourceMachine: "laptop", TargetMachine: "hetzner-vm1",
+			RepositoryRemote: "/tmp/acme/app.git", Branch: "feature/session", SourceWorkCommit: strings.Repeat("b", 40),
+			BundleCommit: strings.Repeat("a", 40), HandoverPath: ".wb/handoffs/handoff-override.md",
+			HandoverDigest: sessionmove.DigestBytes(options.Handover.Body), SourceRuntime: "codex", SourceModel: "gpt-5", CreatedAt: time.Now().UTC(),
+		})
+		raw := mustEncodeMoveTestRequest(t, request)
+		digest := sessionmove.DigestBytes(raw)
+		if _, err := store.Admit(raw, digest); err != nil {
+			return worktrees.SessionCheckpointResult{}, err
+		}
+		return worktrees.SessionCheckpointResult{Request: request, Digest: digest, RequestBytes: raw}, nil
+	})
+	deps.Store = func(string) (sessionmove.Store, error) { return store, nil }
+	command := moveCommand("", deps)
+	command.SetArgs([]string{"--to", "hetzner-vm1", "--handover-file", "-", "--override-secret", overrideKey})
+	command.SetIn(strings.NewReader(secretLine))
+	var stderr bytes.Buffer
+	command.SetErr(&stderr)
+	var stdout bytes.Buffer
+	command.SetOut(&stdout)
+	if err := command.Execute(); err != nil {
+		t.Fatalf("session move with an exact override should succeed: %v", err)
+	}
+	if !checkpointCalled {
+		t.Fatal("expected checkpoint to run once the exact finding was acknowledged")
+	}
+	if !strings.Contains(stderr.String(), "secret scan advisory") || !strings.Contains(stderr.String(), "aws-access-token") {
+		t.Fatalf("override must be logged as a visible advisory, stderr = %q", stderr.String())
+	}
+	if strings.Contains(stderr.String(), fakeAWSAccessKeyID()) {
+		t.Fatalf("advisory echoed the matched secret: %q", stderr.String())
+	}
+}

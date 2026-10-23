@@ -13,10 +13,16 @@ import (
 // against the process now holding it. It reports false when the platform cannot
 // answer, which callers must surface as unknown rather than as a match.
 func ProcessStartTime(pid int) (time.Time, bool) {
+	return processStartTimeFromProcRoot("/proc", pid)
+}
+
+// processStartTimeFromProcRoot reads process and boot-time evidence from the
+// same proc filesystem, so a start time is known only when both are valid.
+func processStartTimeFromProcRoot(procRoot string, pid int) (time.Time, bool) {
 	if pid <= 0 {
 		return time.Time{}, false
 	}
-	stat, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	stat, err := os.ReadFile(filepath.Join(procRoot, strconv.Itoa(pid), "stat"))
 	if err != nil {
 		return time.Time{}, false
 	}
@@ -24,7 +30,7 @@ func ProcessStartTime(pid int) (time.Time, bool) {
 	if !ok {
 		return time.Time{}, false
 	}
-	system, err := os.ReadFile("/proc/stat")
+	system, err := os.ReadFile(filepath.Join(procRoot, "stat"))
 	if err != nil {
 		return time.Time{}, false
 	}

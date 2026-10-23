@@ -48,6 +48,7 @@ func lgCovEngineFixture(t *testing.T, store *streams.Store, git Git, node Node) 
 }
 
 func TestLgCovResultFailedCoversVerification(t *testing.T) {
+	t.Parallel()
 	if (Result{Consumers: []ConsumerResult{{Verification: &Verification{Passed: false}}}}).Failed() != true {
 		t.Fatal("a consumer with a failed verification did not fail the result")
 	}
@@ -60,6 +61,7 @@ func TestLgCovResultFailedCoversVerification(t *testing.T) {
 }
 
 func TestLgCovLinkValidatesItsInputs(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	engine := lgCovEngineFixture(t, nil, nil, nil)
 
@@ -74,9 +76,11 @@ func TestLgCovLinkValidatesItsInputs(t *testing.T) {
 }
 
 func TestLgCovLinkReportsDiscoveryHashAndDeclarationFailures(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("the library cannot be discovered", func(t *testing.T) {
+		t.Parallel()
 		engine := lgCovEngineFixture(t, nil, nil, nil)
 		_, err := engine.Run(ctx, Options{Library: filepath.Join(t.TempDir(), "missing"), Consumers: []string{t.TempDir()}})
 		if err == nil {
@@ -85,6 +89,7 @@ func TestLgCovLinkReportsDiscoveryHashAndDeclarationFailures(t *testing.T) {
 	})
 
 	t.Run("the content hash fails", func(t *testing.T) {
+		t.Parallel()
 		library, consumer := t.TempDir(), t.TempDir()
 		lgCovWriteFile(t, filepath.Join(library, "backend", "go.mod"), goLibraryModule)
 		git := lgCovNewGit()
@@ -97,6 +102,7 @@ func TestLgCovLinkReportsDiscoveryHashAndDeclarationFailures(t *testing.T) {
 	})
 
 	t.Run("the consumer has no stream to record against", func(t *testing.T) {
+		t.Parallel()
 		library, consumer := t.TempDir(), t.TempDir()
 		lgCovWriteFile(t, filepath.Join(library, "backend", "go.mod"), goLibraryModule)
 		engine := lgCovEngineFixture(t, nil, nil, nil)
@@ -108,6 +114,7 @@ func TestLgCovLinkReportsDiscoveryHashAndDeclarationFailures(t *testing.T) {
 	})
 
 	t.Run("the consumer's declarations cannot be read", func(t *testing.T) {
+		t.Parallel()
 		fixture := newFixture(t,
 			map[string]string{"backend/go.mod": goLibraryModule},
 			map[string]string{"consumer-mod.txt": "not a module\n"})
@@ -126,6 +133,7 @@ func TestLgCovLinkReportsDiscoveryHashAndDeclarationFailures(t *testing.T) {
 	})
 
 	t.Run("tracked changes cannot be read before linking", func(t *testing.T) {
+		t.Parallel()
 		fixture := newFixture(t,
 			map[string]string{"backend/go.mod": goLibraryModule},
 			map[string]string{"backend/go.mod": "module github.com/acme/app/backend\n\ngo 1.27\n\nrequire github.com/acme/library/backend v0.4.0\n"})
@@ -142,6 +150,7 @@ func TestLgCovLinkReportsDiscoveryHashAndDeclarationFailures(t *testing.T) {
 	})
 
 	t.Run("tracked changes cannot be read after linking", func(t *testing.T) {
+		t.Parallel()
 		fixture := newFixture(t,
 			map[string]string{"backend/go.mod": goLibraryModule},
 			map[string]string{"backend/go.mod": "module github.com/acme/app/backend\n\ngo 1.27\n\nrequire github.com/acme/library/backend v0.4.0\n"})
@@ -163,9 +172,11 @@ func TestLgCovLinkReportsDiscoveryHashAndDeclarationFailures(t *testing.T) {
 }
 
 func TestLgCovLinkNpmWithoutAToolchainAndSkippedInstall(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("no Node toolchain", func(t *testing.T) {
+		t.Parallel()
 		fixture := newFixture(t,
 			map[string]string{"libs/core/package.json": `{"name":"@acme/core"}`},
 			map[string]string{"package.json": `{"dependencies":{"@acme/core":"1.0.0"}}`})
@@ -180,6 +191,7 @@ func TestLgCovLinkNpmWithoutAToolchainAndSkippedInstall(t *testing.T) {
 	})
 
 	t.Run("a frozen install that cannot be evaluated is skipped", func(t *testing.T) {
+		t.Parallel()
 		fixture := newFixture(t,
 			map[string]string{"libs/core/package.json": `{"name":"@acme/core"}`},
 			map[string]string{"package.json": `{"dependencies":{"@acme/core":"1.0.0"}}`})
@@ -199,6 +211,7 @@ func TestLgCovLinkNpmWithoutAToolchainAndSkippedInstall(t *testing.T) {
 }
 
 func TestLgCovLinkReportsAGoWorkspaceThatCannotBeWritten(t *testing.T) {
+	t.Parallel()
 	fixture := newFixture(t,
 		map[string]string{"backend/go.mod": goLibraryModule},
 		map[string]string{"backend/go.mod": "module github.com/acme/app/backend\n\ngo 1.27\n\nrequire github.com/acme/library/backend v0.4.0\n"})
@@ -217,6 +230,7 @@ func TestLgCovLinkReportsAGoWorkspaceThatCannotBeWritten(t *testing.T) {
 }
 
 func TestLgCovOpenStreamsFiltersAndFails(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	base := t.TempDir()
 	library := writeTree(t, filepath.Join(base, "library"), map[string]string{"backend/go.mod": goLibraryModule})
@@ -224,6 +238,7 @@ func TestLgCovOpenStreamsFiltersAndFails(t *testing.T) {
 		"backend/go.mod": "module github.com/acme/app/backend\n\ngo 1.27\n\nrequire github.com/acme/library/backend v0.4.0\n"})
 
 	t.Run("stream state cannot be listed", func(t *testing.T) {
+		t.Parallel()
 		notADirectory := filepath.Join(t.TempDir(), "store")
 		lgCovWriteFile(t, notADirectory, "not a directory\n")
 		engine := lgCovEngineFixture(t, streams.OpenAt(notADirectory), nil, nil)
@@ -234,6 +249,7 @@ func TestLgCovOpenStreamsFiltersAndFails(t *testing.T) {
 	})
 
 	t.Run("an unreadable stream refuses the link", func(t *testing.T) {
+		t.Parallel()
 		store := streams.OpenAt(filepath.Join(t.TempDir(), "streams"))
 		lgCovWriteFile(t, filepath.Join(store.Root, "broken", "stream.json"), "{not json")
 		engine := lgCovEngineFixture(t, store, nil, nil)
@@ -244,6 +260,7 @@ func TestLgCovOpenStreamsFiltersAndFails(t *testing.T) {
 	})
 
 	t.Run("ended streams and a name filter are honoured", func(t *testing.T) {
+		t.Parallel()
 		store := streams.OpenAt(filepath.Join(t.TempDir(), "streams"))
 		if _, err := store.Create(streams.Stream{
 			Name:    "ended",
@@ -282,6 +299,7 @@ func TestLgCovOpenStreamsFiltersAndFails(t *testing.T) {
 }
 
 func TestLgCovRecordLinksRequiresStateAndAMatch(t *testing.T) {
+	t.Parallel()
 	engine := &Engine{}
 	if err := engine.recordLinks("fixture", "/tmp/consumer", nil); err != nil {
 		t.Fatalf("recording no links must be a no-op, got %v", err)
@@ -329,6 +347,7 @@ func TestLgCovRecordLinksRequiresStateAndAMatch(t *testing.T) {
 }
 
 func TestLgCovSmallHelpers(t *testing.T) {
+	t.Parallel()
 	if sameWorktree("", t.TempDir()) || sameWorktree(t.TempDir(), "") {
 		t.Fatal("sameWorktree treated an empty path as a match")
 	}
@@ -347,6 +366,7 @@ func TestLgCovSmallHelpers(t *testing.T) {
 // An Engine with no stream store at all still refuses rather than writing a
 // link nothing can undo.
 func TestLgCovLinkWithNoStoreRefuses(t *testing.T) {
+	t.Parallel()
 	library, consumer := t.TempDir(), t.TempDir()
 	lgCovWriteFile(t, filepath.Join(library, "backend", "go.mod"), goLibraryModule)
 	lgCovWriteFile(t, filepath.Join(consumer, "backend", "go.mod"), "module github.com/acme/app/backend\n\ngo 1.27\n\nrequire github.com/acme/library/backend v0.4.0\n")
@@ -388,6 +408,7 @@ func TestLgCovRelativePathsWhenTheWorkingDirectoryIsGone(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("a relative library cannot be resolved", func(t *testing.T) {
+		t.Parallel()
 		engine := &Engine{}
 		if _, err := engine.Run(ctx, Options{Library: "relative-library", Consumers: []string{"relative-consumer"}}); err == nil {
 			t.Fatal("linking a relative library with no working directory reported success")
@@ -395,6 +416,7 @@ func TestLgCovRelativePathsWhenTheWorkingDirectoryIsGone(t *testing.T) {
 	})
 
 	t.Run("a relative consumer cannot be resolved", func(t *testing.T) {
+		t.Parallel()
 		store := streams.OpenAt(filepath.Join(t.TempDir(), "streams"))
 		engine := &Engine{Store: store, Git: newFakeGit(), Node: newFakeNode()}
 		library := t.TempDir()
@@ -405,6 +427,7 @@ func TestLgCovRelativePathsWhenTheWorkingDirectoryIsGone(t *testing.T) {
 	})
 
 	t.Run("a relative consumer cannot be undone", func(t *testing.T) {
+		t.Parallel()
 		store := streams.OpenAt(filepath.Join(t.TempDir(), "streams"))
 		engine := &Engine{Store: store}
 		if _, err := engine.Run(ctx, Options{Undo: true, Consumers: []string{"relative-consumer"}}); err == nil {

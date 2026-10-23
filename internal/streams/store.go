@@ -10,7 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sneat-dev/wb/internal/unixcompat"
+	"github.com/sneat-dev/wb/internal/filewrite"
+	unix "github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -81,7 +82,9 @@ func (store *Store) Load(name string) (Stream, error) {
 	contents, err := os.ReadFile(store.statePath(name))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return Stream{}, fmt.Errorf("%w: %s", ErrNotFound, name)
+			if _, pathErr := os.Lstat(store.statePath(name)); os.IsNotExist(pathErr) {
+				return Stream{}, fmt.Errorf("%w: %s", ErrNotFound, name)
+			}
 		}
 		return Stream{}, fmt.Errorf("read stream state %s: %w", store.statePath(name), err)
 	}
@@ -327,6 +330,15 @@ func (store *Store) Update(name string, mutate func(*Stream) error) (Stream, err
 }
 
 func (store *Store) writeAtomically(name string, stream Stream) error {
+	return store.writeAtomicallyInjected(name, stream, nil)
+}
+
+// writeAtomicallyInjected is writeAtomically's test seam (task-9 PR-8): every
+// production call site reaches it only through writeAtomically, which always
+// passes a nil *filewrite.Injector, so production behaviour is unchanged. A
+// test passes its own Injector to reach the create/chmod/write/sync/close/
+// rename failure branches deterministically.
+func (store *Store) writeAtomicallyInjected(name string, stream Stream, inj *filewrite.Injector) error {
 	contents, err := json.MarshalIndent(stream, "", "  ")
 	if err != nil {
 		return err
@@ -335,28 +347,28 @@ func (store *Store) writeAtomically(name string, stream Stream) error {
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return fmt.Errorf("create stream directory: %w", err)
 	}
-	temporary, err := os.CreateTemp(directory, "stream-*.json")
+	temporary, err := filewrite.CreateTemp(directory, "stream-*.json", inj)
 	if err != nil {
 		return fmt.Errorf("stage stream state: %w", err)
 	}
 	staged := temporary.Name()
 	defer func() { _ = os.Remove(staged) }()
-	if err := temporary.Chmod(0o600); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.ChmodFile(temporary, 0o600, staged, inj); err != nil {
+		_ = filewrite.Close(temporary, staged, inj)
 		return fmt.Errorf("protect stream state: %w", err)
 	}
-	if _, err := temporary.Write(append(contents, '\n')); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.Write(temporary, append(contents, '\n'), staged, inj); err != nil {
+		_ = filewrite.Close(temporary, staged, inj)
 		return fmt.Errorf("write stream state: %w", err)
 	}
-	if err := temporary.Sync(); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.Sync(temporary, staged, inj); err != nil {
+		_ = filewrite.Close(temporary, staged, inj)
 		return fmt.Errorf("flush stream state: %w", err)
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, staged, inj); err != nil {
 		return fmt.Errorf("close stream state: %w", err)
 	}
-	if err := os.Rename(staged, store.statePath(name)); err != nil {
+	if err := filewrite.Rename(staged, store.statePath(name), inj); err != nil {
 		return fmt.Errorf("publish stream state: %w", err)
 	}
 	return nil
@@ -366,10 +378,14 @@ func (store *Store) writeAtomically(name string, stream Stream) error {
 // found the lock held would otherwise have to tell the caller to retry, and
 // `waits-are-verbs-not-instructions` puts that wait inside the verb.
 func (store *Store) lock(name string) (func(), error) {
+	return store.lockWithOpen(name, os.OpenFile)
+}
+
+func (store *Store) lockWithOpen(name string, open func(string, int, os.FileMode) (*os.File, error)) (func(), error) {
 	if err := os.MkdirAll(store.Dir(name), 0o700); err != nil {
 		return nil, fmt.Errorf("create stream directory: %w", err)
 	}
-	file, err := os.OpenFile(store.lockPath(name), os.O_RDWR|os.O_CREATE, 0o600)
+	file, err := open(store.lockPath(name), os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open stream lock: %w", err)
 	}
@@ -387,10 +403,14 @@ func (store *Store) lock(name string) (func(), error) {
 // bookkeeping — never across a network call — so one stalled `gh` can never
 // freeze every stream verb on the machine.
 func (store *Store) lockStore() (func(), error) {
+	return store.lockStoreWithOpen(os.OpenFile)
+}
+
+func (store *Store) lockStoreWithOpen(open func(string, int, os.FileMode) (*os.File, error)) (func(), error) {
 	if err := os.MkdirAll(store.Root, 0o700); err != nil {
 		return nil, fmt.Errorf("create stream store: %w", err)
 	}
-	file, err := os.OpenFile(filepath.Join(store.Root, ".store.lock"), os.O_RDWR|os.O_CREATE, 0o600)
+	file, err := open(filepath.Join(store.Root, ".store.lock"), os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open stream store lock: %w", err)
 	}
@@ -492,7 +512,7 @@ func unreadableStreamExcludesRepository(path, repository string) (excludes, know
 // must be able to ask the question without importing a stream verb.
 func (store *Store) LiveLinksForWorktree(worktree string) ([]StreamLink, error) {
 	resolved := normalizePath(worktree)
-	all, _, err := store.List()
+	all, err := store.readableLinkStreams()
 	if err != nil {
 		return nil, err
 	}
@@ -544,7 +564,7 @@ type StreamLink struct {
 // repointed by hand.
 func (store *Store) LinkSourcesForWorktree(worktree string) ([]StreamLinkSource, error) {
 	resolved := normalizePath(worktree)
-	all, _, err := store.List()
+	all, err := store.readableLinkStreams()
 	if err != nil {
 		return nil, err
 	}
@@ -591,4 +611,18 @@ func normalizePath(path string) string {
 		return filepath.Clean(resolved)
 	}
 	return filepath.Clean(trimmed)
+}
+
+// RecordRemoteHead persists the fetched branch head for the next status and push lease.
+func (store *Store) RecordRemoteHead(streamName, repository, head string) error {
+	_, err := store.Update(streamName, func(stream *Stream) error {
+		for index := range stream.Members {
+			if strings.EqualFold(stream.Members[index].Repository, repository) {
+				stream.Members[index].Lease.RecordedHead = head
+				return nil
+			}
+		}
+		return fmt.Errorf("stream member %q not found", repository)
+	})
+	return err
 }

@@ -60,6 +60,7 @@ func TestDQCovReleaseRejectsInvalidTaskName(t *testing.T) {
 }
 
 func TestDQCovClaimReleaseAndClaimsReportCloneFailure(t *testing.T) {
+	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "no-such-origin")
 	p := New(Options{ClonePath: filepath.Join(t.TempDir(), "p", "wb-state"), CloneURL: missing})
 	ctx := context.Background()
@@ -279,6 +280,7 @@ func TestDQCovClaimsReportsClaimsPathReadFailure(t *testing.T) {
 }
 
 func TestDQCovMutateStoreReportsMutateError(t *testing.T) {
+	t.Parallel()
 	sentinel := errors.New("dqCov mutate failed")
 	p := New(Options{ClonePath: filepath.Join(t.TempDir(), "p", "wb-state"), CloneURL: "file:///nowhere"})
 

@@ -5,20 +5,24 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"math/rand"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
+	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestCoverAggregatesGoStatements(t *testing.T) {
+	t.Parallel()
 	repository := t.TempDir()
 	writeQualityFile(t, filepath.Join(repository, "go.mod"), "module example.test/coverage\n\ngo 1.26\n")
 	writeQualityFile(t, filepath.Join(repository, "coverage.go"), "package coverage\n\nfunc Covered() int { return 1 }\nfunc Uncovered() int { return 2 }\n")
@@ -44,6 +48,7 @@ func TestCoverAggregatesGoStatements(t *testing.T) {
 }
 
 func TestProfileTotals(t *testing.T) {
+	t.Parallel()
 	profile := filepath.Join(t.TempDir(), "coverage.out")
 	writeQualityFile(t, profile, "mode: set\nexample.go:1.1,1.2 3 1\nexample.go:2.1,2.2 2 0\n")
 	statements, covered, err := profileTotals(profile)
@@ -52,6 +57,59 @@ func TestProfileTotals(t *testing.T) {
 	}
 	if statements != 5 || covered != 3 || percent(covered, statements) != 60 {
 		t.Fatalf("totals = %d/%d (%.2f%%)", covered, statements, percent(covered, statements))
+	}
+}
+
+func TestProfileTotalsMatchesSummaryForRepeatedBlocks(t *testing.T) {
+	t.Parallel()
+	profile := filepath.Join(t.TempDir(), "coverage.out")
+	writeQualityFile(t, profile, "mode: set\n"+
+		"example.com/app/pkg/a.go:1.1,1.4 2 0\n"+
+		"example.com/app/pkg/a.go:1.1,1.6 3 0\n"+
+		"example.com/app/pkg/a.go:1.1,1.4 2 1\n"+
+		"example.com/app/pkg/a.go:1.1,1.4 2 1\n"+
+		"example.com/app/pkg/a.go:1.1,1.6 3 0\n")
+	statements, covered, err := profileTotals(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocks, err := ParseCoverageProfile(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary := SummaryFromProfile(blocks, "example.com/app", CoverageSummaryMeta{})
+	if statements != 5 || covered != 2 || statements != summary.Statements || covered != summary.Covered {
+		t.Fatalf("totals = %d/%d, summary = %d/%d; want 2/5", covered, statements, summary.Covered, summary.Statements)
+	}
+}
+
+func TestProfileTotalsRejectsConflictingBlocksAndEmptyProfiles(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, contents, want string
+	}{
+		{"conflicting statement count", "mode: set\nexample.com/app/pkg/a.go:1.1,1.4 2 0\nexample.com/app/pkg/a.go:1.1,1.4 3 1\n", "statement count"},
+		{"empty file", "", "invalid coverage profile"},
+		{"whitespace only", " \n\t\n", "invalid coverage profile"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			profile := filepath.Join(t.TempDir(), "coverage.out")
+			writeQualityFile(t, profile, tc.contents)
+			if _, _, err := profileTotals(profile); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("profileTotals error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestProfileTotalsAcceptsHeaderOnlyProfile(t *testing.T) {
+	t.Parallel()
+	profile := filepath.Join(t.TempDir(), "coverage.out")
+	writeQualityFile(t, profile, "mode: set\n")
+	statements, covered, err := profileTotals(profile)
+	if err != nil || statements != 0 || covered != 0 {
+		t.Fatalf("header-only totals = %d/%d, error = %v; want 0/0", covered, statements, err)
 	}
 }
 
@@ -67,10 +125,7 @@ func TestVerifyRunsNodeScriptsWithDetectedPackageManager(t *testing.T) {
 		t.Fatal(err)
 	}
 	log := filepath.Join(repository, "commands.log")
-	writeQualityFile(t, filepath.Join(bin, "pnpm"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \""+log+"\"\n")
-	if err := os.Chmod(filepath.Join(bin, "pnpm"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeQualityExecutableFile(t, filepath.Join(bin, "pnpm"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \""+log+"\"\n")
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	var progress []Progress
@@ -99,6 +154,56 @@ func TestVerifyRunsNodeScriptsWithDetectedPackageManager(t *testing.T) {
 			t.Fatalf("verification progress event %d state = %s, want %s", index, event.State, want)
 		}
 	}
+
+	// Merge validation runs lint before test/build. A successful install in the
+	// lint phase serves the same locked scope for the later phase.
+	if err := os.WriteFile(log, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lint := VerifyWithOptions(context.Background(), "example/node", repository, []Check{CheckLint}, RunOptions{})
+	later := VerifyWithOptions(context.Background(), "example/node", repository, []Check{CheckTest, CheckBuild}, RunOptions{PriorNodeInstallReport: &lint})
+	if lint.Status != StatusPassed || later.Status != StatusPassed {
+		t.Fatalf("phased verification: lint=%+v later=%+v", lint, later)
+	}
+	contents, err = os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.TrimSpace(string(contents)), "install --frozen-lockfile\nrun lint\nrun test\nrun build"; got != want {
+		t.Fatalf("phased commands = %q, want %q", got, want)
+	}
+
+	// A lint phase with no Node script has no install evidence to reuse.
+	writeQualityFile(t, filepath.Join(repository, "package.json"), `{"scripts":{"test":"x","build":"x"}}`)
+	if err := os.WriteFile(log, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lint = VerifyWithOptions(context.Background(), "example/node", repository, []Check{CheckLint}, RunOptions{})
+	later = VerifyWithOptions(context.Background(), "example/node", repository, []Check{CheckTest}, RunOptions{PriorNodeInstallReport: &lint})
+	contents, err = os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.TrimSpace(string(contents)), "install --frozen-lockfile\nrun test"; got != want || later.Status != StatusPassed {
+		t.Fatalf("missing-lint-script commands = %q, later=%+v; want %q", got, later, want)
+	}
+
+	// A failed lint-phase install must be retried before later checks.
+	writeQualityFile(t, filepath.Join(repository, "package.json"), `{"scripts":{"lint":"x","test":"x","build":"x"}}`)
+	failedOnce := filepath.Join(repository, "install-failed-once")
+	writeQualityExecutableFile(t, filepath.Join(bin, "pnpm"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \""+log+"\"\nif [ \"$1\" = install ] && [ ! -f \""+failedOnce+"\" ]; then : > \""+failedOnce+"\"; exit 1; fi\n")
+	if err := os.WriteFile(log, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lint = VerifyWithOptions(context.Background(), "example/node", repository, []Check{CheckLint}, RunOptions{})
+	later = VerifyWithOptions(context.Background(), "example/node", repository, []Check{CheckTest}, RunOptions{PriorNodeInstallReport: &lint})
+	contents, err = os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.TrimSpace(string(contents)), "install --frozen-lockfile\nrun lint\ninstall --frozen-lockfile\nrun test"; got != want || lint.Status != StatusFailed || later.Status != StatusPassed {
+		t.Fatalf("failed-install commands = %q, lint=%+v later=%+v; want %q", got, lint, later, want)
+	}
 }
 
 func TestVerifyRunsEveryConfiguredGoLintCommand(t *testing.T) {
@@ -112,10 +217,7 @@ func TestVerifyRunsEveryConfiguredGoLintCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	log := filepath.Join(repository, "commands.log")
-	writeQualityFile(t, filepath.Join(bin, "go"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \""+log+"\"\n")
-	if err := os.Chmod(filepath.Join(bin, "go"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeQualityExecutableFile(t, filepath.Join(bin, "go"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \""+log+"\"\n")
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	report := VerifyWithOptions(context.Background(), "example/lint", repository, []Check{CheckLint}, RunOptions{
@@ -146,14 +248,8 @@ func TestVerifyRunsNxTargetsWhenRootScriptsAreAbsent(t *testing.T) {
 		t.Fatal(err)
 	}
 	log := filepath.Join(repository, "commands.log")
-	writeQualityFile(t, filepath.Join(bin, "pnpm"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \""+log+"\"\n")
-	if err := os.Chmod(filepath.Join(bin, "pnpm"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	writeQualityFile(t, filepath.Join(bin, "node"), "#!/bin/sh\nprintf 'node %s\\n' \"$*\" >> \""+log+"\"\n")
-	if err := os.Chmod(filepath.Join(bin, "node"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeQualityExecutableFile(t, filepath.Join(bin, "pnpm"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \""+log+"\"\n")
+	writeQualityExecutableFile(t, filepath.Join(bin, "node"), "#!/bin/sh\nprintf 'node %s\\n' \"$*\" >> \""+log+"\"\n")
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	report := Verify(context.Background(), "example/nx", repository, []Check{CheckLint, CheckTest, CheckBuild})
@@ -199,7 +295,7 @@ func TestVerifyPreparesEveryIndependentNodeScopeBeforeScripts(t *testing.T) {
 		t.Fatal(err)
 	}
 	log := filepath.Join(repository, "commands.log")
-	writeQualityFile(t, filepath.Join(bin, "pnpm"), `#!/bin/sh
+	writeQualityExecutableFile(t, filepath.Join(bin, "pnpm"), `#!/bin/sh
 scope=$(pwd)
 case "$1" in
   install)
@@ -217,9 +313,6 @@ case "$1" in
   *) echo "unexpected pnpm command: $*" >&2; exit 1 ;;
 esac
 `)
-	if err := os.Chmod(filepath.Join(bin, "pnpm"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	report := Verify(context.Background(), "example/node-scopes", repository, []Check{CheckLint, CheckTest, CheckBuild})
@@ -258,10 +351,7 @@ func TestVerifyUsesGoWorkspaceModules(t *testing.T) {
 		t.Fatal(err)
 	}
 	log := filepath.Join(repository, "go-commands.log")
-	writeQualityFile(t, filepath.Join(bin, "go"), "#!/bin/sh\nprintf '%s %s\\n' \"$(pwd)\" \"$*\" >> \""+log+"\"\n")
-	if err := os.Chmod(filepath.Join(bin, "go"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeQualityExecutableFile(t, filepath.Join(bin, "go"), "#!/bin/sh\nprintf '%s %s\\n' \"$(pwd)\" \"$*\" >> \""+log+"\"\n")
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	report := Verify(context.Background(), "example/go-workspace", repository, []Check{CheckLint, CheckTest, CheckBuild})
@@ -295,10 +385,7 @@ func TestVerifyDiscoversStandaloneGoModulesWithoutWorkspace(t *testing.T) {
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeQualityFile(t, filepath.Join(bin, "go"), "#!/bin/sh\nexit 0\n")
-	if err := os.Chmod(filepath.Join(bin, "go"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeQualityExecutableFile(t, filepath.Join(bin, "go"), "#!/bin/sh\nexit 0\n")
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	report := Verify(context.Background(), "example/standalone", repository, []Check{CheckLint, CheckTest, CheckBuild})
@@ -313,6 +400,7 @@ func TestVerifyDiscoversStandaloneGoModulesWithoutWorkspace(t *testing.T) {
 }
 
 func TestNodeInstallCommandUsesLockedPackageManagerSemantics(t *testing.T) {
+	t.Parallel()
 	for manager, want := range map[string]string{
 		"npm":  "npm ci",
 		"pnpm": "pnpm install --frozen-lockfile",
@@ -326,6 +414,7 @@ func TestNodeInstallCommandUsesLockedPackageManagerSemantics(t *testing.T) {
 }
 
 func TestNodeCheckCommandBoundsNxWithoutForwardingExecutorSpecificFlags(t *testing.T) {
+	t.Parallel()
 	got := strings.Join(nodeCheckCommand("pnpm", CheckLint, true, true), " ")
 	want := "node node_modules/nx/dist/bin/nx.js run-many --target=lint --all --skip-nx-cache --parallel=1"
 	if got != want {
@@ -335,6 +424,7 @@ func TestNodeCheckCommandBoundsNxWithoutForwardingExecutorSpecificFlags(t *testi
 
 func TestVerifySpecScoreConfiguration(t *testing.T) {
 	t.Run("configured missing root fails closed", func(t *testing.T) {
+		t.Parallel()
 		repository := t.TempDir()
 		writeQualityFile(t, filepath.Join(repository, "specscore.yaml"), "project:\n  slug: example\n")
 
@@ -349,6 +439,7 @@ func TestVerifySpecScoreConfiguration(t *testing.T) {
 	})
 
 	t.Run("unconfigured missing root remains non-applicable", func(t *testing.T) {
+		t.Parallel()
 		repository := t.TempDir()
 
 		report := Verify(context.Background(), "example/no-spec", repository, []Check{CheckSpec})
@@ -374,10 +465,7 @@ func TestVerifySpecScoreConfiguration(t *testing.T) {
 			t.Fatal(err)
 		}
 		log := filepath.Join(repository, "commands.log")
-		writeQualityFile(t, filepath.Join(bin, "specscore"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \""+log+"\"\n")
-		if err := os.Chmod(filepath.Join(bin, "specscore"), 0o755); err != nil {
-			t.Fatal(err)
-		}
+		writeQualityExecutableFile(t, filepath.Join(bin, "specscore"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \""+log+"\"\n")
 		t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 		report := Verify(context.Background(), "example/spec", repository, []Check{CheckSpec})
@@ -403,6 +491,7 @@ func TestVerifySpecScoreConfiguration(t *testing.T) {
 	// pins the boundaries of the carve-out.
 
 	t.Run("external plans store without config is skipped", func(t *testing.T) {
+		t.Parallel()
 		repository := t.TempDir()
 		writeExternalPlansStore(t, repository)
 
@@ -686,6 +775,7 @@ func TestVerifyExternalPlansStore(t *testing.T) {
 // TestExternalPlansStorePath pins the path rule for every non-directory
 // entry under spec/ in an external Plans store.
 func TestExternalPlansStorePath(t *testing.T) {
+	t.Parallel()
 	for rel, want := range map[string]bool{
 		// Aggregate index, and what a symlinked spec/ or spec/plans looks like.
 		"plans/README.md":         true,
@@ -789,15 +879,13 @@ func stubSpecscoreBinary(t *testing.T, repository string) string {
 		t.Fatal(err)
 	}
 	log := filepath.Join(repository, "commands.log")
-	writeQualityFile(t, filepath.Join(bin, "specscore"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \""+log+"\"\n")
-	if err := os.Chmod(filepath.Join(bin, "specscore"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeQualityExecutableFile(t, filepath.Join(bin, "specscore"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \""+log+"\"\n")
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return log
 }
 
 func TestParseChecks(t *testing.T) {
+	t.Parallel()
 	checks, err := ParseChecks("test,lint,test")
 	if err != nil {
 		t.Fatal(err)
@@ -811,6 +899,7 @@ func TestParseChecks(t *testing.T) {
 }
 
 func TestCommandErrorRetainsFailureTailWhenOutputIsLong(t *testing.T) {
+	t.Parallel()
 	prefix := "setup context\n"
 	middle := strings.Repeat("passing package output\n", 100)
 	failure := "--- FAIL: TestImportantJourney (15.14s)\n    journey_test.go:42: exact failure\nFAIL"
@@ -828,7 +917,824 @@ func TestCommandErrorRetainsFailureTailWhenOutputIsLong(t *testing.T) {
 	}
 }
 
+// TestTruncateCommandDetailToKeepsMiddleFailAndPanicBlocksAHeadTailBoundWouldDrop
+// pins sneat-dev/wb#582: `go test` output is sorted by package, and the
+// overwhelming majority pass, so the failing package's own "--- FAIL"
+// block, and any "panic:" and its stack, sit wherever the alphabet puts
+// them — almost never at either end. A head+tail-only bound (the
+// behaviour before this fix) reliably kept only passing "ok" lines here;
+// this test builds exactly that shape and shows the evidence survives,
+// strictly within the byte budget (review finding B1).
+func TestTruncateCommandDetailToKeepsMiddleFailAndPanicBlocksAHeadTailBoundWouldDrop(t *testing.T) {
+	t.Parallel()
+	head := strings.Repeat("ok  \tgithub.com/acme/aaa\t0.01s\tcoverage: 100.0% of statements\n", 20)
+	failBlock := "--- FAIL: TestDaemonFileBridgeRetryRecoversSubmitAcrossTokenAndGenerationRotation (1.81s)\n" +
+		"    daemon_file_bridge_test.go:149: old daemon operation count = 0, <nil>\n"
+	panicBlock := "panic: runtime error: index out of range [3] with length 3\n" +
+		"\tgoroutine 7 [running]:\n" +
+		"\tgithub.com/acme/pkg.doWork(...)\n" +
+		"\t\t/src/pkg/work.go:42\n"
+	middle := strings.Repeat("ok  \tgithub.com/acme/mmm\t0.02s\tcoverage: 98.0% of statements\n", 200)
+	// A bare "FAIL" line — the whole-command summary a shard emits without
+	// its own "--- FAIL" block, e.g. a compile failure — must survive on
+	// its own too, not only as part of a "--- FAIL" block or a panic's
+	// stack.
+	bareFail := "FAIL\tgithub.com/acme/broken\t[build failed]\n"
+	tail := strings.Repeat("ok  \tgithub.com/acme/zzz\t0.03s\tcoverage: 100.0% of statements\n", 20) + "FAIL\nexit status 1"
+
+	detail := head + failBlock + middle + panicBlock + middle + bareFail + middle + tail
+
+	// A degenerate head+tail bound over this shape would keep only the
+	// leading and trailing "ok" lines and the terminal bare "FAIL" — the
+	// exact defect #582 reported. Confirm the geometry actually exercises
+	// that: both blocks sit well inside the region a 1000-byte bound
+	// drops.
+	const max = 1000
+	headBytes := max / 4
+	if headBytes > 250 {
+		headBytes = 250
+	}
+	if strings.Index(detail, failBlock) < headBytes {
+		t.Fatalf("test fixture invalid: failBlock is not past the head window")
+	}
+	if strings.Index(detail, panicBlock)+len(panicBlock) > len(detail)-200 {
+		t.Fatalf("test fixture invalid: panicBlock is not clear of the tail window")
+	}
+
+	got := truncateCommandDetailTo(detail, max)
+
+	if len(got) > max {
+		t.Fatalf("truncated detail (%d bytes) exceeds the budget (%d bytes): %q", len(got), max, got)
+	}
+	if !strings.Contains(got, "--- FAIL: TestDaemonFileBridgeRetryRecoversSubmitAcrossTokenAndGenerationRotation") {
+		t.Fatalf("truncated detail dropped the middle FAIL block: %q", got)
+	}
+	if !strings.Contains(got, "daemon_file_bridge_test.go:149: old daemon operation count = 0, <nil>") {
+		t.Fatalf("truncated detail dropped the FAIL block's assertion message: %q", got)
+	}
+	if !strings.Contains(got, "panic: runtime error: index out of range [3] with length 3") {
+		t.Fatalf("truncated detail dropped the middle panic line: %q", got)
+	}
+	if !strings.Contains(got, "/src/pkg/work.go:42") {
+		t.Fatalf("truncated detail dropped the panic's stack: %q", got)
+	}
+	if !strings.Contains(got, bareFail) {
+		t.Fatalf("truncated detail dropped the standalone middle FAIL line: %q", got)
+	}
+	if !strings.Contains(got, "truncated") {
+		t.Fatalf("truncated detail does not disclose truncation: %q", got)
+	}
+	if len(got) >= len(detail) {
+		t.Fatalf("truncated detail (%d bytes) is not smaller than the input (%d bytes)", len(got), len(detail))
+	}
+}
+
+// TestTruncateCommandDetailToKeepsARealPanicStacksGoroutineHeaderAndFrames
+// pins review finding B (round 2 of #582) with a real captured `go test
+// -run TestBoom` failure (testdata/real_panic_stack.txt: a genuine runtime
+// panic from an out-of-range index), not a synthetic one. The Go runtime
+// always prints exactly one blank line right after the "panic: ..." line
+// and before "goroutine N [running]:"; the earlier fix treated that first
+// blank line itself as the end of the stack, so the goroutine header and
+// every frame under it — including the test's own frame — were dropped
+// even though the budget had room to spare.
+func TestTruncateCommandDetailToKeepsARealPanicStacksGoroutineHeaderAndFrames(t *testing.T) {
+	t.Parallel()
+	fixture, err := os.ReadFile(filepath.Join("testdata", "real_panic_stack.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := strings.Repeat("ok  \tgithub.com/acme/aaa\t0.01s\tcoverage: 100.0% of statements\n", 40)
+	tail := strings.Repeat("ok  \tgithub.com/acme/zzz\t0.03s\tcoverage: 100.0% of statements\n", 40)
+	detail := head + string(fixture) + tail
+
+	// A generous budget: this test's point is that the goroutine header and
+	// its frames are kept at all once there is room, not that the whole
+	// fixture must survive an unrelated, unrealistically tight budget.
+	const max = 2000
+	got := truncateCommandDetailTo(detail, max)
+	if len(got) > max {
+		t.Fatalf("truncated detail (%d bytes) exceeds the budget (%d bytes): %q", len(got), max, got)
+	}
+	for _, want := range []string{
+		"--- FAIL: TestBoom (0.00s)",
+		"panic: runtime error: index out of range [3] with length 0",
+		"goroutine 6 [running]:",
+		"panicdemo.TestBoom.func1()",
+		"/tmp/tmp.QqaMXOYIOO/p_test.go:8",
+		"panicdemo.TestBoom(0x38af9667a248?)",
+		"/tmp/tmp.QqaMXOYIOO/p_test.go:12",
+		"FAIL\tpanicdemo\t0.006s",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("truncated detail dropped %q from a real panic stack: %q", want, got)
+		}
+	}
+}
+
+// TestTruncateCommandDetailToWalksBackToStartWhenTheLastLineHasNoTrailingNewline
+// exercises the scanStart walk-back's own edge case directly (review
+// finding N3's fix): the line reached while backing up over a run of
+// indented continuation lines can itself be the very last line of detail,
+// with no trailing newline after it to find.
+func TestTruncateCommandDetailToWalksBackToStartWhenTheLastLineHasNoTrailingNewline(t *testing.T) {
+	t.Parallel()
+	detail := "H\n    indented continuation with no trailing newline at all"
+	const max = 10
+	got := truncateCommandDetailTo(detail, max)
+	// Neither "H" nor the indented line matches any evidence trigger, so
+	// this must fall back to the legacy shape byte-for-byte — including
+	// its own long-standing imprecision at a budget this tiny (the same
+	// parity every other no-evidence input relies on).
+	want := legacyTruncateCommandDetailTo(detail, max)
+	if got != want {
+		t.Fatalf("truncateCommandDetailTo = %q, want the legacy shape %q", got, want)
+	}
+}
+
+// TestFitEvidenceBlockStopsWithoutAttemptingAPartialLineWhenNoRoomRemainsAtAll
+// exercises fitEvidenceBlock's own boundary directly: once a kept line has
+// used the entire budget, the next line's separator alone leaves no room
+// at all (not even for a rune-safe partial, review finding N5's own
+// limit) — the loop must simply stop, not attempt to append anything more.
+func TestFitEvidenceBlockStopsWithoutAttemptingAPartialLineWhenNoRoomRemainsAtAll(t *testing.T) {
+	t.Parallel()
+	const budget = 20
+	firstLine := strings.Repeat("A", budget)
+	secondLine := strings.Repeat("B", 100)
+	available := budget + len(evidenceHeader) + len(evidenceTruncatedNotice)
+
+	got := fitEvidenceBlock([]evidenceLine{{text: firstLine}, {text: secondLine}}, available)
+	if len(got) > available {
+		t.Fatalf("fitEvidenceBlock (%d bytes) exceeds available (%d bytes): %q", len(got), available, got)
+	}
+	if !strings.Contains(got, firstLine) {
+		t.Fatalf("fitEvidenceBlock dropped the line that exactly fit the budget: %q", got)
+	}
+	if strings.Contains(got, "B") {
+		t.Fatalf("fitEvidenceBlock kept part of a line it had no room for at all: %q", got)
+	}
+}
+
+// TestTruncateCommandDetailToKeepsAFailBlockNearTheEndAfterEvidenceShrinksTheTail
+// pins review finding B3: a "--- FAIL" block that sits within what the
+// historical head+tail bound would have kept as tail must still survive
+// once evidence found earlier shrinks that tail to make room for itself —
+// scanning must never stop at the old, larger tail boundary.
+func TestTruncateCommandDetailToKeepsAFailBlockNearTheEndAfterEvidenceShrinksTheTail(t *testing.T) {
+	t.Parallel()
+	head := strings.Repeat("ok  \tgithub.com/acme/aaa\t0.01s\tcoverage: 100.0% of statements\n", 20)
+	middleFail := "--- FAIL: TestMiddle (0.01s)\n    fixture_test.go:1: middle failure\n"
+	filler := strings.Repeat("ok  \tgithub.com/acme/mmm\t0.02s\tcoverage: 98.0% of statements\n", 150)
+	nearTailFail := "--- FAIL: TestNearTail (0.02s)\n    fixture_test.go:2: near-tail failure\n"
+	tail := strings.Repeat("ok  \tgithub.com/acme/zzz\t0.03s\tcoverage: 100.0% of statements\n", 5)
+
+	detail := head + middleFail + filler + nearTailFail + tail
+
+	const max = 1000
+	// Confirm nearTailFail actually sits inside the legacy (no-evidence)
+	// tail window, so this test exercises the shrink, not a fixture that
+	// happened to already scan it as "middle".
+	headBytes := max / 4
+	legacyTailBytes, _ := sizeTailAndMarker(max - headBytes)
+	if strings.Index(detail, nearTailFail) < len(detail)-legacyTailBytes {
+		t.Fatalf("test fixture invalid: nearTailFail is not inside the legacy tail window")
+	}
+
+	got := truncateCommandDetailTo(detail, max)
+	if len(got) > max {
+		t.Fatalf("truncated detail (%d bytes) exceeds the budget (%d bytes)", len(got), max)
+	}
+	if !strings.Contains(got, "--- FAIL: TestMiddle") {
+		t.Fatalf("truncated detail dropped the middle FAIL block: %q", got)
+	}
+	if !strings.Contains(got, "--- FAIL: TestNearTail") {
+		t.Fatalf("truncated detail dropped the near-tail FAIL block once the tail shrank: %q", got)
+	}
+}
+
+// TestTruncateCommandDetailToKeepsANestedSubtestBlockWhoseParentIsInTheHead
+// pins review finding N7: an indented "--- FAIL" sub-test line, and its
+// assertion message, must survive even when the parent "--- FAIL" line
+// that introduces the block falls inside the head window itself.
+func TestTruncateCommandDetailToKeepsANestedSubtestBlockWhoseParentIsInTheHead(t *testing.T) {
+	t.Parallel()
+	const max = 1000
+	headBytes := max / 4
+	// Pad so the parent "--- FAIL" line's own start falls before headBytes
+	// but its line, and the indented sub-test block under it, extend past
+	// it.
+	pad := strings.Repeat("x", headBytes-10)
+	parentBlock := "--- FAIL: TestParent (0.05s)\n" +
+		"    --- FAIL: TestParent/sub (0.01s)\n" +
+		"        fixture_test.go:9: nested assertion failed\n"
+	filler := strings.Repeat("ok  \tgithub.com/acme/mmm\t0.02s\tcoverage: 98.0% of statements\n", 150)
+	tail := strings.Repeat("ok  \tgithub.com/acme/zzz\t0.03s\tcoverage: 100.0% of statements\n", 5)
+	detail := pad + "\n" + parentBlock + filler + tail
+
+	if strings.Index(detail, parentBlock) >= headBytes {
+		t.Fatalf("test fixture invalid: parentBlock does not straddle the head boundary")
+	}
+
+	got := truncateCommandDetailTo(detail, max)
+	if len(got) > max {
+		t.Fatalf("truncated detail (%d bytes) exceeds the budget (%d bytes)", len(got), max)
+	}
+	if !strings.Contains(got, "--- FAIL: TestParent/sub") {
+		t.Fatalf("truncated detail dropped the nested sub-test line whose parent is in the head: %q", got)
+	}
+	if !strings.Contains(got, "nested assertion failed") {
+		t.Fatalf("truncated detail dropped the nested sub-test's assertion: %q", got)
+	}
+}
+
+// TestTruncateCommandDetailToKeepsASubtestFarPastTheHeadWhenItsParentLineIsFullyInsideTheHead
+// pins review finding 6 (round 4 of #582): the existing "parent is in the
+// head" test above only ever exercised a parent "--- FAIL" line that itself
+// straddles the head boundary. This one pads so the parent line's own bytes
+// — trailing newline included — end well before headBytes, with only its
+// indented sub-test continuation straddling past it, so the parent line is
+// dropped as an exact duplicate of what the head already shows while its
+// sub-test block still survives.
+func TestTruncateCommandDetailToKeepsASubtestFarPastTheHeadWhenItsParentLineIsFullyInsideTheHead(t *testing.T) {
+	t.Parallel()
+	const max = 1000
+	headBytes := max / 4
+	parentLine := "--- FAIL: TestParent (0.05s)\n"
+	pad := strings.Repeat("x", headBytes-len(parentLine)-40)
+	subtestBlock := "    --- FAIL: TestParent/sub (0.01s)\n        fixture_test.go:9: nested assertion failed\n"
+	filler := strings.Repeat("ok  \tgithub.com/acme/mmm\t0.02s\tcoverage: 98.0% of statements\n", 150)
+	tail := strings.Repeat("ok  \tgithub.com/acme/zzz\t0.03s\tcoverage: 100.0% of statements\n", 5)
+	detail := pad + "\n" + parentLine + subtestBlock + filler + tail
+
+	parentStart := strings.Index(detail, parentLine)
+	if parentStart+len(parentLine) >= headBytes {
+		t.Fatalf("test fixture invalid: the parent line itself is not fully inside the head (ends at %d, headBytes %d)", parentStart+len(parentLine), headBytes)
+	}
+	if parentStart+len(parentLine)+len(subtestBlock) <= headBytes {
+		t.Fatalf("test fixture invalid: the sub-test block does not straddle past the head boundary")
+	}
+
+	got := truncateCommandDetailTo(detail, max)
+	if len(got) > max {
+		t.Fatalf("truncated detail (%d bytes) exceeds the budget (%d bytes)", len(got), max)
+	}
+	if !strings.Contains(got, "--- FAIL: TestParent/sub") {
+		t.Fatalf("truncated detail dropped the sub-test line whose parent is fully in the head: %q", got)
+	}
+	if !strings.Contains(got, "nested assertion failed") {
+		t.Fatalf("truncated detail dropped the sub-test's assertion: %q", got)
+	}
+	if strings.Count(got, "--- FAIL: TestParent (0.05s)") != 1 {
+		t.Fatalf("truncated detail should show the parent line exactly once (from the head alone), got %d: %q", strings.Count(got, "--- FAIL: TestParent (0.05s)"), got)
+	}
+}
+
+// TestTruncateCommandDetailToKeepsBothOccurrencesOfIdenticalAssertionTextUnderDifferentTests
+// pins review finding B (round 4 of #582), the blocking finding: the
+// round-2/round-3 de-duplication matched evidence lines by TEXT against
+// what the head or tail already show, so an assertion line that legitimately
+// repeats — verbatim — under a different failing test was silently dropped
+// even though its own occurrence was never shown anywhere else. TestA's
+// block sits in the middle (never reproduced elsewhere); TestB's block, with
+// the identical assertion text, sits inside the kept tail. De-duplication
+// must be by position, so TestA's own occurrence survives intact.
+func TestTruncateCommandDetailToKeepsBothOccurrencesOfIdenticalAssertionTextUnderDifferentTests(t *testing.T) {
+	t.Parallel()
+	head := strings.Repeat("ok  \tgithub.com/acme/aaa\t0.01s\tcoverage: 100.0% of statements\n", 20)
+	sharedAssertion := "    a_test.go:5: want 1 got 2\n"
+	testABlock := "--- FAIL: TestA (0.00s)\n" + sharedAssertion
+	testBBlock := "--- FAIL: TestB (0.00s)\n" + sharedAssertion
+	middle := strings.Repeat("ok  \tgithub.com/acme/mmm\t0.02s\tcoverage: 98.0% of statements\n", 200)
+	tailFiller := strings.Repeat("ok  \tgithub.com/acme/zzz\t0.03s\tcoverage: 100.0% of statements\n", 3)
+	detail := head + testABlock + middle + testBBlock + tailFiller
+
+	const max = 1000
+	headBytes := max / 4
+	legacyTailBytes, _ := sizeTailAndMarker(max - headBytes)
+	if strings.Index(detail, testBBlock) < len(detail)-legacyTailBytes {
+		t.Fatalf("test fixture invalid: TestB's block is not inside the kept tail window")
+	}
+	if strings.Index(detail, testABlock) >= headBytes && strings.Index(detail, testABlock)+len(testABlock) <= len(detail)-legacyTailBytes {
+		// expected: genuinely in the middle
+	} else {
+		t.Fatalf("test fixture invalid: TestA's block is not genuinely in the middle")
+	}
+
+	got := truncateCommandDetailTo(detail, max)
+	if len(got) > max {
+		t.Fatalf("truncated detail (%d bytes) exceeds the budget (%d bytes): %q", len(got), max, got)
+	}
+	wantIntactBlock := "--- FAIL: TestA (0.00s)\n    a_test.go:5: want 1 got 2"
+	if !strings.Contains(got, wantIntactBlock) {
+		t.Fatalf("truncated detail dropped TestA's own assertion line, even though its text also appears under a different test in the tail: %q", got)
+	}
+}
+
+// TestTruncateCommandDetailToRegrowsTheTailWhenDeduplicationEmptiesTheEvidence
+// pins review finding N2 (round 4 of #582): when the only evidence found
+// turns out to sit entirely inside the tail window a bare head+tail bound
+// would already have kept, the freed evidence budget must not be wasted —
+// the output must match the legacy head+tail shape exactly (recomputed at
+// the full available budget), not a shorter one still sized as though
+// evidence had been kept.
+func TestTruncateCommandDetailToRegrowsTheTailWhenDeduplicationEmptiesTheEvidence(t *testing.T) {
+	t.Parallel()
+	middle := strings.Repeat("ok  \tgithub.com/acme/mmm\t0.02s\tcoverage: 98.0% of statements\n", 200)
+	detail := middle + "FAIL\nexit status 1"
+
+	const max = 1000
+	headBytes := max / 4
+	legacyTailBytes, _ := sizeTailAndMarker(max - headBytes)
+	if strings.Index(detail, "FAIL\nexit status 1") < len(detail)-legacyTailBytes {
+		t.Fatalf("test fixture invalid: the bare FAIL line is not inside the kept tail window")
+	}
+
+	got := truncateCommandDetailTo(detail, max)
+	want := legacyTruncateCommandDetailTo(detail, max)
+	if got != want {
+		t.Fatalf("truncateCommandDetailTo = %q, want byte-identical to the legacy shape %q (evidence collapsed entirely, so the tail must regrow to fill the freed budget)", got, want)
+	}
+}
+
+// TestFitEvidenceBlockOmitsAPartialLineShorterThanTheMinimumMeaningfulLength
+// pins review finding 3 (round 4 of #582): a single over-long trigger line
+// with almost no room left after the header and the omission notice used to
+// contribute a fragment only a byte or two long — conveying nothing a
+// reader could act on. Below minPartialEvidenceLineBytes, fitEvidenceBlock
+// must omit the line entirely rather than keep a useless fragment.
+func TestFitEvidenceBlockOmitsAPartialLineShorterThanTheMinimumMeaningfulLength(t *testing.T) {
+	t.Parallel()
+	line := "--- FAIL: " + strings.Repeat("VeryLongTestName", 40) + " (0.00s)"
+	available := len(evidenceHeader) + len(evidenceTruncatedNotice) + (minPartialEvidenceLineBytes - 1)
+
+	got := fitEvidenceBlock([]evidenceLine{{text: line}}, available)
+	if got != "" {
+		t.Fatalf("fitEvidenceBlock kept a fragment shorter than the minimum meaningful length: %q", got)
+	}
+}
+
+// TestTruncateCommandDetailToOmitsATinyEvidenceFragmentRatherThanShowingIt
+// is the integration-level pin for the same finding: reproduces the
+// review's own repro (a single huge assertion line, a budget that leaves
+// only a few bytes of room for it) and confirms the returned detail never
+// contains a truncated, near-meaningless fragment of it.
+func TestTruncateCommandDetailToOmitsATinyEvidenceFragmentRatherThanShowingIt(t *testing.T) {
+	t.Parallel()
+	head := strings.Repeat("ok  \tgithub.com/acme/aaa\t0.01s\tcoverage: 100.0% of statements\n", 5)
+	bigLine := "--- FAIL: TestBig (0.00s)\n    " + strings.Repeat("assertion detail ", 40) + "\n"
+	tail := strings.Repeat("ok  \tgithub.com/acme/zzz\t0.03s\tcoverage: 100.0% of statements\n", 5)
+	detail := head + bigLine + tail
+
+	const max = 150
+	got := truncateCommandDetailTo(detail, max)
+	if len(got) > max {
+		t.Fatalf("truncated detail (%d bytes) exceeds the budget (%d bytes): %q", len(got), max, got)
+	}
+	// At this budget, the single over-long trigger line cannot meet
+	// minPartialEvidenceLineBytes, so nothing survives: the output must
+	// fall back to the plain (evidence-free) shape rather than show a
+	// near-meaningless fragment such as "---" under an evidence header
+	// (the review's own reproduction at this exact budget).
+	if strings.Contains(got, "kept failure evidence") {
+		t.Fatalf("truncated detail emitted an evidence header with nothing meaningful under it: %q", got)
+	}
+	if strings.Contains(got, "---") {
+		t.Fatalf("truncated detail kept a meaningless fragment of the over-long line: %q", got)
+	}
+}
+
+// TestTruncateCommandDetailToEndsANoHeaderPanicAtTheFirstBlankLine pins
+// review finding 4 (round 4 of #582): a "panic:" trigger line with no
+// goroutine header anywhere after it — never a real Go runtime panic, but
+// possible in arbitrary command output — must not swallow every line up to
+// the next go-test status line. It must end at the very first blank line,
+// exactly as it would if a real header had already been seen and passed.
+func TestTruncateCommandDetailToEndsANoHeaderPanicAtTheFirstBlankLine(t *testing.T) {
+	t.Parallel()
+	head := strings.Repeat("ok  \tgithub.com/acme/aaa\t0.01s\tcoverage: 100.0% of statements\n", 20)
+	noHeaderPanic := "panic: something went sideways\n\n" + strings.Repeat("unrelated chatter line\n", 30)
+	middle := strings.Repeat("ok  \tgithub.com/acme/mmm\t0.02s\tcoverage: 98.0% of statements\n", 150)
+	tail := strings.Repeat("ok  \tgithub.com/acme/zzz\t0.03s\tcoverage: 100.0% of statements\n", 5)
+	detail := head + noHeaderPanic + middle + tail
+
+	const max = 2000
+	got := truncateCommandDetailTo(detail, max)
+	if len(got) > max {
+		t.Fatalf("truncated detail (%d bytes) exceeds the budget (%d bytes)", len(got), max)
+	}
+	if !strings.Contains(got, "panic: something went sideways") {
+		t.Fatalf("truncated detail dropped the panic line itself: %q", got)
+	}
+	if strings.Contains(got, "unrelated chatter line") {
+		t.Fatalf("truncated detail swallowed chatter past the first blank line of a headerless panic: %q", got)
+	}
+}
+
+// TestTruncateCommandDetailToKeepsALaterGoroutinesFrameInATestTimeoutPanic
+// pins review finding 5 (round 4 of #582): a `panic: test timed out`
+// dump prints several goroutine blocks, each separated by a blank line, and
+// the hung test's own frame is typically in a LATER block, not the first
+// (alarm) goroutine. Ending the stack at the first post-header blank line
+// dropped that later block entirely; a blank line must not end the stack
+// when the very next line is itself another goroutine header.
+func TestTruncateCommandDetailToKeepsALaterGoroutinesFrameInATestTimeoutPanic(t *testing.T) {
+	t.Parallel()
+	head := strings.Repeat("ok  \tgithub.com/acme/aaa\t0.01s\tcoverage: 100.0% of statements\n", 5)
+	timeoutPanic := "panic: test timed out after 30s\n" +
+		"running tests:\n" +
+		"\tTestSlow (29s)\n" +
+		"\n" +
+		"goroutine 6 [running]:\n" +
+		"testing.Main.func1()\n" +
+		"\t/usr/local/go/src/testing/testing.go:2200 +0x1a\n" +
+		"\n" +
+		"goroutine 1 [chan receive]:\n" +
+		"testing.(*T).Run(0xc0000a0000)\n" +
+		"\t/usr/local/go/src/testing/testing.go:1750 +0x3ab\n" +
+		"\n" +
+		"goroutine 7 [sleep]:\n" +
+		"time.Sleep(0x6fc23ac00)\n" +
+		"\t/usr/local/go/src/runtime/time.go:195 +0x125\n" +
+		"mypkg.TestSlow(0xc0000a2000)\n" +
+		"\t/home/ai/slow_test.go:9 +0x40\n"
+	tail := "FAIL\tmypkg\t30.001s\n"
+	// Review finding 3 (round 5 of #582): the original fixture (about 870
+	// bytes) was smaller than max, so truncateCommandDetailTo returned it
+	// unchanged and the test passed on any implementation, including the
+	// pre-fix code. Pad the middle so the input genuinely exceeds the
+	// budget and the truncation path actually runs.
+	filler := strings.Repeat("ok  \tgithub.com/acme/mmm\t0.02s\tcoverage: 98.0% of statements\n", 40)
+	detail := head + timeoutPanic + filler + tail
+
+	const max = 1000
+	got := truncateCommandDetailTo(detail, max)
+	if len(got) > max {
+		t.Fatalf("truncated detail (%d bytes) exceeds the budget (%d bytes)", len(got), max)
+	}
+	if !strings.Contains(got, "slow_test.go:9") {
+		t.Fatalf("truncated detail dropped the hung test's own frame in a later goroutine block: %q", got)
+	}
+	if !strings.Contains(got, "goroutine 1 [chan receive]:") {
+		t.Fatalf("truncated detail dropped the middle goroutine block entirely: %q", got)
+	}
+}
+
+// TestTruncateCommandDetailToUnchangedWhenNothingWorthKeepingIsDropped pins
+// the historical head+tail-only shape for the common case this fix must
+// not disturb: when nothing worth keeping is found, truncateCommandDetailTo
+// returns byte-for-byte what the pre-#582 algorithm returned (review
+// finding N5 — an exact comparison, not Contains/HasPrefix).
+func TestTruncateCommandDetailToUnchangedWhenNothingWorthKeepingIsDropped(t *testing.T) {
+	t.Parallel()
+	detail := strings.Repeat("head", 1000) + "TAIL"
+	const max = 2000
+	got := truncateCommandDetailTo(detail, max)
+	want := legacyTruncateCommandDetailTo(detail, max)
+	if got != want {
+		t.Fatalf("truncateCommandDetailTo(no evidence) = %q, want byte-identical to the legacy shape %q", got, want)
+	}
+	if strings.Contains(got, "kept failure evidence") {
+		t.Fatalf("truncated detail claims to keep evidence that was never present: %q", got)
+	}
+}
+
+// TestTruncateCommandDetailToMatchesLegacyOnRandomInputsWithNoRealEvidence
+// is the byte-exact differential test review finding B4 asked for: many
+// deterministically generated inputs, containing only near-miss look-alike
+// text ("FAILED", "panicked", indented "panic:", "x FAIL y") that must
+// never be mistaken for real evidence once matching is restricted to whole
+// lines, across a range of budgets. Every one must match the legacy
+// head+tail-only algorithm byte-for-byte.
+func TestTruncateCommandDetailToMatchesLegacyOnRandomInputsWithNoRealEvidence(t *testing.T) {
+	t.Parallel()
+	random := rand.New(rand.NewSource(20260924))
+	lookAlikes := []string{
+		"ok  \tgithub.com/acme/pkg%d\t0.0%ds\tcoverage: 9%d.0%% of statements",
+		"this package FAILED to look like a real failure",
+		"a panicked goroutine is not a panic: line",
+		"    panic: this panic: line is indented, so it never starts a line",
+		"x FAIL y sits mid-line, never at column zero",
+		"=== RUN   TestSomething",
+		"--- PASS: TestSomething (0.00s)",
+	}
+	maxValues := []int{50, 100, 250, 500, 1000, 2000}
+
+	for iteration := 0; iteration < 500; iteration++ {
+		lineCount := 5 + random.Intn(60)
+		lines := make([]string, 0, lineCount)
+		for i := 0; i < lineCount; i++ {
+			template := lookAlikes[random.Intn(len(lookAlikes))]
+			// Review finding N6: only the one template with %d verbs takes
+			// the random substitutions — passing them to every template
+			// regardless made fmt.Sprintf append "%!(EXTRA ...)" noise to
+			// every line without a verb to consume them.
+			line := template
+			if strings.Contains(template, "%d") {
+				line = fmt.Sprintf(template, random.Intn(100), random.Intn(9), random.Intn(9))
+			}
+			lines = append(lines, line)
+		}
+		detail := strings.Join(lines, "\n")
+		for _, max := range maxValues {
+			got := truncateCommandDetailTo(detail, max)
+			want := legacyTruncateCommandDetailTo(detail, max)
+			if got != want {
+				t.Fatalf("iteration %d, max %d: truncateCommandDetailTo diverged from the legacy shape on a no-evidence input\ndetail=%q\ngot =%q\nwant=%q", iteration, max, detail, got, want)
+			}
+		}
+	}
+}
+
+// legacyTruncateCommandDetailTo is a frozen copy of the pre-#582
+// algorithm (byte-position head+tail, no evidence recovery), kept only so
+// tests can differential-test the new truncateCommandDetailTo against it
+// for inputs with nothing worth keeping in the dropped middle, where
+// behaviour must be identical.
+func legacyTruncateCommandDetailTo(detail string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	if len(detail) <= max {
+		return detail
+	}
+	headBytes := max / 4
+	if headBytes > 250 {
+		headBytes = 250
+	}
+	tailBytes := max - headBytes - 64
+	if tailBytes < 0 {
+		tailBytes = 0
+	}
+	marker := fmt.Sprintf("\n… output truncated; final %d bytes:\n", tailBytes)
+	tailBytes = max - headBytes - len(marker)
+	if tailBytes < 0 {
+		tailBytes = 0
+	}
+	marker = fmt.Sprintf("\n… output truncated; final %d bytes:\n", tailBytes)
+	return detail[:headBytes] + marker + detail[len(detail)-tailBytes:]
+}
+
+// TestTruncateCommandDetailToCapsEvidenceWhenItWouldOverflowTheBudget pins
+// the defensive cap on kept evidence: a pathological run with dozens of
+// "--- FAIL" blocks in its dropped middle must not make the returned
+// string exceed the budget (review finding B1) — every kept line is
+// either whole or, only for the very last one, a rune-safe prefix (review
+// findings B2 and N5) — and discloses the cut, and the tail correctly
+// collapses to nothing once the evidence alone exceeds the remainder.
+func TestTruncateCommandDetailToCapsEvidenceWhenItWouldOverflowTheBudget(t *testing.T) {
+	t.Parallel()
+	head := strings.Repeat("ok  \tgithub.com/acme/aaa\t0.01s\tcoverage: 100.0% of statements\n", 20)
+	var blocks strings.Builder
+	for i := 0; i < 60; i++ {
+		blocks.WriteString("--- FAIL: TestRepeatedFailure (0.01s)\n    fixture_test.go:1: repeated failure body\n")
+	}
+	tail := strings.Repeat("ok  \tgithub.com/acme/zzz\t0.03s\tcoverage: 100.0% of statements\n", 20)
+	detail := head + blocks.String() + tail
+
+	const max = 1000
+	got := truncateCommandDetailTo(detail, max)
+
+	if len(got) > max {
+		t.Fatalf("truncated detail (%d bytes) exceeds the budget (%d bytes): %q", len(got), max, got)
+	}
+	if !strings.Contains(got, "--- FAIL: TestRepeatedFailure") {
+		t.Fatalf("truncated detail dropped all evidence: %q", got)
+	}
+	if !strings.Contains(got, "further failure evidence omitted") {
+		t.Fatalf("truncated detail cut evidence without disclosing it: %q", got)
+	}
+	// Every kept evidence line before the omission notice reproduces one
+	// of the repeated blocks either in full, or — only for the very last
+	// line, when it does not fit whole — as its own rune-safe prefix
+	// (review finding N5: an over-long line's start is kept rather than
+	// dropping the whole line).
+	beforeNotice, _, _ := strings.Cut(got, evidenceTruncatedNotice)
+	_, keptEvidence, found := strings.Cut(beforeNotice, evidenceHeader)
+	if !found {
+		t.Fatalf("truncated detail has no evidence header: %q", got)
+	}
+	if keptEvidence != "" {
+		lines := strings.Split(keptEvidence, "\n")
+		for i, line := range lines {
+			if line == "--- FAIL: TestRepeatedFailure (0.01s)" || line == "    fixture_test.go:1: repeated failure body" {
+				continue
+			}
+			isLast := i == len(lines)-1
+			isPrefix := strings.HasPrefix("--- FAIL: TestRepeatedFailure (0.01s)", line) ||
+				strings.HasPrefix("    fixture_test.go:1: repeated failure body", line)
+			if !isLast || !isPrefix {
+				t.Fatalf("truncated detail cut evidence mid-line in an unexpected place: %q", line)
+			}
+		}
+	}
+}
+
+// TestTruncateCommandDetailToNeverSplitsAMultibyteRuneEvenAtATinyBudget
+// pins review finding B2's rune-safety requirement in the extreme case
+// where even the evidence header does not fit: the returned string must
+// still be valid UTF-8 and within budget.
+func TestTruncateCommandDetailToNeverSplitsAMultibyteRuneEvenAtATinyBudget(t *testing.T) {
+	t.Parallel()
+	detail := "AAAAAAAAAAAAAAAAAAAA\n" +
+		"--- FAIL: TestTiny (0.00s)\n    fixture_test.go:1: tiny failure\n" +
+		strings.Repeat("ok  \tgithub.com/acme/zzz\t0.03s\tcoverage: 100.0% of statements\n", 5)
+	const max = 22
+	got := truncateCommandDetailTo(detail, max)
+	if len(got) > max {
+		t.Fatalf("truncated detail (%d bytes) exceeds the budget (%d bytes): %q", len(got), max, got)
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncated detail split a multibyte rune: %q", got)
+	}
+}
+
+// TestTruncateCommandDetailToNeverFallsWellShortOfBudgetAtAMarkerDigitBoundary
+// pins review finding B1 (round 5 of #582): sizeTailAndMarker's own
+// two-pass rendering can grow the marker by one byte when the tail's byte
+// count crosses a digit-count boundary (9→10, 99→100, 999→1000), pushing
+// `len(marker)+tailBytes` one byte past what the evidence path's budget has
+// left. The old clamp responded by dropping the marker AND the entire tail
+// — including the tail's own final, distinctive line — even though almost
+// the whole budget was still unused. Sweeping every budget across a range
+// that crosses all three boundaries must never leave the output more than a
+// few bytes short of the budget, and the tail's final line must survive at
+// the review's own cited budget (1429).
+func TestTruncateCommandDetailToNeverFallsWellShortOfBudgetAtAMarkerDigitBoundary(t *testing.T) {
+	t.Parallel()
+	head := strings.Repeat("ok  \tgithub.com/acme/aaa\t0.01s\tcoverage: 100.0% of statements\n", 40)
+	failBlock := "--- FAIL: TestMiddle (0.01s)\n    fixture_test.go:1: middle failure\n"
+	okTail := strings.Repeat("ok  \tgithub.com/acme/zzz\t0.03s\tcoverage: 100.0% of statements\n", 40)
+	const finalLine = "unsharded packages: exit status 1"
+	detail := head + failBlock + okTail + "FAIL\n" + finalLine
+
+	for max := 900; max <= 1500; max++ {
+		if len(detail) <= max {
+			continue
+		}
+		got := truncateCommandDetailTo(detail, max)
+		if len(got) > max {
+			t.Fatalf("max=%d: truncated detail (%d bytes) exceeds the budget", max, len(got))
+		}
+		if max-len(got) > 8 {
+			t.Fatalf("max=%d: truncated detail is %d bytes, %d bytes short of the budget (a marker digit-count boundary dropped the whole tail): %q", max, len(got), max-len(got), got)
+		}
+	}
+
+	got := truncateCommandDetailTo(detail, 1429)
+	if !strings.Contains(got, finalLine) {
+		t.Fatalf("truncated detail at budget 1429 dropped the tail's final line %q: %q", finalLine, got)
+	}
+}
+
+// TestTruncateCommandDetailToTailMarkerStatesTheExactByteCount pins review
+// finding B2: the "final N bytes" notice must be rendered from the tail's
+// FINAL, actual size, not a provisional one computed before the evidence
+// block's own length was known.
+func TestTruncateCommandDetailToTailMarkerStatesTheExactByteCount(t *testing.T) {
+	t.Parallel()
+	head := strings.Repeat("ok  \tgithub.com/acme/aaa\t0.01s\tcoverage: 100.0% of statements\n", 20)
+	failBlock := "--- FAIL: TestMiddle (0.01s)\n    fixture_test.go:1: middle failure\n"
+	middle := strings.Repeat("ok  \tgithub.com/acme/mmm\t0.02s\tcoverage: 98.0% of statements\n", 200)
+	tail := strings.Repeat("ok  \tgithub.com/acme/zzz\t0.03s\tcoverage: 100.0% of statements\n", 20)
+	detail := head + failBlock + middle + tail
+
+	got := truncateCommandDetailTo(detail, 1000)
+	const markerPrefix = "\n… output truncated; final "
+	idx := strings.Index(got, markerPrefix)
+	if idx < 0 {
+		t.Fatalf("truncated detail has no tail marker: %q", got)
+	}
+	rest := got[idx+len(markerPrefix):]
+	spaceIdx := strings.Index(rest, " bytes:\n")
+	if spaceIdx < 0 {
+		t.Fatalf("tail marker is not in the expected shape: %q", got)
+	}
+	claimedCount, err := strconv.Atoi(rest[:spaceIdx])
+	if err != nil {
+		t.Fatalf("tail marker byte count is not a number: %q: %v", rest[:spaceIdx], err)
+	}
+	actualTail := rest[spaceIdx+len(" bytes:\n"):]
+	if claimedCount != len(actualTail) {
+		t.Fatalf("tail marker claims %d bytes, but %d bytes actually follow it: %q", claimedCount, len(actualTail), actualTail)
+	}
+}
+
+// TestTruncateRuneSafeNeverSplitsAMultibyteRune pins truncateRuneSafe's own
+// contract directly (used only in fitEvidenceBlock's own extreme
+// last-resort branch, where it is never called with max <= 0 — this test
+// still exercises that guard, plus the len(s) <= max no-op case and the
+// case that actually requires walking back over a split multibyte rune).
+func TestTruncateRuneSafeNeverSplitsAMultibyteRune(t *testing.T) {
+	t.Parallel()
+	multibyte := "a…b" // "…" is U+2026, 3 bytes: 0xE2 0x80 0xA6
+	cases := []struct {
+		name string
+		s    string
+		max  int
+		want string
+	}{
+		{"non-positive max returns empty", multibyte, 0, ""},
+		{"negative max returns empty", multibyte, -1, ""},
+		{"max at or above len(s) returns s unchanged", multibyte, len(multibyte), multibyte},
+		{"cut lands mid-rune, walks back to the rune start", multibyte, 2, "a"},
+		{"cut lands mid-rune one byte later, still walks back", multibyte, 3, "a"},
+		{"cut lands exactly on a rune boundary", multibyte, 1, "a"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			got := truncateRuneSafe(testCase.s, testCase.max)
+			if got != testCase.want {
+				t.Fatalf("truncateRuneSafe(%q, %d) = %q, want %q", testCase.s, testCase.max, got, testCase.want)
+			}
+			if !utf8.ValidString(got) {
+				t.Fatalf("truncateRuneSafe(%q, %d) = %q is not valid UTF-8", testCase.s, testCase.max, got)
+			}
+		})
+	}
+}
+
+// TestIsEndOfPanicStackRecognizesEveryGoTestStatusLineShape pins review
+// finding N6: a panic's stack trace ends not only at a blank line but at
+// any of the status-line shapes `go test`'s own output can resume with,
+// even with no blank line in between — regardless of what line (if any)
+// follows, which only changes how a bare blank line is treated (round-4
+// findings N4 and N5).
+func TestIsEndOfPanicStackRecognizesEveryGoTestStatusLineShape(t *testing.T) {
+	t.Parallel()
+	lookaheads := []struct {
+		next    string
+		hasNext bool
+	}{{"", false}, {"goroutine 1 [running]:", true}, {"some other line", true}}
+	for _, line := range []string{
+		"--- FAIL: TestSomething (0.00s)",
+		"FAIL",
+		"FAIL\tgithub.com/acme/pkg\t0.01s",
+		"ok  \tgithub.com/acme/pkg\t0.01s",
+		"?   \tgithub.com/acme/pkg\t[no test files]",
+		"PASS",
+		"--- PASS: TestSomething (0.00s)",
+		"=== RUN   TestSomething",
+		"=== NAME  TestSomething",
+		"coverage: 91.2% of statements",
+		"[unsharded packages]",
+		"[example.test/serial shard 2/2]",
+	} {
+		for _, lookahead := range lookaheads {
+			if !isEndOfPanicStack(line, lookahead.next, lookahead.hasNext) {
+				t.Errorf("isEndOfPanicStack(%q, %q, %v) = false, want true", line, lookahead.next, lookahead.hasNext)
+			}
+		}
+	}
+	for _, line := range []string{
+		"\tgoroutine 7 [running]:",
+		"\tgithub.com/acme/pkg.doWork(...)",
+		"\t\t/src/pkg/work.go:42",
+		"a plain stack-trace-looking line",
+	} {
+		for _, lookahead := range lookaheads {
+			if isEndOfPanicStack(line, lookahead.next, lookahead.hasNext) {
+				t.Errorf("isEndOfPanicStack(%q, %q, %v) = true, want false", line, lookahead.next, lookahead.hasNext)
+			}
+		}
+	}
+}
+
+// TestIsEndOfPanicStackTreatsABlankLineAsTheEndUnlessAGoroutineHeaderFollows
+// pins review finding B (round 2 of #582) and its round-4 generalization
+// (finding N5): the Go runtime always prints exactly one blank line right
+// after "panic: ..." and before "goroutine N [running]:", and again between
+// each goroutine's own frames in a multi-goroutine dump such as a
+// test-timeout panic. A blank line whose very next line is a goroutine
+// header must never end the stack, no matter how many such blank lines
+// already passed; a blank line that is not followed by one — including the
+// last line of the scanned region, which nothing follows at all — does end
+// it, exactly like the go-test status-line shapes above.
+func TestIsEndOfPanicStackTreatsABlankLineAsTheEndUnlessAGoroutineHeaderFollows(t *testing.T) {
+	t.Parallel()
+	if isEndOfPanicStack("", "goroutine 6 [running]:", true) {
+		t.Error(`isEndOfPanicStack("", "goroutine 6 [running]:", true) = true, want false: a header follows, so the stack has not ended`)
+	}
+	if isEndOfPanicStack("", "goroutine 1 [chan receive]:", true) {
+		t.Error(`isEndOfPanicStack("", "goroutine 1 [chan receive]:", true) = true, want false: a second goroutine's header also does not end the stack`)
+	}
+	if !isEndOfPanicStack("", "exit status 1", true) {
+		t.Error(`isEndOfPanicStack("", "exit status 1", true) = false, want true: the next line is not a goroutine header`)
+	}
+	if !isEndOfPanicStack("", "", false) {
+		t.Error(`isEndOfPanicStack("", "", false) = false, want true: there is no next line at all`)
+	}
+	if isEndOfPanicStack("    ", "goroutine 1 [running]:", true) {
+		t.Error(`isEndOfPanicStack("    ", "goroutine 1 [running]:", true) = true, want false`)
+	}
+	if !isEndOfPanicStack("    ", "some chatter", true) {
+		t.Error(`isEndOfPanicStack("    ", "some chatter", true) = false, want true`)
+	}
+}
+
 func TestShardedCoverageFailureIndexPrecedesRawOutputAndSurvivesTruncation(t *testing.T) {
+	t.Parallel()
 	jobs := []goCoverageJob{
 		{label: "example.test/serial shard 2/2"},
 		{label: "unsharded packages"},
@@ -887,6 +1793,7 @@ func TestBoundedCoverageParallelismLeavesOneEffectiveCPUForOtherAgents(t *testin
 }
 
 func TestCoverWithOptionsDurablyStoresOversizedShardedOutput(t *testing.T) {
+	t.Parallel()
 	module := t.TempDir()
 	writeQualityFile(t, filepath.Join(module, "go.mod"), "module example.test/durable\n\ngo 1.26\n")
 	writeQualityFile(t, filepath.Join(module, "serial", "serial.go"), "package serial\n\nfunc Value() int { return 1 }\n")
@@ -902,6 +1809,7 @@ func TestBetaFails(t *testing.T) {
 	t.Log(strings.Repeat("oversized shard output ", 3000))
 	t.Fatal("exact-failing-shard-test")
 }
+
 `)
 	diagnosticsDir := filepath.Join(t.TempDir(), "reports")
 	report := CoverWithOptions(context.Background(), "example/durable", module, RunOptions{
@@ -952,31 +1860,203 @@ func TestBetaFails(t *testing.T) {
 	}
 }
 
+func TestShardedCoveragePersistsFailureBeforeLaterShardCancellation(t *testing.T) {
+	module := t.TempDir()
+	writeQualityFile(t, filepath.Join(module, "go.mod"), "module example.test/interrupted\n\ngo 1.26\n")
+	writeQualityFile(t, filepath.Join(module, "serial", "serial.go"), "package serial\n")
+	marker := filepath.Join(t.TempDir(), "later-shard-started")
+	writeQualityFile(t, filepath.Join(module, "serial", "serial_test.go"), `package serial
+
+import (
+	"os"
+	"time"
+	"testing"
+)
+
+func TestAlphaFails(t *testing.T) { t.Log("durable-before-next-shard"); t.Fatal("exact-failing-shard-test") }
+func TestBetaBlocks(t *testing.T) {
+	if err := os.WriteFile(os.Getenv("WB_COVERAGE_BLOCK_MARKER"), []byte("started"), 0600); err != nil { t.Fatal(err) }
+	time.Sleep(30 * time.Second)
+}
+`)
+	t.Setenv("WB_COVERAGE_BLOCK_MARKER", marker)
+	oldProcs := runtime.GOMAXPROCS(1)
+	defer runtime.GOMAXPROCS(oldProcs)
+	diagnosticsDir := filepath.Join(t.TempDir(), "reports")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var reporterMu sync.Mutex
+	var firstFailureManifest []byte
+	var firstFailureErr error
+	var firstFailureSHA string
+	var startedLater bool
+	var cancelOnce sync.Once
+	reporter := func(event Progress) {
+		if event.State == ProgressCompleted && event.Status == StatusFailed && strings.Contains(event.Detail, "shard 1/") {
+			raw, err := os.ReadFile(filepath.Join(diagnosticsDir, "coverage-diagnostics-"+coverageDiagnosticStem("example/interrupted", module)+".yaml"))
+			diagnostic := coverageDiagnosticFor(diagnosticsDir, "example/interrupted", module)
+			reporterMu.Lock()
+			firstFailureManifest, firstFailureErr = raw, err
+			if diagnostic != nil {
+				firstFailureSHA = diagnostic.SHA256
+			}
+			reporterMu.Unlock()
+		}
+		if event.State == ProgressStarted && strings.Contains(event.Detail, "shard 2/") {
+			reporterMu.Lock()
+			startedLater = true
+			reporterMu.Unlock()
+			cancelOnce.Do(func() {
+				go func() {
+					deadline := time.Now().Add(10 * time.Second)
+					for time.Now().Before(deadline) {
+						if _, err := os.Stat(marker); err == nil {
+							cancel()
+							return
+						}
+						if ctx.Err() != nil {
+							return
+						}
+						time.Sleep(5 * time.Millisecond)
+					}
+					cancel()
+				}()
+			})
+		}
+	}
+	_, _, runErr := runShardedCoverageWithDiagnosticsAndProgressTimeouts(ctx, nil, module, filepath.Join(t.TempDir(), "coverage.out"), []string{"./serial"}, 2, diagnosticsDir, "example/interrupted", 0, 0, 0, reporter, nil, false)
+	if runErr == nil {
+		t.Fatal("sharded coverage succeeded despite failed first shard and cancelled second shard")
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("later shard never reached its blocking test: %v", err)
+	}
+	reporterMu.Lock()
+	started, persistedRaw, persistedErr, persistedSHA := startedLater, firstFailureManifest, firstFailureErr, firstFailureSHA
+	reporterMu.Unlock()
+	if !started {
+		t.Fatal("later shard never started")
+	}
+	if persistedErr != nil {
+		t.Fatalf("failed-shard manifest was unavailable at completion notification: %v", persistedErr)
+	}
+	persistedDigest := sha256.Sum256(persistedRaw)
+	if persistedSHA != fmt.Sprintf("%x", persistedDigest) {
+		t.Fatalf("failed-shard manifest digest at completion = %q, want %x", persistedSHA, persistedDigest)
+	}
+	assertDurableFailureManifest := func(raw []byte, wantEntries int) {
+		t.Helper()
+		var manifest CoverageDiagnosticManifest
+		if err := yaml.Unmarshal(raw, &manifest); err != nil {
+			t.Fatalf("parse durable manifest: %v", err)
+		}
+		if len(manifest.Files) < wantEntries {
+			t.Fatalf("manifest entries = %d, want at least %d", len(manifest.Files), wantEntries)
+		}
+		found := false
+		for _, file := range manifest.Files {
+			artifact, err := os.ReadFile(file.Path)
+			if err != nil {
+				t.Fatalf("read durable diagnostic %s: %v", file.Path, err)
+			}
+			digest := sha256.Sum256(artifact)
+			if len(artifact) != file.Bytes || fmt.Sprintf("%x", digest) != file.SHA256 {
+				t.Fatalf("diagnostic size or digest mismatch for %s", file.Path)
+			}
+			if strings.Contains(string(artifact), "exact-failing-shard-test") && strings.Contains(string(artifact), "TestAlphaFails") && strings.Contains(string(artifact), "durable-before-next-shard") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatal("manifest lacks exact raw output and named failed test")
+		}
+	}
+	assertDurableFailureManifest(persistedRaw, 1)
+	manifestPath := filepath.Join(diagnosticsDir, "coverage-diagnostics-"+coverageDiagnosticStem("example/interrupted", module)+".yaml")
+	finalRaw, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("read final diagnostic manifest: %v", err)
+	}
+	assertDurableFailureManifest(finalRaw, 1)
+	diagnostic := coverageDiagnosticFor(diagnosticsDir, "example/interrupted", module)
+	manifestDigest := sha256.Sum256(finalRaw)
+	if diagnostic == nil || diagnostic.SHA256 != fmt.Sprintf("%x", manifestDigest) {
+		t.Fatalf("final manifest digest is invalid: diagnostic=%+v want=%x", diagnostic, manifestDigest)
+	}
+}
+
+func TestCoverageDiagnosticsSinkSerializesConcurrentFailures(t *testing.T) {
+	t.Parallel()
+	directory := filepath.Join(t.TempDir(), "reports")
+	sink := newCoverageDiagnosticsSink(directory, "example/concurrent", "module")
+	const count = 8
+	errs := make(chan error, count)
+	var wait sync.WaitGroup
+	for index := 0; index < count; index++ {
+		index := index
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			output := fmt.Sprintf("failure-%d\n--- FAIL: TestFailure%d (0.00s)\n", index, index)
+			err := sink.persist(index, goCoverageJob{label: fmt.Sprintf("shard %d", index+1)}, goCoverageJobResult{output: output, err: errors.New("failed")})
+			errs <- err
+		}()
+	}
+	wait.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("persist concurrent diagnostic: %v", err)
+		}
+	}
+	manifestPath := filepath.Join(directory, "coverage-diagnostics-"+coverageDiagnosticStem("example/concurrent", "module")+".yaml")
+	manifestRaw, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("read concurrent manifest: %v", err)
+	}
+	var manifest CoverageDiagnosticManifest
+	if err := yaml.Unmarshal(manifestRaw, &manifest); err != nil {
+		t.Fatalf("parse concurrent manifest: %v", err)
+	}
+	if len(manifest.Files) != count {
+		t.Fatalf("concurrent manifest entries = %d, want %d", len(manifest.Files), count)
+	}
+	for index, file := range manifest.Files {
+		if want := fmt.Sprintf("shard %d", index+1); file.Label != want {
+			t.Fatalf("manifest[%d].Label = %q, want %q", index, file.Label, want)
+		}
+		artifact, err := os.ReadFile(file.Path)
+		if err != nil {
+			t.Fatalf("read concurrent artifact %s: %v", file.Path, err)
+		}
+		digest := sha256.Sum256(artifact)
+		if len(artifact) != file.Bytes || fmt.Sprintf("%x", digest) != file.SHA256 {
+			t.Fatalf("concurrent artifact %s has invalid size or digest", file.Path)
+		}
+	}
+}
+
 func TestRunWithOptionsRetriesAndTimesOut(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("test shell helper is POSIX-only")
 	}
 	dir := t.TempDir()
 	countPath := filepath.Join(dir, "attempts")
 	retryTool := filepath.Join(dir, "retry-tool")
-	writeQualityFile(t, retryTool, "#!/bin/sh\ncount=0\nif [ -f \""+countPath+"\" ]; then count=$(cat \""+countPath+"\"); fi\ncount=$((count + 1))\nprintf '%s' \"$count\" > \""+countPath+"\"\nif [ \"$count\" -lt 2 ]; then exit 1; fi\n")
-	if err := os.Chmod(retryTool, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeQualityExecutableFile(t, retryTool, "#!/bin/sh\ncount=0\nif [ -f \""+countPath+"\" ]; then count=$(cat \""+countPath+"\"); fi\ncount=$((count + 1))\nprintf '%s' \"$count\" > \""+countPath+"\"\nif [ \"$count\" -lt 2 ]; then exit 1; fi\n")
 	if _, attempts, err := runWithOptions(context.Background(), RunOptions{Retry: 1}, dir, retryTool); err != nil || attempts != 2 {
 		t.Fatalf("retry result = err %v, attempts %d", err, attempts)
 	}
 	timeoutTool := filepath.Join(dir, "timeout-tool")
-	writeQualityFile(t, timeoutTool, "#!/bin/sh\nsleep 1\n")
-	if err := os.Chmod(timeoutTool, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeQualityExecutableFile(t, timeoutTool, "#!/bin/sh\nsleep 1\n")
 	if _, attempts, err := runWithOptions(context.Background(), RunOptions{Timeout: 10 * time.Millisecond}, dir, timeoutTool); err == nil || attempts != 1 || !strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("timeout result = err %v, attempts %d", err, attempts)
 	}
 }
 
 func TestGoTestCommandCarriesTheWBTimeout(t *testing.T) {
+	t.Parallel()
 	if got := strings.Join(goCommand(CheckTest, false, 20*time.Minute), " "); got != "go test -timeout 20m0s ./..." {
 		t.Fatalf("go test command=%q", got)
 	}
@@ -986,15 +2066,13 @@ func TestGoTestCommandCarriesTheWBTimeout(t *testing.T) {
 }
 
 func TestRunVerificationCheckTimeoutBoundsAllAttempts(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("test shell helper is POSIX-only")
 	}
 	dir := t.TempDir()
 	tool := filepath.Join(dir, "slow-check")
-	writeQualityFile(t, tool, "#!/bin/sh\nsleep 1\n")
-	if err := os.Chmod(tool, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeQualityExecutableFile(t, tool, "#!/bin/sh\nsleep 1\n")
 	entry := runVerification(context.Background(), RunOptions{Timeout: time.Second, Retry: 1, CheckTimeout: 10 * time.Millisecond}, "test", ".", CheckTest, dir, tool)
 	if entry.Status != StatusFailed || entry.Attempts != 1 || !strings.Contains(entry.Detail, "check timed out after 10ms") {
 		t.Fatalf("check deadline result = %+v", entry)
@@ -1002,191 +2080,19 @@ func TestRunVerificationCheckTimeoutBoundsAllAttempts(t *testing.T) {
 }
 
 func TestRunVerificationParentDeadlineWinsOverCheckDeadline(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("test shell helper is POSIX-only")
 	}
 	dir := t.TempDir()
 	tool := filepath.Join(dir, "slow-check")
-	writeQualityFile(t, tool, "#!/bin/sh\nsleep 1\n")
-	if err := os.Chmod(tool, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeQualityExecutableFile(t, tool, "#!/bin/sh\nsleep 1\n")
 	parent, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
-	defer cancel()
+	t.Cleanup(func() { cancel() })
 	entry := runVerification(parent, RunOptions{CheckTimeout: time.Second}, "test", ".", CheckTest, dir, tool)
 	if entry.Status != StatusFailed || strings.Contains(entry.Detail, "check timed out") {
 		t.Fatalf("parent deadline did not win: %+v", entry)
 	}
-}
-
-func TestRunWithOptionsCancellationTerminatesForkedProcessTree(t *testing.T) {
-	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
-		t.Skip("WB process-tree cancellation is supported on Darwin and Linux")
-	}
-	for _, test := range []struct {
-		name, startupDelay string
-	}{
-		{name: "immediate", startupDelay: ""},
-		// This exceeds the former one-second PID polling deadline. It proves
-		// readiness, rather than a race with the attempt deadline, owns start.
-		{name: "delayed-start", startupDelay: "sleep 1.2\n"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			dir := t.TempDir()
-			pidsPath := filepath.Join(dir, "pids")
-			tool := filepath.Join(dir, "forking-cancellation-tool")
-			writeQualityFile(t, tool, "#!/bin/sh\n"+test.startupDelay+"sleep 30 &\nchild=$!\nprintf '%s %s' \"$$\" \"$child\" > \""+pidsPath+"\"\nwhile :; do sleep 1; done\n")
-			if err := os.Chmod(tool, 0o755); err != nil {
-				t.Fatal(err)
-			}
-
-			type result struct {
-				output   string
-				attempts int
-				err      error
-			}
-			resultCh := make(chan result, 1)
-			done := make(chan struct{})
-			ctx, cancel := context.WithCancel(context.Background())
-			var recordedPIDs []int
-			parentGroupID := 0
-			t.Cleanup(func() {
-				cancel()
-				drained := false
-				select {
-				case <-done:
-					drained = true
-				case <-time.After(time.Second):
-				}
-				// The assertions below normally prove these PIDs are already gone.
-				// If a mutation regresses group cancellation and an assertion aborts
-				// first, kill only the group whose recorded parent was proved to own
-				// it, so this test never leaves its child sleep running for 30s.
-				if parentGroupID != 0 && qualityProcessesAlive(recordedPIDs) {
-					if err := syscall.Kill(-parentGroupID, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-						t.Errorf("kill recorded process group %d: %v", parentGroupID, err)
-					}
-					if drained {
-						t.Error("recorded process survived cancellation; test cleanup killed its group")
-					}
-				}
-				if !drained {
-					select {
-					case <-done:
-					case <-time.After(time.Second):
-						t.Error("forking process did not drain after test cleanup cancellation")
-					}
-				}
-			})
-			go func() {
-				// The 30-second attempt deadline is only a safety net. The separate
-				// real-deadline test above owns timeout-to-error mapping; this test
-				// owns readiness and whole-process-tree cancellation.
-				output, attempts, err := runWithOptions(ctx, RunOptions{Timeout: 30 * time.Second}, dir, tool)
-				resultCh <- result{output: output, attempts: attempts, err: err}
-				close(done)
-			}()
-
-			// The script owns readiness by writing both PIDs. Its bounded watchdog
-			// detects a startup failure and reports an early command exit instead
-			// of competing with the cancellation behavior being asserted.
-			readinessDeadline := time.NewTimer(10 * time.Second)
-			defer readinessDeadline.Stop()
-			var pids []string
-			for len(pids) == 0 {
-				select {
-				case outcome := <-resultCh:
-					t.Fatalf("forking process exited before readiness: err %v, attempts %d, output %q", outcome.err, outcome.attempts, outcome.output)
-				case <-readinessDeadline.C:
-					t.Fatal("timed out waiting for forked process readiness")
-				default:
-				}
-				raw, err := os.ReadFile(pidsPath)
-				if err == nil && strings.TrimSpace(string(raw)) != "" {
-					pids = strings.Fields(string(raw))
-					break
-				}
-				if err != nil && !errors.Is(err, os.ErrNotExist) {
-					t.Fatalf("read %s: %v", pidsPath, err)
-				}
-				time.Sleep(10 * time.Millisecond)
-			}
-			if len(pids) != 2 {
-				t.Fatalf("recorded PIDs = %q, want parent and child", pids)
-			}
-			for _, rawPID := range pids {
-				pid, parseErr := strconv.Atoi(rawPID)
-				if parseErr != nil || pid <= 0 {
-					t.Fatalf("recorded PID %q: %v", rawPID, parseErr)
-				}
-				recordedPIDs = append(recordedPIDs, pid)
-				assertQualityProcessAlive(t, pid)
-			}
-			parentGroupID = qualityOwnedProcessGroup(t, recordedPIDs[0])
-			cancel()
-			var outcome result
-			select {
-			case outcome = <-resultCh:
-			case <-time.After(5 * time.Second):
-				t.Fatal("forking process did not return within five seconds of cancellation")
-			}
-			if ctx.Err() != context.Canceled || outcome.err == nil || strings.Contains(outcome.err.Error(), "timed out after") || outcome.attempts != 1 {
-				t.Fatalf("cancellation result = context %v, err %v, attempts %d, output %q", ctx.Err(), outcome.err, outcome.attempts, outcome.output)
-			}
-			for _, rawPID := range pids {
-				pid, parseErr := strconv.Atoi(rawPID)
-				if parseErr != nil || pid <= 0 {
-					t.Fatalf("recorded PID %q: %v", rawPID, parseErr)
-				}
-				assertQualityProcessGone(t, pid)
-			}
-		})
-	}
-}
-
-func assertQualityProcessAlive(t *testing.T, pid int) {
-	t.Helper()
-	if err := syscall.Kill(pid, 0); err != nil {
-		t.Fatalf("probe ready PID %d: %v", pid, err)
-	}
-}
-
-func qualityOwnedProcessGroup(t *testing.T, pid int) int {
-	t.Helper()
-	output, err := exec.Command("ps", "-o", "pgid=", "-p", strconv.Itoa(pid)).Output()
-	if err != nil {
-		t.Fatalf("read process group for %d: %v", pid, err)
-	}
-	groupID, err := strconv.Atoi(strings.TrimSpace(string(output)))
-	if err != nil || groupID != pid {
-		t.Fatalf("process group for recorded parent %d = %q; want its own group", pid, output)
-	}
-	return groupID
-}
-
-func qualityProcessesAlive(pids []int) bool {
-	for _, pid := range pids {
-		if syscall.Kill(pid, 0) == nil {
-			return true
-		}
-	}
-	return false
-}
-
-func assertQualityProcessGone(t *testing.T, pid int) {
-	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		err := syscall.Kill(pid, 0)
-		if errors.Is(err, syscall.ESRCH) {
-			return
-		}
-		if err != nil {
-			t.Fatalf("probe PID %d: %v", pid, err)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("forked process PID %d survived cancellation", pid)
 }
 
 func checkStrings(checks []Check) []string {
@@ -1203,6 +2109,23 @@ func writeQualityFile(t *testing.T, path, contents string) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeQualityExecutableFile writes an executable fake tool at path. It uses
+// testenv.WriteExecutableFile (a temp-file write-then-rename under a
+// process-wide fork guard) rather than writeQualityFile followed by
+// os.Chmod: opening a writable fd directly at the final path -- regardless
+// of its initial mode -- leaves a window a concurrent fork elsewhere in this
+// parallel test binary can inherit before its own exec, racing "text file
+// busy" (golang/go#22315; task-21, #739).
+func writeQualityExecutableFile(t *testing.T, path, contents string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := testenv.WriteExecutableFile(path, []byte(contents), 0o755); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -43,7 +43,7 @@ func TestWtLogCovValidateSessionReceiveSpec(t *testing.T) {
 	}
 	// Path derivation admits an intentionally absent store/fence.
 	spec.AuthorityStore = ""
-	if err := validateSessionReceiveSpec(context.Background(), spec); err != nil {
+	if _, err := admitSessionReceiveSpec(context.Background(), spec); err != nil {
 		t.Fatalf("valid spec rejected: %v", err)
 	}
 	for name, mutate := range map[string]func(*SessionReceiveSpec){
@@ -62,7 +62,7 @@ func TestWtLogCovValidateSessionReceiveSpec(t *testing.T) {
 	} {
 		mutated := spec
 		mutate(&mutated)
-		if err := validateSessionReceiveSpec(context.Background(), mutated); err == nil {
+		if _, err := admitSessionReceiveSpec(context.Background(), mutated); err == nil {
 			t.Errorf("invalid session receive spec %q was accepted", name)
 		}
 	}
@@ -160,6 +160,7 @@ func TestWtLogCovReceivedSessionWorktreePath(t *testing.T) {
 }
 
 func TestWtLogCovExactInterruptedSessionStage(t *testing.T) {
+	t.Parallel()
 	operationRoot := t.TempDir()
 	stage := ".wb-stage-" + strings.Repeat("a", 32)
 	if err := os.MkdirAll(filepath.Join(operationRoot, stage, "checkout"), 0o700); err != nil {
@@ -182,6 +183,7 @@ func TestWtLogCovExactInterruptedSessionStage(t *testing.T) {
 }
 
 func TestWtLogCovInterruptedSessionStageNames(t *testing.T) {
+	t.Parallel()
 	operationRoot := t.TempDir()
 	stage := ".wb-stage-" + strings.Repeat("b", 32)
 	if err := os.MkdirAll(filepath.Join(operationRoot, stage), 0o700); err != nil {
@@ -194,7 +196,7 @@ func TestWtLogCovInterruptedSessionStageNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = directory.Close() }()
+	t.Cleanup(func() { _ = directory.Close() })
 	names, err := interruptedSessionStageNames(directory)
 	if err != nil {
 		t.Fatal(err)

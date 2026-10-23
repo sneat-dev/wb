@@ -13,6 +13,33 @@ import (
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
+// readCleanupReportFile is the shared trust boundary for cleanup receipts.
+// Both chronological validation and retired-worktree lookup must interpret
+// the same complete, regular JSON file before judging its identity or outcome.
+func readCleanupReportFile(path string) (cleanupReport, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return cleanupReport{}, fmt.Errorf("stat terminal cleanup report %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return cleanupReport{}, fmt.Errorf("terminal cleanup report %s is not a regular file", path)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return cleanupReport{}, fmt.Errorf("read terminal cleanup report %s: %w", path, err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(contents))
+	decoder.DisallowUnknownFields()
+	var report cleanupReport
+	if err := decoder.Decode(&report); err != nil {
+		return cleanupReport{}, fmt.Errorf("decode terminal cleanup report %s: %w", path, err)
+	}
+	if err := requireJSONEOF(decoder); err != nil {
+		return cleanupReport{}, fmt.Errorf("decode terminal cleanup report %s: %w", path, err)
+	}
+	return report, nil
+}
+
 // TerminalCleanupProof is the exact successful cleanup result for one retired
 // managed worktree. Callers must still revalidate its Git ancestry against the
 // current remote target; this proves only the local identity and terminal WB
@@ -28,6 +55,10 @@ type TerminalCleanupProof struct {
 // Absence is never evidence: only a structurally valid applied cleanup receipt
 // with the expected repository, target, task, path, and branch is accepted.
 func FindTerminalCleanupProof(projectsRoot, repository, target, task, worktree, branch string) (*TerminalCleanupProof, error) {
+	return findTerminalCleanupProofWithReadDir(projectsRoot, repository, target, task, worktree, branch, os.ReadDir)
+}
+
+func findTerminalCleanupProofWithReadDir(projectsRoot, repository, target, task, worktree, branch string, readDir func(string) ([]os.DirEntry, error)) (*TerminalCleanupProof, error) {
 	if _, _, err := splitRepository(repository); err != nil {
 		return nil, fmt.Errorf("invalid terminal cleanup repository: %w", err)
 	}
@@ -44,6 +75,8 @@ func FindTerminalCleanupProof(projectsRoot, repository, target, task, worktree, 
 	}
 
 	var matches []TerminalCleanupProof
+	var latestUnverifiable time.Time
+	var latestUnverifiablePath string
 	for _, layout := range resolution.Read {
 		reportsRoot := filepath.Join(layout.Home, "reports", "worktree-cleanup")
 		rootInfo, statErr := os.Lstat(reportsRoot)
@@ -56,30 +89,34 @@ func FindTerminalCleanupProof(projectsRoot, repository, target, task, worktree, 
 		if !rootInfo.IsDir() || rootInfo.Mode()&os.ModeSymlink != 0 {
 			return nil, fmt.Errorf("terminal cleanup report root %s is not a real directory", reportsRoot)
 		}
-		entries, readErr := os.ReadDir(reportsRoot)
+		entries, readErr := readDir(reportsRoot)
 		if readErr != nil {
 			return nil, fmt.Errorf("read terminal cleanup report root %s: %w", reportsRoot, readErr)
 		}
 		for _, entry := range entries {
-			if !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
-				continue
-			}
-			if _, parseErr := time.Parse("20060102T150405.000000000Z", entry.Name()); parseErr != nil {
+			recordedAt, parseErr := time.Parse("20060102T150405.000000000Z", entry.Name())
+			if parseErr != nil {
 				continue
 			}
 			path := filepath.Join(reportsRoot, entry.Name(), "cleanup.json")
-			info, statErr := os.Lstat(path)
-			if statErr != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			if !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+				if recordedAt.After(latestUnverifiable) {
+					latestUnverifiable, latestUnverifiablePath = recordedAt, path
+				}
 				continue
 			}
-			contents, readErr := os.ReadFile(path)
-			if readErr != nil {
+			report, readErr := readCleanupReportFile(path)
+			if readErr != nil || !report.GeneratedAt.Equal(recordedAt) {
+				// A later unreadable or malformed report could be a failed
+				// retry for this task. Its identity cannot be trusted, even if
+				// it belongs to another task, so an older success cannot prove
+				// the latest cleanup completed.
+				if recordedAt.After(latestUnverifiable) {
+					latestUnverifiable, latestUnverifiablePath = recordedAt, path
+				}
 				continue
 			}
-			decoder := json.NewDecoder(bytes.NewReader(contents))
-			decoder.DisallowUnknownFields()
-			var report cleanupReport
-			if decoder.Decode(&report) != nil || requireJSONEOF(decoder) != nil || report.GeneratedAt.IsZero() || report.Phase != "applied" || !report.Apply || !cleanupReportSelectsTask(report, task) {
+			if report.Phase != "applied" || !report.Apply || !cleanupReportSelectsTask(report, task) {
 				continue
 			}
 			var matched []CleanupResult
@@ -103,6 +140,9 @@ func FindTerminalCleanupProof(projectsRoot, repository, target, task, worktree, 
 	}
 	sort.Slice(matches, func(i, j int) bool { return matches[i].GeneratedAt.Before(matches[j].GeneratedAt) })
 	proof := matches[len(matches)-1]
+	if !latestUnverifiable.Before(proof.GeneratedAt) {
+		return nil, fmt.Errorf("later cleanup receipt %s is unverifiable; cannot establish latest terminal cleanup for %s", latestUnverifiablePath, worktree)
+	}
 	if !proof.Result.Eligible || !proof.Result.Applied || !proof.Result.Clean || !proof.Result.IntegratedAtOrigin ||
 		!proof.Result.WorktreeGone || !proof.Result.BranchDeleted || proof.Result.RemoteTargetSHA == "" {
 		return nil, fmt.Errorf("latest cleanup receipt %s does not prove retired replacement %s completed", proof.ReportPath, worktree)

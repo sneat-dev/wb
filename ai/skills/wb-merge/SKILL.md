@@ -123,6 +123,10 @@ or job. See `references/ci-polling.md` for the full filter contract and why
 a filter matching nothing is never a vacuous pass; never pass
 `--workflow`/`--check` to `wb pr land` or a worktree merge.
 
+**Trigger.**
+
+- about to pipe a `wb` verb through `tail`/`grep`/`head` (or `2>&1 | …`) → the pipe hides its exit status, so a refusal exits 0 and the `&&` chain runs on (the agent hook refuses it); use `--quiet` (`wb pr create --quiet`), not a pipe
+
 ## Fast path
 
 Land with one call:
@@ -226,6 +230,12 @@ refreshes its own lane. A lane record that cannot be parsed refuses the same
 way a live owner does, naming the corrupt file, rather than being treated as
 free. This is the mechanical enforcement of "one landing owner per repository
 and target branch" — see `[[land-work-dont-queue-it]]`.
+An unpublished prepare-time conflict releases receipt-based lane ownership after
+the prepare stops and WB verifies its candidate branch is absent remotely: its
+receipt and sources remain available for repair, while another source may
+prepare and land. Published or land-phase conflicts still hold the lane, and
+the live-session guard remains exclusive. If remote publication cannot be
+checked, the receipt keeps holding the lane.
 
 Inside a stream, agent pull requests target `stream/<name>`, never `main`, and
 landing uses the repository-approved merge method, with merge commits preferred
@@ -316,9 +326,11 @@ than a fictional queue.
    Before candidate CI, prove the candidate head contains the freshly fetched
    exact target SHA and that the target has a nonempty server-enforced strict
    required-status-check policy. If the target advances, rebase or reintegrate
-   and obtain a new receipt. Merge-group observation is planned; this
-   source-head workflow must fail closed for a merge queue rather than claim
-   synthetic-SHA support.
+   and obtain a new receipt. A merge-queue target is the exception: never
+   merge it directly (an admin bypass would land a head the queue never
+   tested); land it with `wb pr land` or `wb worktree land`, which enqueue
+   the exact head and observe the queue to the target. `wb ci wait` fails
+   closed there by design.
    `wb worktree merge` now composes this conflict-free mechanical path. Its
    prepare receipt remains explicitly local and not landed until Phase 2
    proves the exact remote target.

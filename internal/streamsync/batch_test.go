@@ -23,6 +23,7 @@ func tenElements() []Element {
 // first failure, naming the seventh, listing one to six as proven good, and
 // costing 1+7 runs rather than ten.
 func TestABatchVerifiesOnceThenFindsTheCulpritByPrefixReApply(t *testing.T) {
+	t.Parallel()
 	engine, git, _, verifier, events := newTestEngine()
 	options := baseOptions()
 	// Run 1 is the whole batch and fails. Then prefixes 1..1 … 1..7; the
@@ -77,6 +78,7 @@ func TestABatchVerifiesOnceThenFindsTheCulpritByPrefixReApply(t *testing.T) {
 
 // With every element passing the total is exactly one full run.
 func TestAPassingBatchCostsExactlyOneRun(t *testing.T) {
+	t.Parallel()
 	engine, git, _, verifier, _ := newTestEngine()
 	verifier.runs = []VerificationRun{{Passed: true}}
 
@@ -99,6 +101,7 @@ func TestAPassingBatchCostsExactlyOneRun(t *testing.T) {
 // rather than any element — reported as an interaction failure, not blamed on
 // the last element.
 func TestEveryPrefixPassingIsReportedAsAnInteractionFailure(t *testing.T) {
+	t.Parallel()
 	engine, _, _, verifier, _ := newTestEngine()
 	verifier.runs = []VerificationRun{{Passed: false, Details: []string{"flaky integration test"}}}
 	for prefix := 1; prefix <= 10; prefix++ {
@@ -121,6 +124,7 @@ func TestEveryPrefixPassingIsReportedAsAnInteractionFailure(t *testing.T) {
 // a prefix carrying half of Angular cannot build by construction and would
 // blame the wrong element.
 func TestALockstepFamilyIsOneElementAndIsNeverSplit(t *testing.T) {
+	t.Parallel()
 	engine, git, _, verifier, _ := newTestEngine()
 	elements := []Element{
 		{Name: "unrelated", SHA: "sha-a"},
@@ -155,6 +159,7 @@ func TestALockstepFamilyIsOneElementAndIsNeverSplit(t *testing.T) {
 // A mechanism may only be named as skipped after CI is proved to run it;
 // anything neither side carries is reported as unguarded.
 func TestSkippedMechanismsAreOnlyClaimedWhenCIProvablyRunsThem(t *testing.T) {
+	t.Parallel()
 	engine, _, _, verifier, _ := newTestEngine()
 	engine.CI = fakeCI{present: map[string]bool{"-race": true}}
 	verifier.runs = []VerificationRun{{Passed: true, Skipped: []string{"-race", "playwright-e2e"}}}
@@ -174,6 +179,7 @@ func TestSkippedMechanismsAreOnlyClaimedWhenCIProvablyRunsThem(t *testing.T) {
 // With no way to read CI, nothing may be claimed as covered — and nothing may
 // be claimed as ABSENT either. "I could not tell" is its own answer.
 func TestWithoutCIEvidenceNothingIsClaimedEitherWay(t *testing.T) {
+	t.Parallel()
 	engine, _, _, verifier, _ := newTestEngine()
 	engine.CI = nil
 	verifier.runs = []VerificationRun{{Passed: true, Skipped: []string{"-race"}}}
@@ -197,6 +203,7 @@ func TestWithoutCIEvidenceNothingIsClaimedEitherWay(t *testing.T) {
 // it might run is UNVERIFIED — reporting it unguarded asserts something WB
 // does not know.
 func TestAReusableWorkflowMakesAMechanismUnverifiedNotUnguarded(t *testing.T) {
+	t.Parallel()
 	engine, _, _, verifier, _ := newTestEngine()
 	engine.CI = fakeCI{present: map[string]bool{}, opaque: true}
 	verifier.runs = []VerificationRun{{Passed: true, Skipped: []string{"-race"}}}
@@ -217,6 +224,7 @@ func TestAReusableWorkflowMakesAMechanismUnverifiedNotUnguarded(t *testing.T) {
 // agent commits will not be the topmost N commits, and this type is shared
 // with absorb.
 func TestTheBatchBaseComesFromTheFirstElementsParent(t *testing.T) {
+	t.Parallel()
 	engine, git, _, verifier, _ := newTestEngine()
 	git.heads["sha-1^"] = "real-base-sha"
 	verifier.runs = []VerificationRun{{Passed: false, Details: []string{"boom"}}, {Passed: false, Details: []string{"boom"}}}
@@ -242,6 +250,7 @@ func TestTheBatchBaseComesFromTheFirstElementsParent(t *testing.T) {
 // SF-4. The scan stops at the first failing prefix by design, so the report
 // says how many elements it never examined.
 func TestTheReportSaysHowManyElementsWereNeverExamined(t *testing.T) {
+	t.Parallel()
 	engine, _, _, verifier, _ := newTestEngine()
 	verifier.runs = []VerificationRun{{Passed: false, Details: []string{"boom"}}, {Passed: false, Details: []string{"boom"}}}
 
@@ -257,6 +266,7 @@ func TestTheReportSaysHowManyElementsWereNeverExamined(t *testing.T) {
 // A cherry-pick that cannot be re-applied names the element it failed on
 // rather than reporting a spurious pass.
 func TestAFailedReApplyNamesItsElement(t *testing.T) {
+	t.Parallel()
 	engine, git, _, verifier, _ := newTestEngine()
 	verifier.runs = []VerificationRun{{Passed: false, Details: []string{"boom"}}, {Passed: true}}
 	git.cherryErr["sha-2"] = errors.New("conflict in backend/handler.go")

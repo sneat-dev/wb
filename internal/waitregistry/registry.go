@@ -24,6 +24,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
+	"github.com/sneat-dev/wb/internal/provenance"
 	"github.com/sneat-dev/wb/internal/session"
 )
 
@@ -50,19 +52,49 @@ type Record struct {
 	// derives it, because a wait that died without clearing its record is
 	// exactly the thing worth seeing.
 	Stale bool `json:"stale,omitempty"`
+
+	// Provenance fields (wb#631, SDLC logging-gap analysis 2026-09-18): IDs
+	// only, stamped by Register from the environment at zero cost, never a
+	// prompt or response body. Additive and omitempty; recordSchema did not
+	// need to move for a purely additive field.
+	HarnessSessionID string `json:"harness_session_id,omitempty"`
+	Harness          string `json:"harness,omitempty"`
+	EffortLevel      string `json:"effort_level,omitempty"`
+	AgentID          string `json:"agent_id,omitempty"`
+	ToolUseID        string `json:"tool_use_id,omitempty"`
+	WBVersion        string `json:"wb_version,omitempty"`
 }
 
-// Alive reports whether a process still exists. It delegates to WB's existing
-// per-platform liveness check rather than reimplementing one: an earlier
-// hand-rolled version used Process.Signal(nil), which always fails Go's signal
-// type assertion, so every live waiter was reported as stale.
+// DefaultAlive reports whether a process still exists. It delegates to WB's
+// existing per-platform liveness check rather than reimplementing one: an
+// earlier hand-rolled version used Process.Signal(nil), which always fails
+// Go's signal type assertion, so every live waiter was reported as stale.
 //
-// It is a variable so tests can decide liveness without spawning processes.
-var Alive = func(pid int) bool {
+// It is List's liveness check when Options.Alive is nil. Callers that need a
+// different answer — tests deciding liveness without spawning processes —
+// set Options.Alive instead of replacing this function: liveness is an
+// injected dependency, not mutable package state, so parallel tests never
+// race on it.
+func DefaultAlive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
 	return session.ProcessAlive(pid)
+}
+
+// Options configures registry behaviour that differs between production and
+// tests. The zero value is production behaviour.
+type Options struct {
+	// Alive reports whether a process still exists. Nil defaults to
+	// DefaultAlive, the real OS check.
+	Alive func(pid int) bool
+}
+
+func (o Options) alive(pid int) bool {
+	if o.Alive != nil {
+		return o.Alive(pid)
+	}
+	return DefaultAlive(pid)
 }
 
 func dir(home string) string { return filepath.Join(home, directory) }
@@ -71,10 +103,38 @@ func dir(home string) string { return filepath.Join(home, directory) }
 // caller defers that function: a wait that ends normally leaves nothing behind,
 // and one that is killed leaves a record List reports as stale.
 func Register(home string, record Record) (func(), error) {
+	return registerInjected(home, record, nil)
+}
+
+// registerInjected is Register's test seam (task-9 PR-8): every production
+// call site reaches it only through Register, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged. A test passes
+// its own Injector to reach the write/rename failure branches
+// deterministically.
+func registerInjected(home string, record Record, inj *filewrite.Injector) (func(), error) {
 	if strings.TrimSpace(record.ID) == "" {
 		return nil, errors.New("wait record requires an id")
 	}
 	record.Schema = recordSchema
+	fields := provenance.FromEnv()
+	if record.HarnessSessionID == "" {
+		record.HarnessSessionID = fields.HarnessSessionID
+	}
+	if record.Harness == "" {
+		record.Harness = fields.Harness
+	}
+	if record.EffortLevel == "" {
+		record.EffortLevel = fields.EffortLevel
+	}
+	if record.AgentID == "" {
+		record.AgentID = fields.AgentID
+	}
+	if record.ToolUseID == "" {
+		record.ToolUseID = fields.ToolUseID
+	}
+	if record.WBVersion == "" {
+		record.WBVersion = fields.WBVersion
+	}
 	root := dir(home)
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, fmt.Errorf("create wait registry: %w", err)
@@ -86,10 +146,10 @@ func Register(home string, record Record) (func(), error) {
 	}
 	// Written whole, then renamed, so a reader never sees half a record.
 	temporary := path + ".tmp"
-	if err := os.WriteFile(temporary, encoded, 0o600); err != nil {
+	if err := filewrite.WriteFile(temporary, encoded, 0o600, inj); err != nil {
 		return nil, fmt.Errorf("write wait record: %w", err)
 	}
-	if err := os.Rename(temporary, path); err != nil {
+	if err := filewrite.Rename(temporary, path, inj); err != nil {
 		return nil, fmt.Errorf("commit wait record: %w", err)
 	}
 	return func() { _ = os.Remove(path) }, nil
@@ -98,7 +158,7 @@ func Register(home string, record Record) (func(), error) {
 // List reports every recorded wait, newest first, marking as stale any whose
 // process is gone. Listing never deletes: a stale record is evidence, and
 // removing it is an explicit Prune.
-func List(home string) ([]Record, error) {
+func List(home string, opts Options) ([]Record, error) {
 	entries, err := os.ReadDir(dir(home))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -119,7 +179,7 @@ func List(home string) ([]Record, error) {
 		if json.Unmarshal(raw, &record) != nil || record.Schema != recordSchema {
 			continue
 		}
-		record.Stale = !Alive(record.PID)
+		record.Stale = !opts.alive(record.PID)
 		records = append(records, record)
 	}
 	sort.Slice(records, func(one, two int) bool { return records[one].StartedAt.After(records[two].StartedAt) })
@@ -129,8 +189,8 @@ func List(home string) ([]Record, error) {
 // Prune removes records whose process is gone and reports how many went. It is
 // separate from List so that seeing a dead waiter is never a side effect of
 // asking what is waiting.
-func Prune(home string) (int, error) {
-	records, err := List(home)
+func Prune(home string, opts Options) (int, error) {
+	records, err := List(home, opts)
 	if err != nil {
 		return 0, err
 	}

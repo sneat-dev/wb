@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func setGitIdentity(t *testing.T) {
@@ -19,7 +21,7 @@ func gitIn(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
-	cmd.Env = os.Environ()
+	cmd.Env = testenv.GitAutoMaintenanceOffEnv(os.Environ())
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
@@ -34,6 +36,7 @@ func seededOriginAndClone(t *testing.T) (origin, clone string) {
 	setGitIdentity(t)
 	origin = t.TempDir()
 	gitIn(t, origin, "init", "-q", "--bare", "-b", "main")
+	testenv.ConfigureGitAutoMaintenanceOff(t, origin)
 	clone = filepath.Join(t.TempDir(), "clone")
 	gitIn(t, t.TempDir(), "clone", "-q", origin, clone)
 	gitIn(t, clone, "commit", "-q", "--allow-empty", "-m", "seed")

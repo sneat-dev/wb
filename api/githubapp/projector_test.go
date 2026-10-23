@@ -117,6 +117,7 @@ func newProjector() (ProjectionEngine, *projectorDeliveryStore, *projectorWriter
 }
 
 func TestProjectionEngineProcessAppliesValidatedSnapshotAndCommits(t *testing.T) {
+	t.Parallel()
 	engine, store, writer := newProjector()
 	delivery := WebhookDelivery{ID: "delivery-1", Event: "push", Repository: "github.com/acme/app", Payload: []byte(`{"action":"closed"}`)}
 	queued, err := engine.Process(context.Background(), delivery, projectorSignature(engine.WebhookSecret, delivery.Payload))
@@ -129,6 +130,7 @@ func TestProjectionEngineProcessAppliesValidatedSnapshotAndCommits(t *testing.T)
 }
 
 func TestProjectionEngineProcessUsesInstallationWakeupWhenRepositoryIsAbsent(t *testing.T) {
+	t.Parallel()
 	engine, store, _ := newProjector()
 	delivery := WebhookDelivery{ID: "delivery-installation", Event: "installation", Payload: []byte("payload")}
 	queued, err := engine.Process(context.Background(), delivery, projectorSignature(engine.WebhookSecret, delivery.Payload))
@@ -138,6 +140,7 @@ func TestProjectionEngineProcessUsesInstallationWakeupWhenRepositoryIsAbsent(t *
 }
 
 func TestProjectionEngineClaimsConcurrentDeliveryBeforeRefresh(t *testing.T) {
+	t.Parallel()
 	engine, store, writer := newProjector()
 	started := make(chan struct{})
 	continueRefresh := make(chan struct{})
@@ -178,6 +181,7 @@ func (r blockingProjectionReader) RefreshProjection(context.Context, WebhookDeli
 }
 
 func TestProjectionEngineProcessRejectsDuplicateAndMissingDependencies(t *testing.T) {
+	t.Parallel()
 	engine, store, _ := newProjector()
 	store.seen = true
 	delivery := WebhookDelivery{ID: "delivery-1", Event: "push", Payload: []byte("payload")}
@@ -192,6 +196,7 @@ func TestProjectionEngineProcessRejectsDuplicateAndMissingDependencies(t *testin
 		"secret":     func(e *ProjectionEngine) { e.WebhookSecret = nil },
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			candidate, _, _ := newProjector()
 			mutate(&candidate)
 			if _, err := candidate.Process(context.Background(), delivery, ""); !errors.Is(err, ErrNoProjector) {
@@ -202,6 +207,7 @@ func TestProjectionEngineProcessRejectsDuplicateAndMissingDependencies(t *testin
 }
 
 func TestProjectionEngineProcessRejectsInvalidEnvelopeAndSignature(t *testing.T) {
+	t.Parallel()
 	engine, _, _ := newProjector()
 	for name, testCase := range map[string]struct {
 		delivery  WebhookDelivery
@@ -212,6 +218,7 @@ func TestProjectionEngineProcessRejectsInvalidEnvelopeAndSignature(t *testing.T)
 		"bad signature": {WebhookDelivery{ID: "id", Event: "push"}, "sha256=00"},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			if _, err := engine.Process(context.Background(), testCase.delivery, testCase.signature); err == nil {
 				t.Fatal("expected error")
 			}
@@ -220,6 +227,7 @@ func TestProjectionEngineProcessRejectsInvalidEnvelopeAndSignature(t *testing.T)
 }
 
 func TestProjectionEngineProcessPropagatesPhaseErrors(t *testing.T) {
+	t.Parallel()
 	delivery := WebhookDelivery{ID: "id", Event: "push", Payload: []byte("payload")}
 	cases := map[string]func(*ProjectionEngine){
 		"has":     func(e *ProjectionEngine) { e.Deliveries = &projectorDeliveryStore{err: errors.New("has")} },
@@ -236,6 +244,7 @@ func TestProjectionEngineProcessPropagatesPhaseErrors(t *testing.T) {
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			engine, _, _ := newProjector()
 			mutate(&engine)
 			if _, err := engine.Process(context.Background(), delivery, projectorSignature(engine.WebhookSecret, delivery.Payload)); err == nil {
@@ -246,6 +255,7 @@ func TestProjectionEngineProcessPropagatesPhaseErrors(t *testing.T) {
 }
 
 func TestProjectionEngineReportsClaimReleaseFailureWithProjectionFailure(t *testing.T) {
+	t.Parallel()
 	engine, store, _ := newProjector()
 	store.releaseErr = errors.New("release")
 	projectionErr := errors.New("projection")
@@ -270,6 +280,7 @@ func (w projectorSelectiveWriter) WriteLatestMerges(context.Context, string, Rep
 }
 
 func TestValidateProjectionSnapshotRejectsMismatchedRecords(t *testing.T) {
+	t.Parallel()
 	cases := []ProjectionSnapshot{
 		{Repositories: []ProjectionDocument{{Scope: ScopeOrganization, ID: "id", DisplayName: "x", UpdatedAt: time.Unix(1, 0)}}},
 		{Repositories: []ProjectionDocument{{Scope: ScopeRepository}}},

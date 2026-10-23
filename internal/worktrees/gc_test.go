@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -47,7 +48,7 @@ if [ -f "$WB_TEST_PR_INDEX/$sha.unknown" ]; then
 fi
 printf '[]'
 `
-	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(binDir, "gh"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("WB_TEST_PR_INDEX", indexDir)
@@ -458,6 +459,7 @@ func TestGCPurgesTerminalArtefactsSilentlyOnItsOwnReadPath(t *testing.T) {
 // type itself must not grow a force. This is a contract test, not a style
 // preference — a force flag here would be a way to delete unpushed work.
 func TestGCHasNoForceShapedOption(t *testing.T) {
+	t.Parallel()
 	forbidden := []string{"force", "yes", "skipchecks", "noverify", "override"}
 	value := reflect.TypeOf(GCOptions{})
 	for index := 0; index < value.NumField(); index++ {
@@ -1079,11 +1081,11 @@ func TestHeartbeatIsScopedToTheDirectoryTheCommandRanIn(t *testing.T) {
 	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	root, err := worktreeRootOf(nested)
+	root, err := heartbeatPorts().WorktreeRootOf(nested)
 	if err != nil || root != created[0].WorktreeDir {
-		t.Fatalf("worktreeRootOf(%s) = %q, %v", nested, root, err)
+		t.Fatalf("heartbeatPorts().WorktreeRootOf(%s) = %q, %v", nested, root, err)
 	}
-	outside, err := worktreeRootOf(t.TempDir())
+	outside, err := heartbeatPorts().WorktreeRootOf(t.TempDir())
 	if err != nil || outside != "" {
 		t.Fatalf("a directory outside every worktree resolves to %q, %v", outside, err)
 	}
@@ -1227,6 +1229,7 @@ func TestActivityIgnoresATimestampInTheFuture(t *testing.T) {
 // A negative window is a mistake, and a silently inverted safety rule is the
 // worst possible response to one.
 func TestNegativeSessionFreshnessDisablesRatherThanInverts(t *testing.T) {
+	t.Parallel()
 	result := ListResult{LastActivityAt: time.Now()}
 	if checkoutIsInUse(result, GCOptions{SessionFreshness: -time.Hour}, time.Now()) {
 		t.Fatal("a negative window must disable the rule, not invert it")

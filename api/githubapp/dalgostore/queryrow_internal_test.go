@@ -10,6 +10,7 @@ import (
 // as is, a generic map row is decoded through JSON, and rows that cannot be
 // encoded or do not fit the element type are reported, not panicked on.
 func TestQueryRowDecodesGenericRowsAndReportsBadOnes(t *testing.T) {
+	t.Parallel()
 	type row struct {
 		Value int `json:"value"`
 	}

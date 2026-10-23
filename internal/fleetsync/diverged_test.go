@@ -2,10 +2,12 @@ package fleetsync
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // divergedClone reproduces the third shape that made sync red: a canonical
@@ -17,6 +19,7 @@ func divergedClone(t *testing.T) (discover.Repo, string) {
 	t.Helper()
 	origin := t.TempDir()
 	git(t, origin, "init", "-q", "--bare", "-b", "main")
+	testenv.ConfigureGitAutoMaintenanceOff(t, origin)
 
 	seed := t.TempDir()
 	git(t, seed, "init", "-q", "-b", "main")
@@ -38,12 +41,14 @@ func divergedClone(t *testing.T) (discover.Repo, string) {
 func clone(t *testing.T, origin, dest string) {
 	t.Helper()
 	cmd := exec.Command("git", "clone", "-q", origin, dest)
+	cmd.Env = testenv.GitAutoMaintenanceOffEnv(os.Environ())
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("clone: %v: %s", err, out)
 	}
 }
 
 func TestSyncReportsDivergenceRatherThanFailing(t *testing.T) {
+	t.Parallel()
 	repo, local := divergedClone(t)
 	before := revParse(t, local, "HEAD")
 
@@ -67,6 +72,7 @@ func TestSyncReportsDivergenceRatherThanFailing(t *testing.T) {
 // The local commit must survive: --ff-only means sync can never absorb a
 // divergence into a merge commit, whatever pull.rebase says on this machine.
 func TestSyncLeavesDivergedLocalCommitInPlace(t *testing.T) {
+	t.Parallel()
 	repo, local := divergedClone(t)
 	git(t, local, "config", "pull.rebase", "false")
 
@@ -87,6 +93,7 @@ func TestSyncLeavesDivergedLocalCommitInPlace(t *testing.T) {
 
 // A branch tracking nothing has nowhere to pull from. Reportable, not fatal.
 func TestSyncReportsNoUpstreamRatherThanFailing(t *testing.T) {
+	t.Parallel()
 	repo, local := divergedClone(t)
 	git(t, local, "switch", "-q", "-c", "detour")
 
@@ -106,8 +113,10 @@ func TestSyncReportsNoUpstreamRatherThanFailing(t *testing.T) {
 // Behind-only is the ordinary case; the new classification must not stop it
 // from fast-forwarding.
 func TestSyncStillFastForwardsWhenOnlyBehind(t *testing.T) {
+	t.Parallel()
 	origin := t.TempDir()
 	git(t, origin, "init", "-q", "--bare", "-b", "main")
+	testenv.ConfigureGitAutoMaintenanceOff(t, origin)
 	seed := t.TempDir()
 	git(t, seed, "init", "-q", "-b", "main")
 	git(t, seed, "remote", "add", "origin", origin)
@@ -129,6 +138,7 @@ func TestSyncStillFastForwardsWhenOnlyBehind(t *testing.T) {
 }
 
 func TestDivergedAndNoUpstreamStatusStrings(t *testing.T) {
+	t.Parallel()
 	if got := Diverged.String(); got != "diverged" {
 		t.Fatalf("Diverged.String() = %q, want %q", got, "diverged")
 	}

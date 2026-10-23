@@ -69,6 +69,7 @@ func describeOptions(repositories fixture) DescribeOptions {
 // TestDescribeReadsACanonicalClone pins the schema agents key their decisions
 // off. A wrong `kind` or `writable` here is worse than no marker at all.
 func TestDescribeReadsACanonicalClone(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	inspection, err := Describe(repositories.Canonical, describeOptions(repositories))
 	if err != nil {
@@ -93,6 +94,7 @@ func TestDescribeReadsACanonicalClone(t *testing.T) {
 // TestDescribeReadsALinkedWorktree checks the harder half: a worktree has to
 // name the canonical clone it came from and the task it carries.
 func TestDescribeReadsALinkedWorktree(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	inspection, err := Describe(repositories.Worktree, describeOptions(repositories))
 	if err != nil {
@@ -121,6 +123,7 @@ func TestDescribeReadsALinkedWorktree(t *testing.T) {
 }
 
 func TestDescribeReadsALocalLinkedWorktree(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	localWorktree := addLocalWorktree(t, repositories)
 	inspection, err := Describe(localWorktree, describeOptions(repositories))
@@ -140,6 +143,7 @@ func TestDescribeReadsALocalLinkedWorktree(t *testing.T) {
 }
 
 func TestTaskCoordinatesRefusesAnArbitraryDotWorktreesParent(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	if task, root := taskCoordinates(filepath.Join(t.TempDir(), ".worktrees", "task"), repositories.Canonical, "sneat-dev/wb"); task != "" || root != "" {
 		t.Fatalf("arbitrary .worktrees path = task %q root %q", task, root)
@@ -172,6 +176,7 @@ func sameDirectory(left, right string) bool {
 // TestDescribeRefusesAnUnmanagedPath keeps the marker from claiming authority
 // over a checkout WB does not manage.
 func TestDescribeRefusesAnUnmanagedPath(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	if _, err := Describe(t.TempDir(), describeOptions(repositories)); err == nil {
 		t.Fatal("a path in no repository was described")
@@ -183,6 +188,7 @@ func TestDescribeRefusesAnUnmanagedPath(t *testing.T) {
 // an untracked path. It must be invisible in BOTH a canonical clone and a
 // linked worktree, from one rule.
 func TestApplyKeepsGitStatusClean(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	for _, path := range []string{repositories.Canonical, repositories.Worktree} {
 		inspection, err := Describe(path, describeOptions(repositories))
@@ -218,6 +224,7 @@ func TestApplyKeepsGitStatusClean(t *testing.T) {
 // TestApplyIsIdempotent keeps a refresh on every sync and every create free,
 // and keeps a re-run from rewriting a marker whose only difference is a clock.
 func TestApplyIsIdempotent(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	options := describeOptions(repositories)
 	inspection, err := Describe(repositories.Worktree, options)
@@ -263,6 +270,7 @@ func TestApplyIsIdempotent(t *testing.T) {
 // TestEnsureExcludePreservesTheUsersRules keeps WB additive in a file it does
 // not own.
 func TestEnsureExcludePreservesTheUsersRules(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "info", "exclude")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
@@ -298,6 +306,7 @@ func TestEnsureExcludePreservesTheUsersRules(t *testing.T) {
 // TestRenderStatesTheContract checks the fields and the remedy an agent acts
 // on, for both kinds.
 func TestRenderStatesTheContract(t *testing.T) {
+	t.Parallel()
 	canonical := Render(Descriptor{
 		Kind: KindCanonical, Writable: false, Repository: "sneat-co/backstage",
 		CheckoutPath: "/p/sneat-co/backstage", CanonicalPath: "/p/sneat-co/backstage",
@@ -331,6 +340,7 @@ func TestRenderStatesTheContract(t *testing.T) {
 // TestRenderQuotesPathsThatYAMLWouldMisread keeps a path holding a colon from
 // silently producing an unparseable document.
 func TestRenderQuotesPathsThatYAMLWouldMisread(t *testing.T) {
+	t.Parallel()
 	rendered := Render(Descriptor{
 		Kind: KindWorktree, Writable: true, Repository: "owner/name",
 		CheckoutPath: `/tmp/odd: path/"quoted"`, Branch: "yes", BaseBranch: "main",
@@ -348,6 +358,7 @@ func TestRenderQuotesPathsThatYAMLWouldMisread(t *testing.T) {
 // written before its rule exists is a dirty checkout for as long as the gap
 // lasts, which is exactly what WB's hooks refuse.
 func TestApplyWritesTheExcludeRuleBeforeTheMarker(t *testing.T) {
+	t.Parallel()
 	repositories := newFixture(t)
 	inspection, err := Describe(repositories.Canonical, describeOptions(repositories))
 	if err != nil {

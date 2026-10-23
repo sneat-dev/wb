@@ -9,8 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubobserver/testfixture"
+
 	"github.com/sneat-dev/wb/internal/landinglane"
 	"github.com/sneat-dev/wb/internal/session"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -28,23 +31,18 @@ func newCreateFixture(t *testing.T) *createFixture {
 	t.Helper()
 	root := t.TempDir()
 	t.Setenv("WB_PROJECTS_ROOT", filepath.Join(root, "projects"))
-	seed := filepath.Join(root, "seed")
+	seed := pullRequestGitSeed(t)
 	remote := filepath.Join(root, "remote.git")
 	projects := filepath.Join(root, "projects")
 	canonical := filepath.Join(projects, "acme", "app")
-	writeEngineFile(t, filepath.Join(seed, "go.mod"), "module example.test/app\n\ngo 1.24\n")
-	runEngineGit(t, seed, "init", "-b", "main")
-	runEngineGit(t, seed, "config", "user.name", "WB Test")
-	runEngineGit(t, seed, "config", "user.email", "wb@example.test")
-	runEngineGit(t, seed, "add", "-A")
-	runEngineGit(t, seed, "commit", "-m", "initial")
-	runEngineGit(t, root, "clone", "--bare", seed, remote)
+	runEngineGit(t, root, "clone", "--bare", "--no-hardlinks", seed, remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	runEngineGit(t, remote, "config", "user.name", "WB Test")
 	runEngineGit(t, remote, "config", "user.email", "wb@example.test")
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	runEngineGit(t, root, "clone", remote, canonical)
+	runEngineGit(t, root, "clone", "--no-hardlinks", remote, canonical)
 	runEngineGit(t, canonical, "config", "user.name", "WB Test")
 	runEngineGit(t, canonical, "config", "user.email", "wb@example.test")
 	// A second base branch, so a --base override has somewhere real to fetch.
@@ -141,6 +139,9 @@ case "$*" in
     cat "$S/files" ;;
   'api repos/acme/app/pulls/'*'/commits?per_page=100 --include'|'api repos/acme/app/pulls/'*'/commits?per_page=100')
     cat "$S/commits" ;;
+  'api repos/acme/app/pulls?state=all&per_page=1&base='*)
+    # No pull request has targeted the landed head: it may be retired.
+    printf '[]\n' ;;
   'api repos/acme/app/pulls/'*' --include'|'api repos/acme/app/pulls/'*)
     merge_sha=""
     if [ "$merged" = true ]; then merge_sha=$(git --git-dir="$WB_CREATE_REMOTE" rev-parse refs/heads/main); fi
@@ -222,7 +223,7 @@ case "$*" in
   *) echo "unexpected gh command: $*" >&2; exit 2 ;;
 esac
 `
-	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(withEmptyActionsRuns(script)), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(bin, "gh"), []byte(testfixture.WithEmptyActionsRuns(script)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("WB_CREATE_STATE", fixture.state)
@@ -928,7 +929,7 @@ func TestCreateCommitAllStopsBeforeAnyPushWhenTheHookFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	hook := "#!/bin/sh\necho blocked by hook >&2\nexit 1\n"
-	if err := os.WriteFile(filepath.Join(hooksDir, "pre-commit"), []byte(hook), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(hooksDir, "pre-commit"), []byte(hook), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	worktree := fixture.createWorktree(t, "hook-task", "feature/hook", "main")
@@ -1070,7 +1071,8 @@ func TestCreateAddRefusesANonexistentPath(t *testing.T) {
 func TestCreateAddRefusesADirectoryContainingCaseVariantSecretsAndASpace(t *testing.T) {
 	fixture := newCreateFixture(t)
 	worktree := fixture.createWorktree(t, "add-dir-secret-task", "feature/add-dir-secret", "main")
-	writeEngineFile(t, filepath.Join(worktree, "config", ".env"), "SECRET=1\n")
+	// A case-insensitive filesystem cannot retain .env and .ENV separately.
+	// The uppercase spelling alone proves the staged-path check folds case.
 	writeEngineFile(t, filepath.Join(worktree, "config", ".ENV"), "SECRET=2\n")
 	writeEngineFile(t, filepath.Join(worktree, "config", "secret key.pem"), "-----BEGIN-----\n")
 	result, err := CreatePullRequest(context.Background(), PullRequestCreateOptions{
@@ -1083,7 +1085,7 @@ func TestCreateAddRefusesADirectoryContainingCaseVariantSecretsAndASpace(t *test
 	if result.Outcome != CreateRefused || result.RefusalCode != CreateRefusalSecretPath {
 		t.Fatalf("outcome=%s refusal=%s reason=%s", result.Outcome, result.RefusalCode, result.Reason)
 	}
-	for _, want := range []string{"config/.env", "config/.ENV", "config/secret key.pem"} {
+	for _, want := range []string{"config/.ENV", "config/secret key.pem"} {
 		if !strings.Contains(result.Reason, want) {
 			t.Fatalf("reason = %q, want it to name %q", result.Reason, want)
 		}
@@ -1232,7 +1234,7 @@ func TestCreateReturnsFindingsWithCommittedPathsWhenPushFailsAfterCommit(t *test
 		t.Fatal(err)
 	}
 	hook := "#!/bin/sh\necho blocked by pre-push hook >&2\nexit 1\n"
-	if err := os.WriteFile(filepath.Join(hooksDir, "pre-push"), []byte(hook), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(hooksDir, "pre-push"), []byte(hook), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	worktree := fixture.createWorktree(t, "push-hook-task", "feature/push-hook", "main")

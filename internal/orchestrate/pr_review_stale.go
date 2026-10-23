@@ -8,6 +8,10 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+	"github.com/sneat-dev/wb/internal/githubobserver"
+
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -75,7 +79,7 @@ var reviewCommitParents = pullRequestCommitParents
 // unverifiable result, since a false "stale" here is exactly the false
 // refusal that made landing another pull request after WB's own
 // update-branch fail outright. It records a finding and lands instead.
-func reviewedHeadStillCurrent(ctx context.Context, options PullRequestLandOptions, view PullRequestView, reviewedHead, currentHead string) (advanced, unverifiable bool, cause string) {
+func reviewedHeadStillCurrent(ctx context.Context, options PullRequestLandOptions, view githubchecks.PullRequestView, reviewedHead, currentHead string) (advanced, unverifiable bool, cause string) {
 	reviewedHead = strings.ToLower(strings.TrimSpace(reviewedHead))
 	currentHead = strings.ToLower(strings.TrimSpace(currentHead))
 	if reviewedHead == "" || currentHead == "" || reviewedHead == currentHead {
@@ -92,9 +96,9 @@ func reviewedHeadStillCurrent(ctx context.Context, options PullRequestLandOption
 	// before the walk needs its objects; a failure here (a deleted branch
 	// after merge) is not fatal — verifyUpdateBranchMergeProof's own M4
 	// fallback (the commits API) covers a head this fetch could not reach.
-	_, _, _ = runCommand(ctx, 0, 0, worktree, "git", "fetch", "--no-tags", "origin",
+	_, _, _ = runCommand(ctx, options.resolveRunner(), 0, 0, worktree, "git", "fetch", "--no-tags", "origin",
 		"+refs/heads/"+branch+":refs/remotes/origin/"+branch)
-	return reviewedHeadAdvanceChain(ctx, worktree, branch, options.Repository, view.Base.Ref, reviewedHead, currentHead)
+	return reviewedHeadAdvanceChain(ctx, options.resolveGit(), options.resolveRunner(), worktree, branch, options.Repository, view.Base.Ref, reviewedHead, currentHead)
 }
 
 // resolveReviewProofCheckout finds a local git checkout the proof can run
@@ -113,7 +117,7 @@ func reviewedHeadStillCurrent(ctx context.Context, options PullRequestLandOption
 // inventory or canonical clone on disk.
 var resolveReviewCheckout = resolveReviewProofCheckout
 
-func resolveReviewProofCheckout(ctx context.Context, options PullRequestLandOptions, view PullRequestView) (worktree, branch string, found bool) {
+func resolveReviewProofCheckout(ctx context.Context, options PullRequestLandOptions, view githubchecks.PullRequestView) (worktree, branch string, found bool) {
 	if canonical, _, ok, err := locateBranchCheckout(ctx, options.ProjectsRoot, options.Repository, view.Head.Ref, view.Base.Ref); err == nil && ok && strings.TrimSpace(canonical) != "" {
 		return canonical, view.Head.Ref, true
 	}
@@ -129,7 +133,7 @@ func resolveReviewProofCheckout(ctx context.Context, options PullRequestLandOpti
 // the checkout directly rather than locating one — the seam tests use to
 // exercise the walk with reviewHeadAdvanceProof faked, without a real git
 // checkout or worktree inventory.
-func reviewedHeadAdvanceChain(ctx context.Context, worktree, branch, repository, target, reviewedHead, currentHead string) (advanced, unverifiable bool, cause string) {
+func reviewedHeadAdvanceChain(ctx context.Context, git Git, run runner.Runner, worktree, branch, repository, target, reviewedHead, currentHead string) (advanced, unverifiable bool, cause string) {
 	head := currentHead
 	for hop := 0; hop < maxReviewAdvanceHops; hop++ {
 		if strings.EqualFold(head, reviewedHead) {
@@ -137,7 +141,7 @@ func reviewedHeadAdvanceChain(ctx context.Context, worktree, branch, repository,
 		}
 		parents, err := reviewCommitParents(ctx, repository, head)
 		if err != nil {
-			if IsTransientReadFailure(err) {
+			if githubobserver.IsTransientReadFailure(err) {
 				return false, true, "a transient GitHub read failure interrupted the check (" + err.Error() + ")"
 			}
 			return false, false, ""
@@ -145,9 +149,9 @@ func reviewedHeadAdvanceChain(ctx context.Context, worktree, branch, repository,
 		if len(parents) != 2 {
 			return false, false, ""
 		}
-		proven, proofErr := reviewHeadAdvanceProof(ctx, worktree, branch, target, repository, parents[0], parents[1], head)
+		proven, proofErr := reviewHeadAdvanceProof(ctx, git, run, worktree, branch, target, repository, parents[0], parents[1], head)
 		if proofErr != nil {
-			if IsTransientReadFailure(proofErr) {
+			if githubobserver.IsTransientReadFailure(proofErr) {
 				return false, true, "a transient GitHub read failure interrupted the check (" + proofErr.Error() + ")"
 			}
 			return false, false, ""
@@ -279,7 +283,7 @@ func fetchIssueCommentBody(ctx context.Context, url, repository, number string) 
 // update-branch merges, and downgrades to an honest "review-unbound"
 // finding (never a false review_bound: true) when it is not, or when the
 // binding could not be verified at all.
-func recordMergedByGitHubReviewBinding(ctx context.Context, options PullRequestLandOptions, view PullRequestView, reviewedHead string, result *PullRequestLandResult) {
+func recordMergedByGitHubReviewBinding(ctx context.Context, options PullRequestLandOptions, view githubchecks.PullRequestView, reviewedHead string, result *PullRequestLandResult) {
 	if advanced, _, _ := reviewedHeadStillCurrent(ctx, options, view, reviewedHead, view.Head.SHA); advanced {
 		return
 	}
@@ -299,15 +303,12 @@ func recordMergedByGitHubReviewBinding(ctx context.Context, options PullRequestL
 // 5) rather than always blamed on "no local checkout" regardless of which
 // one actually happened: the caller records it as a finding and lands,
 // rather than refusing on a check that never actually ran.
-func reviewStaleRefusal(ctx context.Context, options PullRequestLandOptions, view PullRequestView, reviewedHead, currentHead string, autoMergeArmed bool, number string) (*landRefusal, string) {
+func reviewStaleRefusal(ctx context.Context, options PullRequestLandOptions, view githubchecks.PullRequestView, reviewedHead, currentHead string, autoMergeArmed bool, number string) (*landRefusal, string) {
 	advanced, unverifiable, cause := reviewedHeadStillCurrent(ctx, options, view, reviewedHead, currentHead)
 	if advanced {
 		return nil, ""
 	}
 	if unverifiable {
-		if strings.TrimSpace(cause) == "" {
-			cause = "the check could not be verified"
-		}
 		return nil, "the review's binding to " + shortMergeRevision(reviewedHead) +
 			" could not be verified against the current head " + shortMergeRevision(currentHead) +
 			": " + cause
@@ -323,4 +324,19 @@ func reviewStaleRefusal(ctx context.Context, options PullRequestLandOptions, vie
 		reason:  reason,
 		command: "review the current head, then: wb pr land " + options.Repository + "#" + number + " --approved-by <fresh review>",
 	}, ""
+}
+
+// applyPullRequestLandReviewBinding records the same proof decision before
+// arming and after waiting. The caller owns phase eligibility and supplies the
+// exact armed state; proof and refusal policy remain in reviewStaleRefusal.
+func applyPullRequestLandReviewBinding(ctx context.Context, options PullRequestLandOptions, view githubchecks.PullRequestView, reviewedHead, currentHead string, autoMergeArmed bool, number string, result *PullRequestLandResult) *landRefusal {
+	refusal, note := reviewStaleRefusal(ctx, options, view, reviewedHead, currentHead, autoMergeArmed, number)
+	if refusal != nil {
+		return refusal
+	}
+	if note != "" {
+		result.ReviewBound = boolPtr(false)
+		result.Evidence["review"] = "review-unverified: " + note
+	}
+	return nil
 }

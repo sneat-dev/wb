@@ -60,7 +60,7 @@ func (p *Provider) stampOwnLastSeen(login, machine string, at time.Time) string 
 		return "" // corrupt: skip silently, leave the bytes exactly as they are
 	}
 	snap.LastSeenAt = at
-	encoded, err := remotestate.Encode(snap)
+	encoded, err := p.encodeSnapshot(snap)
 	if err != nil {
 		return ""
 	}
@@ -174,7 +174,7 @@ var errStorePathFreed = errors.New("gitrepo: claim path freed by a concurrent op
 // see clonelock.go — for the whole Fetch-through-push critical section, not
 // just the network half of it.
 func (p *Provider) Claim(ctx context.Context, claim remotestate.Claim, mode remotestate.ClaimMode, expectedHolder string) (remotestate.ClaimOutcome, error) {
-	lock, err := acquireCloneLock(p.opts.ClonePath)
+	lock, err := acquireCloneLock(p.opts.ClonePath, p.opts.Now, p.opts.Sleep)
 	if err != nil {
 		return remotestate.ClaimOutcome{}, err
 	}
@@ -241,7 +241,7 @@ func (p *Provider) claim(ctx context.Context, claim remotestate.Claim, mode remo
 
 	rel := ClaimPath(claim.Task)
 	abs := filepath.Join(p.opts.ClonePath, filepath.FromSlash(rel))
-	data, err := remotestate.EncodeClaim(claim)
+	data, err := p.encodeClaim(claim)
 	if err != nil {
 		return remotestate.ClaimOutcome{}, err
 	}
@@ -306,7 +306,7 @@ func (p *Provider) claim(ctx context.Context, claim remotestate.Claim, mode remo
 // call wb#321 traced two concurrent WB processes' git commands colliding
 // in, so it must never run against the shared clone unserialized.
 func (p *Provider) Release(ctx context.Context, task, login, machine string, force bool) (remotestate.ReleaseOutcome, error) {
-	lock, err := acquireCloneLock(p.opts.ClonePath)
+	lock, err := acquireCloneLock(p.opts.ClonePath, p.opts.Now, p.opts.Sleep)
 	if err != nil {
 		return remotestate.ReleaseOutcome{}, err
 	}
@@ -347,7 +347,7 @@ func (p *Provider) release(ctx context.Context, task, login, machine string, for
 	message := fmt.Sprintf("wb: release %s by %s/%s", task, login, machine)
 
 	mutate := func() (string, bool, []string, error) {
-		if err := os.Remove(abs); err != nil {
+		if err := p.removeClaim(abs); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				return message, false, nil, nil
 			}
@@ -400,7 +400,7 @@ func (p *Provider) release(ctx context.Context, task, login, machine string, for
 // List uses for machines/*. It runs under cloneLock like List, for the same
 // read-during-a-concurrent-write reason.
 func (p *Provider) Claims(ctx context.Context) ([]remotestate.ClaimEntry, error) {
-	lock, err := acquireCloneLock(p.opts.ClonePath)
+	lock, err := acquireCloneLock(p.opts.ClonePath, p.opts.Now, p.opts.Sleep)
 	if err != nil {
 		return nil, err
 	}

@@ -11,6 +11,7 @@ import (
 )
 
 func TestInspectRepositoryBranchesReportsHeartbeatWhileRepositoryBlocks(t *testing.T) {
+	t.Parallel()
 	var progress bytes.Buffer
 	repository := discover.Repo{Org: "sneat-dev", Name: "wb"}
 	sweep := branchSweepOptions{Progress: &progress}
@@ -35,6 +36,7 @@ func TestInspectRepositoryBranchesReportsHeartbeatWhileRepositoryBlocks(t *testi
 }
 
 func TestInspectRepositoryBranchesDoesNotReportHeartbeatForFastRepository(t *testing.T) {
+	t.Parallel()
 	var progress bytes.Buffer
 	repository := discover.Repo{Org: "sneat-dev", Name: "wb"}
 	sweep := branchSweepOptions{Progress: &progress}

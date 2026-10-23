@@ -12,9 +12,12 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
+
+	"github.com/sneat-dev/wb/internal/filewrite"
 )
 
-const validationCacheSchema = 2
+const validationCacheSchema = 3
 
 // ValidationCacheKey identifies the exact inputs that make a verification
 // report reusable. Checks remain ordered because the order is part of the
@@ -30,7 +33,11 @@ type ValidationCacheKey struct {
 	// ValidatorSHAs binds cached evidence to the executable bytes that produced
 	// it. In particular, SpecScore's rules can change between installed
 	// versions while the repository and WB revision remain identical.
-	ValidatorSHAs map[string]string `json:"validator_shas,omitempty"`
+	ValidatorSHAs       map[string]string `json:"validator_shas,omitempty"`
+	Timeout             time.Duration     `json:"timeout"`
+	Retry               int               `json:"retry"`
+	CheckTimeout        time.Duration     `json:"check_timeout"`
+	ShardAttemptTimeout time.Duration     `json:"shard_attempt_timeout"`
 }
 
 type validationCacheRecord struct {
@@ -42,20 +49,22 @@ type validationCacheRecord struct {
 
 // NewValidationCacheKey fingerprints repository-local policy, module manifests,
 // and the executable digests used by external validators. The caller supplies
-// the exact target revision and WB revision, and passes nil validatorSHAs when
-// no external validator participates.
+// the exact target revision, WB revision, and effective command limits, and
+// passes nil validatorSHAs when no external validator participates.
 //
 // One constructor rather than two: the original signature was kept alongside a
 // WithValidators variant that delegated to it, and `wb deadcode` immediately
 // reported the original as unreachable once the only caller moved. A dead
 // wrapper beside a live near-identical function is a reliable way to have the
 // wrong one called later.
-func NewValidationCacheKey(repository, targetRevision, root, wbRevision string, checks []Check, validatorSHAs map[string]string) (ValidationCacheKey, error) {
+func NewValidationCacheKey(repository, targetRevision, root, wbRevision string, checks []Check, validatorSHAs map[string]string, options RunOptions) (ValidationCacheKey, error) {
 	key := ValidationCacheKey{
 		Repository: repository, TargetRevision: targetRevision,
 		Checks: append([]Check(nil), checks...), WBRevision: wbRevision,
 		GoToolchain:   runtime.Version(),
 		ValidatorSHAs: cloneStringMap(validatorSHAs),
+		Timeout:       options.Timeout, Retry: options.Retry,
+		CheckTimeout: options.CheckTimeout, ShardAttemptTimeout: options.ShardAttemptTimeout,
 	}
 	for _, name := range []string{repositoryQualityConfigPath} {
 		path := filepath.Join(root, name)
@@ -89,10 +98,9 @@ func NewValidationCacheKey(repository, targetRevision, root, wbRevision string, 
 		if err != nil {
 			return ValidationCacheKey{}, err
 		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return ValidationCacheKey{}, err
-		}
+		// WalkDir supplied path by joining descendant names to this same root;
+		// its volume and absolute/relative form agree with root.
+		rel, _ := filepath.Rel(root, path)
 		key.ModuleFiles = append(key.ModuleFiles, filepath.ToSlash(rel)+"="+digest)
 	}
 	return key, nil
@@ -130,38 +138,31 @@ func fileDigest(path string) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-func validationCacheDigest(schema int, key ValidationCacheKey, report VerificationReport) (string, error) {
-	payload, err := json.Marshal(struct {
+// Cache payloads contain only finite primitive fields, slices, string-keyed maps,
+// and nonrecursive evidence pointers; they have no custom JSON marshalers.
+func validationCacheDigest(schema int, key ValidationCacheKey, report VerificationReport) string {
+	payload, _ := json.Marshal(struct {
 		Schema int                `json:"schema"`
 		Key    ValidationCacheKey `json:"key"`
 		Report VerificationReport `json:"report"`
 	}{schema, key, report})
-	if err != nil {
-		return "", err
-	}
 	sum := sha256.Sum256(payload)
-	return hex.EncodeToString(sum[:]), nil
+	return hex.EncodeToString(sum[:])
 }
 
-func validationCacheKeyDigest(key ValidationCacheKey) (string, error) {
-	payload, err := json.Marshal(struct {
+func validationCacheKeyDigest(key ValidationCacheKey) string {
+	payload, _ := json.Marshal(struct {
 		Schema int                `json:"schema"`
 		Key    ValidationCacheKey `json:"key"`
 	}{validationCacheSchema, key})
-	if err != nil {
-		return "", err
-	}
 	sum := sha256.Sum256(payload)
-	return hex.EncodeToString(sum[:]), nil
+	return hex.EncodeToString(sum[:])
 }
 
 // LoadValidationCache returns only an intact terminal report with an exact key.
 // Any malformed, stale, or otherwise incomplete record is a cache miss.
 func LoadValidationCache(cacheRoot string, key ValidationCacheKey) (VerificationReport, bool, error) {
-	digest, err := validationCacheKeyDigest(key)
-	if err != nil {
-		return VerificationReport{}, false, err
-	}
+	digest := validationCacheKeyDigest(key)
 	path := filepath.Join(cacheRoot, digest+".json")
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -177,8 +178,8 @@ func LoadValidationCache(cacheRoot string, key ValidationCacheKey) (Verification
 	if record.Schema != validationCacheSchema || !sameValidationCacheKey(record.Key, key) || record.Report.Status == StatusSkipped || record.Report.Revision != key.TargetRevision || !record.Report.WorkspaceClean {
 		return VerificationReport{}, false, nil
 	}
-	actual, err := validationCacheDigest(record.Schema, record.Key, record.Report)
-	if err != nil || actual != record.Digest {
+	actual := validationCacheDigest(record.Schema, record.Key, record.Report)
+	if actual != record.Digest {
 		return VerificationReport{}, false, nil
 	}
 	return record.Report, true, nil
@@ -193,43 +194,47 @@ func sameValidationCacheKey(a, b ValidationCacheKey) bool {
 // SaveValidationCache writes terminal evidence atomically. Failed writes are
 // returned to the caller; a cache failure never changes validation semantics.
 func SaveValidationCache(cacheRoot string, key ValidationCacheKey, report VerificationReport) error {
+	return saveValidationCacheInjected(cacheRoot, key, report, nil)
+}
+
+// saveValidationCacheInjected is SaveValidationCache's test seam (task-9
+// PR-6): every production call site reaches it only through
+// SaveValidationCache, which always passes a nil *filewrite.Injector, so
+// production behaviour is unchanged. A test passes its own Injector to
+// reach a write/sync/close/rename failure branch deterministically.
+func saveValidationCacheInjected(cacheRoot string, key ValidationCacheKey, report VerificationReport, inj *filewrite.Injector) error {
 	if report.Status == StatusSkipped || report.Revision != key.TargetRevision || !report.WorkspaceClean {
 		return fmt.Errorf("validation cache accepts only terminal clean evidence")
 	}
-	keyDigest, err := validationCacheKeyDigest(key)
-	if err != nil {
-		return err
-	}
-	digest, err := validationCacheDigest(validationCacheSchema, key, report)
-	if err != nil {
-		return err
-	}
+	keyDigest := validationCacheKeyDigest(key)
+	digest := validationCacheDigest(validationCacheSchema, key, report)
 	record := validationCacheRecord{Schema: validationCacheSchema, Key: key, Report: report, Digest: digest}
-	raw, err := json.Marshal(record)
-	if err != nil {
-		return err
-	}
+	raw, _ := json.Marshal(record)
 	if err := os.MkdirAll(cacheRoot, 0o755); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(cacheRoot, ".validation-*.tmp")
+	tmp, err := filewrite.CreateTemp(cacheRoot, ".validation-*.tmp", inj)
 	if err != nil {
 		return err
 	}
 	tmpName := tmp.Name()
+	// Unconditional cleanup, unchanged from the pre-migration code: a
+	// random-suffixed CreateTemp name is never shared between concurrent
+	// writers, so removing it after a successful Rename (a harmless no-op
+	// ENOENT) or after a failure (a genuine leftover) is always correct.
 	defer func() { _ = os.Remove(tmpName) }()
-	if _, err := tmp.Write(raw); err != nil {
+	if err := filewrite.Write(tmp, raw, tmpName, inj); err != nil {
 		_ = tmp.Close()
 		return err
 	}
-	if err := tmp.Sync(); err != nil {
+	if err := filewrite.Sync(tmp, tmpName, inj); err != nil {
 		_ = tmp.Close()
 		return err
 	}
-	if err := tmp.Close(); err != nil {
+	if err := filewrite.Close(tmp, tmpName, inj); err != nil {
 		return err
 	}
-	return os.Rename(tmpName, filepath.Join(cacheRoot, keyDigest+".json"))
+	return filewrite.Rename(tmpName, filepath.Join(cacheRoot, keyDigest+".json"), inj)
 }
 
 // ValidationCacheDir is kept in one place so all merge baseline callers share

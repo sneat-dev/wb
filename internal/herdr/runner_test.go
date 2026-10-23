@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestResolveBinaryPrefersHERDRBinPath(t *testing.T) {
@@ -26,7 +28,7 @@ func TestResolveBinaryPrefersHERDRBinPath(t *testing.T) {
 func TestResolveBinaryStaleHERDRBinPathFallsBackToPATH(t *testing.T) {
 	directory := t.TempDir()
 	fakeHerdr := filepath.Join(directory, "herdr")
-	if err := os.WriteFile(fakeHerdr, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+	if err := testenv.WriteExecutableFile(fakeHerdr, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", directory)
@@ -79,7 +81,7 @@ func TestIsStaleBinaryPath(t *testing.T) {
 func TestResolveBinaryFallsBackToPATH(t *testing.T) {
 	directory := t.TempDir()
 	fakeHerdr := filepath.Join(directory, "herdr")
-	if err := os.WriteFile(fakeHerdr, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+	if err := testenv.WriteExecutableFile(fakeHerdr, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", directory)
@@ -113,7 +115,7 @@ func TestResolveBinaryNilLookup(t *testing.T) {
 func TestResolveBinaryIgnoresEmptyHERDRBinPath(t *testing.T) {
 	directory := t.TempDir()
 	fakeHerdr := filepath.Join(directory, "herdr")
-	if err := os.WriteFile(fakeHerdr, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+	if err := testenv.WriteExecutableFile(fakeHerdr, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", directory)
@@ -132,7 +134,7 @@ func TestExecRunnerRunsArgvOnly(t *testing.T) {
 	argvFile := filepath.Join(directory, "argv")
 	script := "#!/bin/sh\n: > \"" + argvFile + "\"\nfor a in \"$@\"; do printf '%s\\0' \"$a\" >> \"" + argvFile + "\"; done\nprintf 'ok'\n"
 	scriptPath := filepath.Join(directory, "recorder")
-	if err := os.WriteFile(scriptPath, []byte(script), 0o700); err != nil {
+	if err := testenv.WriteExecutableFile(scriptPath, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 

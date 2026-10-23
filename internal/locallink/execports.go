@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/console"
+	"github.com/sneat-dev/wb/internal/filewrite"
 )
 
 const defaultCommandTimeout = 30 * time.Minute
@@ -38,38 +39,47 @@ func (git ExecGit) run(ctx context.Context, dir string, env []string, args ...st
 // than a checksum of a file listing. Ignored paths — `node_modules`, `dist` —
 // stay out, so a rebuild does not change the source identity.
 func (git ExecGit) ContentHash(ctx context.Context, dir string) (string, bool, error) {
-	index, err := os.CreateTemp("", "wb-locallink-index-*")
+	return git.contentHashInjected(ctx, dir, nil)
+}
+
+// contentHashInjected is ContentHash's test seam (task-9 PR-9): every
+// production call site reaches it only through ContentHash, which always
+// passes a nil *filewrite.Injector, so production behaviour is unchanged. A
+// test passes its own Injector to reach the temporary index reservation's
+// create/close failure branches deterministically.
+func (git ExecGit) contentHashInjected(ctx context.Context, dir string, inj *filewrite.Injector) (string, bool, error) {
+	return git.contentHashWithIO(ctx, dir, inj, git.run, os.Remove)
+}
+
+func (git ExecGit) contentHashWithIO(ctx context.Context, dir string, inj *filewrite.Injector, run func(context.Context, string, []string, ...string) (string, error), remove func(string) error) (string, bool, error) {
+	indexPath, err := filewrite.CreateScratch("", "wb-locallink-index-*", 0, nil, inj)
 	if err != nil {
-		return "", false, err
-	}
-	indexPath := index.Name()
-	if err := index.Close(); err != nil {
 		return "", false, err
 	}
 	// git read-tree refuses to populate an index file that already exists as
 	// an empty regular file in some versions; removing it leaves only the
 	// unique name reserved.
-	if err := os.Remove(indexPath); err != nil {
+	if err := remove(indexPath); err != nil {
 		return "", false, err
 	}
 	defer func() { _ = os.Remove(indexPath) }()
 	env := []string{"GIT_INDEX_FILE=" + indexPath}
-	if _, err := git.run(ctx, dir, env, "read-tree", "HEAD"); err != nil {
+	if _, err := run(ctx, dir, env, "read-tree", "HEAD"); err != nil {
 		// A repository with no commit yet has no HEAD to read; an empty index
 		// is the correct starting point rather than a failure.
-		if _, emptyErr := git.run(ctx, dir, env, "read-tree", "--empty"); emptyErr != nil {
+		if _, emptyErr := run(ctx, dir, env, "read-tree", "--empty"); emptyErr != nil {
 			return "", false, fmt.Errorf("prepare a temporary index for %s: %w", dir, emptyErr)
 		}
 	}
-	if _, err := git.run(ctx, dir, env, "add", "-A", "."); err != nil {
+	if _, err := run(ctx, dir, env, "add", "-A", "."); err != nil {
 		return "", false, fmt.Errorf("stage the working tree of %s into a temporary index: %w", dir, err)
 	}
-	tree, err := git.run(ctx, dir, env, "write-tree")
+	tree, err := run(ctx, dir, env, "write-tree")
 	if err != nil {
 		return "", false, fmt.Errorf("write a tree for %s: %w", dir, err)
 	}
 	hash := strings.TrimSpace(tree)
-	status, err := git.run(ctx, dir, nil, "status", "--porcelain")
+	status, err := run(ctx, dir, nil, "status", "--porcelain")
 	if err != nil {
 		return "", false, fmt.Errorf("read status of %s: %w", dir, err)
 	}
@@ -100,6 +110,15 @@ func (git ExecGit) TrackedChanges(ctx context.Context, dir string) ([]string, er
 // a tracked `.gitignore`: that would be a tracked change, which a local link
 // must never make.
 func (git ExecGit) ExcludePath(ctx context.Context, dir, pattern string) error {
+	return git.excludePathInjected(ctx, dir, pattern, nil)
+}
+
+// excludePathInjected is ExcludePath's test seam (task-9 PR-8): every
+// production call site reaches it only through ExcludePath, which always
+// passes a nil *filewrite.Injector, so production behaviour is unchanged. A
+// test passes its own Injector to reach the open/write failure branches
+// deterministically.
+func (git ExecGit) excludePathInjected(ctx context.Context, dir, pattern string, inj *filewrite.Injector) error {
 	path, err := git.excludeFile(ctx, dir)
 	if err != nil {
 		return err
@@ -116,16 +135,16 @@ func (git ExecGit) ExcludePath(ctx context.Context, dir, pattern string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create %s: %w", filepath.Dir(path), err)
 	}
-	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	file, err := filewrite.OpenAppend(path, 0o644, inj)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", path, err)
 	}
-	defer func() { _ = file.Close() }()
+	defer func() { _ = filewrite.Close(file, path, inj) }()
 	line := pattern + "\n"
 	if len(existing) > 0 && strings.TrimSpace(existing[len(existing)-1]) != "" {
 		line = pattern + "\n"
 	}
-	if _, err := file.WriteString(line); err != nil {
+	if err := filewrite.Write(file, []byte(line), path, inj); err != nil {
 		return fmt.Errorf("append %q to %s: %w", pattern, path, err)
 	}
 	return nil
@@ -377,6 +396,85 @@ func linkAppliedMarkerPath(consumerDir, packageName string) string {
 // left the consumer with no package at all until someone re-installed. npm's
 // flat layout leaves a real directory, which is moved aside.
 func (node ExecNode) Link(ctx context.Context, consumerDir, packageName, dist string) (result NodeLinkResult, returnedErr error) {
+	return node.linkInjected(ctx, consumerDir, packageName, dist, nil)
+}
+
+// writeLinkPendingMarker is Link's pending-link-marker write, extracted
+// (task-9 PR-8) so it and writeLinkSymlinkBackup -- Link's other, separately
+// error-wrapped write-once sequence -- each get their own filewrite-routed
+// helper rather than one shared helper that would blur their distinct error
+// text and distinct cleanup-on-failure logic (the marker write also removes
+// the claimed stage directory; the backup write does not, since it runs
+// after stage is already populated and kept). Every production call site
+// reaches it only through Link, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged.
+func writeLinkPendingMarker(packageName, marker, stage string, inj *filewrite.Injector) error {
+	markerFile, err := filewrite.CreateExclusivePath(marker, 0o644, inj)
+	if err != nil {
+		if cleanupErr := os.Remove(stage); cleanupErr != nil {
+			return fmt.Errorf("record the pending link for %s: %w; preserve unclaimed stage %s: %v", packageName, err, stage, cleanupErr)
+		}
+		return fmt.Errorf("record the pending link for %s (run --undo if a prior attempt was interrupted): %w", packageName, err)
+	}
+	if err := filewrite.Write(markerFile, []byte(stage+"\n"), marker, inj); err != nil {
+		_ = filewrite.Close(markerFile, marker, inj)
+		_ = os.Remove(marker)
+		_ = os.Remove(stage)
+		return fmt.Errorf("record the staged link path for %s: %w", packageName, err)
+	}
+	if err := filewrite.Close(markerFile, marker, inj); err != nil {
+		_ = os.Remove(marker)
+		_ = os.Remove(stage)
+		return fmt.Errorf("close the pending link marker for %s: %w", packageName, err)
+	}
+	return nil
+}
+
+// writeLinkSymlinkBackup is Link's existing-symlink-target backup write,
+// extracted (task-9 PR-8) for the same reason as writeLinkPendingMarker.
+func writeLinkSymlinkBackup(packageName, symlinkBackup, existing string, inj *filewrite.Injector) error {
+	backupFile, err := filewrite.CreateExclusivePath(symlinkBackup, 0o644, inj)
+	if err != nil {
+		return fmt.Errorf("claim the link recovery record %s without replacing existing data: %w", symlinkBackup, err)
+	}
+	if err := filewrite.Write(backupFile, []byte(existing), symlinkBackup, inj); err != nil {
+		_ = filewrite.Close(backupFile, symlinkBackup, inj)
+		_ = os.Remove(symlinkBackup)
+		return fmt.Errorf("record the existing link target of %s: %w", packageName, err)
+	}
+	if err := filewrite.Close(backupFile, symlinkBackup, inj); err != nil {
+		_ = os.Remove(symlinkBackup)
+		return fmt.Errorf("close the existing link target record of %s: %w", packageName, err)
+	}
+	return nil
+}
+
+// linkInjected is Link's test seam (task-9 PR-8): every production call
+// site reaches it only through Link, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged. A test passes
+// its own Injector to reach writeLinkPendingMarker's and
+// writeLinkSymlinkBackup's failure branches deterministically.
+func (node ExecNode) linkInjected(ctx context.Context, consumerDir, packageName, dist string, inj *filewrite.Injector) (NodeLinkResult, error) {
+	return node.linkWithPublication(ctx, consumerDir, packageName, dist, inj, nativeLinkPublicationIO())
+}
+
+type linkPublicationIO struct {
+	inspect  func(string) (os.FileInfo, error)
+	remove   func(string) error
+	rename   func(string, string) error
+	symlink  func(string, string) error
+	relative func(string, string) (string, error)
+}
+
+func nativeLinkPublicationIO() linkPublicationIO {
+	return linkPublicationIO{os.Lstat, os.Remove, renameInstalledPackageForLink, os.Symlink, filepath.Rel}
+}
+
+// renameInstalledPackageForLink moves the installed directory into its recovery backup.
+// Keeping the native rename explicit preserves the move-only publication guard.
+func renameInstalledPackageForLink(from, to string) error { return os.Rename(from, to) }
+
+func (node ExecNode) linkWithPublication(ctx context.Context, consumerDir, packageName, dist string, inj *filewrite.Injector, access linkPublicationIO) (result NodeLinkResult, returnedErr error) {
 	target := filepath.Join(consumerDir, "node_modules", filepath.FromSlash(packageName))
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return result, fmt.Errorf("create %s: %w", filepath.Dir(target), err)
@@ -387,7 +485,7 @@ func (node ExecNode) Link(ctx context.Context, consumerDir, packageName, dist st
 			return result, fmt.Errorf("restore the prior local link before refreshing %s: %w", packageName, err)
 		}
 	}
-	info, statErr := os.Lstat(target)
+	info, statErr := access.inspect(target)
 	if statErr != nil && !os.IsNotExist(statErr) {
 		return result, fmt.Errorf("inspect %s: %w", target, statErr)
 	}
@@ -408,23 +506,8 @@ func (node ExecNode) Link(ctx context.Context, consumerDir, packageName, dist st
 	if err := os.Mkdir(stage, 0o755); err != nil {
 		return result, fmt.Errorf("claim the staged package path %s without replacing existing data: %w", stage, err)
 	}
-	markerFile, err := os.OpenFile(marker, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-	if err != nil {
-		if cleanupErr := os.Remove(stage); cleanupErr != nil {
-			return result, fmt.Errorf("record the pending link for %s: %w; preserve unclaimed stage %s: %v", packageName, err, stage, cleanupErr)
-		}
-		return result, fmt.Errorf("record the pending link for %s (run --undo if a prior attempt was interrupted): %w", packageName, err)
-	}
-	if _, err := markerFile.WriteString(stage + "\n"); err != nil {
-		_ = markerFile.Close()
-		_ = os.Remove(marker)
-		_ = os.Remove(stage)
-		return result, fmt.Errorf("record the staged link path for %s: %w", packageName, err)
-	}
-	if err := markerFile.Close(); err != nil {
-		_ = os.Remove(marker)
-		_ = os.Remove(stage)
-		return result, fmt.Errorf("close the pending link marker for %s: %w", packageName, err)
+	if err := writeLinkPendingMarker(packageName, marker, stage, inj); err != nil {
+		return result, err
 	}
 	defer func() {
 		if returnedErr == nil {
@@ -434,10 +517,10 @@ func (node ExecNode) Link(ctx context.Context, consumerDir, packageName, dist st
 			returnedErr = fmt.Errorf("%w; restore the published package after the failed link: %v", returnedErr, cleanupErr)
 		}
 	}()
-	if err := copyBuiltPackageContents(dist, stage); err != nil {
+	if err := copyBuiltPackageContentsInjected(dist, stage, inj); err != nil {
 		return result, fmt.Errorf("stage %s in the consumer's installed peer context: %w", packageName, err)
 	}
-	info, err = os.Lstat(target)
+	info, err = access.inspect(target)
 	switch {
 	case err == nil && info.Mode()&os.ModeSymlink != 0:
 		// Record where it pointed before replacing it. Without this the
@@ -446,39 +529,29 @@ func (node ExecNode) Link(ctx context.Context, consumerDir, packageName, dist st
 		if readErr != nil {
 			return result, fmt.Errorf("read the existing link at %s: %w", target, readErr)
 		}
-		backupFile, err := os.OpenFile(symlinkBackup, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-		if err != nil {
-			return result, fmt.Errorf("claim the link recovery record %s without replacing existing data: %w", symlinkBackup, err)
+		if err := writeLinkSymlinkBackup(packageName, symlinkBackup, existing, inj); err != nil {
+			return result, err
 		}
-		if _, err := backupFile.WriteString(existing); err != nil {
-			_ = backupFile.Close()
-			_ = os.Remove(symlinkBackup)
-			return result, fmt.Errorf("record the existing link target of %s: %w", packageName, err)
-		}
-		if err := backupFile.Close(); err != nil {
-			_ = os.Remove(symlinkBackup)
-			return result, fmt.Errorf("close the existing link target record of %s: %w", packageName, err)
-		}
-		if err := os.Remove(target); err != nil {
+		if err := access.remove(target); err != nil {
 			return result, fmt.Errorf("replace the existing link at %s: %w", target, err)
 		}
 		result.Previous = filepath.ToSlash(filepath.Join("node_modules", filepath.FromSlash(packageName)+linkSymlinkBackupSuffix))
 	case err == nil:
-		if err := os.Rename(target, directoryBackup); err != nil {
+		if err := access.rename(target, directoryBackup); err != nil {
 			return result, fmt.Errorf("set aside the installed %s: %w", packageName, err)
 		}
 		result.Previous = filepath.ToSlash(filepath.Join("node_modules", filepath.FromSlash(packageName)+linkBackupSuffix))
 	case !os.IsNotExist(err):
 		return result, fmt.Errorf("inspect %s: %w", target, err)
 	}
-	if err := os.Symlink(stage, target); err != nil {
+	if err := access.symlink(stage, target); err != nil {
 		return result, fmt.Errorf("link %s to staged package %s: %w", target, stage, err)
 	}
 	for _, artifact := range []string{target, marker, stage, target + linkSymlinkBackupSuffix, target + linkBackupSuffix} {
 		if !fileExists(artifact) {
 			continue
 		}
-		relative, err := filepath.Rel(consumerDir, artifact)
+		relative, err := access.relative(consumerDir, artifact)
 		if err != nil {
 			return result, fmt.Errorf("record generated path %s: %w", artifact, err)
 		}
@@ -514,16 +587,6 @@ func nodeLinkStagePath(consumerDir, target string, info os.FileInfo) (string, er
 	return filepath.Join(parent, "."+filepath.Base(target)+".wb-locallink-stage"), nil
 }
 
-func copyBuiltPackage(source, destination string) error {
-	if err := validateBuiltPackageSource(source); err != nil {
-		return err
-	}
-	if err := os.Mkdir(destination, 0o755); err != nil {
-		return err
-	}
-	return copyBuiltPackageContents(source, destination)
-}
-
 func validateBuiltPackageSource(source string) error {
 	info, err := os.Lstat(source)
 	if err != nil {
@@ -535,7 +598,17 @@ func validateBuiltPackageSource(source string) error {
 	return nil
 }
 
-func copyBuiltPackageContents(source, destination string) error {
+// copyBuiltPackageContentsInjected copies a built package tree. Production
+// call sites pass a nil *filewrite.Injector, so production behaviour is
+// unchanged; a test passes its own Injector to reach the create/write/close failure branches deterministically. The
+// copy itself goes through io.Copy into a filewrite.Writer wrapping output,
+// which restores io.Copy's copy_file_range/splice/sendfile fast path
+// because input is a real *os.File (review-t9-pr6 N3).
+func copyBuiltPackageContentsInjected(source, destination string, inj *filewrite.Injector) error {
+	return copyBuiltPackageContentsWithOpen(source, destination, inj, os.Open)
+}
+
+func copyBuiltPackageContentsWithOpen(source, destination string, inj *filewrite.Injector, open func(string) (*os.File, error)) error {
 	return filepath.WalkDir(source, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -543,10 +616,8 @@ func copyBuiltPackageContents(source, destination string) error {
 		if path == source {
 			return nil
 		}
-		relative, err := filepath.Rel(source, path)
-		if err != nil {
-			return err
-		}
+		// WalkDir supplies the root or its lexical descendants on the same volume.
+		relative, _ := filepath.Rel(source, path)
 		target := filepath.Join(destination, relative)
 		if entry.Type()&os.ModeSymlink != 0 {
 			return fmt.Errorf("built package contains unsupported symlink %s", path)
@@ -561,17 +632,17 @@ func copyBuiltPackageContents(source, destination string) error {
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("built package contains unsupported non-regular file %s", path)
 		}
-		input, err := os.Open(path)
+		input, err := open(path)
 		if err != nil {
 			return err
 		}
-		output, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, info.Mode().Perm())
+		output, err := filewrite.CreateExclusivePath(target, info.Mode().Perm(), inj)
 		if err != nil {
 			_ = input.Close()
 			return err
 		}
-		_, copyErr := io.Copy(output, input)
-		closeErr := output.Close()
+		_, copyErr := io.Copy(filewrite.Writer(output, target, inj), input)
+		closeErr := filewrite.Close(output, target, inj)
 		_ = input.Close()
 		if copyErr != nil {
 			return copyErr
@@ -581,11 +652,26 @@ func copyBuiltPackageContents(source, destination string) error {
 }
 
 // Unlink implements Node, restoring whichever shape the link displaced.
+type linkRestoreObservations struct {
+	lstat    func(string) (os.FileInfo, error)
+	stat     func(string) (os.FileInfo, error)
+	readlink func(string) (string, error)
+	readFile func(string) ([]byte, error)
+}
+
+func nativeLinkRestoreObservations() linkRestoreObservations {
+	return linkRestoreObservations{os.Lstat, os.Stat, os.Readlink, os.ReadFile}
+}
+
 func (node ExecNode) Unlink(ctx context.Context, consumerDir, packageName string) (string, error) {
+	return node.unlinkWithObservations(ctx, consumerDir, packageName, nativeLinkRestoreObservations())
+}
+
+func (node ExecNode) unlinkWithObservations(ctx context.Context, consumerDir, packageName string, observe linkRestoreObservations) (string, error) {
 	target := filepath.Join(consumerDir, "node_modules", filepath.FromSlash(packageName))
 	marker := linkAppliedMarkerPath(consumerDir, packageName)
 	stage := ""
-	if contents, err := os.ReadFile(marker); err == nil {
+	if contents, err := observe.readFile(marker); err == nil {
 		var validateErr error
 		stage, validateErr = validateStagedLinkPath(consumerDir, target, strings.TrimSpace(string(contents)))
 		if validateErr != nil {
@@ -595,9 +681,9 @@ func (node ExecNode) Unlink(ctx context.Context, consumerDir, packageName string
 		return "", fmt.Errorf("read the applied-link marker for %s: %w", packageName, err)
 	}
 
-	info, err := os.Lstat(target)
+	info, err := observe.lstat(target)
 	if err == nil && info.Mode()&os.ModeSymlink != 0 {
-		actual, readErr := os.Readlink(target)
+		actual, readErr := observe.readlink(target)
 		if readErr != nil {
 			return "", fmt.Errorf("read the active link at %s: %w", target, readErr)
 		}
@@ -607,8 +693,8 @@ func (node ExecNode) Unlink(ctx context.Context, consumerDir, packageName string
 		}
 		if stage != "" && filepath.Clean(actualPath) != stage {
 			symlinkBackup := target + linkSymlinkBackupSuffix
-			if original, backupErr := os.ReadFile(symlinkBackup); backupErr == nil && strings.TrimSpace(string(original)) == actual {
-				if _, statErr := os.Stat(target); statErr != nil {
+			if original, backupErr := observe.readFile(symlinkBackup); backupErr == nil && strings.TrimSpace(string(original)) == actual {
+				if _, statErr := observe.stat(target); statErr != nil {
 					return "", fmt.Errorf("restored the original link for %s but it is dangling — %s no longer resolves; re-install to recover the published package: %w", packageName, actual, statErr)
 				}
 				if err := os.Remove(symlinkBackup); err != nil {
@@ -656,7 +742,7 @@ func (node ExecNode) Unlink(ctx context.Context, consumerDir, packageName string
 	// A recorded symlink target is restored first: on pnpm this is the normal
 	// case, and it is the one that used to be lost entirely.
 	symlinkBackup := target + linkSymlinkBackupSuffix
-	if contents, readErr := os.ReadFile(symlinkBackup); readErr == nil {
+	if contents, readErr := observe.readFile(symlinkBackup); readErr == nil {
 		original := strings.TrimSpace(string(contents))
 		if original == "" {
 			return "", fmt.Errorf("the recorded link target for %s is empty; restore it by re-installing", packageName)
@@ -664,7 +750,7 @@ func (node ExecNode) Unlink(ctx context.Context, consumerDir, packageName string
 		if err := os.Symlink(original, target); err != nil {
 			return "", fmt.Errorf("restore the original link for %s: %w", packageName, err)
 		}
-		if _, statErr := os.Stat(target); statErr != nil {
+		if _, statErr := observe.stat(target); statErr != nil {
 			return "", fmt.Errorf("restored the original link for %s but it is dangling — %s no longer resolves; re-install to recover the published package: %w", packageName, original, statErr)
 		}
 		if err := os.Remove(symlinkBackup); err != nil {
@@ -736,7 +822,22 @@ type siblingEdge struct {
 // to the corresponding staged identities. The edges live inside the untracked
 // stage directories, so removing any package stage removes its edges too and
 // leaves the installed pnpm topology available for exact undo.
+type siblingLinkIO struct {
+	lstat    func(string) (os.FileInfo, error)
+	readlink func(string) (string, error)
+	mkdirAll func(string, os.FileMode) error
+	symlink  func(string, string) error
+}
+
+func nativeSiblingLinkIO() siblingLinkIO {
+	return siblingLinkIO{os.Lstat, os.Readlink, os.MkdirAll, os.Symlink}
+}
+
 func (node ExecNode) LinkSiblings(ctx context.Context, consumerDir string, packageNames []string) error {
+	return node.linkSiblingsWithIO(ctx, consumerDir, packageNames, nativeSiblingLinkIO())
+}
+
+func (node ExecNode) linkSiblingsWithIO(ctx context.Context, consumerDir string, packageNames []string, access siblingLinkIO) error {
 	stages := make(map[string]siblingStage, len(packageNames))
 	for _, packageName := range packageNames {
 		if _, already := stages[packageName]; already {
@@ -798,11 +899,11 @@ func (node ExecNode) LinkSiblings(ctx context.Context, consumerDir string, packa
 	for _, edge := range edges {
 		from, to := stages[edge.from], stages[edge.to]
 		link := filepath.Join(from.stage, "node_modules", filepath.FromSlash(edge.to))
-		if info, err := os.Lstat(link); err == nil {
+		if info, err := access.lstat(link); err == nil {
 			if info.Mode()&os.ModeSymlink == 0 {
 				return fmt.Errorf("refuse to replace existing staged sibling path %s", link)
 			}
-			actual, readErr := os.Readlink(link)
+			actual, readErr := access.readlink(link)
 			if readErr != nil {
 				return fmt.Errorf("read existing staged sibling path %s: %w", link, readErr)
 			}
@@ -821,16 +922,13 @@ func (node ExecNode) LinkSiblings(ctx context.Context, consumerDir string, packa
 		if fileExists(link) {
 			continue
 		}
-		if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		if err := access.mkdirAll(filepath.Dir(link), 0o755); err != nil {
 			removeSiblingEdges(created)
 			return fmt.Errorf("create staged sibling parent for %s: %w", edge.to, err)
 		}
-		relative, err := filepath.Rel(filepath.Dir(link), to.stage)
-		if err != nil {
-			removeSiblingEdges(created)
-			return fmt.Errorf("resolve staged sibling %s from %s: %w", edge.to, edge.from, err)
-		}
-		if err := os.Symlink(relative, link); err != nil {
+		// Both stages were validated inside the same absolute consumer workspace.
+		relative, _ := filepath.Rel(filepath.Dir(link), to.stage)
+		if err := access.symlink(relative, link); err != nil {
 			removeSiblingEdges(created)
 			return fmt.Errorf("link staged sibling %s into %s: %w", edge.to, edge.from, err)
 		}
@@ -863,10 +961,8 @@ type runtimeGraphMismatch struct {
 // published physical package while the application resolves WB's staged one.
 // Bundlers follow that physical edge and emit two token identities.
 func (node ExecNode) verifyRuntimeGraph(ctx context.Context, consumerDir string, packageNames []string) error {
-	linked, err := json.Marshal(dedupe(packageNames))
-	if err != nil {
-		return fmt.Errorf("encode linked npm identities for runtime graph verification: %w", err)
-	}
+	// A slice of strings has no custom encoders or unsupported JSON values.
+	linked, _ := json.Marshal(dedupe(packageNames))
 	if _, err := exec.LookPath("node"); err != nil {
 		return fmt.Errorf("node is required to verify the linked npm runtime graph: %w", err)
 	}
@@ -1056,12 +1152,16 @@ func removeSiblingEdges(paths []string) {
 }
 
 func validateStagedLinkPath(consumerDir, target, stage string) (string, error) {
+	return validateStagedLinkPathWithAbsolute(consumerDir, target, stage, filepath.Abs)
+}
+
+func validateStagedLinkPathWithAbsolute(consumerDir, target, stage string, absolute func(string) (string, error)) (string, error) {
 	stage = filepath.Clean(stage)
 	wantBase := "." + filepath.Base(target) + ".wb-locallink-stage"
 	if !filepath.IsAbs(stage) || filepath.Base(stage) != wantBase {
 		return "", fmt.Errorf("applied-link marker names invalid staged path %q", stage)
 	}
-	absoluteConsumer, err := filepath.Abs(consumerDir)
+	absoluteConsumer, err := absolute(consumerDir)
 	if err != nil {
 		return "", err
 	}

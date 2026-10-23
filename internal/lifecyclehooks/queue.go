@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
+
+	"github.com/sneat-dev/wb/internal/filewrite"
 )
 
 type queuedJob struct {
@@ -72,6 +74,10 @@ func (dispatcher Dispatcher) enqueue(item pending) (int, error) {
 }
 
 func (dispatcher Dispatcher) ensureState() error {
+	return dispatcher.ensureStateInjected(nil)
+}
+
+func (dispatcher Dispatcher) ensureStateInjected(inj *filewrite.Injector) error {
 	for _, directory := range []string{dispatcher.StateDir, dispatcher.pendingDir(), dispatcher.runningDir(), dispatcher.diagnosticsDir(), dispatcher.unseenDir(), dispatcher.quarantineDir()} {
 		if err := os.MkdirAll(directory, 0o700); err != nil {
 			return fmt.Errorf("create lifecycle hook state: %w", err)
@@ -79,7 +85,7 @@ func (dispatcher Dispatcher) ensureState() error {
 		if err := validatePrivateDirectory(directory, "lifecycle hook state directory"); err != nil {
 			return fmt.Errorf("protect lifecycle hook state: %w", err)
 		}
-		if err := os.Chmod(directory, 0o700); err != nil {
+		if err := filewrite.ChmodPath(directory, 0o700, inj); err != nil {
 			return fmt.Errorf("protect lifecycle hook state: %w", err)
 		}
 	}
@@ -246,6 +252,10 @@ func (dispatcher Dispatcher) recoverRunning() ([]string, error) {
 }
 
 func (dispatcher Dispatcher) claimBatch(limit int, worker *flock.Flock) ([]queuedJob, bool, []string, error) {
+	return dispatcher.claimBatchWithUnlock(limit, worker, (*flock.Flock).Unlock)
+}
+
+func (dispatcher Dispatcher) claimBatchWithUnlock(limit int, worker *flock.Flock, unlock func(*flock.Flock) error) ([]queuedJob, bool, []string, error) {
 	queueLock := flock.New(filepath.Join(dispatcher.StateDir, "queue.lock"))
 	if err := queueLock.Lock(); err != nil {
 		return nil, false, nil, err
@@ -289,7 +299,7 @@ func (dispatcher Dispatcher) claimBatch(limit int, worker *flock.Flock) ([]queue
 	// Release worker ownership while the queue lock still excludes enqueue.
 	// A subsequent enqueue will then start a worker that can acquire ownership,
 	// closing the otherwise tiny empty-queue shutdown race.
-	if err := worker.Unlock(); err != nil {
+	if err := unlock(worker); err != nil {
 		return nil, false, warnings, err
 	}
 	return nil, true, warnings, nil
@@ -393,10 +403,14 @@ func (writer *cappedFile) Write(content []byte) (int, error) {
 }
 
 func openDiagnostics(directory string) (*cappedFile, *cappedFile, error) {
+	return openDiagnosticsInjected(directory, nil)
+}
+
+func openDiagnosticsInjected(directory string, inj *filewrite.Injector) (*cappedFile, *cappedFile, error) {
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return nil, nil, err
 	}
-	if err := os.Chmod(directory, 0o700); err != nil {
+	if err := filewrite.ChmodPath(directory, 0o700, inj); err != nil {
 		return nil, nil, err
 	}
 	stdout, err := os.OpenFile(filepath.Join(directory, "stdout.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
@@ -437,6 +451,10 @@ func readJob(path string) (queuedJob, error) {
 	if err != nil {
 		return queuedJob{}, err
 	}
+	return decodeJob(raw, path)
+}
+
+func decodeJob(raw []byte, path string) (queuedJob, error) {
 	var job queuedJob
 	if err := json.Unmarshal(raw, &job); err != nil {
 		return queuedJob{}, fmt.Errorf("decode lifecycle hook queue item %s: %w", path, err)
@@ -448,6 +466,15 @@ func readJob(path string) (queuedJob, error) {
 }
 
 func writeJSONAtomic(path string, value any, mode os.FileMode) error {
+	return writeJSONAtomicInjected(path, value, mode, nil)
+}
+
+// writeJSONAtomicInjected is writeJSONAtomic's test seam (task-9 PR-8): every
+// production call site reaches it only through writeJSONAtomic, which always
+// passes a nil *filewrite.Injector, so production behaviour is unchanged. A
+// test passes its own Injector to reach the create/chmod/write/sync/close/
+// rename/dir-sync failure branches deterministically.
+func writeJSONAtomicInjected(path string, value any, mode os.FileMode, inj *filewrite.Injector) error {
 	raw, err := json.Marshal(value)
 	if err != nil {
 		return err
@@ -455,34 +482,43 @@ func writeJSONAtomic(path string, value any, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
+	temporary, err := filewrite.CreateTemp(filepath.Dir(path), ".tmp-*", inj)
 	if err != nil {
 		return err
 	}
 	temporaryPath := temporary.Name()
 	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := temporary.Chmod(mode); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.ChmodFile(temporary, mode, temporaryPath, inj); err != nil {
+		_ = filewrite.Close(temporary, temporaryPath, inj)
 		return err
 	}
-	if _, err := temporary.Write(append(raw, '\n')); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.Write(temporary, append(raw, '\n'), temporaryPath, inj); err != nil {
+		_ = filewrite.Close(temporary, temporaryPath, inj)
 		return err
 	}
-	if err := temporary.Sync(); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.Sync(temporary, temporaryPath, inj); err != nil {
+		_ = filewrite.Close(temporary, temporaryPath, inj)
 		return err
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, temporaryPath, inj); err != nil {
 		return err
 	}
-	if err := os.Rename(temporaryPath, path); err != nil {
+	if err := filewrite.Rename(temporaryPath, path, inj); err != nil {
 		return err
 	}
-	return syncDirectory(filepath.Dir(path))
+	return syncDirectoryInjected(filepath.Dir(path), inj)
 }
 
 func (dispatcher Dispatcher) quarantineFile(path, reason string) (string, error) {
+	return dispatcher.quarantineFileInjected(path, reason, nil)
+}
+
+// quarantineFileInjected is quarantineFile's test seam (task-9 PR-8): every
+// production call site reaches it only through quarantineFile, which always
+// passes a nil *filewrite.Injector, so production behaviour is unchanged. A
+// test passes its own Injector to reach the rename/chmod/write/dir-sync
+// failure branches deterministically.
+func (dispatcher Dispatcher) quarantineFileInjected(path, reason string, inj *filewrite.Injector) (string, error) {
 	if err := os.MkdirAll(dispatcher.quarantineDir(), 0o700); err != nil {
 		return "", err
 	}
@@ -491,19 +527,28 @@ func (dispatcher Dispatcher) quarantineFile(path, reason string) (string, error)
 	}
 	name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)) + "-" + receiptID(dispatcher.Now().UTC()) + ".bad"
 	destination := filepath.Join(dispatcher.quarantineDir(), name)
-	if err := os.Rename(path, destination); err != nil {
+	if err := filewrite.Rename(path, destination, inj); err != nil {
 		return "", err
 	}
-	if err := os.Chmod(destination, 0o600); err != nil {
+	if err := filewrite.ChmodPath(destination, 0o600, inj); err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(destination+".reason.txt", []byte(boundedMessage(reason, 1024)+"\n"), 0o600); err != nil {
+	if err := filewrite.WriteFile(destination+".reason.txt", []byte(boundedMessage(reason, 1024)+"\n"), 0o600, inj); err != nil {
 		return "", err
 	}
-	return destination, syncQueueDirectories(filepath.Dir(path), dispatcher.quarantineDir())
+	for _, directory := range []string{filepath.Dir(path), dispatcher.quarantineDir()} {
+		if err := syncDirectoryInjected(directory, inj); err != nil {
+			return destination, err
+		}
+	}
+	return destination, nil
 }
 
 func appendReceipt(path string, receipt Receipt) error {
+	return appendReceiptInjected(path, receipt, nil, filewrite.OpenAppend)
+}
+
+func appendReceiptInjected(path string, receipt Receipt, inj *filewrite.Injector, open func(string, os.FileMode, *filewrite.Injector) (*os.File, error)) error {
 	if err := validateReceipt(receipt); err != nil {
 		return err
 	}
@@ -525,7 +570,7 @@ func appendReceipt(path string, receipt Receipt) error {
 	if err != nil {
 		return err
 	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	file, err := open(path, 0o600, inj)
 	if err != nil {
 		return err
 	}
@@ -537,17 +582,17 @@ func appendReceipt(path string, receipt Receipt) error {
 	if existed && !os.SameFile(expected, opened) {
 		return errors.New("lifecycle hook receipt stream changed while opening")
 	}
-	if err := file.Chmod(0o600); err != nil {
+	if err := filewrite.ChmodFile(file, 0o600, path, inj); err != nil {
 		return err
 	}
 	raw, err := json.Marshal(receipt)
 	if err != nil {
 		return err
 	}
-	if _, err := file.Write(append(raw, '\n')); err != nil {
+	if err := filewrite.Write(file, append(raw, '\n'), path, inj); err != nil {
 		return err
 	}
-	if err := file.Sync(); err != nil {
+	if err := filewrite.Sync(file, path, inj); err != nil {
 		return err
 	}
 	if err := writeJSONAtomic(filepath.Join(receiptIndexDir(path), receipt.ID+".json"), receipt, 0o600); err != nil {
@@ -608,6 +653,10 @@ func findReceipt(path, id string) (Receipt, bool, error) {
 }
 
 func scanReceipts(path string, visit func(Receipt)) ([]string, error) {
+	return scanReceiptsWithOpen(path, visit, os.Open)
+}
+
+func scanReceiptsWithOpen(path string, visit func(Receipt), open func(string) (*os.File, error)) ([]string, error) {
 	if err := ensureTrustedParent(path, "lifecycle hook receipt parent"); err != nil {
 		return nil, err
 	}
@@ -620,7 +669,7 @@ func scanReceipts(path string, visit func(Receipt)) ([]string, error) {
 	if err != nil || !exists {
 		return nil, err
 	}
-	file, err := os.Open(path)
+	file, err := open(path)
 	if err != nil {
 		return nil, err
 	}

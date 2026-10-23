@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // ---------------------------------------------------------------------------
@@ -48,7 +50,7 @@ func wtLifeCovNewRepo(t *testing.T) *wtLifeCovRepo {
 func wtLifeCovGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	command := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	command.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0")
+	command.Env = testenv.GitAutoMaintenanceOffEnv(append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0"))
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
@@ -72,7 +74,7 @@ func wtLifeCovStage(t *testing.T) (operationRoot, stage string, descriptor *os.F
 func wtLifeCovScript(t *testing.T, name, body string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), name)
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(path, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return path
@@ -133,6 +135,7 @@ func TestWtLifeCovSecureStageHelperRejectsMalformedRequests(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			result := wtLifeCovRunSecureHelper(t, "stage", []*os.File{descriptor}, testCase.args)
 			if result.exitCode != 1 {
 				t.Fatalf("exit = %d, want 1 (stderr %q)", result.exitCode, result.stderr)
@@ -145,6 +148,7 @@ func TestWtLifeCovSecureStageHelperRejectsMalformedRequests(t *testing.T) {
 }
 
 func TestWtLifeCovSecureStageHelperRejectsMissingStageDescriptor(t *testing.T) {
+	t.Parallel()
 	result := wtLifeCovRunSecureHelper(t, "stage", nil, []string{secureStagePathArgument})
 	if result.exitCode != 1 {
 		t.Fatalf("stage without descriptor exit = %d, stderr = %q", result.exitCode, result.stderr)
@@ -242,6 +246,7 @@ func TestWtLifeCovSecureStageCanonicalHelperRejectsInvalidArguments(t *testing.T
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			result := wtLifeCovRunSecureHelper(t, "stage-canonical", files, testCase.args)
 			if result.exitCode != 1 || !strings.Contains(result.stderr, "invalid arguments") {
 				t.Fatalf("exit = %d, stderr = %q", result.exitCode, result.stderr)
@@ -453,6 +458,7 @@ func TestWtLifeCovSecureCanonicalPolicyHelperRejectsNonPolicyQueries(t *testing.
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			result := wtLifeCovRunSecureHelper(t, "canonical-policy",
 				[]*os.File{repo.root, repo.common}, testCase.args)
 			if result.exitCode != 1 || !strings.Contains(result.stderr, "invalid read-only query") {
@@ -649,6 +655,7 @@ func TestWtLifeCovSecureCleanupHelperAuthorizesEveryHeldRoot(t *testing.T) {
 
 	remote := filepath.Join(t.TempDir(), "remote.git")
 	wtLifeCovGit(t, t.TempDir(), "init", "--bare", "--quiet", remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	remoteDescriptor := wtLifeCovOpenDirectory(t, remote)
 	withRemote := wtLifeCovRunSecureHelper(t, "cleanup",
 		[]*os.File{repo.root, repo.common, remoteDescriptor},
@@ -691,6 +698,7 @@ func TestWtLifeCovSecureCleanupHelperPushesToHeldLocalRemote(t *testing.T) {
 	git := wtLifeCovTrustedGit(t)
 	remote := filepath.Join(t.TempDir(), "remote.git")
 	wtLifeCovGit(t, t.TempDir(), "init", "--bare", "--quiet", "--initial-branch=main", remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	remoteDescriptor := wtLifeCovOpenDirectory(t, remote)
 
 	result := wtLifeCovRunSecureHelper(t, "cleanup",
@@ -857,6 +865,7 @@ func TestWtLifeCovLocalOriginDirectoryForSecurePushClassifiesRemotes(t *testing.
 
 	remote := filepath.Join(t.TempDir(), "remote.git")
 	wtLifeCovGit(t, t.TempDir(), "init", "--bare", "--quiet", remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	directory, path, err := localOriginDirectoryForSecurePush(t.Context(), canonical, []string{"push", "--", remote, "HEAD:refs/heads/x"})
 	if err != nil {
 		t.Fatalf("local push remote: %v", err)
@@ -884,6 +893,7 @@ func TestWtLifeCovLocalOriginDirectoryForSecurePushClassifiesRemotes(t *testing.
 }
 
 func TestWtLifeCovSecurePushRepositoryArgumentSelectsRemote(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		args []string
 		want string

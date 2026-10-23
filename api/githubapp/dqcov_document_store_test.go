@@ -101,6 +101,7 @@ func dqCovEmptyDocuments() map[string]json.RawMessage {
 }
 
 func TestDQCovProjectionStoreFailsClosedWithoutBackend(t *testing.T) {
+	t.Parallel()
 	store := DocumentProjectionStore{}
 	ctx := context.Background()
 	if _, err := store.ListProjections(ctx, ScopeRepository); err == nil {
@@ -121,6 +122,7 @@ func TestDQCovProjectionStoreFailsClosedWithoutBackend(t *testing.T) {
 }
 
 func TestDQCovProjectionStorePropagatesBackendFailures(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	failing := &dqCovDocumentStore{documents: dqCovEmptyDocuments(), getErr: errors.New("get down"), queryErr: errors.New("query down")}
 	store := DocumentProjectionStore{Backend: failing}
@@ -142,6 +144,7 @@ func TestDQCovProjectionStorePropagatesBackendFailures(t *testing.T) {
 }
 
 func TestDQCovProjectionStoreReportsMissingDocuments(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := DocumentProjectionStore{Backend: &dqCovDocumentStore{documents: dqCovEmptyDocuments()}}
 	if _, err := store.ListSeries(ctx, ScopeRepository, "id", "merged"); !errors.Is(err, ErrProjectionNotFound) {
@@ -157,6 +160,7 @@ func TestDQCovProjectionStoreReportsMissingDocuments(t *testing.T) {
 }
 
 func TestDQCovProjectionWriterValidatesDeliveryIDAndBackend(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	if err := (DocumentProjectionWriter{}).WriteRepositories(ctx, "delivery-1", nil); err == nil {
 		t.Error("writer accepted a nil backend")
@@ -176,6 +180,7 @@ func TestDQCovProjectionWriterValidatesDeliveryIDAndBackend(t *testing.T) {
 }
 
 func TestDQCovDeliveryStoreFailsClosedWithoutBackend(t *testing.T) {
+	t.Parallel()
 	store := DocumentProjectionDeliveryStore{}
 	ctx := context.Background()
 	if _, err := store.ClaimDelivery(ctx, "delivery-1"); err == nil {
@@ -190,6 +195,7 @@ func TestDQCovDeliveryStoreFailsClosedWithoutBackend(t *testing.T) {
 }
 
 func TestDQCovDeliveryStoreDefaultsClockAndLease(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fake := &dqCovDocumentStore{documents: dqCovEmptyDocuments()}
 	store := DocumentProjectionDeliveryStore{Backend: fake}
@@ -216,6 +222,7 @@ func TestDQCovDeliveryStoreDefaultsClockAndLease(t *testing.T) {
 }
 
 func TestDQCovDeliveryStorePropagatesTransactionFailures(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	getFail := &dqCovDocumentStore{documents: dqCovEmptyDocuments(), getErr: errors.New("get down")}
 	setFail := &dqCovDocumentStore{documents: dqCovEmptyDocuments(), failSetOn: deliveryCollection}

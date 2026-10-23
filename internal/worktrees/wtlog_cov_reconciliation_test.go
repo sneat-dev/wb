@@ -2,6 +2,7 @@ package worktrees
 
 import (
 	"context"
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,6 +24,7 @@ func wtLogCovReconciliationClaim(worktree string) (workLogClaim, workLogProjecti
 }
 
 func TestWtLogCovValidateBranchReconciliationOptions(t *testing.T) {
+	t.Parallel()
 	valid := LogRecoverOptions{Worktree: "/tmp/wt", ReconcileBranch: "wb/x", ExpectedHead: strings.Repeat("a", 40),
 		Actor: "operator", Reason: "rebind", EventID: "event-1", Remote: true}
 	if err := validateBranchReconciliationOptions(valid); err != nil {
@@ -50,9 +52,10 @@ func TestWtLogCovValidateBranchReconciliationOptions(t *testing.T) {
 }
 
 func TestWtLogCovCorroborateReconciliationClaimShape(t *testing.T) {
+	t.Parallel()
 	worktree := t.TempDir()
 	claim, projection := wtLogCovReconciliationClaim(worktree)
-	if err := corroborateReconciliationClaimShape(worktree, projection, claim); err != nil {
+	if err := worktreeclaims.ValidateReconciliationClaimShape(worktree, projection, claim); err != nil {
 		t.Fatalf("valid claim shape rejected: %v", err)
 	}
 
@@ -62,7 +65,7 @@ func TestWtLogCovCorroborateReconciliationClaimShape(t *testing.T) {
 	successor.AcquiredVia = "recycle_failed"
 	successor.ClaimID = successorWorkLogClaimID(successor.ParentClaimID, successor.AgentID, successor.AcquiredVia)
 	projection.ClaimID = successor.ClaimID
-	if err := corroborateReconciliationClaimShape(worktree, projection, successor); err != nil {
+	if err := worktreeclaims.ValidateReconciliationClaimShape(worktree, projection, successor); err != nil {
 		t.Fatalf("valid v1 successor rejected: %v", err)
 	}
 	declared := successor
@@ -70,7 +73,7 @@ func TestWtLogCovCorroborateReconciliationClaimShape(t *testing.T) {
 	declared.ClaimID = declaredSuccessorWorkLogClaimID(declared.ParentClaimID, declared.AgentID, declared.AcquiredVia,
 		ClaimExecutionIdentity{Model: declared.Model})
 	projection.ClaimID = declared.ClaimID
-	if err := corroborateReconciliationClaimShape(worktree, projection, declared); err != nil {
+	if err := worktreeclaims.ValidateReconciliationClaimShape(worktree, projection, declared); err != nil {
 		t.Fatalf("valid declared v2 successor rejected: %v", err)
 	}
 
@@ -96,16 +99,17 @@ func TestWtLogCovCorroborateReconciliationClaimShape(t *testing.T) {
 		projectionCopy := workLogProjection{Version: 1, EffortID: claim.EffortID, RunID: claim.RunID,
 			ClaimID: claim.ClaimID, Lifecycle: "active"}
 		mutate(&mutated)
-		if err := corroborateReconciliationClaimShape(worktree, projectionCopy, mutated); err == nil {
+		if err := worktreeclaims.ValidateReconciliationClaimShape(worktree, projectionCopy, mutated); err == nil {
 			t.Errorf("invalid reconciliation claim %q was accepted", name)
 		}
 	}
 }
 
 func TestWtLogCovReconciliationEventAndProjection(t *testing.T) {
+	t.Parallel()
 	record := branchReconciliationRecord{EventID: "event-1", Reason: "rebind", Actor: "operator",
 		LiveBranch: "wb/live", ClaimBranch: "wb/claim", LocalHead: "local", RemoteHead: "remote"}
-	event := reconciliationEvent(context.Background(), t.TempDir(), record)
+	event := reconciliationEvent(record, observeLocalGit(context.Background(), t.TempDir()))
 	if event.ID != record.EventID || event.Type != LocalEventBranchReconciled || event.Message != record.Reason {
 		t.Fatalf("event = %#v", event)
 	}
@@ -120,6 +124,11 @@ func TestWtLogCovReconciliationEventAndProjection(t *testing.T) {
 	if local == nil || local.Version != 1 || local.EffortID != projection.EffortID || local.ClaimID != projection.ClaimID || local.Lifecycle != "active" {
 		t.Fatalf("local projection = %#v", local)
 	}
+	result := completedBranchReconciliationResult("/tmp/worktree", event, *local)
+	if !result.Applied || !result.ReadyForNormalCleanup || result.Worktree != "/tmp/worktree" || result.Verb != "recover" ||
+		result.Event == nil || result.Event.ID != event.ID || result.Projection == nil || result.Projection.ClaimID != local.ClaimID {
+		t.Fatalf("completed reconciliation result = %#v", result)
+	}
 }
 
 func TestWtLogCovBranchReconciliationRecordRoundTrip(t *testing.T) {
@@ -129,12 +138,12 @@ func TestWtLogCovBranchReconciliationRecordRoundTrip(t *testing.T) {
 		Worktree: claim.Worktree, Repository: claim.Repository, ClaimBranch: claim.Branch, LiveBranch: "wb/live",
 		ExpectedHead: strings.Repeat("a", 40), LocalHead: strings.Repeat("b", 40), RemoteHead: strings.Repeat("c", 40),
 		TargetHead: strings.Repeat("d", 40), Actor: "operator", Reason: "rebind", Stage: "recorded", CreatedAt: time.Now().UTC()}
-	directory, err := createBranchReconciliationRecord(home, claim, record)
+	directory, err := reconciliationClaimPorts().CreateRecord(home, claim, record)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = directory.Close() }()
-	stored, readDirectory, err := readBranchReconciliationRecord(home, claim, record.EventID)
+	stored, readDirectory, err := reconciliationClaimPorts().ReadRecord(home, claim, record.EventID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,12 +151,12 @@ func TestWtLogCovBranchReconciliationRecordRoundTrip(t *testing.T) {
 	if stored.EventID != record.EventID || stored.ClaimID != claim.ClaimID || stored.Stage != "recorded" {
 		t.Fatalf("stored record = %#v", stored)
 	}
-	if _, _, err := readBranchReconciliationRecord(home, claim, "missing-event"); err == nil {
+	if _, _, err := reconciliationClaimPorts().ReadRecord(home, claim, "missing-event"); err == nil {
 		t.Fatal("missing reconciliation record was read")
 	}
 
 	projection := workLogProjection{Version: 1, EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID, Lifecycle: "active"}
-	event := reconciliationEvent(context.Background(), claim.Worktree, record)
+	event := reconciliationEvent(record, observeLocalGit(context.Background(), claim.Worktree))
 	result, err := finishBranchReconciliation(directory, stored, claim.Worktree, event, *localProjectionForReconciliation(projection))
 	if err != nil {
 		t.Fatal(err)
@@ -155,7 +164,7 @@ func TestWtLogCovBranchReconciliationRecordRoundTrip(t *testing.T) {
 	if !result.Applied || !result.ReadyForNormalCleanup || result.Worktree != claim.Worktree || result.Verb != "recover" {
 		t.Fatalf("result = %#v", result)
 	}
-	finished, finishedDirectory, err := readBranchReconciliationRecord(home, claim, record.EventID)
+	finished, finishedDirectory, err := reconciliationClaimPorts().ReadRecord(home, claim, record.EventID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,6 +175,7 @@ func TestWtLogCovBranchReconciliationRecordRoundTrip(t *testing.T) {
 }
 
 func TestWtLogCovCorroborateReconciliationRecord(t *testing.T) {
+	t.Parallel()
 	claim, _ := wtLogCovReconciliationClaim("/tmp/wt")
 	head := strings.Repeat("a", 40)
 	options := LogRecoverOptions{Worktree: "/tmp/wt", ReconcileBranch: "wb/live", ExpectedHead: head,
@@ -174,7 +184,7 @@ func TestWtLogCovCorroborateReconciliationRecord(t *testing.T) {
 		Worktree: "/tmp/wt", ClaimBranch: claim.Branch, LiveBranch: "wb/live", ExpectedHead: head,
 		LocalHead: strings.Repeat("b", 40), RemoteHead: strings.Repeat("c", 40), TargetHead: strings.Repeat("d", 40),
 		Actor: "operator", Reason: "rebind"}
-	if err := corroborateReconciliationRecord(record, claim, "/tmp/wt", options); err != nil {
+	if err := worktreeclaims.CorroborateReconciliationRecord(record, claim, reconciliationRequest("/tmp/wt", options)); err != nil {
 		t.Fatalf("valid record rejected: %v", err)
 	}
 	for name, mutate := range map[string]func(*branchReconciliationRecord){
@@ -195,7 +205,7 @@ func TestWtLogCovCorroborateReconciliationRecord(t *testing.T) {
 	} {
 		mutated := record
 		mutate(&mutated)
-		if err := corroborateReconciliationRecord(mutated, claim, "/tmp/wt", options); err == nil {
+		if err := worktreeclaims.CorroborateReconciliationRecord(mutated, claim, reconciliationRequest("/tmp/wt", options)); err == nil {
 			t.Errorf("invalid reconciliation record %q was accepted", name)
 		}
 	}
@@ -221,7 +231,7 @@ func TestWtLogCovReconciliationClaimReaders(t *testing.T) {
 	_ = claims.Close()
 	_ = runDir.Close()
 
-	loadedProjection, loadedClaim, err := reconciliationClaim(fixture.home, fixture.canonical)
+	loadedProjection, loadedClaim, err := reconciliationClaimPorts().ReadClaim(fixture.home, fixture.canonical)
 	if err != nil {
 		t.Fatalf("reconciliation claim read failed: %v", err)
 	}
@@ -233,12 +243,12 @@ func TestWtLogCovReconciliationClaimReaders(t *testing.T) {
 		t.Fatal(err)
 	}
 	unlock()
-	if _, _, err := reconciliationClaim(fixture.home, filepath.Join(t.TempDir(), "none")); err == nil {
+	if _, _, err := reconciliationClaimPorts().ReadClaim(fixture.home, filepath.Join(t.TempDir(), "none")); err == nil {
 		t.Fatal("reconciliation claim without a projection was accepted")
 	}
 	missingRun := claim
 	missingRun.RunID = "other-run"
-	if _, _, err := reconciliationClaim(fixture.home, fixture.canonical); err != nil {
+	if _, _, err := reconciliationClaimPorts().ReadClaim(fixture.home, fixture.canonical); err != nil {
 		t.Fatalf("projection read depended on the claim run: %v", err)
 	}
 	if _, err := lockBranchReconciliationClaim(fixture.home, missingRun); err == nil {
@@ -335,8 +345,12 @@ func TestWtLogCovReconciliationBundleHelpers(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = directory.Close() }()
-	if err := bundleClaimHead(context.Background(), canonical, directory, "event-1", "local", "refs/heads/wb/bundle", head); err != nil {
+	if err := bundleClaimHead(context.Background(), canonical, directory, "event-1", "local", "refs/heads/wb/bundle", head, reconciliationBundlePorts{}); err != nil {
 		t.Fatalf("bundle preservation failed: %v", err)
+	}
+	if err := bundleClaimHead(context.Background(), canonical, directory, "event-1", "missing", "refs/heads/wb/missing", head, reconciliationBundlePorts{}); err == nil ||
+		!strings.Contains(err.Error(), "create missing recovery bundle") {
+		t.Fatalf("unknown immutable-claim ref bundle error = %v", err)
 	}
 	for _, name := range []string{"local.bundle", "local.json"} {
 		if _, err := os.Stat(filepath.Join(directory.Name(), name)); err != nil {

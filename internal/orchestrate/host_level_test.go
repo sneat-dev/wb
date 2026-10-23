@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // TestCanonicalClonePathFollowsTheCloneURL pins where a canonical clone belongs:
@@ -14,6 +16,7 @@ import (
 // names a forge itself, and it must be the same fallback EnsureCanonical clones
 // from — otherwise the predicted and the created path could disagree.
 func TestCanonicalClonePathFollowsTheCloneURL(t *testing.T) {
+	t.Parallel()
 	root := "/projects"
 	for _, test := range []struct {
 		slug     string
@@ -54,6 +57,7 @@ func TestEnsureCanonicalClonesIntoTheHostLevelDerivedFromTheCloneURL(t *testing.
 	runEngineGit(t, seed, "add", "-A")
 	runEngineGit(t, seed, "commit", "-m", "initial")
 	runEngineGit(t, root, "clone", "--bare", seed, remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)

@@ -13,6 +13,7 @@ import (
 )
 
 func TestWtLogCovSameExternalHandoffEvidence(t *testing.T) {
+	t.Parallel()
 	if !sameExternalHandoffEvidence(nil, nil) || sameExternalHandoffEvidence(&workLogExternalHandoffEvidence{Version: 1}, nil) || sameExternalHandoffEvidence(nil, &workLogExternalHandoffEvidence{Version: 1}) {
 		t.Fatal("nil handling is wrong")
 	}
@@ -28,6 +29,7 @@ func TestWtLogCovSameExternalHandoffEvidence(t *testing.T) {
 }
 
 func TestWtLogCovValidExternalAttempt(t *testing.T) {
+	t.Parallel()
 	valid := "000001-" + strings.Repeat("a", 32)
 	if !validExternalAttempt(valid, 1) {
 		t.Fatal("valid attempt id was refused")
@@ -71,6 +73,7 @@ func TestWtLogCovExternalTargetRuntimeModel(t *testing.T) {
 }
 
 func TestWtLogCovSessionNativeHarnessID(t *testing.T) {
+	t.Parallel()
 	if got := sessionNativeHarnessID(session.Record{NativeHarnessID: " native ", AgentID: "agent"}); got != "native" {
 		t.Fatalf("native harness id = %q", got)
 	}
@@ -83,6 +86,7 @@ func TestWtLogCovSessionNativeHarnessID(t *testing.T) {
 }
 
 func TestWtLogCovExternalLocalEventID(t *testing.T) {
+	t.Parallel()
 	digest := sessionmove.DigestBytes([]byte("payload"))
 	first := externalLocalEventID("kind", digest, "attempt")
 	if first != externalLocalEventID("kind", digest, "attempt") {
@@ -149,6 +153,7 @@ func TestWtLogCovFindExternalSourceOffer(t *testing.T) {
 }
 
 func TestWtLogCovExpectedExternalClaimID(t *testing.T) {
+	t.Parallel()
 	parentID := strings.Repeat("a", 64)
 	claimID := strings.Repeat("b", 64)
 	claim := workLogClaim{EffortID: "effort", RunID: "run", ClaimID: claimID, ParentClaimID: parentID, AgentID: "agent"}
@@ -457,6 +462,7 @@ func TestWtLogCovFindExternalSourceOwner(t *testing.T) {
 }
 
 func TestWtLogCovSessionReceivePureHelpers(t *testing.T) {
+	t.Parallel()
 	ref := sessionReceiveFetchRef("handoff-1")
 	if !strings.HasPrefix(ref, "refs/wb/session-receive/") || len(strings.TrimPrefix(ref, "refs/wb/session-receive/")) != 64 {
 		t.Fatalf("fetch ref = %q", ref)

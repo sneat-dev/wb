@@ -5,6 +5,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func write(t *testing.T, dir, name, content string) {
@@ -21,9 +23,12 @@ func newRemoteRepo(t *testing.T) string {
 	t.Helper()
 	remote := t.TempDir()
 	git(t, remote, "init", "-q", "--bare", "-b", "main")
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 
 	clone := t.TempDir()
-	if out, err := exec.Command("git", "clone", "-q", remote, clone).CombinedOutput(); err != nil {
+	cloneCmd := exec.Command("git", "clone", "-q", remote, clone)
+	cloneCmd.Env = testenv.GitAutoMaintenanceOffEnv(os.Environ())
+	if out, err := cloneCmd.CombinedOutput(); err != nil {
 		t.Fatalf("clone: %v: %s", err, out)
 	}
 	// Land() commits inside this clone via plain `git commit` (no explicit
@@ -40,6 +45,7 @@ func newRemoteRepo(t *testing.T) string {
 }
 
 func TestEvaluateTemplateSectionInsert(t *testing.T) {
+	t.Parallel()
 	clone := newRemoteRepo(t)
 	r := writeTemplate(t, "m", "block body")
 	r.Target = "README.md"
@@ -54,8 +60,10 @@ func TestEvaluateTemplateSectionInsert(t *testing.T) {
 }
 
 func TestEvaluateTemplateSectionNoTargetFile(t *testing.T) {
+	t.Parallel()
 	remote := t.TempDir()
 	git(t, remote, "init", "-q", "--bare", "-b", "main")
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	seed := t.TempDir()
 	git(t, seed, "init", "-q", "-b", "main")
 	write(t, seed, "other.txt", "x\n")
@@ -77,6 +85,7 @@ func TestEvaluateTemplateSectionNoTargetFile(t *testing.T) {
 }
 
 func TestLandTemplateSectionDirectPush(t *testing.T) {
+	t.Parallel()
 	clone := newRemoteRepo(t)
 	r := writeTemplate(t, "m", "block body")
 	r.Name = "test-recipe"
@@ -104,6 +113,7 @@ func TestLandTemplateSectionDirectPush(t *testing.T) {
 }
 
 func TestLandCommandDirectPush(t *testing.T) {
+	t.Parallel()
 	clone := newRemoteRepo(t)
 	r := Recipe{Name: "touch-it", Type: KindCommand, Command: "echo hi > NOTES.md"}
 	if err := r.applyDefaults(); err != nil {

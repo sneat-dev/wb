@@ -11,6 +11,12 @@ The canonical public Workbench site is [sneat.work/bench](https://sneat.work/ben
 For the product story, decision guide, and measured evidence, see
 [Why/when to use WB CLI? How it saves you time and money.](docs/why-use-wb.md)
 
+## WB in the DataTug development workflow
+
+[DataTug](https://datatug.app) is our flagship product. We use WB to coordinate
+its repository worktrees, checks, and delivery across the development fleet.
+Read [how we build DataTug with our tools](https://datatug.app/en/under-the-hood/tools-we-built/).
+
 ## WB
 
 Public Workbench projections are opt-in from this repository's root README:
@@ -142,7 +148,12 @@ Before branching, WB fetches the exact `refs/heads/<base>` from `origin`
 creates the new branch from that verified commit without switching, pulling,
 resetting, or fast-forwarding the canonical checkout or any local base branch;
 this is safe when local `main` is stale, checked out in another worktree, or
-contains active local work. By default, a worktree is created in the central
+contains active local work. More generally, which branch a canonical clone has
+checked out is never a WB precondition: `wb pr land`, `wb worktree land`,
+`wb worktree cleanup` and the managed hooks work whatever branch it is on, clean
+or dirty (only uncommitted work is protected, and a push that merely deletes
+remote refs, which is how a merged branch is retired, sends nothing from the
+clone and passes the guard unconditionally). By default, a worktree is created in the central
 store at `<root>/.worktrees/<task>/<host>/<org>/<repository>`, where `<root>` is
 the projects root: the task is the first level, so every checkout of a
 multi-repository task stays together, and a search scoped to one task, one host,
@@ -530,6 +541,30 @@ session_move:
 On the target, the validated `remote.machine` must be `hetzner-vm1`, and
 `tmux` plus the selected harness must be available on the remote `PATH`.
 
+A target may also carry an optional `http` section, which is not a courier:
+it is where this machine's daemon reads that machine's Cockpit export in the
+background, so its worktrees and agents appear live in the Cockpit.
+
+```yaml
+session_move:
+  targets:
+    hetzner-vm1:
+      default_courier: ssh
+      ssh:
+        host: hetzner-vm1
+      http:
+        url: https://vm1.example        # https, or http on a loopback host only
+        token_file: /Users/me/.config/wb/credentials/vm1.token
+```
+
+`url` is the origin of that machine's daemon-hosted hub and `token_file` a
+private file holding a machine credential enrolled with it (`wb remote enroll
+--url <hub-url> --token-stdin`). `token_file` may be omitted when `url` is the
+hub this machine is already enrolled with (`remote.url`). Set
+`cockpit.remote_http: false` to read no machine over HTTP, and `cockpit.remote_ssh: false` to read none over SSH
+(the fallback for a machine with no HTTP route). How Cockpit is put together, its pages and routes,
+configuration keys, cadences and budgets are in [docs/cockpit.md](docs/cockpit.md).
+
 Run a same-harness move by omitting `--harness`, or explicitly move between
 the two supported harnesses, `codex` and `claude-code`:
 
@@ -585,6 +620,9 @@ remote:
   machine: <unique-name-for-this-machine>
   publish:
     unpushed: subjects   # or: counts
+    # interval: 15m      # opt in: the daemon also publishes after a local scan (minimum 5m; unset = by hand only)
+    # agents: false      # opt in: include this machine's agents in the snapshot
+    # metrics: false     # opt in: include this machine's latest CPU, memory and disk sample
 ```
 
 `wb remote publish` scans this machine's attention repositories and live task
@@ -1993,7 +2031,11 @@ ancestor of the candidate, and requires either classic or ruleset strict
 required-status-check policy with at least one required check. It does not wait
 for current target CI to turn green: an updated candidate may be the fix for a
 red target. Target movement rejects the receipt and requires reintegration.
-Merge-group observation for merge queues remains planned and fails closed.
+On a merge-queue target the source-head receipt fails closed, because the
+queue merges a merge group that exists only once the pull request is enqueued;
+`wb pr land` and `wb worktree land` enqueue it with `enqueuePullRequest` pinned
+to the observed head and observe the queue to the target, never merging
+directly.
 Missing policy authority, unsupported required-workflow names, or incomplete
 check/status pagination remain pending or fail closed. A pass requires two
 unchanged terminal observations. That is a bounded quiescence receipt, not
@@ -2308,6 +2350,18 @@ verbs of known generators (`specscore … new`, `go mod tidy`, `pnpm install`,
 `gofmt -w`) run with the clone as the working directory; and any Git invocation
 that disables the repository's managed hooks.
 
+It also refuses one construct that is not a write: a state-changing wb verb
+whose output is piped into another command (`wb worktree create … 2>&1 | tail
+-1 && …`). A pipeline reports only its last command's exit status, so the
+verb's refusal exits 0 and the `&&` chain runs on; on 2026-10-02 that opened a
+duplicate pull request. The remedy is `--quiet` on the verb (outcome and
+refusals only, no progress) instead of a pipe, or `set -o pipefail` earlier in
+the same shell (reading `PIPESTATUS` afterwards does not count, and neither
+does a pipefail that a `bash -c` payload, a closed subshell or an `&&` branch
+would not carry). Read-only verbs, a verb that ends its pipeline
+(`printf … | wb worktree create … --original-prompt-file -`), and other
+programs are not affected, and there is no override.
+
 Bash detection is deliberately partial and documented as such in
 `internal/agentguard/bash.go`. It models no shell expansion, so a working
 directory reached through a variable and a file written by a script inside a
@@ -2461,22 +2515,229 @@ the drift warning above in its opening context; `wb skills hook install`
 merges that hook into `~/.claude/settings.json` (`--dry-run` to preview).
 `wb` never edits that file on its own outside this explicit subcommand.
 
-## Operations dashboard
+## Operations dashboard (retired: use Cockpit)
 
-`wb daemon serve` starts the embedded read-only dashboard and versioned JSON
-API at `http://127.0.0.1:8766` by default. It shows managed worktrees and
-privacy-safe `wb run --` cost from the last 14 days.
+`wb daemon serve` starts Cockpit and the versioned read-only JSON API at
+`http://127.0.0.1:8766` by default; `wb cockpit` opens and signs in to
+Cockpit, and `/` redirects to `/cockpit/`. The server-rendered operations pages
+that used to live at `/` and `/metrics`, with their `/coverage` redirect and
+`GET /api/v1/overview` data route, are retired and answer 404. The fleet
+metrics view has no Cockpit page yet; read it with `wb coverage` and the hub's
+`/v0/workbench/metrics` API.
 
 ```sh
 wb daemon serve
 curl http://127.0.0.1:8766/api/v1/health
-curl http://127.0.0.1:8766/api/v1/overview
 ```
 
 The command refuses non-loopback listeners. For access from another registered
 machine, publish the loopback service through an authenticated Cloudflare
 Tunnel. The MVP API is read-only and does not expose arbitrary command
 execution.
+
+`GET /api/v1/log` serves the tail of the daemon's runtime log (`?tail=<bytes>`,
+256 KiB by default, at most 4 MiB) to the owner only. The log is file content,
+so the route requires the owner session `wb cockpit` opens, on a loopback
+`Host`; any other request gets `401 {"error":"owner_session_required"}` and the
+file is not opened.
+
+An owner session has two halves, and a request must carry both:
+
+- the cookie `wb_cockpit_session_<port>`, which the login sets. A browser sends
+  it to every server on `127.0.0.1`, whatever its port, so on its own it proves
+  nothing;
+- the session key, in the request header `X-Wb-Cockpit-Session-Key`. `wb cockpit`
+  prints it in the fragment of the login URL
+  (`/cockpit/session/login?code=...#key=<key>`); the Cockpit page takes it from
+  there, keeps it in the storage of its own origin and adds the header to its
+  own requests. The login URL is a credential: it is printed only when stdout is
+  a terminal, or with `wb cockpit --print-url`.
+
+To read the log, read the file on the machine itself:
+`~/Library/Logs/wb/daemon.log` under launchd, `daemon.log` in the daemon's
+runtime directory elsewhere. Opening `http://127.0.0.1:8766/api/v1/log` in the
+address bar no longer works, even in the signed-in browser: an address carries
+the cookie and cannot carry the header, so it is answered 401. A client that is
+not the Cockpit page sends both halves itself:
+
+```sh
+curl -H 'Cookie: wb_cockpit_session_8766=<session id>' \
+     -H 'X-Wb-Cockpit-Session-Key: <key>' \
+     http://127.0.0.1:8766/api/v1/log
+```
+
+A reverse proxy or script that fetched `/api/v1/log` with no session is
+refused: there is no unattended credential for the route, and the daemon's owner
+token does not open it. Read the file on disk instead.
+
+### Running the daemon under a supervisor
+
+`daemon serve` detects whether a process supervisor started it and records
+the result in its own lifecycle state. `wb daemon status` reports it as
+`supervisor=systemd|launchd|none`. Detection requires more than a bare
+environment variable, because both are observed to survive into a process
+that merely inherited its parent's environment without being started by the
+supervisor itself:
+
+- **systemd** sets `INVOCATION_ID` on every unit it starts, and (systemd
+  **248 or newer**) also sets `SYSTEMD_EXEC_PID` naming the exact PID it
+  exec'd. Detection requires `SYSTEMD_EXEC_PID` to be present *and* equal to
+  the daemon's own PID — `INVOCATION_ID` alone reports `none`. **A daemon run
+  under systemd older than 248 is therefore always recorded as `none`**: that
+  systemd cannot supply the evidence this build requires to tell "started by
+  this exact unit" from "merely inherited the session's environment."
+- **launchd** sets `XPC_SERVICE_NAME` to the job label for a job it manages
+  (and to the literal string `"0"`, treated as absent, for a process it did
+  not launch directly). Detection additionally requires launchd to be the
+  daemon's *direct* parent (PPID 1, which is launchd on every targeted macOS
+  version), and treats a label prefixed `application.` (macOS's own label
+  for an ordinary foreground GUI application — an IDE, a terminal app) as
+  absent regardless of parentage, so a `daemon serve` run from an IDE's
+  integrated terminal is never mistaken for a launch agent.
+
+This is what lets `wb daemon restart` and the self-update after-update hook
+hand a supervised daemon back to its supervisor instead of starting a
+detached replacement behind it: when the running daemon is supervised —
+systemd, or launchd under a label other than wb's own self-managed one
+(`dev.sneat.wb.daemon`, which wb's own start/restart already correctly
+re-bootstraps and kickstarts itself) — those paths stop it and then wait
+(bounded, with progress) for the supervisor's own replacement to report ready
+under the new executable, rather than spawning one themselves.
+
+`wb daemon start` refuses a detached start when the runtime's last recorded
+owner is a supervisor other than wb's own launchd job, and either a live
+process is already being handed off from a different binary, or nothing is
+alive at all — restart it through that supervisor instead
+([#617](https://github.com/sneat-dev/wb/issues/617), recurrence of
+[#546](https://github.com/sneat-dev/wb/issues/546)). Before refusing, it
+independently confirms the recorded supervisor can still be shown to exist at
+all (a systemd user manager answering `is-system-running` with a recognized
+state, or `launchctl print` confirming the exact recorded label); a stale
+record that fails that check does not refuse, so an operator is never locked
+out of `wb daemon start` forever by a supervisor that is long gone.
+`--force-detached` is the explicit override for the cases that check cannot
+resolve either way.
+
+On macOS, the launchd service has one fixed label per user, so a start for one
+projects root would remove the service registered for another (and overwrite
+its plist). `wb daemon start` and `wb daemon restart` read the installed plist
+first and refuse, changing nothing, when it serves a different projects root or
+cannot be read as a plist, naming that root and its listen address.
+`--replace-other-root` is the only way to proceed; `wb cockpit`,
+`wb dashboard --local` (deprecated) and the implicit daemon starts have no flag and refuse
+with the same instruction to run `wb daemon start --replace-other-root` first.
+
+The canonical systemd user unit:
+
+```ini
+# ~/.config/systemd/user/wb-daemon.service
+[Unit]
+Description=WB daemon
+# Without a start-limit interval, a daemon that keeps failing to bind (for
+# example because something else already holds the port) restarts forever
+# every 5s. StartLimitIntervalSec/StartLimitBurst bound that: after
+# StartLimitBurst failures inside the interval, systemd stops restarting it
+# and the unit is left `failed`, which is itself the signal that something is
+# wrong. Both belong here in [Unit] for clarity, though systemd's own ignore
+# behavior for the two is NOT symmetric: StartLimitIntervalSec in [Service] is
+# silently ignored entirely (only the [Unit] copy is ever read), while
+# StartLimitBurst in [Service] is still honored there for backward
+# compatibility. Placing both in [Unit] avoids relying on that asymmetric,
+# easy-to-get-wrong behavior.
+StartLimitIntervalSec=300
+StartLimitBurst=12
+
+[Service]
+# --projects-root names the input the operator chose, exactly like the
+# launchd plist's WB_PROJECTS_ROOT below: the daemon still resolves its own
+# runtime directory from it at startup, so a later WB_HOME/root move cannot
+# leave this unit pointing at an abandoned directory. Set it explicitly if
+# `%h/projects` (the default this example assumes) is not where you run wb
+# from; an explicit WB_HOME can go in Environment= the same way.
+ExecStart=%h/go/bin/wb --projects-root %h/projects daemon serve --listen 127.0.0.1:8766
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=default.target
+```
+
+```sh
+systemctl --user enable --now wb-daemon.service
+systemctl --user status wb-daemon.service
+systemctl --user restart wb-daemon.service   # hands the daemon a new executable
+```
+
+The equivalent launchd agent on macOS — this is the *shape* `wb daemon
+start`/`wb daemon restart` themselves already write and re-bootstrap
+(`cmd/wb/daemon_process_darwin.go`'s `launchdPlistBytes`), not a separate
+file to install by hand: a Mac developer never writes this plist directly,
+because those commands do it for them on every start and handoff.
+
+```xml
+<!-- ~/Library/LaunchAgents/dev.sneat.wb.daemon.plist -->
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+  <key>Label</key><string>dev.sneat.wb.daemon</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/YOU/go/bin/wb</string>
+    <string>--projects-root</string>
+    <string>/Users/YOU/projects</string>
+    <string>daemon</string>
+    <string>serve</string>
+    <string>--listen</string>
+    <string>127.0.0.1:8766</string>
+    <string>--managed-start</string>
+  </array>
+  <!-- Only present when WB_PROJECTS_ROOT is set in the environment that ran
+       `wb daemon start`/`restart`; it is the same operator-chosen input as
+       --projects-root above, not a path resolved at install time. -->
+  <key>EnvironmentVariables</key>
+  <dict><key>WB_PROJECTS_ROOT</key><string>/Users/YOU/projects</string></dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ProcessType</key><string>Background</string>
+  <key>StandardOutPath</key><string>/Users/YOU/Library/Logs/wb/daemon.log</string>
+  <key>StandardErrorPath</key><string>/Users/YOU/Library/Logs/wb/daemon.log</string>
+</dict></plist>
+```
+
+```sh
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.sneat.wb.daemon.plist
+launchctl kickstart -k gui/$(id -u)/dev.sneat.wb.daemon   # hands the daemon a new executable
+```
+
+No equivalent installer writes the systemd unit yet — install it by hand as
+shown, with `ExecStart` naming the same `wb` binary `wb daemon start` would
+use.
+
+**Known limit:** `wb daemon status`'s double-owner check (the shape of #617 —
+a live, unsupervised daemon fighting a supervisor for the same runtime) has
+two layers. On Linux, when the daemon recorded `supervisor=none`, it queries
+a *specific* systemd user unit's own state directly (`systemctl --user show
+-p ActiveState,Result,NRestarts <unit>` — the unit named by the
+`WB_DAEMON_SYSTEMD_UNIT` environment variable if set, or `wb-daemon.service`
+otherwise) and flags a unit that is `failed`, or `activating` after at least
+one restart, as still existing and fighting for the runtime — this is the
+detector that catches the confirmed live shape: an orphaned `daemon serve`
+(PPID 1, running in a session scope rather than the unit's own cgroup)
+serving the port while its own systemd unit sat crash-looping. Falling back
+from that (when the query is unavailable, or the recorded supervisor is not
+`none`), it compares the daemon's self-recorded supervisor against its own
+current cgroup membership (`/proc/<pid>/cgroup`'s unified `0::` line: its
+last path component must end in `.service`, and be neither the per-user
+manager's own `user@<uid>.service` nor an unrelated foreign unit, to count as
+"ours" — never a parent-PID check, since PID 1 *is* systemd on these hosts,
+so a parent-PID check cannot tell a real unit from an orphaned process merely
+reparented to it). On macOS and Windows neither check is implemented and the
+comparison is reported as unknown. `wb daemon start`/`restart`'s own
+pre-refusal existence check is coarser still: for systemd it can only confirm
+a user manager is reachable at all (`is-system-running` answering one of the
+known non-offline states), not a specific unit's existence, because nothing
+records a unit name for that purpose; for launchd it checks the exact
+recorded label via `launchctl print`. `--force-detached` is the explicit
+override for the cases either check cannot resolve.
 
 ## Bench hub
 
@@ -2496,6 +2757,50 @@ go test ./...                          # run tests
 wb sync --dry-run                      # preview a fleet sync
 wb run --list                          # see your configured recipes
 ```
+
+## Why WB runs the `git` CLI
+
+WB runs the `git` executable for every Git operation. It does not use a Go Git
+library such as [go-git](https://github.com/go-git/go-git). No decision record
+exists, so this is the reason reconstructed from what WB relies on (checked
+2026-09-25 against go-git's
+[`COMPATIBILITY.md`](https://github.com/go-git/go-git/blob/main/COMPATIBILITY.md)):
+
+- **WB is built on features go-git lacks or only partly has.** WB runs linked
+  worktrees (`git worktree`), `rebase`, non-fast-forward `merge`,
+  `cherry-pick`, `stash`, `apply`, `bundle` and `patch-id`.
+  - go-git's compatibility table marks `rebase`, `stash`, `apply` and
+    `bundle` as unsupported, and does not list `patch-id` at all.
+  - Its `merge` is fast-forward only.
+  - Its `cherry-pick` and linked-worktree support are partial.
+- **It must behave exactly like the user's Git.** WB acts on the same
+  repositories people and agents work in with the `git` CLI, so it has to honour
+  their configuration, `includeIf` rules, credential helpers, hooks
+  (`core.hooksPath` is part of WB's own hook management) and signing.
+  - go-git's SSH transport authenticates through the SSH agent by default, and
+    reads only `Hostname` and `Port` from `~/.ssh/config`.
+  - The `git` CLI runs the user's own `ssh` (or `core.sshCommand`), with their
+    identity files and proxy settings.
+- **The secure helpers keep a race-free guarantee that go-git would not give by
+  default.** Some operations, for example `setHooksPathAt` in
+  `internal/hooks/git.go`, hand already-opened directory descriptors to a
+  short-lived WB helper process. The helper enters the Git common directory with `fchdir`
+  and then runs a fixed `git` executable with `--git-dir=.`, so a path swapped
+  after validation cannot redirect the write. go-git opens repositories by path
+  name, so it would re-resolve a swapped path unless it were given a
+  descriptor-rooted filesystem.
+
+**Testing.** Using the CLI does not mean tests need real Git. The coverage
+plan ([`spec/plans/coverage-to-100`](spec/plans/coverage-to-100/README.md),
+task-8, not yet implemented) will route every Git call through one command
+runner and small per-package Git interfaces:
+
+- Unit tests will substitute fakes for them.
+- End-to-end tests will run the real `git` and check that each fake behaves
+  like it.
+
+Once that is in place, a library-backed implementation of one of those
+interfaces could be added without changing any caller.
 
 ## Adding a new operation
 

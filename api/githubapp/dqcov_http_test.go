@@ -132,6 +132,7 @@ func (store dqCovFailingDeliveries) CommitDeliveryAndWakeup(context.Context, str
 }
 
 func TestDQCovResolveViewerFailureFailsClosedForEveryEndpoint(t *testing.T) {
+	t.Parallel()
 	handler := NewHandler(HandlerOptions{
 		Service: Service{
 			ReadModel: &dqCovReadModel{},
@@ -151,6 +152,7 @@ func TestDQCovResolveViewerFailureFailsClosedForEveryEndpoint(t *testing.T) {
 	}
 	for _, target := range targets {
 		t.Run(target, func(t *testing.T) {
+			t.Parallel()
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, target, nil))
 			if response.Code != http.StatusUnauthorized {
@@ -164,6 +166,7 @@ func TestDQCovResolveViewerFailureFailsClosedForEveryEndpoint(t *testing.T) {
 }
 
 func TestDQCovStatsHandlerRejectsInvalidScopeAndMissingID(t *testing.T) {
+	t.Parallel()
 	handler := NewHandler(HandlerOptions{Service: Service{ReadModel: &dqCovReadModel{visibility: VisibilityPublic}}})
 	targets := []string{
 		APIPrefix + "/stats/planet/github.com/acme/app",
@@ -171,6 +174,7 @@ func TestDQCovStatsHandlerRejectsInvalidScopeAndMissingID(t *testing.T) {
 	}
 	for _, target := range targets {
 		t.Run(target, func(t *testing.T) {
+			t.Parallel()
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, target, nil))
 			if response.Code != http.StatusBadRequest {
@@ -184,6 +188,7 @@ func TestDQCovStatsHandlerRejectsInvalidScopeAndMissingID(t *testing.T) {
 }
 
 func TestDQCovSeriesHandlerServesAndValidatesQuery(t *testing.T) {
+	t.Parallel()
 	handler := NewHandler(HandlerOptions{Service: Service{ReadModel: &dqCovReadModel{visibility: VisibilityPublic}}})
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, APIPrefix+"/series?scope=repository&id=github.com/acme/app&metric=merged", nil))
@@ -204,6 +209,7 @@ func TestDQCovSeriesHandlerServesAndValidatesQuery(t *testing.T) {
 		APIPrefix + "/series?scope=repository&id=github.com/acme/app",
 	} {
 		t.Run(target, func(t *testing.T) {
+			t.Parallel()
 			rejected := httptest.NewRecorder()
 			handler.ServeHTTP(rejected, httptest.NewRequest(http.MethodGet, target, nil))
 			if rejected.Code != http.StatusBadRequest {
@@ -217,6 +223,7 @@ func TestDQCovSeriesHandlerServesAndValidatesQuery(t *testing.T) {
 }
 
 func TestDQCovLeaderboardHandlerServesAndRequiresMetric(t *testing.T) {
+	t.Parallel()
 	handler := NewHandler(HandlerOptions{Service: Service{ReadModel: &dqCovReadModel{visibility: VisibilityPublic}}})
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, APIPrefix+"/leaderboards?metric=landed", nil))
@@ -239,6 +246,7 @@ func TestDQCovLeaderboardHandlerServesAndRequiresMetric(t *testing.T) {
 }
 
 func TestDQCovLatestMergesHandlerBoundsLimit(t *testing.T) {
+	t.Parallel()
 	model := &dqCovReadModel{visibility: VisibilityPublic}
 	handler := NewHandler(HandlerOptions{Service: Service{ReadModel: model}})
 
@@ -259,6 +267,7 @@ func TestDQCovLatestMergesHandlerBoundsLimit(t *testing.T) {
 
 	for _, raw := range []string{"abc", "0", "101", "-1"} {
 		t.Run(raw, func(t *testing.T) {
+			t.Parallel()
 			rejected := httptest.NewRecorder()
 			handler.ServeHTTP(rejected, httptest.NewRequest(http.MethodGet, APIPrefix+"/latest-merges?limit="+raw, nil))
 			if rejected.Code != http.StatusBadRequest || !strings.Contains(rejected.Body.String(), "limit_must_be_between_1_and_100") {
@@ -269,6 +278,7 @@ func TestDQCovLatestMergesHandlerBoundsLimit(t *testing.T) {
 }
 
 func TestDQCovHandlerMapsUnconfiguredAndFailingControlPlane(t *testing.T) {
+	t.Parallel()
 	unconfigured := NewHandler(HandlerOptions{})
 	response := httptest.NewRecorder()
 	unconfigured.ServeHTTP(response, httptest.NewRequest(http.MethodGet, APIPrefix+"/dashboard", nil))
@@ -336,6 +346,7 @@ func TestDQCovEventsHandlerResolvesCursorAndRejectsBadFilters(t *testing.T) {
 }
 
 func TestDQCovEventsHandlerMapsStreamSetupFailure(t *testing.T) {
+	t.Parallel()
 	source := &dqCovEventSource{replayErr: errors.New("event log down"), live: make(chan Event)}
 	handler := NewHandler(HandlerOptions{Service: Service{Events: source}})
 	response := httptest.NewRecorder()
@@ -346,6 +357,7 @@ func TestDQCovEventsHandlerMapsStreamSetupFailure(t *testing.T) {
 }
 
 func TestDQCovEventsHandlerRequiresFlusher(t *testing.T) {
+	t.Parallel()
 	source := &dqCovEventSource{live: dqCovClosedEvents()}
 	handler := NewHandler(HandlerOptions{Service: Service{Events: source}})
 	writer := &dqCovNonFlusher{}
@@ -359,6 +371,7 @@ func TestDQCovEventsHandlerRequiresFlusher(t *testing.T) {
 }
 
 func TestDQCovEventsHandlerStreamsLiveAndStopsOnCancelledContext(t *testing.T) {
+	t.Parallel()
 	source := &dqCovEventSource{live: make(chan Event, 1)}
 	source.live <- Event{ID: 1, Type: EventQueue, Visibility: VisibilityPublic, Payload: []byte(`{"queued":true}`)}
 	close(source.live)
@@ -384,6 +397,7 @@ func TestDQCovEventsHandlerStreamsLiveAndStopsOnCancelledContext(t *testing.T) {
 }
 
 func TestDQCovWebhookRejectsOversizedPayloadAndMapsNonSignatureFailure(t *testing.T) {
+	t.Parallel()
 	secret := []byte("webhook-secret")
 	handler := NewHandler(HandlerOptions{Service: Service{Projector: &ProjectionEngine{
 		WebhookSecret: secret, Deliveries: &testDeliveries{}, Reader: &testReader{},

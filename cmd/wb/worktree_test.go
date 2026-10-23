@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/sneat-dev/wb/internal/hooks"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -46,7 +47,7 @@ func writeOriginalPromptFixture(t *testing.T, contents string) string {
 }
 
 func TestWorktreeHelpExplainsDefaultAndSharedLayout(t *testing.T) {
-	command := newWorktreeCreateCmd()
+	command := newWorktreeCreateCmd(&invocation{})
 	for _, wanted := range []string{
 		"dirty or off-base canonical clone",
 		"fetches",
@@ -63,19 +64,19 @@ func TestWorktreeHelpExplainsDefaultAndSharedLayout(t *testing.T) {
 }
 
 func TestWorktreeIdentityHelpAndCreatePreflightRequireExplicitModel(t *testing.T) {
-	create := newWorktreeCreateCmd()
+	create := newWorktreeCreateCmd(&invocation{})
 	for _, flag := range []string{"model", "cli", "provider"} {
 		if create.Flags().Lookup(flag) == nil {
 			t.Fatalf("create is missing --%s", flag)
 		}
 	}
-	correct := newWorktreeCorrectIdentityCmd()
+	correct := newWorktreeCorrectIdentityCmd(&invocation{})
 	for _, flag := range []string{"event-id", "actor", "reason", "model", "cli", "provider"} {
 		if correct.Flags().Lookup(flag) == nil {
 			t.Fatalf("correct-identity is missing --%s", flag)
 		}
 	}
-	abort := newWorktreeAbortCmd()
+	abort := newWorktreeAbortCmd(&invocation{})
 	for _, flag := range []string{"model", "cli", "provider", "absorbed-by"} {
 		if abort.Flags().Lookup(flag) == nil {
 			t.Fatalf("abort is missing --%s", flag)
@@ -115,7 +116,7 @@ func TestWorktreeBranchFlagsRejectBeforeAnyWorkStarts(t *testing.T) {
 }
 
 func TestWorktreeCleanupDefaultsToSafeDryRun(t *testing.T) {
-	command := newWorktreeCleanupCmd()
+	command := newWorktreeCleanupCmd(&invocation{})
 	olderThan := command.Flags().Lookup("older-than")
 	if olderThan == nil || olderThan.DefValue != (24*time.Hour).String() {
 		t.Fatalf("--older-than default = %#v, want %s", olderThan, 24*time.Hour)
@@ -145,7 +146,7 @@ func TestWorktreeCleanupDefaultsToSafeDryRun(t *testing.T) {
 }
 
 func TestWorktreeCleanupAcceptsSeveralExplicitTaskNames(t *testing.T) {
-	command := newWorktreeCleanupCmd()
+	command := newWorktreeCleanupCmd(&invocation{})
 	if err := command.Args(command, []string{"landed-app", "landed-lib"}); err != nil {
 		t.Fatalf("cleanup should accept an exact set of task names: %v", err)
 	}
@@ -156,7 +157,7 @@ func TestWorktreeCleanupAcceptsSeveralExplicitTaskNames(t *testing.T) {
 // named task or combined with --all-merged, both of which select worktrees
 // to inspect rather than task directories to sweep.
 func TestWorktreeCleanupRetireShellsRejectsIncompatibleSelectors(t *testing.T) {
-	command := newWorktreeCleanupCmd()
+	command := newWorktreeCleanupCmd(&invocation{})
 	if err := command.Flags().Set("retire-shells", "true"); err != nil {
 		t.Fatal(err)
 	}
@@ -215,13 +216,13 @@ func TestWorktreeCleanupRetireShellsPlansThenAppliesAnEmptyPreExistingShell(t *t
 }
 
 func TestWorktreeLifecycleHelpExplainsNetworkAndCleanupSafety(t *testing.T) {
-	list := newWorktreeListCmd()
+	list := newWorktreeListCmd(&invocation{})
 	for _, wanted := range []string{"resolver-recognized layout", "repository-local", "configured shared root", "worktree relocate", "only local Git data", "--github", "exact fetched origin-target", "versioned control-plane envelope", "lifecycle artifacts", "seven-day recent-history"} {
 		if !strings.Contains(list.Long, wanted) {
 			t.Errorf("worktree list help does not mention %q", wanted)
 		}
 	}
-	cleanup := newWorktreeCleanupCmd()
+	cleanup := newWorktreeCleanupCmd(&invocation{})
 	for _, wanted := range []string{"default is a dry-run", "freshly fetched exact", "awaiting_push", "force-with-lease", "before any remote or local deletion", "requires --remote", "implicit age window is zero", "--resume-interrupted", "conclusively dead", "--superseded-by", "trusted-reviewer receipt"} {
 		if !strings.Contains(cleanup.Long, wanted) {
 			t.Errorf("worktree cleanup help does not mention %q", wanted)
@@ -250,8 +251,6 @@ func TestWorktreeListPurgesEmptyStageSilentlyAndRecordsIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(wbhome.EnvOverride, projects)
-	previousProjectsRoot := projectsRoot
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"--projects-root", projects, "worktree", "list", task, "--format", "json"}, &stdout, &stderr)
@@ -293,8 +292,6 @@ func TestNamedCleanupApplyReturnsFindingsForNonEmptyArtifactOnlyBacklog(t *testi
 		t.Fatal(err)
 	}
 	t.Setenv(wbhome.EnvOverride, projects)
-	previousProjectsRoot := projectsRoot
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"--projects-root", projects, "worktree", "cleanup", task, "--apply", "--remote", "--format", "json"}, &stdout, &stderr)
@@ -326,30 +323,6 @@ func TestNamedCleanupApplyFailsWhenNothingWasRetired(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "delivered-task") {
 		t.Fatalf("named cleanup failure did not name the task: %q", stderr.String())
-	}
-}
-
-func TestNamedCleanupApplySatisfiedUsesResolvedPhysicalTasks(t *testing.T) {
-	logical := "logical-session-effort"
-	physical := []string{
-		"session-resume-resume-cli-m-002-bbbbbbbb",
-		"session-resume-resume-cli-m-001-aaaaaaaa",
-	}
-	outcome := worktrees.CleanupOutcome{
-		ResolvedTasks: physical,
-		Results: []worktrees.CleanupResult{
-			{ListResult: worktrees.ListResult{Task: physical[0]}, Applied: true, WorktreeGone: true, BranchDeleted: true},
-			{ListResult: worktrees.ListResult{Task: physical[1]}, Applied: true, WorktreeGone: true, BranchDeleted: true},
-		},
-	}
-	if !namedCleanupApplySatisfied([]string{logical}, outcome) {
-		t.Fatal("logical selector whose resolved session-resume members all applied must satisfy named cleanup")
-	}
-	if namedCleanupApplySatisfied([]string{logical}, worktrees.CleanupOutcome{ResolvedTasks: physical}) {
-		t.Fatal("logical selector with no applied members must not satisfy named cleanup")
-	}
-	if namedCleanupApplySatisfied([]string{"delivered-task"}, worktrees.CleanupOutcome{}) {
-		t.Fatal("an unresolved named selector that applied nothing must not satisfy named cleanup")
 	}
 }
 
@@ -389,8 +362,8 @@ func TestWorktreeCreatePreflightsFormatAndPromptBeforeMutation(t *testing.T) {
 // preflight can never drift from the nested command's, and it resolves under
 // the AGENT WORKFLOW root group next to `wb land`.
 func TestCreateAliasSharesWorktreeCreateContract(t *testing.T) {
-	alias := newCreateCmd()
-	nested := newWorktreeCreateCmd()
+	alias := newCreateCmd(&invocation{})
+	nested := newWorktreeCreateCmd(&invocation{})
 	if alias.Name() != "create" || nested.Name() != "create" {
 		t.Fatalf("Name() = %q / %q, want create / create", alias.Name(), nested.Name())
 	}
@@ -428,8 +401,6 @@ func TestWorktreeCleanupWarnsOnMalformedCandidateInsteadOfAborting(t *testing.T)
 	root := t.TempDir()
 	projects, _ := setUpMismatchedWorktreeFixture(t, root)
 
-	previousProjectsRoot := projectsRoot
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"--projects-root", projects, "worktree", "cleanup", "--all-merged", "--non-interactive"}, &stdout, &stderr)
 	if code != exitOK {
@@ -450,8 +421,6 @@ func TestWorktreeCleanupFilterExcludesMalformedCandidateOutsideSelection(t *test
 	root := t.TempDir()
 	projects, _ := setUpMismatchedWorktreeFixture(t, root)
 
-	previousProjectsRoot := projectsRoot
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"--projects-root", projects, "--filter", "unrelated", "worktree", "cleanup", "--all-merged", "--non-interactive"}, &stdout, &stderr)
 	if code != exitOK {
@@ -501,7 +470,7 @@ func setUpMismatchedWorktreeFixture(t *testing.T, root string) (projects, home s
 }
 
 func TestWorktreeRenameHelpExplainsRecyclingAndBranchSafety(t *testing.T) {
-	command := newWorktreeRenameCmd()
+	command := newWorktreeRenameCmd(&invocation{})
 	for _, wanted := range []string{
 		"descriptor-relative", "no-replace", "git worktree repair", "node_modules",
 		"always deleted", "--force", "dry-run",
@@ -523,7 +492,7 @@ func TestWorktreeRenameHelpExplainsRecyclingAndBranchSafety(t *testing.T) {
 }
 
 func TestWorktreeRelocateHelpAndFlags(t *testing.T) {
-	command := newWorktreeRelocateCmd()
+	command := newWorktreeRelocateCmd(&invocation{})
 	for _, wanted := range []string{"--to=local", "--to=shared", "descriptor-anchored", "append-only relocation receipt", "--format=json"} {
 		if !strings.Contains(command.Long, wanted) {
 			t.Errorf("relocate help does not mention %q", wanted)
@@ -542,8 +511,6 @@ func TestWorktreeRelocateHelpAndFlags(t *testing.T) {
 func TestWorktreeRelocateCLIJSONEnvelopeAndShortcut(t *testing.T) {
 	projects := setUpRenameCLIFixture(t)
 	prompt := writeOriginalPromptFixture(t, "relocate CLI JSON fixture")
-	previousProjectsRoot := projectsRoot
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 
 	var stdout, stderr bytes.Buffer
 	createArgs := []string{"--projects-root", projects, "worktree", "create", "cli-relocate", "acme/app", "--model", "unknown", "--original-prompt-file", prompt}
@@ -607,6 +574,35 @@ func TestWorktreeRelocateCLIJSONEnvelopeAndShortcut(t *testing.T) {
 	}
 }
 
+// TestWorktreeRelocateApplyRefreshesTheCheckoutMarker proves --apply reaches
+// markRelocatedCheckouts, not just the dry-run reporting path every other
+// relocate test exercises.
+func TestWorktreeRelocateApplyRefreshesTheCheckoutMarker(t *testing.T) {
+	projects := setUpRenameCLIFixture(t)
+	prompt := writeOriginalPromptFixture(t, "relocate apply CLI fixture")
+
+	var stdout, stderr bytes.Buffer
+	createArgs := []string{"--projects-root", projects, "worktree", "create", "cli-relocate-apply", "acme/app", "--model", "unknown", "--original-prompt-file", prompt}
+	if code := run(createArgs, &stdout, &stderr); code != exitOK {
+		t.Fatalf("worktree create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	applyArgs := []string{"--projects-root", projects, "worktree", "relocate", "cli-relocate-apply", "--to=local", "--apply", "--format=json"}
+	code := run(applyArgs, &stdout, &stderr)
+	if code != exitOK {
+		t.Fatalf("relocate --apply exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	var envelope worktrees.RelocateOutcome
+	if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
+		t.Fatalf("relocate --apply JSON is not parseable: %v\n%s", err, stdout.String())
+	}
+	if len(envelope.Results) != 1 {
+		t.Fatalf("relocate --apply results = %#v", envelope.Results)
+	}
+}
+
 // setUpRenameCLIFixture creates a real canonical repository with a working
 // origin remote — `worktree create`'s canonical sync needs one to pull from —
 // and points WB_PROJECTS_ROOT (and related XDG state) at an isolated root.
@@ -624,6 +620,16 @@ func setUpRenameCLIFixture(t *testing.T) (projects string) {
 	if output, err := exec.Command("git", "init", "--bare", "--initial-branch=main", remote).CombinedOutput(); err != nil {
 		t.Fatalf("init bare remote: %v\n%s", err, output)
 	}
+	// #754: git strips every GIT_CONFIG_* variable from the environment it
+	// hands the server-side receive-pack a same-host `git push` spawns, so
+	// TestMain's process-wide GitAutoMaintenanceOffProcess never reaches it.
+	// Without this, a push below (or one worktree-merge-prepare later does
+	// against a candidate branched from this remote) can leave receive-pack's
+	// own detached `git gc --auto`/`git maintenance run --auto` still writing
+	// inside this bare remote -- which lives directly under root -- racing
+	// t.TempDir()'s own recursive removal of root at test end (task-21,
+	// decision 13; see #711, which hit the identical class of race).
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	projects = filepath.Join(root, "projects")
 	canonical := filepath.Join(projects, "acme", "app")
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
@@ -655,8 +661,6 @@ func TestWorktreeRenameCLIAppliesMoveAndReportsExitOK(t *testing.T) {
 	projects := setUpRenameCLIFixture(t)
 	oldPrompt := writeOriginalPromptFixture(t, "create original request")
 	newPrompt := writeOriginalPromptFixture(t, "recycle original request")
-	previousProjectsRoot := projectsRoot
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"--projects-root", projects, "worktree", "create", "cli-old", "acme/app", "--model", "unknown", "--original-prompt-file", oldPrompt}, &stdout, &stderr); code != exitOK {
@@ -681,8 +685,6 @@ func TestWorktreeRenameCLIAppliesMoveAndReportsExitOK(t *testing.T) {
 func TestWorktreeSummaryCLIRequiresTaskAndPrintsBriefOverview(t *testing.T) {
 	projects := setUpRenameCLIFixture(t)
 	prompt := writeOriginalPromptFixture(t, "summarize this coordinated task")
-	previousProjectsRoot := projectsRoot
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"--projects-root", projects, "worktree", "summary"}, &stdout, &stderr); code == exitOK {
@@ -739,8 +741,6 @@ func TestWorktreeSummaryCLIRequiresTaskAndPrintsBriefOverview(t *testing.T) {
 func TestWorktreeInfoCLIRedactsPromptBodies(t *testing.T) {
 	projects := setUpRenameCLIFixture(t)
 	prompt := writeOriginalPromptFixture(t, "private original request must stay hidden")
-	previousProjectsRoot := projectsRoot
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"--projects-root", projects, "worktree", "create", "cli-info", "acme/app", "--model", "unknown", "--original-prompt-file", prompt}, &stdout, &stderr); code != exitOK {
@@ -793,8 +793,6 @@ func TestWorktreeInfoCLIRedactsPromptBodies(t *testing.T) {
 func TestWorktreeInfoCLIReportsAnActiveMergerLaneClaim(t *testing.T) {
 	projects := setUpRenameCLIFixture(t)
 	prompt := writeOriginalPromptFixture(t, "claim fixture original prompt")
-	previousProjectsRoot := projectsRoot
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"--projects-root", projects, "worktree", "create", "cli-claimed", "acme/app", "--model", "unknown", "--original-prompt-file", prompt}, &stdout, &stderr); code != exitOK {
@@ -853,8 +851,6 @@ func TestWorktreeInfoCLIReportsAnActiveMergerLaneClaim(t *testing.T) {
 func TestWorktreeWorkLogCLIDumpsInitialPromptAndClaim(t *testing.T) {
 	projects := setUpRenameCLIFixture(t)
 	prompt := writeOriginalPromptFixture(t, "agent needs the original request")
-	previousProjectsRoot := projectsRoot
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"--projects-root", projects, "worktree", "create", "cli-worklog", "acme/app", "--model", "unknown", "--original-prompt-file", prompt}, &stdout, &stderr); code != exitOK {
@@ -896,8 +892,6 @@ func TestWorktreeWorkLogCLIDumpsInitialPromptAndClaim(t *testing.T) {
 func TestWorktreeLogMutatingVerbsCLI(t *testing.T) {
 	projects := setUpRenameCLIFixture(t)
 	prompt := writeOriginalPromptFixture(t, "mutating verbs journey")
-	previousProjectsRoot := projectsRoot
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"--projects-root", projects, "worktree", "create", "cli-log-verbs", "acme/app", "--model", "unknown", "--original-prompt-file", prompt}, &stdout, &stderr); code != exitOK {
@@ -972,8 +966,6 @@ func TestWorktreeLogMutatingVerbsCLI(t *testing.T) {
 func TestWorktreeLogFinalizeReportSurfacesThroughListSummaryAndLog(t *testing.T) {
 	projects := setUpRenameCLIFixture(t)
 	prompt := writeOriginalPromptFixture(t, "finalize with a report")
-	previousProjectsRoot := projectsRoot
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"--projects-root", projects, "worktree", "create", "cli-finalize-report", "acme/app", "--model", "unknown", "--original-prompt-file", prompt}, &stdout, &stderr); code != exitOK {
@@ -1138,8 +1130,6 @@ func TestWorktreeLogFinalizeReportSurfacesThroughListSummaryAndLog(t *testing.T)
 func TestWorktreeLogFinalizeReportRejectsOversizedInput(t *testing.T) {
 	projects := setUpRenameCLIFixture(t)
 	prompt := writeOriginalPromptFixture(t, "finalize with an oversized report")
-	previousProjectsRoot := projectsRoot
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"--projects-root", projects, "worktree", "create", "cli-finalize-oversized", "acme/app", "--model", "unknown", "--original-prompt-file", prompt}, &stdout, &stderr); code != exitOK {
@@ -1179,7 +1169,10 @@ func TestWorktreeLogFinalizeReportRejectsOversizedInput(t *testing.T) {
 }
 
 func TestWorktreeLogRecoverReconcileBranchFlagsWireAndRequireInputs(t *testing.T) {
-	command := newWorktreeLogRecoverCmd()
+	command, _, err := newWorktreeWorkLogCmd(&invocation{}).Find([]string{"recover"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, flag := range []string{"reconcile-branch", "expected-head", "remote", "actor", "reason", "event-id", "apply"} {
 		if command.Flags().Lookup(flag) == nil {
 			t.Fatalf("recover is missing --%s", flag)
@@ -1200,8 +1193,6 @@ func TestWorktreeLogRecoverReconcileBranchFlagsWireAndRequireInputs(t *testing.T
 func TestWorktreeCreateCLIResumePreservesImplicitActiveRun(t *testing.T) {
 	projects := setUpRenameCLIFixture(t)
 	prompt := writeOriginalPromptFixture(t, "resume the original request")
-	previousProjectsRoot := projectsRoot
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 
 	var stdout, stderr bytes.Buffer
 	args := []string{"--projects-root", projects, "worktree", "create", "cli-resume", "acme/app", "--model", "unknown", "--original-prompt-file", prompt}
@@ -1237,8 +1228,6 @@ func TestWorktreeRenameCLIRefusesDestinationCollisionAsFindings(t *testing.T) {
 	takenPrompt := writeOriginalPromptFixture(t, "taken original request")
 	sourcePrompt := writeOriginalPromptFixture(t, "source original request")
 	newPrompt := writeOriginalPromptFixture(t, "collision recycle request")
-	previousProjectsRoot := projectsRoot
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"--projects-root", projects, "worktree", "create", "taken", "acme/app", "--model", "unknown", "--original-prompt-file", takenPrompt}, &stdout, &stderr); code != exitOK {
@@ -1296,8 +1285,6 @@ func TestWorktreeCreateRejectsTraversalBeforeRefreshingExternalHooks(t *testing.
 	canonicalPreCommit, canonicalBefore := prepareStaleManagedHook(canonical)
 	externalPreCommit, externalBefore := prepareStaleManagedHook(external)
 
-	previousProjectsRoot := projectsRoot
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"--projects-root", projects, "worktree", "create", "traversal", "acme/app", "../evil"}, &stdout, &stderr); code == exitOK {
 		t.Fatalf("traversal create unexpectedly succeeded: stdout=%s stderr=%s", stdout.String(), stderr.String())
@@ -1357,8 +1344,6 @@ func TestWorktreeCreateRejectsCaseVariantDuplicateBeforeRefreshingManagedHook(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	previousProjectsRoot := projectsRoot
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"--projects-root", projects, "worktree", "create", "duplicate", "acme/app", "ACME/app"}, &stdout, &stderr); code == exitOK {
 		t.Fatalf("duplicate create unexpectedly succeeded: stdout=%s stderr=%s", stdout.String(), stderr.String())
@@ -1428,8 +1413,6 @@ func TestWorktreeCreateReportsCanonicalSyncFailureAsFindings(t *testing.T) {
 	// a real, reproducible reason, without needing SSH or a reachable remote.
 	runCanonicalGit("remote", "add", "origin", filepath.Join(root, "does-not-exist.git"))
 
-	previousProjectsRoot := projectsRoot
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 	prompt := writeOriginalPromptFixture(t, "create request whose origin fetch fails")
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"--projects-root", projects, "worktree", "create", "sync-fail", "acme/app", "--non-interactive", "--model", "unknown", "--original-prompt-file", prompt}, &stdout, &stderr)
@@ -1479,8 +1462,6 @@ func TestWorktreeCreateKeepsRemoteClaimNotesOffStdout(t *testing.T) {
 	runCanonicalGit("commit", "-m", "initial")
 	runCanonicalGit("remote", "add", "origin", filepath.Join(root, "does-not-exist.git"))
 
-	previousProjectsRoot := projectsRoot
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 	prompt := writeOriginalPromptFixture(t, "create request that emits a remote-claim note")
 
 	var stdout, stderr bytes.Buffer
@@ -1522,8 +1503,6 @@ func findOriginalPromptArchive(t *testing.T, home, task string) string {
 // the Work Log exactly as a file-based --original-prompt-file would record it.
 func TestWorktreeCreateAcceptsOriginalPromptFromStdin(t *testing.T) {
 	projects := setUpRenameCLIFixture(t)
-	previousProjectsRoot := projectsRoot
-	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 	home := filepath.Join(projects, ".wb")
 
 	const prompt = "stdin-sourced original request, never staged to a shared path\n"

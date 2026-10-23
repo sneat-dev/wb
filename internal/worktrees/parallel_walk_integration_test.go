@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // concurrencyProbeGitShim puts a `git` on PATH that records a start/end marker
@@ -33,7 +35,7 @@ func concurrencyProbeGitShim(t *testing.T) func() int {
 		"  fi\n" +
 		"done\n" +
 		"exec " + realGit + " \"$@\"\n"
-	if err := os.WriteFile(shim, []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(shim, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))

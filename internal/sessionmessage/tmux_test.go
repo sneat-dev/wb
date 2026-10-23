@@ -34,6 +34,7 @@ func (runner *scriptedTmuxRunner) Run(_ context.Context, executable string, args
 }
 
 func TestOSTmuxUsesOnlyFixedArgvAndExactStdinBufferBytes(t *testing.T) {
+	t.Parallel()
 	raw := []byte("{\n  \"kind\": \"request_handoff\",\n  \"body\": \"; $(touch /tmp/nope)\"\n}\n")
 	runner := &scriptedTmuxRunner{runs: []tmuxRun{
 		{stdout: []byte("wb-session-wbs-successor\t%7\t1234\n")},
@@ -88,6 +89,7 @@ func TestOSTmuxUsesOnlyFixedArgvAndExactStdinBufferBytes(t *testing.T) {
 }
 
 func TestOSTmuxRefusesMoreThanOnePane(t *testing.T) {
+	t.Parallel()
 	runner := &scriptedTmuxRunner{runs: []tmuxRun{{stdout: []byte("wb-session-wbs-successor\t%7\t1234\nwb-session-wbs-successor\t%8\t1235\n")}}}
 	client := &osTmux{executable: "/usr/bin/tmux", runner: runner}
 	if _, err := client.Inspect(context.Background(), "wb-session-wbs-successor"); err == nil {
@@ -96,6 +98,7 @@ func TestOSTmuxRefusesMoreThanOnePane(t *testing.T) {
 }
 
 func TestOSTmuxRefusesNonCanonicalPaneIdentity(t *testing.T) {
+	t.Parallel()
 	runner := &scriptedTmuxRunner{runs: []tmuxRun{{stdout: []byte("wb-session-wbs-successor\t%--evil\t1234\n")}}}
 	client := &osTmux{executable: "/usr/bin/tmux", runner: runner}
 	if _, err := client.Inspect(context.Background(), "wb-session-wbs-successor"); err == nil {

@@ -10,12 +10,15 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // TestDqCovProvenanceSameBinaryMatchesIdentityFields pins the exact fields that
 // make two provenance records the same binary. A development build that shares
 // a version string but not a digest must not be treated as identical.
 func TestDqCovProvenanceSameBinaryMatchesIdentityFields(t *testing.T) {
+	t.Parallel()
 	base := Provenance{Executable: "/wb", SHA256: "digest", Version: "1.2.3", Revision: "abc", Built: "yesterday"}
 	if !base.SameBinary(base) {
 		t.Fatal("identical provenance did not match itself")
@@ -31,6 +34,7 @@ func TestDqCovProvenanceSameBinaryMatchesIdentityFields(t *testing.T) {
 	}
 	for _, check := range different {
 		t.Run(check.name, func(t *testing.T) {
+			t.Parallel()
 			if base.SameBinary(check.other) {
 				t.Fatalf("provenance differing only by %s matched: %#v", check.name, check.other)
 			}
@@ -45,7 +49,8 @@ func TestDqCovProvenanceSameBinaryMatchesIdentityFields(t *testing.T) {
 }
 
 func TestDqCovStateValidRejectsIncompatibleSchemasAndMissingListener(t *testing.T) {
-	valid := NewStarting(nil, "127.0.0.1:8766", Provenance{Executable: "/wb"}, "owner", time.Unix(1, 0))
+	t.Parallel()
+	valid := NewStartingAt(nil, "127.0.0.1:8766", Provenance{Executable: "/wb"}, "owner", "", "", time.Unix(1, 0))
 	if err := valid.Valid(); err != nil {
 		t.Fatalf("Valid() on a fresh state = %v", err)
 	}
@@ -60,6 +65,7 @@ func TestDqCovStateValidRejectsIncompatibleSchemasAndMissingListener(t *testing.
 	}
 	for _, check := range checks {
 		t.Run(check.name, func(t *testing.T) {
+			t.Parallel()
 			broken := valid
 			check.mutate(&broken)
 			err := broken.Valid()
@@ -77,9 +83,10 @@ func TestDqCovStateValidRejectsIncompatibleSchemasAndMissingListener(t *testing.
 // record from an older daemon is upgraded rather than rejected, and that the
 // handoff pointer is only recorded when a previous executable is known.
 func TestDqCovNewStartingRepairsLegacyQueueSchema(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
 	legacy := State{Queue: Queue{Generation: 41, OwnerToken: "legacy-owner"}}
-	next := NewStarting(&legacy, "127.0.0.1:9000", Provenance{SHA256: "new"}, "new-owner", now)
+	next := NewStartingAt(&legacy, "127.0.0.1:9000", Provenance{SHA256: "new"}, "new-owner", "", "", now)
 	if next.Queue.SchemaVersion != QueueSchemaVersion {
 		t.Fatalf("queue schema = %d, want %d", next.Queue.SchemaVersion, QueueSchemaVersion)
 	}
@@ -95,8 +102,9 @@ func TestDqCovNewStartingRepairsLegacyQueueSchema(t *testing.T) {
 }
 
 func TestDqCovStateTransitionsRecordStatusPIDAndTimestamp(t *testing.T) {
+	t.Parallel()
 	start := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
-	state := NewStarting(nil, "127.0.0.1:8766", Provenance{Executable: "/wb"}, "owner", start)
+	state := NewStartingAt(nil, "127.0.0.1:8766", Provenance{Executable: "/wb"}, "owner", "", "", start)
 
 	state.MarkStartingPID(4242, start.Add(time.Second))
 	if state.Status != StatusStarting || state.PID != 4242 || !state.UpdatedAt.Equal(start.Add(time.Second)) {
@@ -117,6 +125,7 @@ func TestDqCovStateTransitionsRecordStatusPIDAndTimestamp(t *testing.T) {
 }
 
 func TestDqCovStoreLoadReportsMissingCorruptAndUnreadableState(t *testing.T) {
+	t.Parallel()
 	directory := t.TempDir()
 	store := Store{Path: filepath.Join(directory, "state.json")}
 
@@ -131,7 +140,7 @@ func TestDqCovStoreLoadReportsMissingCorruptAndUnreadableState(t *testing.T) {
 		t.Fatalf("Load() on corrupt JSON = %t, %v", ok, err)
 	}
 
-	invalid := NewStarting(nil, "127.0.0.1:8766", Provenance{Executable: "/wb"}, "owner", time.Unix(1, 0))
+	invalid := NewStartingAt(nil, "127.0.0.1:8766", Provenance{Executable: "/wb"}, "owner", "", "", time.Unix(1, 0))
 	invalid.SchemaVersion = 77
 	contents, err := json.Marshal(invalid)
 	if err != nil {
@@ -154,11 +163,12 @@ func TestDqCovStoreLoadReportsMissingCorruptAndUnreadableState(t *testing.T) {
 }
 
 func TestDqCovStoreSaveRejectsUnusableDirectories(t *testing.T) {
+	t.Parallel()
 	file := filepath.Join(t.TempDir(), "not-a-directory")
 	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	state := NewStarting(nil, "127.0.0.1:8766", Provenance{Executable: "/wb"}, "owner", time.Unix(1, 0))
+	state := NewStartingAt(nil, "127.0.0.1:8766", Provenance{Executable: "/wb"}, "owner", "", "", time.Unix(1, 0))
 	err := (Store{Path: filepath.Join(file, "nested", "state.json")}).Save(state)
 	if err == nil {
 		t.Fatal("Save() succeeded under a regular file")
@@ -185,9 +195,10 @@ func TestDqCovStoreSaveRejectsUnusableDirectories(t *testing.T) {
 // timestamps fall outside the RFC 3339 range is rejected before any file is
 // created, so a failed save cannot publish a partial record.
 func TestDqCovStoreSaveRejectsStateThatCannotBeEncoded(t *testing.T) {
+	t.Parallel()
 	directory := t.TempDir()
 	path := filepath.Join(directory, "state.json")
-	state := NewStarting(nil, "127.0.0.1:8766", Provenance{Executable: "/wb"}, "owner", time.Unix(1, 0))
+	state := NewStartingAt(nil, "127.0.0.1:8766", Provenance{Executable: "/wb"}, "owner", "", "", time.Unix(1, 0))
 	if err := state.Valid(); err != nil {
 		t.Fatalf("baseline state is invalid: %v", err)
 	}
@@ -205,9 +216,10 @@ func TestDqCovStoreSaveRejectsStateThatCannotBeEncoded(t *testing.T) {
 // records the resolved path and the exact digest of the bytes on disk, so a
 // swapped binary cannot masquerade as the trusted generation.
 func TestDqCovProvenanceForExecutableHashesResolvedBinary(t *testing.T) {
+	t.Parallel()
 	executable := filepath.Join(t.TempDir(), "wb")
 	contents := []byte("#!/bin/sh\necho wb\n")
-	if err := os.WriteFile(executable, contents, 0o700); err != nil {
+	if err := testenv.WriteExecutableFile(executable, contents, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	provenance, err := ProvenanceForExecutable(executable, "1.2.3", "rev-1", "built-today")

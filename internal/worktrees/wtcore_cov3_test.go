@@ -14,6 +14,7 @@ import (
 // configuration parser refuses each documented malformed shape and accepts a
 // well-formed document carrying both settings.
 func TestWTCoreCovBranchConfigRejectsEveryMalformedShape(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		contents string
@@ -33,6 +34,7 @@ func TestWTCoreCovBranchConfigRejectsEveryMalformedShape(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			config, found, err := parseBranchConfig("test.yaml", []byte(testCase.contents))
 			if testCase.wantErr == "" {
 				if err != nil || !found {
@@ -68,6 +70,7 @@ func TestWTCoreCovBranchConfigRejectsEveryMalformedShape(t *testing.T) {
 // distinguishes absence, a non-regular file, an oversize file, and a resolvable
 // symlink to a regular file.
 func TestWTCoreCovLoadBranchConfigFileBoundaries(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	absent, found, err := loadBranchConfigFile(filepath.Join(root, "absent.yaml"))
 	if err != nil || found {
@@ -161,6 +164,7 @@ func TestWTCoreCovResolveSharedWorktreesRootExpandsAndValidates(t *testing.T) {
 // TestWTCoreCovPlacementAndNamingRejections asserts the placement/naming policy
 // surfaces each refusal instead of deriving a branch or path that violates it.
 func TestWTCoreCovPlacementAndNamingRejections(t *testing.T) {
+	t.Parallel()
 	if _, err := ResolveUserWorktreePlacement(t.TempDir(), "relative/canonical"); err == nil {
 		t.Fatal("a relative canonical path was accepted")
 	}
@@ -242,6 +246,7 @@ func TestWTCoreCovAppendConfiguredSharedWorktreesLayout(t *testing.T) {
 // TestWTCoreCovRemoveEmptyTaskDirectoryBoundaries asserts the retirement helper
 // refuses every handle it cannot prove, and retires an empty held directory.
 func TestWTCoreCovRemoveEmptyTaskDirectoryBoundaries(t *testing.T) {
+	t.Parallel()
 	if removeEmptyTaskDirectory(nil) {
 		t.Fatal("a nil cleanup task was accepted")
 	}
@@ -256,7 +261,7 @@ func TestWTCoreCovRemoveEmptyTaskDirectoryBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = worktrees.Close() }()
+	t.Cleanup(func() { _ = worktrees.Close() })
 	// A task path whose base is not a safe segment cannot be retired by name.
 	if removeEmptyTaskDirectory(&cleanupTaskHandle{worktrees: worktrees, task: worktrees, taskPath: root + "/"}) {
 		t.Fatal("an unsafe task directory name was retired")
@@ -270,7 +275,7 @@ func TestWTCoreCovRemoveEmptyTaskDirectoryBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = held.Close() }()
+	t.Cleanup(func() { _ = held.Close() })
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +297,7 @@ func TestWTCoreCovRemoveEmptyTaskDirectoryBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = emptyHandle.Close() }()
+	t.Cleanup(func() { _ = emptyHandle.Close() })
 	if !removeEmptyTaskDirectory(&cleanupTaskHandle{worktrees: worktrees, task: emptyHandle, taskPath: empty}) {
 		t.Fatal("an empty held task directory was not retired")
 	}
@@ -305,6 +310,7 @@ func TestWTCoreCovRemoveEmptyTaskDirectoryBoundaries(t *testing.T) {
 // everything that is not an empty task namespace and marks a filtered match
 // ineligible rather than acting outside the selection.
 func TestWTCoreCovEmptyTaskNamespacesSelectsAndReports(t *testing.T) {
+	t.Parallel()
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

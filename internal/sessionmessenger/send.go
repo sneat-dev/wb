@@ -19,7 +19,9 @@ import (
 // Hooks are test-only crash-boundary probes. Production callers leave them
 // empty; they never change the durable protocol.
 type Hooks struct {
-	BeforeCourier func(sessionmove.MessageState) error
+	AfterExecutionLock func()
+	AfterAddressLoad   func()
+	BeforeCourier      func(sessionmove.MessageState) error
 }
 
 // WorkLogRecord is the exact source-side evidence recorded only after the
@@ -101,6 +103,9 @@ func Send(ctx context.Context, options Options) (Result, error) {
 		return result, err
 	}
 	defer func() { _ = lock.Close() }()
+	if options.Hooks.AfterExecutionLock != nil {
+		options.Hooks.AfterExecutionLock()
+	}
 
 	lockedAddress, err := options.Store.LoadSuccessorAddressUnderLock(lock, address.HandoffID, address.RequestDigest)
 	if err != nil {
@@ -110,6 +115,9 @@ func Send(ctx context.Context, options Options) (Result, error) {
 		return result, fmt.Errorf("%w: successor address changed while acquiring exact handoff authority", sessionmove.ErrHandoffConflict)
 	}
 	address = lockedAddress
+	if options.Hooks.AfterAddressLoad != nil {
+		options.Hooks.AfterAddressLoad()
+	}
 	state, err := options.Store.LoadUnderLock(lock, address.HandoffID, address.RequestDigest)
 	if err != nil {
 		return result, err

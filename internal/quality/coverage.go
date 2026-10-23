@@ -6,15 +6,17 @@ package quality
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 
 	"golang.org/x/mod/modfile"
+
+	"github.com/sneat-dev/wb/internal/filewrite"
 )
 
 // CoverageReport is a deterministic, machine-readable coverage index.
@@ -65,15 +67,13 @@ const (
 	StatusSkipped Status = "skipped"
 )
 
-// Cover measures all Go modules below path. It creates profiles in the system
-// temporary directory, never in the repository.
-func Cover(ctx context.Context, repository, path string) RepositoryCoverage {
-	return CoverWithOptions(ctx, repository, path, RunOptions{})
-}
-
 // CoverWithOptions measures coverage with a deadline and retries for each Go
 // module's test command.
 func CoverWithOptions(ctx context.Context, repository, path string, options RunOptions) RepositoryCoverage {
+	return coverWithOptionsRun(ctx, repository, path, options, runCoverageWithOptions)
+}
+
+func coverWithOptionsRun(ctx context.Context, repository, path string, options RunOptions, run func(context.Context, RunOptions, string, string) (string, int, error)) RepositoryCoverage {
 	if options.CoverageDiagnosticsRepository == "" {
 		options.CoverageDiagnosticsRepository = repository
 	}
@@ -106,7 +106,7 @@ func CoverWithOptions(ctx context.Context, repository, path string, options RunO
 			Language: "go", Module: relativePath(path, module), Check: CheckTest,
 			Command: command, State: ProgressStarted,
 		})
-		output, attempts, err := runCoverageWithOptions(ctx, options, module, profilePath)
+		output, attempts, err := run(ctx, options, module, profilePath)
 		if err != nil {
 			if removeProfile {
 				_ = os.Remove(profilePath)
@@ -114,7 +114,12 @@ func CoverWithOptions(ctx context.Context, repository, path string, options RunO
 			report.Status = StatusFailed
 			report.Error = commandError(command, output, err)
 			if options.CoverageDiagnosticsDir != "" {
-				report.Diagnostic = coverageDiagnosticFor(options.CoverageDiagnosticsDir, repository, module)
+				var commandFailure *coverageCommandError
+				if errors.As(err, &commandFailure) {
+					report.Diagnostic = coverageDiagnosticFromPath(commandFailure.manifestPath)
+				} else {
+					report.Diagnostic = coverageDiagnosticFor(options.CoverageDiagnosticsDir, repository, module)
+				}
 			}
 			reportQualityProgress(options, Progress{
 				Language: "go", Module: relativePath(path, module), Check: CheckTest,
@@ -151,30 +156,46 @@ func CoverWithOptions(ctx context.Context, repository, path string, options RunO
 }
 
 func coverageProfilePath(retain string) (path string, remove bool, err error) {
+	return coverageProfilePathInjected(retain, nil)
+}
+
+// coverageProfilePathInjected is coverageProfilePath's test seam (task-9
+// PR-9): every production call site reaches it only through
+// coverageProfilePath, which always passes a nil *filewrite.Injector, so
+// production behaviour is unchanged. A test passes its own Injector to
+// reach the scratch reservation's create/close failure branches
+// deterministically.
+func coverageProfilePathInjected(retain string, inj *filewrite.Injector) (path string, remove bool, err error) {
+	return coverageProfilePathWithAbs(retain, inj, filepath.Abs)
+}
+
+func coverageProfilePathWithAbs(retain string, inj *filewrite.Injector, absolute func(string) (string, error)) (path string, remove bool, err error) {
 	if retain != "" {
-		absolute, err := filepath.Abs(retain)
+		resolved, err := absolute(retain)
 		if err != nil {
 			return "", false, err
 		}
-		return absolute, false, nil
+		return resolved, false, nil
 	}
-	profile, err := os.CreateTemp("", "wb-coverage-*.out")
+	path, err = filewrite.CreateScratch("", "wb-coverage-*.out", 0, nil, inj)
 	if err != nil {
-		return "", false, err
-	}
-	path = profile.Name()
-	if err := profile.Close(); err != nil {
-		_ = os.Remove(path)
+		if path != "" {
+			_ = os.Remove(path)
+		}
 		return "", false, err
 	}
 	return path, true, nil
 }
 
 func coverageCommandDescription(options RunOptions) string {
-	if options.GoTestShards > 1 {
-		return fmt.Sprintf("go test -coverprofile … ./... (%d process-isolated shards for %s)", options.GoTestShards, strings.Join(options.GoShardPackages, ","))
+	packages := strings.Join(goCoveragePackagePatterns(options), ",")
+	if options.IncludeE2E {
+		return "default and native E2E/contract coverage for " + packages
 	}
-	return "go test -coverprofile … ./..."
+	if options.GoTestShards > 1 {
+		return fmt.Sprintf("go test -coverprofile … %s (%d process-isolated shards for %s)", packages, options.GoTestShards, strings.Join(options.GoShardPackages, ","))
+	}
+	return fmt.Sprintf("go test -coverprofile … %s", packages)
 }
 
 // NewCoverageReport aggregates reports in deterministic repository order.
@@ -192,6 +213,10 @@ func NewCoverageReport(repositories []RepositoryCoverage) CoverageReport {
 }
 
 func goModules(root string) ([]string, error) {
+	return goModulesWithAbs(root, filepath.Abs)
+}
+
+func goModulesWithAbs(root string, absolute func(string) (string, error)) ([]string, error) {
 	workspacePath := filepath.Join(root, "go.work")
 	workspace, err := os.ReadFile(workspacePath)
 	if err == nil {
@@ -205,7 +230,7 @@ func goModules(root string) ([]string, error) {
 			if !filepath.IsAbs(module) {
 				module = filepath.Join(root, module)
 			}
-			module, absErr := filepath.Abs(module)
+			module, absErr := absolute(module)
 			if absErr != nil {
 				return nil, fmt.Errorf("resolve go.work use %q: %w", use.Path, absErr)
 			}
@@ -245,26 +270,14 @@ func goModules(root string) ([]string, error) {
 }
 
 func profileTotals(path string) (statements, covered int, err error) {
-	contents, err := os.ReadFile(path)
+	blocks, err := parseCoverageProfile(path, true)
 	if err != nil {
 		return 0, 0, err
 	}
-	for lineNumber, line := range strings.Split(strings.TrimSpace(string(contents)), "\n") {
-		if lineNumber == 0 && strings.HasPrefix(line, "mode: ") {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) != 3 {
-			return 0, 0, fmt.Errorf("invalid coverage profile %s at line %d", path, lineNumber+1)
-		}
-		count, countErr := strconv.ParseInt(fields[2], 10, 64)
-		statementCount, statementErr := strconv.Atoi(fields[1])
-		if countErr != nil || statementErr != nil {
-			return 0, 0, fmt.Errorf("invalid coverage profile %s at line %d", path, lineNumber+1)
-		}
-		statements += statementCount
-		if count > 0 {
-			covered += statementCount
+	for _, block := range blocks {
+		statements += block.Statements
+		if block.Count > 0 {
+			covered += block.Statements
 		}
 	}
 	return statements, covered, nil

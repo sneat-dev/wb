@@ -23,20 +23,8 @@ import (
 // FinalizeCloneMoveRelocationReceipts); no real SSH courier is needed.
 func TestWithParkedRemoteResumeCustodyResolvesMemberAfterCloneMigration(t *testing.T) {
 	fixture, worktree, source := newSessionCheckpointFixture(t, "park-remote-migrated")
-	useIdentityRemote(t, fixture, worktree)
-	branch := gitTestOutput(t, worktree, "branch", "--show-current")
-	gitTest(t, worktree, "push", "origin", branch)
-	guard, err := Guard(context.Background(), worktree, GuardOptions{ProjectsRoot: fixture.projectsRoot, Admission: AdmissionEnforce})
-	if err != nil {
-		t.Fatal(err)
-	}
-	member, err := CaptureParkedSessionWorktree(context.Background(), fixture.projectsRoot, ListResult{
-		Repository: "acme/app", CanonicalDir: guard.CanonicalDir, WorktreeDir: worktree,
-		WorktreesRoot: guard.WorktreesRoot, Branch: branch,
-	}, source)
-	if err != nil {
-		t.Fatal(err)
-	}
+	branch := preparePushedParkedWorktree(t, fixture, worktree)
+	guard, member := captureParkedWorktreeMember(t, fixture, worktree, source, branch)
 
 	// Move the canonical clone exactly like `wb layout migrate` does: plan,
 	// record relocation intents for every linked worktree, apply the move,

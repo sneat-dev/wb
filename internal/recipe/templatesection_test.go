@@ -21,6 +21,7 @@ func writeTemplate(t *testing.T, marker, body string) Recipe {
 }
 
 func TestLoadTemplateParses(t *testing.T) {
+	t.Parallel()
 	r := writeTemplate(t, "test-approach", "## Our approach\n\nBody text.")
 	tmpl, err := r.loadTemplate()
 	if err != nil {
@@ -38,6 +39,7 @@ func TestLoadTemplateParses(t *testing.T) {
 }
 
 func TestLoadTemplateErrors(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cases := map[string]string{
 		"no start marker": "## heading\n<!-- /m -->",
@@ -57,6 +59,7 @@ func TestLoadTemplateErrors(t *testing.T) {
 }
 
 func TestLoadTemplateMissingFile(t *testing.T) {
+	t.Parallel()
 	r := Recipe{Marker: "m", Template: "/nonexistent/template.md"}
 	if _, err := r.loadTemplate(); err == nil {
 		t.Error("expected error for missing template file, got nil")
@@ -64,6 +67,7 @@ func TestLoadTemplateMissingFile(t *testing.T) {
 }
 
 func TestMarkerRegexEscaping(t *testing.T) {
+	t.Parallel()
 	// A marker with regex-special characters must not corrupt matching —
 	// regexp.QuoteMeta makes it literal.
 	r := writeTemplate(t, "my.marker+v2", "body")
@@ -78,6 +82,7 @@ func TestMarkerRegexEscaping(t *testing.T) {
 }
 
 func TestApplyTemplateSectionInsertBeforeFirstH2(t *testing.T) {
+	t.Parallel()
 	r := writeTemplate(t, "m", "block body")
 	tmpl, _ := r.loadTemplate()
 	content := "# My Project\n\nA great project.\n\n## Usage\n\nRun it.\n"
@@ -94,6 +99,7 @@ func TestApplyTemplateSectionInsertBeforeFirstH2(t *testing.T) {
 }
 
 func TestApplyTemplateSectionAppendsWhenNoH2(t *testing.T) {
+	t.Parallel()
 	r := writeTemplate(t, "m", "block body")
 	tmpl, _ := r.loadTemplate()
 	content := "# Only a title\n\nSome text with no second-level heading.\n"
@@ -107,6 +113,7 @@ func TestApplyTemplateSectionAppendsWhenNoH2(t *testing.T) {
 }
 
 func TestApplyTemplateSectionInsertWhenStartsWithH2(t *testing.T) {
+	t.Parallel()
 	r := writeTemplate(t, "m", "block body")
 	tmpl, _ := r.loadTemplate()
 	content := "## First Section\n\nbody\n"
@@ -123,6 +130,7 @@ func TestApplyTemplateSectionInsertWhenStartsWithH2(t *testing.T) {
 }
 
 func TestApplyTemplateSectionInsertEmptyContent(t *testing.T) {
+	t.Parallel()
 	r := writeTemplate(t, "m", "block body")
 	tmpl, _ := r.loadTemplate()
 	out, action := applyTemplateSection("", tmpl, r.blockRe())
@@ -135,6 +143,7 @@ func TestApplyTemplateSectionInsertEmptyContent(t *testing.T) {
 }
 
 func TestApplyTemplateSectionNoopWhenCurrent(t *testing.T) {
+	t.Parallel()
 	r := writeTemplate(t, "m", "block body")
 	tmpl, _ := r.loadTemplate()
 	content := "# Title\n\n" + tmpl.Block + "\n\n## More\n"
@@ -148,6 +157,7 @@ func TestApplyTemplateSectionNoopWhenCurrent(t *testing.T) {
 }
 
 func TestApplyTemplateSectionNoopWhenNewerPresent(t *testing.T) {
+	t.Parallel()
 	r := writeTemplate(t, "m", "block body")
 	tmpl, _ := r.loadTemplate()
 	newer := "<!-- m:v999 -->\nFUTURE\n<!-- /m -->"
@@ -162,6 +172,7 @@ func TestApplyTemplateSectionNoopWhenNewerPresent(t *testing.T) {
 }
 
 func TestApplyTemplateSectionReplaceOlder(t *testing.T) {
+	t.Parallel()
 	r := writeTemplate(t, "m", "new body")
 	tmpl, _ := r.loadTemplate()
 	old := "<!-- m:v0 -->\nold body\n<!-- /m -->"
@@ -182,6 +193,7 @@ func TestApplyTemplateSectionReplaceOlder(t *testing.T) {
 }
 
 func TestPlanTemplateSection(t *testing.T) {
+	t.Parallel()
 	r := writeTemplate(t, "m", "body")
 	tmpl, _ := r.loadTemplate()
 	if a := planTemplateSection("# x\n## y\n", tmpl, r.blockRe()); a != ActionInsert {
@@ -197,6 +209,7 @@ func TestPlanTemplateSection(t *testing.T) {
 }
 
 func TestActionString(t *testing.T) {
+	t.Parallel()
 	for a, want := range map[Action]string{ActionNoop: "noop", ActionInsert: "insert", ActionReplace: "replace"} {
 		if got := a.String(); got != want {
 			t.Errorf("Action(%d).String() = %q, want %q", a, got, want)

@@ -42,7 +42,6 @@ func TestHkCovLoadPolicyRejectsANonRepositoryPath(t *testing.T) {
 func TestHkCovLoadPolicyRejectsMalformedExplicitConfigs(t *testing.T) {
 	repo := initRepo(t)
 	isolateEnvironment(t)
-	dir := t.TempDir()
 	cases := []struct {
 		name    string
 		content string
@@ -60,7 +59,13 @@ func TestHkCovLoadPolicyRejectsMalformedExplicitConfigs(t *testing.T) {
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
-			path := filepath.Join(dir, "hooks.yaml")
+			t.Parallel()
+			// Each subtest gets its own directory: all nine run in parallel
+			// with each other, and every one previously joined the SAME
+			// shared dir with the same literal "hooks.yaml" name, so they
+			// raced writing and reading each other's content -- a logic
+			// race over file I/O that -race cannot see.
+			path := filepath.Join(t.TempDir(), "hooks.yaml")
 			mustWrite(t, path, test.content)
 			_, err := LoadPolicy(repo, path)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
@@ -123,6 +128,7 @@ func TestHkCovLoadPolicyRejectsInvalidResolvedHooks(t *testing.T) {
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			// Every case except the glob one needs a real go.mod for the
 			// through-a-file case to produce ENOTDIR rather than ENOENT.
 			mustWrite(t, filepath.Join(repo, "go.mod"), "module example.invalid/x\n")
@@ -324,6 +330,7 @@ func TestHkCovExpandPathHandlesHomeAndErrors(t *testing.T) {
 }
 
 func TestHkCovBuiltinTemplateRejectsUnknownNames(t *testing.T) {
+	t.Parallel()
 	if content, ok := builtinTemplate("builtin:does-not-exist"); ok || content != "" {
 		t.Fatalf("builtinTemplate(unknown) = %q, %v; want empty and false", content, ok)
 	}
@@ -335,6 +342,7 @@ func TestHkCovBuiltinTemplateRejectsUnknownNames(t *testing.T) {
 // TestHkCovApplyProfilesDirectBranches exercises applyProfiles paths that
 // LoadPolicy cannot reach because its own layering always initialises Hooks.
 func TestHkCovApplyProfilesDirectBranches(t *testing.T) {
+	t.Parallel()
 	repo := initRepo(t)
 	policy := defaultPolicy(repo)
 	policy.ProfileDefinitions["ghost"] = ProfileDefinition{Name: "ghost"}
@@ -401,6 +409,7 @@ func TestHkCovResolveProfilesAutoDetectionBranches(t *testing.T) {
 // TestHkCovMatchProfileAndGlobBranches exercises matchRepositoryPath directly so
 // the glob and through-a-file branches are asserted on their returned values.
 func TestHkCovMatchProfileAndGlobBranches(t *testing.T) {
+	t.Parallel()
 	repo := t.TempDir()
 	mustWrite(t, filepath.Join(repo, "go.mod"), "module example.invalid/x\n")
 	mustWrite(t, filepath.Join(repo, "a_test.go"), "package a\n")
@@ -443,6 +452,7 @@ func TestHkCovMatchProfileAndGlobBranches(t *testing.T) {
 // TestHkCovHookBlocksSkipsEmptyProfileHooks asserts a profile entry whose hook
 // is disabled or template-less contributes no block.
 func TestHkCovHookBlocksSkipsEmptyProfileHooks(t *testing.T) {
+	t.Parallel()
 	repo := initRepo(t)
 	policy := defaultPolicy(repo)
 	policy.ProfileDefinitions["custom"] = ProfileDefinition{

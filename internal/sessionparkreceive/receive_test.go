@@ -21,8 +21,10 @@ import (
 )
 
 func TestReceiveCompletesOneAndTwoMemberBundles(t *testing.T) {
+	t.Parallel()
 	for _, count := range []int{1, 2} {
 		t.Run(string(rune('0'+count))+"-members", func(t *testing.T) {
+			t.Parallel()
 			fixture := newReceiveFixture(t, count)
 			result, err := Receive(context.Background(), fixture.options())
 			if err != nil {
@@ -54,6 +56,7 @@ func TestReceiveCompletesOneAndTwoMemberBundles(t *testing.T) {
 }
 
 func TestReceiveTargetMachineGuardRefusesBeforeAdmissionOrMemberMutation(t *testing.T) {
+	t.Parallel()
 	fixture := newReceiveFixture(t, 1)
 	options := fixture.options()
 	options.LocalMachine = "wrong-machine"
@@ -69,8 +72,10 @@ func TestReceiveTargetMachineGuardRefusesBeforeAdmissionOrMemberMutation(t *test
 }
 
 func TestReceiveRetriesAfterMembersAndReceiptInterruptions(t *testing.T) {
+	t.Parallel()
 	for _, point := range []string{"members", "receipt"} {
 		t.Run(point, func(t *testing.T) {
+			t.Parallel()
 			fixture := newReceiveFixture(t, 2)
 			injected := errors.New("injected interruption")
 			var once atomic.Bool
@@ -102,8 +107,10 @@ func TestReceiveRetriesAfterMembersAndReceiptInterruptions(t *testing.T) {
 }
 
 func TestReceiveRetriesAfterIndividualMemberInterruptions(t *testing.T) {
+	t.Parallel()
 	injected := errors.New("injected per-member interruption")
 	t.Run("receive second member", func(t *testing.T) {
+		t.Parallel()
 		fixture := newReceiveFixture(t, 2)
 		options := fixture.options()
 		baseReceive := options.ReceiveMember
@@ -136,6 +143,7 @@ func TestReceiveRetriesAfterIndividualMemberInterruptions(t *testing.T) {
 	})
 
 	t.Run("prepare second claim", func(t *testing.T) {
+		t.Parallel()
 		fixture := newReceiveFixture(t, 2)
 		options := fixture.options()
 		basePrepare := options.PrepareMember
@@ -168,6 +176,7 @@ func TestReceiveRetriesAfterIndividualMemberInterruptions(t *testing.T) {
 	})
 
 	t.Run("complete second owner", func(t *testing.T) {
+		t.Parallel()
 		fixture := newReceiveFixture(t, 2)
 		options := fixture.options()
 		baseComplete := options.CompleteMember
@@ -209,6 +218,7 @@ func TestReceiveRetriesAfterIndividualMemberInterruptions(t *testing.T) {
 }
 
 func TestConcurrentReceiveCreatesOneSuccessorAndIdenticalReceipt(t *testing.T) {
+	t.Parallel()
 	fixture := newReceiveFixture(t, 2)
 	options := fixture.options()
 	var launches atomic.Int32

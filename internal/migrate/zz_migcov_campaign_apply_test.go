@@ -149,6 +149,7 @@ func TestMigCovApplyRepositorySourcesReportsReportWriteFailure(t *testing.T) {
 }
 
 func TestMigCovRepositoryComponentLayersSortsPeerComponents(t *testing.T) {
+	t.Parallel()
 	first := &campaignRepository{repository: "github.com/acme/first"}
 	second := &campaignRepository{repository: "github.com/acme/second"}
 	c := &campaign{
@@ -158,10 +159,7 @@ func TestMigCovRepositoryComponentLayersSortsPeerComponents(t *testing.T) {
 			"github.com/acme/second": {repository: second.repository},
 		},
 	}
-	layers, err := c.repositoryComponentLayers()
-	if err != nil {
-		t.Fatalf("repositoryComponentLayers() = %v", err)
-	}
+	layers := c.repositoryComponentLayers()
 	if len(layers) != 1 || len(layers[0]) != 2 {
 		t.Fatalf("layers = %+v, want one layer with two peer components", layers)
 	}
@@ -200,6 +198,7 @@ func TestMigCovPublishRepositoryReportsPushAndPullRequestFailures(t *testing.T) 
 }
 
 func TestMigCovCommitAndPublishRepositoryReportsMissingBaseRef(t *testing.T) {
+	t.Parallel()
 	repository := t.TempDir()
 	runCampaignGit(t, repository, "init", "--initial-branch=main")
 	writeCampaignFile(t, filepath.Join(repository, "README.md"), "seed\n")
@@ -218,6 +217,7 @@ func TestMigCovCommitAndPublishRepositoryReportsMissingBaseRef(t *testing.T) {
 }
 
 func TestMigCovSeedCycleComponentReportsUnreadableWorktree(t *testing.T) {
+	t.Parallel()
 	module := &campaignModule{path: "example.com/app", repository: "github.com/acme/app", migrate: true, root: t.TempDir()}
 	repo := &campaignRepository{repository: "github.com/acme/app", worktree: t.TempDir(), branch: "main", modules: []*campaignModule{module}, report: &CampaignRepositoryReport{}}
 	c := &campaign{

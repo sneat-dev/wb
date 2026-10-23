@@ -160,7 +160,7 @@ func TestSmCovMessageSynchestraDispatchRequiresDurableRouteReceiptAndMessage(t *
 
 func TestSmCovMessageSynchestraDispatchRefusesIdentityDrift(t *testing.T) {
 	store, request, digest, lock, message, raw := smCovSynchMessageFixture(t, true, true, true)
-	defer func() { _ = lock.Close() }()
+	t.Cleanup(func() { _ = lock.Close() })
 	messageDigest := DigestBytes(raw)
 	published, _, err := store.SaveOutgoingMessageSynchestraDispatchUnderLock(lock, request.HandoffID, digest, smCovSynchIdentity(request, digest, messageDigest, message.MessageID))
 	if err != nil {
@@ -182,6 +182,7 @@ func TestSmCovMessageSynchestraDispatchRefusesIdentityDrift(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			identity := smCovSynchIdentity(request, digest, messageDigest, message.MessageID)
 			test.mutate(&identity)
 			if _, _, err := store.SaveOutgoingMessageSynchestraDispatchUnderLock(lock, request.HandoffID, digest, identity); err == nil {

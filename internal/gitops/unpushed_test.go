@@ -2,10 +2,13 @@ package gitops
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // pushedClone builds a clone with a real origin, so upstream tracking behaves
@@ -14,6 +17,7 @@ func pushedClone(t testing.TB) (clone, origin string) {
 	t.Helper()
 	origin = t.TempDir()
 	git(t, origin, "init", "-q", "--bare", "-b", "main", origin)
+	testenv.ConfigureGitAutoMaintenanceOff(t, origin)
 
 	seed := t.TempDir()
 	git(t, seed, "init", "-q", "-b", "main", seed)
@@ -22,7 +26,9 @@ func pushedClone(t testing.TB) (clone, origin string) {
 	git(t, seed, "push", "-q", "origin", "main")
 
 	clone = t.TempDir()
-	if out, err := exec.Command("git", "clone", "-q", origin, clone).CombinedOutput(); err != nil {
+	cloneCmd := exec.Command("git", "clone", "-q", origin, clone)
+	cloneCmd.Env = testenv.GitAutoMaintenanceOffEnv(os.Environ())
+	if out, err := cloneCmd.CombinedOutput(); err != nil {
 		t.Fatalf("clone: %v: %s", err, out)
 	}
 	return clone, origin
@@ -45,91 +51,8 @@ func BenchmarkUnpushedWorkManyBranches(b *testing.B) {
 	}
 }
 
-// The case that made every completed pull request look like work at risk: a
-// branch that was pushed, merged, and had its remote deleted.
-func TestUnpushedCommitsIgnoresABranchWhoseUpstreamIsGone(t *testing.T) {
-	clone, origin := pushedClone(t)
-
-	git(t, clone, "checkout", "-q", "-b", "feature")
-	git(t, clone, "commit", "-q", "--allow-empty", "-m", "feature work")
-	git(t, clone, "push", "-q", "-u", "origin", "feature")
-
-	// The merge deletes the remote branch, as --delete-branch does.
-	git(t, origin, "update-ref", "-d", "refs/heads/feature")
-	git(t, clone, "fetch", "-q", "--prune", "origin")
-
-	commits, err := UnpushedCommits(clone)
-	if err != nil {
-		t.Fatalf("UnpushedCommits: %v", err)
-	}
-	if len(commits) != 0 {
-		t.Fatalf("commits = %v, want none: the branch was pushed, so its work is not unpushed", commits)
-	}
-}
-
-// A branch that was never pushed holds work that really does exist nowhere
-// else, and must still be reported.
-func TestUnpushedCommitsReportsABranchThatWasNeverPushed(t *testing.T) {
-	clone, _ := pushedClone(t)
-
-	git(t, clone, "checkout", "-q", "-b", "local-only")
-	git(t, clone, "commit", "-q", "--allow-empty", "-m", "never pushed")
-
-	commits, err := UnpushedCommits(clone)
-	if err != nil {
-		t.Fatalf("UnpushedCommits: %v", err)
-	}
-	if len(commits) != 1 {
-		t.Fatalf("commits = %v, want the one local-only commit", commits)
-	}
-}
-
-// A branch whose upstream still exists and is behind holds genuinely unpushed
-// work — the remindius case, which the fix must not silence.
-func TestUnpushedCommitsReportsCommitsAheadOfALiveUpstream(t *testing.T) {
-	clone, _ := pushedClone(t)
-
-	git(t, clone, "checkout", "-q", "-b", "feature")
-	git(t, clone, "commit", "-q", "--allow-empty", "-m", "pushed")
-	git(t, clone, "push", "-q", "-u", "origin", "feature")
-	git(t, clone, "commit", "-q", "--allow-empty", "-m", "not yet pushed")
-
-	commits, err := UnpushedCommits(clone)
-	if err != nil {
-		t.Fatalf("UnpushedCommits: %v", err)
-	}
-	if len(commits) != 1 {
-		t.Fatalf("commits = %v, want only the commit ahead of the live upstream", commits)
-	}
-}
-
-// A gone upstream must not hide unpushed work on other branches.
-func TestUnpushedCommitsStillSeesOtherBranchesBesideAGoneOne(t *testing.T) {
-	clone, origin := pushedClone(t)
-
-	git(t, clone, "checkout", "-q", "-b", "merged")
-	git(t, clone, "commit", "-q", "--allow-empty", "-m", "merged work")
-	git(t, clone, "push", "-q", "-u", "origin", "merged")
-	git(t, origin, "update-ref", "-d", "refs/heads/merged")
-	git(t, clone, "fetch", "-q", "--prune", "origin")
-
-	// Branch from main, not from the merged branch: a new effort starts from
-	// the integration target, and branching off "merged" would legitimately
-	// carry its commit along.
-	git(t, clone, "checkout", "-q", "main")
-	git(t, clone, "checkout", "-q", "-b", "live")
-	git(t, clone, "commit", "-q", "--allow-empty", "-m", "real unpushed work")
-
-	commits, err := UnpushedCommits(clone)
-	if err != nil {
-		t.Fatalf("UnpushedCommits: %v", err)
-	}
-	if len(commits) != 1 {
-		t.Fatalf("commits = %v, want only the live branch's unpushed commit", commits)
-	}
-}
-
 func TestUnpushedWorkAttributesCommitToLinkedWorktree(t *testing.T) {
+	t.Parallel()
 	clone, _ := pushedClone(t)
 	linked := filepath.Join(t.TempDir(), "linked")
 	git(t, clone, "worktree", "add", "-q", "-b", "linked-work", linked, "main")
@@ -155,6 +78,7 @@ func TestUnpushedWorkAttributesCommitToLinkedWorktree(t *testing.T) {
 }
 
 func TestUnpushedWorkAttributesSharedHistoryToEveryBranch(t *testing.T) {
+	t.Parallel()
 	clone, _ := pushedClone(t)
 	git(t, clone, "checkout", "-q", "-b", "alpha", "main")
 	git(t, clone, "commit", "-q", "--allow-empty", "-m", "shared work")
@@ -181,11 +105,100 @@ func TestUnpushedWorkAttributesSharedHistoryToEveryBranch(t *testing.T) {
 }
 
 func TestParseUnpushedCommitPreservesTabsInSubject(t *testing.T) {
+	t.Parallel()
 	commit, err := parseUnpushedCommit("abcdef\t1234567 subject\twith tab\tparent1 parent2")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if commit.sha != "abcdef" || commit.line != "1234567 subject\twith tab" || len(commit.parents) != 2 {
 		t.Fatalf("commit = %+v", commit)
+	}
+}
+
+// The case that made every completed pull request look like work at risk: a
+// branch that was pushed, merged, and had its remote deleted.
+func TestUnpushedCommitsIgnoresABranchWhoseUpstreamIsGone(t *testing.T) {
+	t.Parallel()
+	clone, origin := pushedClone(t)
+
+	git(t, clone, "checkout", "-q", "-b", "feature")
+	git(t, clone, "commit", "-q", "--allow-empty", "-m", "feature work")
+	git(t, clone, "push", "-q", "-u", "origin", "feature")
+
+	// The merge deletes the remote branch, as --delete-branch does.
+	git(t, origin, "update-ref", "-d", "refs/heads/feature")
+	git(t, clone, "fetch", "-q", "--prune", "origin")
+
+	commits, err := UnpushedCommits(clone)
+	if err != nil {
+		t.Fatalf("UnpushedCommits: %v", err)
+	}
+	if len(commits) != 0 {
+		t.Fatalf("commits = %v, want none: the branch was pushed, so its work is not unpushed", commits)
+	}
+}
+
+// A branch that was never pushed holds work that really does exist nowhere
+// else, and must still be reported.
+func TestUnpushedCommitsReportsABranchThatWasNeverPushed(t *testing.T) {
+	t.Parallel()
+	clone, _ := pushedClone(t)
+
+	git(t, clone, "checkout", "-q", "-b", "local-only")
+	git(t, clone, "commit", "-q", "--allow-empty", "-m", "never pushed")
+
+	commits, err := UnpushedCommits(clone)
+	if err != nil {
+		t.Fatalf("UnpushedCommits: %v", err)
+	}
+	if len(commits) != 1 {
+		t.Fatalf("commits = %v, want the one local-only commit", commits)
+	}
+}
+
+// A branch whose upstream still exists and is behind holds genuinely unpushed
+// work — the remindius case, which the fix must not silence.
+func TestUnpushedCommitsReportsCommitsAheadOfALiveUpstream(t *testing.T) {
+	t.Parallel()
+	clone, _ := pushedClone(t)
+
+	git(t, clone, "checkout", "-q", "-b", "feature")
+	git(t, clone, "commit", "-q", "--allow-empty", "-m", "pushed")
+	git(t, clone, "push", "-q", "-u", "origin", "feature")
+	git(t, clone, "commit", "-q", "--allow-empty", "-m", "not yet pushed")
+
+	commits, err := UnpushedCommits(clone)
+	if err != nil {
+		t.Fatalf("UnpushedCommits: %v", err)
+	}
+	if len(commits) != 1 {
+		t.Fatalf("commits = %v, want only the commit ahead of the live upstream", commits)
+	}
+}
+
+// A gone upstream must not hide unpushed work on other branches.
+func TestUnpushedCommitsStillSeesOtherBranchesBesideAGoneOne(t *testing.T) {
+	t.Parallel()
+	clone, origin := pushedClone(t)
+
+	git(t, clone, "checkout", "-q", "-b", "merged")
+	git(t, clone, "commit", "-q", "--allow-empty", "-m", "merged work")
+	git(t, clone, "push", "-q", "-u", "origin", "merged")
+	git(t, origin, "update-ref", "-d", "refs/heads/merged")
+	git(t, clone, "fetch", "-q", "--prune", "origin")
+
+	// Branch from main, not from the merged branch: a new effort starts from
+	// the integration target, and branching off "merged" would legitimately
+	// carry its commit along.
+	git(t, clone, "checkout", "-q", "main")
+	git(t, clone, "checkout", "-q", "-b", "live")
+	git(t, clone, "commit", "-q", "--allow-empty", "-m", "real unpushed work")
+
+	commits, err := UnpushedCommits(clone)
+	if err != nil {
+		t.Fatalf("UnpushedCommits: %v", err)
+	}
+	if len(commits) != 1 {
+		t.Fatalf("commits = %v, want only the live branch's unpushed commit", commits)
 	}
 }

@@ -37,11 +37,23 @@ const (
 	ScopeSnapshotRead    MachineScope = "machine_snapshot:read"
 	ScopeEventsPoll      MachineScope = "repository_events:poll"
 	ScopeEventsAck       MachineScope = "repository_events:ack"
+	// ScopePeerSession is the sole scope a peer credential carries
+	// (peer-connectivity#req:invite-and-join). A peer token is deliberately
+	// refused by every route gated on the enrollment scopes above, so the
+	// session it opens can never become a second consumer of its own queue.
+	ScopePeerSession MachineScope = "peer:session"
 )
 
 var enrollmentScopes = []MachineScope{ScopeSnapshotPublish, ScopeSnapshotRead, ScopeEventsPoll, ScopeEventsAck}
 
+// peerScopes is the second valid scope set validScopes accepts: exactly
+// ScopePeerSession, nothing more and nothing less.
+var peerScopes = []MachineScope{ScopePeerSession}
+
 func cloneEnrollmentScopes() []MachineScope { return append([]MachineScope(nil), enrollmentScopes...) }
+
+// clonePeerScopes returns the one-scope set a peer credential is minted with.
+func clonePeerScopes() []MachineScope { return append([]MachineScope(nil), peerScopes...) }
 
 func hasScope(scopes []MachineScope, required MachineScope) bool {
 	for _, scope := range scopes {
@@ -52,16 +64,33 @@ func hasScope(scopes []MachineScope, required MachineScope) bool {
 	return false
 }
 
-func validScopes(scopes []MachineScope) bool {
-	if len(scopes) != len(enrollmentScopes) {
+// scopeSetsEqual reports whether scopes holds exactly the scopes in want,
+// with no extras and nothing missing, order-independent.
+func scopeSetsEqual(scopes, want []MachineScope) bool {
+	if len(scopes) != len(want) {
 		return false
 	}
-	for _, scope := range enrollmentScopes {
+	for _, scope := range want {
 		if !hasScope(scopes, scope) {
 			return false
 		}
 	}
 	return true
+}
+
+// validScopes accepts exactly one of two sets: the existing full enrollment
+// set, or the peer set (peer:session alone). Anything else — a subset, a
+// superset, or a mix — is rejected, so a credential's scopes are always
+// unambiguously "an enrollment" or "a peer session".
+func validScopes(scopes []MachineScope) bool {
+	return scopeSetsEqual(scopes, enrollmentScopes) || scopeSetsEqual(scopes, peerScopes)
+}
+
+// isPeerScopes reports whether scopes is exactly the peer set, which is how
+// callers tell a peer credential from an enrollment credential once a
+// binding has already passed validScopes.
+func isPeerScopes(scopes []MachineScope) bool {
+	return scopeSetsEqual(scopes, peerScopes)
 }
 
 type MachineCredentialBinding struct {
@@ -101,6 +130,15 @@ func (machine Machine) valid() bool {
 
 type MachineBearerResolver interface {
 	ResolveMachineBearer(*http.Request) (Machine, error)
+}
+
+// MachineIndex answers whether any credential — peer or not — already exists
+// for a MachineID, without exposing the credential body. Invite uses it to
+// refuse a name already held by a non-peer credential
+// (peer-connectivity#req:invite-and-join): the peer trust store alone cannot
+// tell "no peer" from "an enrolled machine that keeps its name".
+type MachineIndex interface {
+	HasCredential(context.Context, string) (bool, error)
 }
 
 type MachineSnapshotStore interface {

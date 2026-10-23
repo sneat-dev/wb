@@ -8,6 +8,7 @@ import "testing"
 // reading "0 terminal artefacts purged" — true of the other counter, and read
 // by every reader as "gc will not touch these".
 func TestSummarizeGCCountsRootStagesSeparatelyFromTaskArtefacts(t *testing.T) {
+	t.Parallel()
 	outcome := &GCOutcome{
 		Totals: map[string]int{},
 		Artifacts: []LifecycleArtifact{

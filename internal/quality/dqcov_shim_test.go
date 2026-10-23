@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // dqCovFakeGo installs a deterministic POSIX shell `go` shim on PATH for the
@@ -12,7 +14,8 @@ import (
 // without touching a real Go toolchain or compiling anything:
 //
 //   - `go list -f {{.ImportPath}} <pattern>` prints $DQCOV_GO_LIST_MAIN when the
-//     pattern is "./..." and $DQCOV_GO_LIST_OTHER otherwise;
+//     pattern is "./..." and $DQCOV_GO_LIST_OTHER otherwise; the sentinel
+//     @pattern makes the latter echo the requested package;
 //   - `go test <pkg> -list ...` prints $DQCOV_GO_TEST_LIST;
 //   - `go test ... -coverprofile=<path>` writes a merged-profile fixture to the
 //     requested profile path when $DQCOV_GO_WRITE_PROFILE is set, using
@@ -45,11 +48,12 @@ for a in "$@"; do
     -coverprofile=*) profile="${a#-coverprofile=}" ;;
   esac
 done
+if [ -n "$DQCOV_GO_LOG" ]; then printf '%s\n' "$*" >> "$DQCOV_GO_LOG"; fi
 case "$1" in
   list)
     if [ -n "$DQCOV_GO_LIST_STDERR" ]; then printf '%s\n' "$DQCOV_GO_LIST_STDERR" >&2; fi
     if [ -n "$DQCOV_GO_LIST_FAIL" ]; then exit 1; fi
-    if [ "$last" = "./..." ]; then printf '%s\n' "$DQCOV_GO_LIST_MAIN"; else printf '%s\n' "$DQCOV_GO_LIST_OTHER"; fi
+    if [ "$last" = "./..." ]; then printf '%s\n' "$DQCOV_GO_LIST_MAIN"; elif [ "$DQCOV_GO_LIST_OTHER" = "@pattern" ]; then printf '%s\n' "$last"; else printf '%s\n' "$DQCOV_GO_LIST_OTHER"; fi
     exit 0
     ;;
   test)
@@ -74,7 +78,7 @@ pkg/a.go:1.1,2.2 2 1"
 esac
 exit 0
 `
-	if err := os.WriteFile(shim, []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(shim, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))

@@ -20,8 +20,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/quality"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // depsCovRuntimeAdapter is a scripted deps adapter used to drive
@@ -64,7 +67,7 @@ func depsCovRuntimeRequireShell(t *testing.T) {
 func depsCovRuntimeWriteExecutable(t *testing.T, dir, name, body string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(path, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return path
@@ -195,6 +198,7 @@ func TestDepsCovRuntimeGoCommandEnvironmentSkipsMalformedAndAddsMissingNames(t *
 }
 
 func TestDepsCovRuntimeRunCommandRetriesTransientFailure(t *testing.T) {
+	t.Parallel()
 	depsCovRuntimeRequireShell(t)
 	dir := t.TempDir()
 	counter := filepath.Join(dir, "attempts")
@@ -223,6 +227,7 @@ printf 'recovered on attempt %s' "$attempt"
 }
 
 func TestDepsCovRuntimeRunCommandReportsTimeout(t *testing.T) {
+	t.Parallel()
 	depsCovRuntimeRequireShell(t)
 	dir := t.TempDir()
 	// `exec` replaces the shell with sleep, so the context kill reaches the
@@ -429,51 +434,6 @@ func TestDepsCovRuntimeDependencyDeltasSortByEveryTiebreakKey(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("delta order = %q, want %q", got, want)
-	}
-}
-
-func TestDepsCovRuntimeRepositoryReportFromResultProjectsEveryField(t *testing.T) {
-	t.Parallel()
-	result := orchestrate.Result[[]Decision]{
-		Repository: "acme/app", CanonicalDir: "/canonical", WorktreeDir: "/worktree",
-		Branch: "wb/deps-set-x", Ref: "main", Status: "changed", Reason: "needs exact target",
-		Metadata: []Decision{
-			{Dependency: "b", Ecosystem: EcosystemNPM, File: "b/package.json", Selector: "dependencies.b", BeforeRef: "1.0.0", TargetVersion: "2.0.0", AfterRef: "2.0.0", Action: "updated"},
-			{Dependency: "a", Ecosystem: EcosystemNPM, File: "a/package.json", Selector: "dependencies.a", BeforeRef: "1.0.0", TargetVersion: "2.0.0", AfterRef: "2.0.0", Action: "updated"},
-		},
-		ChangedFiles:  []string{"z.txt", "a.txt"},
-		Verifications: []quality.VerificationEntry{{Language: "go", Check: quality.CheckTest, Status: quality.StatusPassed, Detail: "ok"}},
-		Commit:        "abc123", Pushed: true, PR: "https://example.test/pr/7",
-		Checks: []orchestrate.RemoteCheck{{Name: "ci/test", Bucket: "pass", Link: "https://example.test/check/1"}},
-		Merged: true, Held: true,
-	}
-	report := RepositoryReportFromResult(result)
-	if report.Repository != "acme/app" || report.CanonicalDir != "/canonical" || report.WorktreeDir != "/worktree" {
-		t.Fatalf("identity projection = %+v", report)
-	}
-	if report.Branch != "wb/deps-set-x" || report.Ref != "main" || report.Status != "changed" || report.Reason != "needs exact target" {
-		t.Fatalf("lifecycle projection = %+v", report)
-	}
-	if report.Commit != "abc123" || !report.Pushed || report.PR != "https://example.test/pr/7" || !report.Merged || !report.Held {
-		t.Fatalf("publication projection = %+v", report)
-	}
-	if len(report.Verifications) != 1 || report.Verifications[0].Language != "go" {
-		t.Fatalf("verification projection = %+v", report.Verifications)
-	}
-	if !reflect.DeepEqual(report.ChangedFiles, []string{"a.txt", "z.txt"}) {
-		t.Fatalf("changed files = %q, want sorted", report.ChangedFiles)
-	}
-	if len(report.Decisions) != 2 || report.Decisions[0].File != "a/package.json" {
-		t.Fatalf("decisions = %+v, want sorted by file", report.Decisions)
-	}
-	if len(report.DependencyDeltas) != 2 || report.DependencyDeltas[0].Package != "a" {
-		t.Fatalf("dependency deltas = %+v", report.DependencyDeltas)
-	}
-	if len(report.Checks) != 1 || report.Checks[0].Name != "ci/test" || report.Checks[0].Bucket != "pass" || report.Checks[0].Link != "https://example.test/check/1" {
-		t.Fatalf("checks = %+v", report.Checks)
-	}
-	if !reflect.DeepEqual(report, repositoryReportFromResult(result)) {
-		t.Fatalf("RepositoryReportFromResult diverged from repositoryReportFromResult")
 	}
 }
 
@@ -932,6 +892,7 @@ func TestDepsCovRuntimeChangedPublishableNxProjectsBranches(t *testing.T) {
 }
 
 func TestDepsCovRuntimeChangedPublishableNxProjectsUsesCandidateGitDiff(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeTestFile(t, filepath.Join(dir, "packages/a/package.json"), `{"name":"@acme/a"}`+"\n")
 	writeTestFile(t, filepath.Join(dir, "packages/a/project.json"), `{"name":"a"}`+"\n")
@@ -1038,6 +999,7 @@ func TestDepsCovRuntimeGenerateNxVersionPlanBranches(t *testing.T) {
 }
 
 func TestDepsCovRuntimeGenerateNxVersionPlanRefusesAnUncreatablePlanDirectory(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("dangling-symlink setup is not portable to windows")
 	}
@@ -1262,5 +1224,47 @@ func TestDepsCovRuntimeInspectPeersReportsConflictingLockfileEvidence(t *testing
 	row := peerRowByName(t, report, "react")
 	if row.Verdict != PeerMissing || !strings.Contains(row.Reason, "conflicting") {
 		t.Fatalf("row = %+v, want the conflicting lockfile evidence surfaced", row)
+	}
+}
+
+func TestRepositoryReportFromResultProjectsEveryField(t *testing.T) {
+	t.Parallel()
+	result := orchestrate.Result[[]Decision]{
+		Repository: "acme/app", CanonicalDir: "/canonical", WorktreeDir: "/worktree",
+		Branch: "wb/deps-set-x", Ref: "main", Status: "changed", Reason: "needs exact target",
+		Metadata: []Decision{
+			{Dependency: "b", Ecosystem: EcosystemNPM, File: "b/package.json", Selector: "dependencies.b", BeforeRef: "1.0.0", TargetVersion: "2.0.0", AfterRef: "2.0.0", Action: "updated"},
+			{Dependency: "a", Ecosystem: EcosystemNPM, File: "a/package.json", Selector: "dependencies.a", BeforeRef: "1.0.0", TargetVersion: "2.0.0", AfterRef: "2.0.0", Action: "updated"},
+		},
+		ChangedFiles:  []string{"z.txt", "a.txt"},
+		Verifications: []quality.VerificationEntry{{Language: "go", Check: quality.CheckTest, Status: quality.StatusPassed, Detail: "ok"}},
+		Commit:        "abc123", Pushed: true, PR: "https://example.test/pr/7",
+		Checks: []githubchecks.RemoteCheck{{Name: "ci/test", Bucket: "pass", Link: "https://example.test/check/1"}},
+		Merged: true, Held: true,
+	}
+	report := repositoryReportFromResult(result)
+	if report.Repository != "acme/app" || report.CanonicalDir != "/canonical" || report.WorktreeDir != "/worktree" {
+		t.Fatalf("identity projection = %+v", report)
+	}
+	if report.Branch != "wb/deps-set-x" || report.Ref != "main" || report.Status != "changed" || report.Reason != "needs exact target" {
+		t.Fatalf("lifecycle projection = %+v", report)
+	}
+	if report.Commit != "abc123" || !report.Pushed || report.PR != "https://example.test/pr/7" || !report.Merged || !report.Held {
+		t.Fatalf("publication projection = %+v", report)
+	}
+	if len(report.Verifications) != 1 || report.Verifications[0].Language != "go" {
+		t.Fatalf("verification projection = %+v", report.Verifications)
+	}
+	if !reflect.DeepEqual(report.ChangedFiles, []string{"a.txt", "z.txt"}) {
+		t.Fatalf("changed files = %q, want sorted", report.ChangedFiles)
+	}
+	if len(report.Decisions) != 2 || report.Decisions[0].File != "a/package.json" {
+		t.Fatalf("decisions = %+v, want sorted by file", report.Decisions)
+	}
+	if len(report.DependencyDeltas) != 2 || report.DependencyDeltas[0].Package != "a" {
+		t.Fatalf("dependency deltas = %+v", report.DependencyDeltas)
+	}
+	if len(report.Checks) != 1 || report.Checks[0].Name != "ci/test" || report.Checks[0].Bucket != "pass" || report.Checks[0].Link != "https://example.test/check/1" {
+		t.Fatalf("checks = %+v", report.Checks)
 	}
 }

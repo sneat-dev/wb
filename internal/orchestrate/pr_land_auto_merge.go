@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/sneat-dev/wb/internal/githubchecks"
+	"github.com/sneat-dev/wb/internal/githubobserver"
 )
 
 // enablePullRequestAutoMerge asks GitHub to merge this pull request once its
@@ -48,10 +51,7 @@ func enablePullRequestAutoMerge(ctx context.Context, repository, number, mergeMe
 		"-f", "subject="+subject,
 		"-f", "body="+body)
 	if response.ExitCode != 0 {
-		message := strings.TrimSpace(string(response.Stderr))
-		if message == "" {
-			message = strings.TrimSpace(string(response.Stdout))
-		}
+		message := githubobserver.CommandDiagnostic(response)
 		return fmt.Sprintf("enable auto-merge: %s", message)
 	}
 	return ""
@@ -89,9 +89,17 @@ func autoMergeBypassesAGuard(ctx context.Context, options PullRequestLandOptions
 		return "--keep-commits merges a rebuilt branch, not this head"
 	}
 	if options.AllowUnfenced {
+		// REQ waiver-on-unfenced-target: where GitHub enforces no required
+		// check, a waiver is judged by WB alone, so GitHub must not merge
+		// before that verdict.
+		if options.hasWaivers() {
+			if required, _, reason := options.resolveInspector().RequiredChecks(ctx, options.Repository, target, false); reason != "" || len(required) == 0 {
+				return "waivers on a target without server-enforced required checks are judged by WB before it merges"
+			}
+		}
 		return ""
 	}
-	_, freshnessAuthority, reason := targetBranchRequiredChecks(ctx, options.Repository, target, true)
+	_, freshnessAuthority, reason := githubchecks.RequiredChecks(ctx, options.Repository, target, true)
 	if reason != "" {
 		return "target policy unreadable: " + reason
 	}

@@ -25,14 +25,18 @@ type gitFilesystemCapabilityRoot struct {
 }
 
 func requireGitFilesystemCapability() error {
-	if err := platformGitFilesystemCapabilityAvailable(); err != nil {
+	return requireGitFilesystemCapabilityWithAdmission(platformGitFilesystemCapabilityAvailable, trustedGitExecutable)
+}
+
+func requireGitFilesystemCapabilityWithAdmission(available func() error, executable func() (string, error)) error {
+	if err := available(); err != nil {
 		return err
 	}
 	// Resolve the executable before Create/Cleanup has prepared any writable
 	// WB state. On macOS this also avoids invoking the /usr/bin/git xcrun shim
 	// inside the restricted child, where its global cache is not an authority
 	// WB should grant to Git.
-	_, err := trustedGitExecutable()
+	_, err := executable()
 	return err
 }
 
@@ -73,4 +77,21 @@ func newGitFilesystemCapability(writeRoots ...gitFilesystemCapabilityRoot) (gitF
 // fallback.
 func runGitWithFilesystemCapability(capability gitFilesystemCapability, executable string, args, environment []string) int {
 	return runPlatformGitWithFilesystemCapability(capability, executable, args, environment)
+}
+
+// runSecureGitHelper keeps hook runtime descriptors alive until Git finishes,
+// after each caller has validated its own retained repository descriptors.
+func runSecureGitHelper(prefix, repoPath string, writeRoots []gitFilesystemCapabilityRoot, executable string, args, environment []string) int {
+	writeRoots, hookRoots, err := appendSecureHookExecutionCapabilityRoots(repoPath, helperProjectsRoot(), writeRoots)
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "%s: prepare hook runtime layout: %v\n", prefix, err)
+		return 1
+	}
+	defer closeSecureHookRootHandles(hookRoots)
+	capability, err := newGitFilesystemCapability(writeRoots...)
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "%s: %v\n", prefix, err)
+		return 1
+	}
+	return runGitWithFilesystemCapability(capability, executable, args, environment)
 }

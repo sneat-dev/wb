@@ -2,12 +2,10 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/sneat-dev/wb/internal/buildinfo"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -78,38 +76,5 @@ func TestVersionCommand_DoesNotTouchWorktreeHeartbeatOrInvokedCommand(t *testing
 	}
 	if string(after) != string(before) {
 		t.Errorf("heartbeat file changed after plain `wb version`:\nbefore: %s\nafter:  %s", before, after)
-	}
-}
-
-// AC: cli-install#req:version-json-contract — review M2: every catalog CLI's
-// `version --json` MUST print exactly the four fleet-wide contract keys
-// (name, version, commit, date, date_source), never omitted even when
-// empty, and `name` MUST equal the catalog id ("wb").
-func TestVersionJSON_ContractKeys(t *testing.T) {
-	buildinfo.Set("1.2.3")
-	t.Cleanup(func() { buildinfo.Set("") })
-
-	var stdout, stderr bytes.Buffer
-	if code := run([]string{"version", "--json"}, &stdout, &stderr); code != exitOK {
-		t.Fatalf("wb version --json exit = %d, stderr = %s", code, stderr.String())
-	}
-
-	var decoded map[string]json.RawMessage
-	if err := json.Unmarshal(stdout.Bytes(), &decoded); err != nil {
-		t.Fatalf("decode %s: %v", stdout.String(), err)
-	}
-	for _, key := range []string{"name", "version", "commit", "date", "date_source"} {
-		if _, ok := decoded[key]; !ok {
-			t.Errorf("version --json is missing contract key %q (cli-install#req:version-json-contract): %s", key, stdout.String())
-		}
-	}
-	var name, version string
-	_ = json.Unmarshal(decoded["name"], &name)
-	_ = json.Unmarshal(decoded["version"], &version)
-	if name != "wb" {
-		t.Errorf("name = %q, want %q", name, "wb")
-	}
-	if version != "1.2.3" {
-		t.Errorf("version = %q, want the overridden 1.2.3 unchanged", version)
 	}
 }

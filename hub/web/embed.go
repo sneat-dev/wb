@@ -62,6 +62,17 @@ const dashboardIndex = "dashboard/index.html"
 const notBuiltPage = "The bench dashboard was not built into this wb binary. " +
 	"Run `pnpm install && pnpm build` in hub/web, then rebuild wb.\n"
 
+// PagePolicy is the Content-Security-Policy of every response of this handler.
+// The Astro build emits inline scripts (the two `is:inline` scripts of
+// BaseLayout.astro, and any bundled script small enough for the build to
+// inline), so this subtree alone still allows them; every other page of the
+// daemon's listener refuses inline script. The pages here build what they
+// show with createElement and textContent, and take a link's address only
+// from a record whose parser accepted it as an http(s) address
+// (src/data/worktrees.ts isSafeURL, src/data/github-app.ts safeGitHubURL), so
+// no stored value becomes markup or a script address.
+const PagePolicy = "default-src 'self'; script-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'self'"
+
 // Built reports whether a real dashboard is embedded.
 func Built() bool {
 	_, err := fs.Stat(distFS, dashboardIndex)
@@ -88,6 +99,7 @@ func Handler() http.Handler { return handlerFor(distFS, Built()) }
 // pages are both testable in a checkout that has only one of them.
 func handlerFor(files fs.FS, built bool) http.Handler {
 	return http.StripPrefix(strings.TrimSuffix(MountPath, "/"), http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Security-Policy", PagePolicy)
 		if !built {
 			writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			writer.WriteHeader(http.StatusOK)

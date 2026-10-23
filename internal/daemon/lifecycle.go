@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/filewrite"
 )
 
 const (
@@ -105,6 +107,48 @@ type State struct {
 	// restarts the daemon, and without this the reason would exist only in a
 	// log the same removal may have unlinked.
 	StoppedReason string `json:"stopped_reason,omitempty"`
+
+	// Supervisor and SupervisorExecPID are what the process itself observed
+	// about its own start, through DetectSupervisor. They are empty in records
+	// written before this field existed and in a record whose process was
+	// never observed to start under a supervisor at all — both read as
+	// SupervisorNone by a reporter, since neither can name an owner to hand a
+	// restart to (sneat-dev/wb#617, sneat-dev/wb#546).
+	Supervisor        Supervisor `json:"supervisor,omitempty"`
+	SupervisorExecPID string     `json:"supervisor_exec_pid,omitempty"`
+
+	// SupervisorLabel is the supervisor's own identity for the job it started,
+	// when DetectSupervisor could read one — currently only launchd's job
+	// label (from XPC_SERVICE_NAME). It is what lets a reader tell wb's own
+	// self-managed launchd job (cmd/wb's daemonLaunchdLabel, which wb already
+	// knows how to re-bootstrap with a new binary) from a foreign one wb must
+	// hand off to instead of touching directly (sneat-dev/wb#622 review item 1).
+	SupervisorLabel string `json:"supervisor_label,omitempty"`
+
+	// SystemdUnit is the systemd unit name this process observed ITSELF
+	// running inside, from its own /proc/self/cgroup, at `daemon serve`
+	// startup -- independent of any config a LATER, separate `wb daemon
+	// status` invocation's own environment happens to carry. A later reader
+	// checking this daemon's unit health MUST prefer this field over its own
+	// configured/default unit name: unit identity read from the status
+	// invoker's own environment gives a false negative for a daemon
+	// correctly supervised under a unit name the status invocation was never
+	// told about (sneat-dev/wb#622 review round 3, item M3). Empty when this
+	// process is not in a systemd service unit's own cgroup at all.
+	SystemdUnit string `json:"systemd_unit,omitempty"`
+}
+
+// ReportedSupervisor is Supervisor normalized for a reader: an empty or
+// otherwise unrecognized recorded value — a record written before this field
+// existed, most notably — is reported as SupervisorNone rather than as
+// whatever raw string happens to be on disk, because "no supervisor known" is
+// exactly the state that must never launch a detached replacement believing
+// something else owns the process.
+func (s State) ReportedSupervisor() Supervisor {
+	if s.Supervisor.Valid() {
+		return s.Supervisor
+	}
+	return SupervisorNone
 }
 
 func (s State) Valid() error {
@@ -127,15 +171,9 @@ func (s State) Valid() error {
 	return nil
 }
 
-// NewStarting creates the next fenced queue generation. Existing queue jobs
-// stay in the durable queue file owned by the scheduler; this record tells the
-// replacement scheduler exactly which binary owned the preceding generation.
-func NewStarting(previous *State, listen string, provenance Provenance, ownerToken string, now time.Time) State {
-	return NewStartingAt(previous, listen, provenance, ownerToken, "", "", now)
-}
-
-// NewStartingAt is NewStarting with the daemon's own location recorded, so the
-// generation it opens names the home it belongs to.
+// NewStartingAt creates the next fenced queue generation and records the
+// daemon's own location, so the generation it opens names the home it
+// belongs to.
 func NewStartingAt(previous *State, listen string, provenance Provenance, ownerToken, wbHome, statePath string, now time.Time) State {
 	state := newStarting(previous, listen, provenance, ownerToken, now)
 	state.WBHome = wbHome
@@ -235,6 +273,15 @@ func (s Store) Load() (State, bool, error) {
 }
 
 func (s Store) Save(state State) error {
+	return s.saveInjected(state, nil)
+}
+
+// saveInjected is Save's test seam (task-9 PR-7): every production call site
+// reaches it only through Save, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged. A test passes
+// its own Injector to reach the stage/chmod/write/sync/close/rename failure
+// branches deterministically.
+func (s Store) saveInjected(state State, inj *filewrite.Injector) error {
 	if err := state.Valid(); err != nil {
 		return err
 	}
@@ -245,28 +292,28 @@ func (s Store) Save(state State) error {
 	if err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(s.Path), ".daemon-state-*")
+	temporary, err := filewrite.CreateTemp(filepath.Dir(s.Path), ".daemon-state-*", inj)
 	if err != nil {
 		return err
 	}
 	temporaryName := temporary.Name()
 	defer func() { _ = os.Remove(temporaryName) }()
-	if err := temporary.Chmod(0o600); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.ChmodFile(temporary, 0o600, temporaryName, inj); err != nil {
+		_ = filewrite.Close(temporary, temporaryName, inj)
 		return err
 	}
-	if _, err := temporary.Write(append(data, '\n')); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.Write(temporary, append(data, '\n'), temporaryName, inj); err != nil {
+		_ = filewrite.Close(temporary, temporaryName, inj)
 		return err
 	}
-	if err := temporary.Sync(); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.Sync(temporary, temporaryName, inj); err != nil {
+		_ = filewrite.Close(temporary, temporaryName, inj)
 		return err
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, temporaryName, inj); err != nil {
 		return err
 	}
-	return os.Rename(temporaryName, s.Path)
+	return filewrite.Rename(temporaryName, s.Path, inj)
 }
 
 // ProvenanceForExecutable produces exact local evidence for a running binary.

@@ -6,6 +6,7 @@ import (
 )
 
 func TestAppendAddsStableEffortAndStreamWithoutBranchOrWorktree(t *testing.T) {
+	t.Parallel()
 	got := Append("Summary.\n", Provenance{Effort: "checkout-rewrite", Stream: "cli-helpers"})
 	for _, want := range []string{
 		"WB effort: `checkout-rewrite`",

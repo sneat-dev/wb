@@ -1,0 +1,47 @@
+<div class="filter-line">
+  <div class="filter">
+    <app-glyph class="lead" [paths]="search" />
+    <input
+      #box
+      class="filter-input"
+      type="text"
+      autocomplete="off"
+      spellcheck="false"
+      [attr.aria-label]="'Filter ' + noun()"
+      placeholder="Filter: words, sneat-*/*-go, -excluded, field:value"
+      [attr.aria-describedby]="hintOpen() ? id() + '-hint' : null"
+      [value]="text()"
+      (input)="edited.emit(box.value)"
+    />
+    @if (text() !== '') {
+      <button type="button" class="icon" aria-label="Clear the filter text" title="Clear the filter text" (click)="clear(); box.focus()"><app-glyph [paths]="cross" /></button>
+    }
+    <button type="button" class="icon" aria-label="How the filter works" [attr.aria-expanded]="hintOpen()" (click)="hintOpen.set(!hintOpen())"><app-glyph [paths]="help" /></button>
+  </div>
+  <span class="count tnum">@if (atLeast()) {at least }{{ shown() }} of {{ total() }}</span>
+</div>
+@if (hintOpen()) {
+  <p class="hint" role="note" [id]="id() + '-hint'">
+    <code>fix ci</code> every word must match &middot; <code>sneat-*/*-go</code> <code>*</code> any run, <code>?</code> one character &middot; <code>-wb</code> leaves out &middot; <code>"fix ci"</code> keeps the space<br />
+    <code>field:value</code> searches one field: {{ fields() }}. A quoted value is matched whole. Not case sensitive; no regular expressions.
+  </p>
+}
+<div class="chips">
+  <div class="chip-group" role="group" aria-label="Quick filters">
+    @for (chip of chips(); track chip.id) {
+      <button type="button" class="toggle" [attr.aria-pressed]="activeChips().includes(chip.id)" [attr.title]="chip.hint ?? null" (click)="chipToggled.emit(chip.id)">
+        @if (activeChips().includes(chip.id)) {
+          <app-glyph [paths]="tick" />
+        }
+        {{ chip.label }}
+      </button>
+    }
+  </div>
+  @if (machines().length > 0) {
+    <div class="chip-group" role="group" aria-label="Machines">
+      @for (machine of machines(); track machine.id) {
+        <button type="button" class="toggle" [attr.aria-pressed]="activeMachines().includes(machine.id)" (click)="machineToggled.emit(machine.id)">{{ machine.label }}</button>
+      }
+    </div>
+  }
+</div>

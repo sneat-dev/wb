@@ -1,0 +1,41 @@
+name: Playwright web setup
+description: >-
+  Sets up Node, Corepack (pnpm), the frozen-lockfile dependencies of one web
+  application and its Playwright browsers. The one place in the repository that
+  installs Playwright browsers, shared by the hub and Cockpit web workflows.
+
+inputs:
+  working-directory:
+    description: Directory of the web application (where its package.json and lockfile are).
+    required: true
+  node-version:
+    description: Node major version to install.
+    required: true
+  browsers:
+    description: Space-separated Playwright browsers to install.
+    required: false
+    default: chromium
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Node
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Enable Corepack
+      shell: bash
+      run: corepack enable
+
+    - name: Install dependencies
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: pnpm install --frozen-lockfile
+
+    - name: Install Playwright browsers
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        BROWSERS: ${{ inputs.browsers }}
+      run: pnpm exec playwright install --with-deps $BROWSERS

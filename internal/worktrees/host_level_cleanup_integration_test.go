@@ -31,21 +31,7 @@ func newHostLevelGitFixture(t *testing.T) *gitFixture {
 	remote := newSharedHostedOrigin(t)
 	canonical := cloneHostedOriginInto(t, remote, projectsRoot, "acme", "app")
 	configureGitUser(t, canonical)
-	var err error
-	projectsRoot, err = filepath.EvalSymlinks(projectsRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	canonical, err = filepath.EvalSymlinks(canonical)
-	if err != nil {
-		t.Fatal(err)
-	}
-	homeParent, err := filepath.EvalSymlinks(filepath.Dir(home))
-	if err != nil {
-		t.Fatal(err)
-	}
-	home = filepath.Join(homeParent, filepath.Base(home))
-	return &gitFixture{projectsRoot: projectsRoot, canonical: canonical, remote: remote, home: home}
+	return resolvedGitFixture(t, projectsRoot, canonical, remote, home)
 }
 
 // prepareMergedHostLevelTask is prepareMergedTask's host-level counterpart:

@@ -9,6 +9,7 @@ import (
 )
 
 func TestDqCovRawExecutionPolicyPathIsPerUserAndOutsideProjects(t *testing.T) {
+	t.Parallel()
 	path, err := RawExecutionPolicyPath()
 	if err != nil {
 		t.Fatal(err)
@@ -25,6 +26,7 @@ func TestDqCovRawExecutionPolicyPathIsPerUserAndOutsideProjects(t *testing.T) {
 // shape where no explicit path is supplied: it must resolve the per-user policy
 // and still fail closed while that file is absent.
 func TestDqCovLoadRawExecutionPolicyWithDefaultPath(t *testing.T) {
+	t.Parallel()
 	projectsRoot := t.TempDir()
 	defaultPath, err := RawExecutionPolicyPath()
 	if err != nil {
@@ -40,9 +42,11 @@ func TestDqCovLoadRawExecutionPolicyWithDefaultPath(t *testing.T) {
 }
 
 func TestDqCovLoadRawExecutionPolicySurfacesUnresolvableAndUninspectablePaths(t *testing.T) {
+	t.Parallel()
 	projectsRoot := t.TempDir()
 
 	t.Run("policy directory does not exist", func(t *testing.T) {
+		t.Parallel()
 		allowed, err := LoadRawExecutionPolicy(filepath.Join(t.TempDir(), "absent", "policy.json"), projectsRoot)
 		if err != nil || allowed {
 			t.Fatalf("absent policy directory = %t, %v", allowed, err)
@@ -50,6 +54,7 @@ func TestDqCovLoadRawExecutionPolicySurfacesUnresolvableAndUninspectablePaths(t 
 	})
 
 	t.Run("projects root cannot be resolved", func(t *testing.T) {
+		t.Parallel()
 		path := filepath.Join(t.TempDir(), "policy.json")
 		writeRawExecutionPolicy(t, path, []byte(enabledRawExecutionPolicy), 0o600)
 		allowed, err := LoadRawExecutionPolicy(path, filepath.Join(t.TempDir(), "absent-root"))
@@ -59,6 +64,7 @@ func TestDqCovLoadRawExecutionPolicySurfacesUnresolvableAndUninspectablePaths(t 
 	})
 
 	t.Run("policy path below a regular file", func(t *testing.T) {
+		t.Parallel()
 		file := filepath.Join(t.TempDir(), "regular-file")
 		if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
@@ -70,6 +76,7 @@ func TestDqCovLoadRawExecutionPolicySurfacesUnresolvableAndUninspectablePaths(t 
 	})
 
 	t.Run("policy directory below a regular file", func(t *testing.T) {
+		t.Parallel()
 		file := filepath.Join(t.TempDir(), "regular-file")
 		if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
@@ -82,6 +89,7 @@ func TestDqCovLoadRawExecutionPolicySurfacesUnresolvableAndUninspectablePaths(t 
 }
 
 func TestDqCovLoadRawExecutionPolicyRejectsTrailingAndUnknownContent(t *testing.T) {
+	t.Parallel()
 	projectsRoot := t.TempDir()
 	externalRoot := t.TempDir()
 	document := `{"version":1,"allow_raw_daemon_execution":true}`
@@ -98,6 +106,7 @@ func TestDqCovLoadRawExecutionPolicyRejectsTrailingAndUnknownContent(t *testing.
 	}
 	for _, check := range checks {
 		t.Run(check.name, func(t *testing.T) {
+			t.Parallel()
 			path := filepath.Join(externalRoot, check.name+".json")
 			writeRawExecutionPolicy(t, path, []byte(check.contents), 0o600)
 			allowed, err := LoadRawExecutionPolicy(path, projectsRoot)
@@ -112,6 +121,7 @@ func TestDqCovLoadRawExecutionPolicyRejectsTrailingAndUnknownContent(t *testing.
 }
 
 func TestDqCovPathWithinComparesResolvedAbsolutePaths(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	resolvedRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
@@ -139,6 +149,7 @@ func TestDqCovPathWithinComparesResolvedAbsolutePaths(t *testing.T) {
 	}
 	for _, check := range checks {
 		t.Run(check.name, func(t *testing.T) {
+			t.Parallel()
 			got, err := pathWithin(root, check.candidate)
 			if err != nil {
 				t.Fatal(err)

@@ -416,6 +416,7 @@ func itoaSlCovLauncher(value int) string {
 }
 
 func TestSlCovValidatePrivatePlanRejectsDivergence(t *testing.T) {
+	t.Parallel()
 	fx := newLauncherRetryFixture(t)
 	state, err := fx.store.Load(fx.request.HandoffID)
 	if err != nil {
@@ -450,6 +451,7 @@ func TestSlCovValidatePrivatePlanRejectsDivergence(t *testing.T) {
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			broken := fx.plan
 			mutate(&broken)
 			if err := validatePrivatePlan(state, broken); err == nil {
@@ -458,6 +460,7 @@ func TestSlCovValidatePrivatePlanRejectsDivergence(t *testing.T) {
 		})
 	}
 	t.Run("sparse optional fields", func(t *testing.T) {
+		t.Parallel()
 		sparse := fx.plan
 		sparse.PinnedBranch, sparse.AuthorityFile, sparse.ContinuationKind, sparse.ContinuationDigest = "", "", "", ""
 		if err := validatePrivatePlan(state, sparse); err != nil {
@@ -475,8 +478,8 @@ func TestSlCovVerifyLauncherWorktreeReadsAndDigestsTheHandover(t *testing.T) {
 	if err := os.Chdir(fx.worktree); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = os.Chdir(previous) }()
-	if err := verifyLauncherWorktree(fx.plan, fx.request, fx.store); err != nil {
+	t.Cleanup(func() { _ = os.Chdir(previous) })
+	if err := verifyLauncherWorktreeWithDirectory(fx.plan, fx.request, fx.store, os.Getwd, os.Stat); err != nil {
 		t.Fatalf("tracked handover = %v", err)
 	}
 	t.Run("wrong cwd", func(t *testing.T) {
@@ -484,10 +487,13 @@ func TestSlCovVerifyLauncherWorktreeReadsAndDigestsTheHandover(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer func() { _ = os.Chdir(fx.worktree) }()
-		if err := verifyLauncherWorktree(fx.plan, fx.request, fx.store); err == nil {
+		if err := verifyLauncherWorktreeWithDirectory(fx.plan, fx.request, fx.store, os.Getwd, os.Stat); err == nil {
 			t.Fatal("accepted a foreign cwd")
 		}
 	})
+	// "missing handover" and "changed handover digest" both mutate the same
+	// on-disk handover file inside fx.worktree, so they are left serial
+	// rather than racing each other.
 	t.Run("missing handover", func(t *testing.T) {
 		path := filepath.Join(fx.worktree, filepath.FromSlash(fx.request.HandoverPath))
 		original, err := os.ReadFile(path)
@@ -498,7 +504,7 @@ func TestSlCovVerifyLauncherWorktreeReadsAndDigestsTheHandover(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer func() { _ = os.WriteFile(path, original, 0o644) }()
-		if err := verifyLauncherWorktree(fx.plan, fx.request, fx.store); err == nil {
+		if err := verifyLauncherWorktreeWithDirectory(fx.plan, fx.request, fx.store, os.Getwd, os.Stat); err == nil {
 			t.Fatal("accepted a missing handover")
 		}
 	})
@@ -512,18 +518,20 @@ func TestSlCovVerifyLauncherWorktreeReadsAndDigestsTheHandover(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer func() { _ = os.WriteFile(path, original, 0o644) }()
-		if err := verifyLauncherWorktree(fx.plan, fx.request, fx.store); err == nil || !strings.Contains(err.Error(), "digest changed") {
+		if err := verifyLauncherWorktreeWithDirectory(fx.plan, fx.request, fx.store, os.Getwd, os.Stat); err == nil || !strings.Contains(err.Error(), "digest changed") {
 			t.Fatalf("tampered handover = %v", err)
 		}
 	})
 	t.Run("missing worktree", func(t *testing.T) {
+		t.Parallel()
 		broken := fx.plan
 		broken.WorktreeDir = filepath.Join(t.TempDir(), "absent")
-		if err := verifyLauncherWorktree(broken, fx.request, fx.store); err == nil {
+		if err := verifyLauncherWorktreeWithDirectory(broken, fx.request, fx.store, os.Getwd, os.Stat); err == nil {
 			t.Fatal("accepted a missing worktree")
 		}
 	})
 	t.Run("private handover", func(t *testing.T) {
+		t.Parallel()
 		request := completeLaunchTestRequest(t)
 		request.HandoverPath = ""
 		request.HandoverContent = "private handover\n"
@@ -547,12 +555,12 @@ func TestSlCovVerifyLauncherWorktreeReadsAndDigestsTheHandover(t *testing.T) {
 		_ = lock.Close()
 		plan := fx.plan
 		plan.WorktreeDir = fx.worktree
-		if err := verifyLauncherWorktree(plan, request, store); err != nil {
+		if err := verifyLauncherWorktreeWithDirectory(plan, request, store, os.Getwd, os.Stat); err != nil {
 			t.Fatalf("private handover = %v", err)
 		}
 		pruned := sessionmove.NewStore(store.Root)
 		if err := os.Remove(filepath.Join(store.Root, request.HandoffID, "handover.md")); err == nil {
-			if err := verifyLauncherWorktree(plan, request, pruned); err == nil {
+			if err := verifyLauncherWorktreeWithDirectory(plan, request, pruned, os.Getwd, os.Stat); err == nil {
 				t.Fatal("accepted a missing private handover")
 			}
 		}

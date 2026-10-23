@@ -9,7 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+	"github.com/sneat-dev/wb/internal/githubobserver/testfixture"
+
 	"github.com/sneat-dev/wb/internal/quality"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // installWorktreeMergeDeferralGH installs a fake `gh` that serves the three
@@ -29,7 +33,7 @@ func installWorktreeMergeDeferralGH(t *testing.T, branchJSON, classicDetailJSON,
 		"  'api repos/acme/app/rules/branches/main?per_page=100 --include'|'api repos/acme/app/rules/branches/main?per_page=100') printf '%s\\n' \"$WB_TEST_RULES_JSON\" ;;\n" +
 		"  *) echo \"unexpected gh command: $*\" >&2; exit 2 ;;\n" +
 		"esac\n"
-	if err := os.WriteFile(script, []byte(withEmptyActionsRuns(body)), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(testfixture.WithEmptyActionsRuns(body)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("WB_TEST_BRANCH_JSON", branchJSON)
@@ -49,9 +53,26 @@ func TestWorktreeMergeValidationDeferralEligible(t *testing.T) {
 		branchJSON        string
 		classicDetailJSON string
 		rulesJSON         string
+		mergeQueue        bool
 		wantEligible      bool
 		wantReasonHas     string
 	}{
+		{
+			name:          "merge queue fences an unstrict non-empty policy",
+			branchJSON:    `{"protected":true,"protection":{}}`,
+			rulesJSON:     `[{"type":"required_status_checks","ruleset_id":3,"parameters":{"strict_required_status_checks_policy":false,"required_status_checks":[{"context":"CI"}]}},{"type":"merge_queue","ruleset_id":3,"parameters":{"merge_method":"MERGE"}}]`,
+			mergeQueue:    true,
+			wantEligible:  true,
+			wantReasonHas: "github merge queue",
+		},
+		{
+			name:          "merge queue with no required checks stays local",
+			branchJSON:    `{"protected":true,"protection":{}}`,
+			rulesJSON:     `[{"type":"merge_queue","ruleset_id":3,"parameters":{"merge_method":"MERGE"}}]`,
+			mergeQueue:    true,
+			wantEligible:  false,
+			wantReasonHas: "no required status checks",
+		},
 		{
 			name:              "authoritative non-empty fenced policy defers",
 			branchJSON:        `{"protected":true,"protection":{"required_pull_request_reviews":{},"required_status_checks":{}}}`,
@@ -96,7 +117,7 @@ func TestWorktreeMergeValidationDeferralEligible(t *testing.T) {
 			} else {
 				installWorktreeMergeDeferralGH(t, test.branchJSON, test.classicDetailJSON, test.rulesJSON)
 			}
-			eligible, reason := worktreeMergeValidationDeferralEligible(context.Background(), "acme/app", "main")
+			eligible, reason := worktreeMergeValidationDeferralEligible(context.Background(), "acme/app", "main", test.mergeQueue)
 			if eligible != test.wantEligible {
 				t.Fatalf("eligible = %t, reason = %q, want eligible=%t", eligible, reason, test.wantEligible)
 			}
@@ -275,7 +296,7 @@ func TestRequireWorktreeMergePublishedValidationHonorsThisCallsRoute(t *testing.
 		receipt.Validation = quality.VerificationReport{Status: quality.StatusSkipped}
 		receipt.ValidationDeferral = &WorktreeMergeValidationDeferral{Route: WorktreeMergeRoutePullRequest, CandidateSHA: receipt.Candidate.SHA}
 		plan := worktreeMergeValidationPlan{Route: receipt.Route, Defer: true}
-		if err := requireWorktreeMergePublishedValidation(receipt, plan); err != nil {
+		if err := requireWorktreeMergePublishedValidationContext(context.Background(), receipt, plan, 0, 0, 0); err != nil {
 			t.Fatalf("PR-route deferral was refused: %v", err)
 		}
 	})
@@ -286,7 +307,7 @@ func TestRequireWorktreeMergePublishedValidationHonorsThisCallsRoute(t *testing.
 		receipt.Validation = quality.VerificationReport{Status: quality.StatusSkipped}
 		receipt.ValidationDeferral = &WorktreeMergeValidationDeferral{Route: WorktreeMergeRoutePullRequest, CandidateSHA: receipt.Candidate.SHA}
 		plan := worktreeMergeValidationPlan{Route: receipt.Route, Defer: false}
-		if err := requireWorktreeMergePublishedValidation(receipt, plan); err == nil {
+		if err := requireWorktreeMergePublishedValidationContext(context.Background(), receipt, plan, 0, 0, 0); err == nil {
 			t.Fatal("a route this call resolved as direct was authorized to publish by a stale PR-route deferral")
 		}
 	})
@@ -298,7 +319,7 @@ func TestRequireWorktreeMergePublishedValidationHonorsThisCallsRoute(t *testing.
 		receipt.Status = WorktreeMergePrepared
 		receipt.Validation = quality.VerificationReport{Status: quality.StatusPassed}
 		plan := worktreeMergeValidationPlan{Route: receipt.Route, Defer: false}
-		if err := requireWorktreeMergePublishedValidation(receipt, plan); err == nil {
+		if err := requireWorktreeMergePublishedValidationContext(context.Background(), receipt, plan, 0, 0, 0); err == nil {
 			t.Fatal("already-published carve-out fired for a call resolved as direct")
 		}
 	})
@@ -310,7 +331,7 @@ func TestRequireWorktreeMergePublishedValidationHonorsThisCallsRoute(t *testing.
 		receipt.Status = WorktreeMergePrepared
 		receipt.Validation = quality.VerificationReport{Status: quality.StatusPassed}
 		plan := worktreeMergeValidationPlan{Route: receipt.Route, Defer: true}
-		if err := requireWorktreeMergePublishedValidation(receipt, plan); err != nil {
+		if err := requireWorktreeMergePublishedValidationContext(context.Background(), receipt, plan, 0, 0, 0); err != nil {
 			t.Fatalf("already-published carve-out was refused on the PR route: %v", err)
 		}
 	})
@@ -322,7 +343,7 @@ func TestRequireWorktreeMergePublishedValidationHonorsThisCallsRoute(t *testing.
 		receipt.Validation = quality.VerificationReport{Status: quality.StatusPassed, Revision: receipt.Candidate.SHA}
 		receipt.ValidationIdentity = &WorktreeMergeValidationIdentity{CandidateSHA: receipt.Candidate.SHA}
 		plan := worktreeMergeValidationPlan{Route: receipt.Route, Defer: false}
-		if err := requireWorktreeMergePublishedValidation(receipt, plan); err != nil {
+		if err := requireWorktreeMergePublishedValidationContext(context.Background(), receipt, plan, 0, 0, 0); err != nil {
 			t.Fatalf("genuinely validated exact identity was refused: %v", err)
 		}
 	})
@@ -338,7 +359,7 @@ func TestRequireWorktreeMergePublishedValidationHonorsThisCallsRoute(t *testing.
 		receipt.Validation = quality.VerificationReport{Status: quality.StatusSkipped}
 		receipt.ValidationDeferral = &WorktreeMergeValidationDeferral{Route: WorktreeMergeRoutePullRequest, CandidateSHA: receipt.Candidate.SHA}
 		plan := worktreeMergeValidationPlan{Route: receipt.Route, Defer: false}
-		if err := requireWorktreeMergePublishedValidation(receipt, plan); err == nil {
+		if err := requireWorktreeMergePublishedValidationContext(context.Background(), receipt, plan, 0, 0, 0); err == nil {
 			t.Fatal("a stale deferral was accepted even though this call's plan forbids deferring")
 		}
 	})
@@ -361,17 +382,17 @@ func TestPreparedValidationStillValidAcceptsMatchingPRRouteDeferral(t *testing.T
 		},
 	}
 	plan := worktreeMergeValidationPlan{Route: receipt.Route, Defer: true}
-	reusable, err := preparedValidationStillValid(receipt, plan)
+	reusable, err := preparedValidationStillValidContext(context.Background(), receipt, plan, 0, 0, 0)
 	if err != nil || !reusable {
-		t.Fatalf("preparedValidationStillValid(deferred receipt) = (%t, %v), want (true, nil)", reusable, err)
+		t.Fatalf("preparedValidationStillValidContext(context.Background(), deferred receipt) = (%t, %v, 0, 0, 0), want (true, nil)", reusable, err)
 	}
 
 	// A deferral for a different candidate SHA (stale) must not be reused.
 	stale := receipt
 	stale.Candidate.SHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-	reusable, err = preparedValidationStillValid(stale, plan)
+	reusable, err = preparedValidationStillValidContext(context.Background(), stale, plan, 0, 0, 0)
 	if err != nil || reusable {
-		t.Fatalf("preparedValidationStillValid(stale deferred receipt) = (%t, %v), want (false, nil)", reusable, err)
+		t.Fatalf("preparedValidationStillValidContext(context.Background(), stale deferred receipt) = (%t, %v, 0, 0, 0), want (false, nil)", reusable, err)
 	}
 
 	// A deferral recorded under a route this call did not resolve as pr must
@@ -379,18 +400,18 @@ func TestPreparedValidationStillValidAcceptsMatchingPRRouteDeferral(t *testing.T
 	direct := receipt
 	direct.Route = WorktreeMergeRouteDecision{Route: WorktreeMergeRouteDirect}
 	directPlan := worktreeMergeValidationPlan{Route: direct.Route, Defer: false}
-	reusable, err = preparedValidationStillValid(direct, directPlan)
+	reusable, err = preparedValidationStillValidContext(context.Background(), direct, directPlan, 0, 0, 0)
 	if err != nil || reusable {
-		t.Fatalf("preparedValidationStillValid(direct-route call, PR deferral) = (%t, %v), want (false, nil)", reusable, err)
+		t.Fatalf("preparedValidationStillValidContext(context.Background(), direct-route call, PR deferral, 0, 0, 0) = (%t, %v), want (false, nil)", reusable, err)
 	}
 
 	// Finding X1: even on the PR route with a matching candidate SHA, a
 	// deferral must not be reused when THIS call's own plan forbids
 	// deferring (--allow-unfenced or --validate-locally on the resume).
 	noLongerDeferring := worktreeMergeValidationPlan{Route: receipt.Route, Defer: false}
-	reusable, err = preparedValidationStillValid(receipt, noLongerDeferring)
+	reusable, err = preparedValidationStillValidContext(context.Background(), receipt, noLongerDeferring, 0, 0, 0)
 	if err != nil || reusable {
-		t.Fatalf("preparedValidationStillValid(X1: plan.Defer=false) = (%t, %v), want (false, nil)", reusable, err)
+		t.Fatalf("preparedValidationStillValidContext(context.Background(), X1: plan.Defer=false) = (%t, %v, 0, 0, 0), want (false, nil)", reusable, err)
 	}
 }
 
@@ -541,7 +562,7 @@ func TestWorktreeMergeValidationPlanHolderResolvesRouteExactlyOnce(t *testing.T)
 		"  'api repos/acme/app/rules/branches/main?per_page=100 --include'|'api repos/acme/app/rules/branches/main?per_page=100') printf '%s\\n' '[]' ;;\n" +
 		"  *) echo \"unexpected gh command: $*\" >&2; exit 2 ;;\n" +
 		"esac\n"
-	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(withEmptyActionsRuns(script)), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(bin, "gh"), []byte(testfixture.WithEmptyActionsRuns(script)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("WB_TEST_CALL_COUNTER", counter)
@@ -594,59 +615,6 @@ func TestApplyRecordedWorktreeMergeRouteBeforeFirstResolve(t *testing.T) {
 	applyRecordedWorktreeMergeRouteBeforeFirstResolve(&fresh, &freshOptions)
 	if freshOptions.Route != WorktreeMergeRouteAuto {
 		t.Fatalf("options.Route = %q, want auto to remain when there is no recorded history", freshOptions.Route)
-	}
-}
-
-// TestMissingRequiredChecksTrustsGitHubsOwnSkippedOrNeutralVerdict is round
-// 3's replacement for the round-2 finding X2 regression test
-// (sneat-dev/wb#591 red-team follow-up): the final red-team pass found the
-// strict "requireExecuted" mode itself broken (on sneat-co/sneat-go, a
-// required check that legitimately concludes "skipped" on an exact-tree
-// reuse made the post-target wait hang forever), so round 3 removes it
-// entirely. missingRequiredChecks (reverted to its pre-X2 signature and
-// behavior) must treat a registered required check as satisfied by name
-// regardless of its conclusion -- including "skipped" and "neutral" -- for
-// every caller, deferred or not: GitHub branch protection's own evaluation
-// is the gate.
-func TestMissingRequiredChecksTrustsGitHubsOwnSkippedOrNeutralVerdict(t *testing.T) {
-	required := []RequiredRemoteCheck{{Name: "CI"}}
-
-	skipped := []RemoteCheck{{Name: "check-run:CI", Bucket: "pass", Conclusion: "skipped"}}
-	if missing := missingRequiredChecks(skipped, required); len(missing) != 0 {
-		t.Fatalf("a registered skipped required check was treated as missing: %v", missing)
-	}
-
-	neutral := []RemoteCheck{{Name: "check-run:CI", Bucket: "pass", Conclusion: "neutral"}}
-	if missing := missingRequiredChecks(neutral, required); len(missing) != 0 {
-		t.Fatalf("a registered neutral required check was treated as missing: %v", missing)
-	}
-
-	success := []RemoteCheck{{Name: "check-run:CI", Bucket: "pass", Conclusion: "success"}}
-	if missing := missingRequiredChecks(success, required); len(missing) != 0 {
-		t.Fatalf("a genuinely successful required check was treated as missing: %v", missing)
-	}
-
-	unregistered := []RemoteCheck{{Name: "check-run:OtherCheck", Bucket: "pass", Conclusion: "success"}}
-	if missing := missingRequiredChecks(unregistered, required); len(missing) == 0 {
-		t.Fatal("a required check that never registered under its own name was not reported missing")
-	}
-}
-
-// TestCheckRunBucketTreatsNeutralAsPass is Minor 11's regression test
-// (sneat-dev/wb#591 round 3 red-team follow-up): round 2's global
-// neutral-joins-skipped-in-"skipping" bucket change altered `wb ci wait`
-// JSON output and graduation's validateCIWait as an unintended side effect.
-// Round 3 reverts it: "neutral" buckets as "pass" again, exactly as before
-// round 2, while "skipped" alone still buckets as "skipping".
-func TestCheckRunBucketTreatsNeutralAsPass(t *testing.T) {
-	if bucket := checkRunBucket("completed", "neutral"); bucket != "pass" {
-		t.Fatalf("checkRunBucket(completed, neutral) = %q, want pass", bucket)
-	}
-	if bucket := checkRunBucket("completed", "skipped"); bucket != "skipping" {
-		t.Fatalf("checkRunBucket(completed, skipped) = %q, want skipping", bucket)
-	}
-	if bucket := checkRunBucket("completed", "success"); bucket != "pass" {
-		t.Fatalf("checkRunBucket(completed, success) = %q, want pass", bucket)
 	}
 }
 
@@ -755,17 +723,17 @@ func TestLandWorktreeMergePullRequestDeferredValidationSkippedCheckLandsAndRecor
 // check), not a stale copy of the first.
 func TestRecordDeferredValidationCheckSkippedFindingReplacesRatherThanAppends(t *testing.T) {
 	receipt := &WorktreeMergeReceipt{ValidationDeferral: &WorktreeMergeValidationDeferral{}}
-	first := PullRequestWaitResult{
-		RequiredChecks: []RequiredRemoteCheck{{Name: "CI"}},
-		Checks:         []RemoteCheck{{Name: "CI", Conclusion: "skipped"}},
+	first := githubchecks.PullRequestWaitResult{
+		RequiredChecks: []githubchecks.RequiredRemoteCheck{{Name: "CI"}},
+		Checks:         []githubchecks.RemoteCheck{{Name: "CI", Conclusion: "skipped"}},
 	}
 	recordDeferredValidationCheckSkippedFinding(receipt, first)
 	if len(receipt.Findings) != 1 {
 		t.Fatalf("after one call, findings = %+v, want exactly one", receipt.Findings)
 	}
-	second := PullRequestWaitResult{
-		RequiredChecks: []RequiredRemoteCheck{{Name: "CI"}, {Name: "Lint"}},
-		Checks: []RemoteCheck{
+	second := githubchecks.PullRequestWaitResult{
+		RequiredChecks: []githubchecks.RequiredRemoteCheck{{Name: "CI"}, {Name: "Lint"}},
+		Checks: []githubchecks.RemoteCheck{
 			{Name: "CI", Conclusion: "success"},
 			{Name: "Lint", Conclusion: "neutral"},
 		},
@@ -845,7 +813,8 @@ func TestLandWorktreeMergePullRequestDeferredValidationRecordsFindingOnceAcrossT
 	// pending. Nothing has resolved yet, so no finding of any kind may be
 	// recorded on this receipt.
 	pendingOptions := wmEngineLandOptions(fixture, receipt.ReceiptPath)
-	pendingOptions.Timeout = 200 * time.Millisecond
+	// Only the check wait is short; Timeout stays generous for git and gh.
+	pendingOptions.WaitSlice = 200 * time.Millisecond
 	pending, err := ResumeWorktreeMerge(context.Background(), pendingOptions)
 	if err == nil || pending.Status != WorktreeMergeChecksPending {
 		t.Fatalf("first resume slice did not stop at checks_pending: receipt=%+v err=%v", pending, err)
@@ -900,7 +869,7 @@ func TestAwaitLandablePullRequestSkippedRequiredCheckAlwaysPasses(t *testing.T) 
 	installWorktreeMergeEngineGH(t, fixture, receipt.Candidate.SHA, receipt.Candidate.Branch).writeState(t, "check-conclusion", "skipped")
 	runEngineGit(t, receipt.Candidate.Worktree, "push", fixture.repository.CloneURL, "HEAD:refs/heads/"+receipt.Candidate.Branch)
 
-	view := PullRequestView{Number: 41}
+	view := githubchecks.PullRequestView{Number: 41}
 	view.Head.SHA, view.Head.Ref = receipt.Candidate.SHA, receipt.Candidate.Branch
 	view.Base.Ref = "main"
 
@@ -908,7 +877,9 @@ func TestAwaitLandablePullRequestSkippedRequiredCheckAlwaysPasses(t *testing.T) 
 		Repository: "acme/app", PullRequest: "41", ProjectsRoot: fixture.githubDir,
 		MergeMethod: "merge", MergeMethodExplicit: true,
 		NoAutoMerge: true, NoUpdateBranch: true,
-		Slice: 3 * time.Second, CheckPollInterval: 100 * time.Millisecond,
+		// Instrumented native Git/hosted reads must still complete the mandatory
+		// unchanged foreground reread; the production policy is unchanged.
+		Slice: 30 * time.Second, CheckPollInterval: 100 * time.Millisecond,
 	}
 	_, waited, _, _, refusal, err := awaitLandablePullRequest(context.Background(), options, view, "41", "x2 subject", "x2 body", map[string]string{})
 	if err != nil {
@@ -917,7 +888,7 @@ func TestAwaitLandablePullRequestSkippedRequiredCheckAlwaysPasses(t *testing.T) 
 	if refusal != nil {
 		t.Fatalf("awaitLandablePullRequest unexpectedly refused: %+v", refusal)
 	}
-	if waited.Status != PullRequestWaitPassed {
+	if waited.Status != githubchecks.PullRequestWaitPassed {
 		t.Fatalf("a skipped required check must count as passing: %+v", waited)
 	}
 }

@@ -22,7 +22,8 @@ type Inspection struct {
 type DescribeOptions struct {
 	// ProjectsRoot is the directory holding {owner}/{repository} clones.
 	ProjectsRoot string
-	// BaseBranch is the protected branch a canonical clone must stay on.
+	// BaseBranch is the clone's base branch: the branch worktrees are cut from
+	// and landings target. The clone itself may have any branch checked out.
 	BaseBranch string
 	// Version identifies the WB build that generated the marker.
 	Version string
@@ -39,6 +40,12 @@ type DescribeOptions struct {
 // and `wb worktree create` refresh markers across the whole fleet without
 // paying for a fork per checkout.
 func Describe(path string, options DescribeOptions) (Inspection, error) {
+	return describeWithPathResolver(path, options, filepath.Abs)
+}
+
+// describeWithPathResolver keeps path-resolution failures testable on hosts
+// where an unlinked working directory remains resolvable.
+func describeWithPathResolver(path string, options DescribeOptions, resolve func(string) (string, error)) (Inspection, error) {
 	now := time.Now
 	if options.Now != nil {
 		now = options.Now
@@ -47,7 +54,7 @@ func Describe(path string, options DescribeOptions) (Inspection, error) {
 	if baseBranch == "" {
 		baseBranch = "main"
 	}
-	absolute, err := filepath.Abs(path)
+	absolute, err := resolve(path)
 	if err != nil {
 		return Inspection{}, fmt.Errorf("resolve %s: %w", path, err)
 	}

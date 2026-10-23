@@ -7,7 +7,9 @@ import "testing"
 // finding quotes the reconstructible command, not the trailing indentation and
 // shell word.
 func TestGpCovAuditReportsOnlyTheFirstLineOfAMultiLineInstallerStep(t *testing.T) {
+	t.Parallel()
 	t.Run("an unpinned multi-line install", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		write(t, root, ".github/workflows/ci.yml", `
 jobs:
@@ -31,6 +33,7 @@ jobs:
 	})
 
 	t.Run("the same shape with a pinned version is accepted", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		write(t, root, ".github/workflows/ci.yml", `
 jobs:

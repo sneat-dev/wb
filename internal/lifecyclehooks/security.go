@@ -25,6 +25,10 @@ func validateTrustedConfig(path string) (os.FileInfo, error) {
 }
 
 func (dispatcher Dispatcher) validateControlPaths(events []Event) error {
+	return dispatcher.validateControlPathsWithAbsolute(events, filepath.Abs)
+}
+
+func (dispatcher Dispatcher) validateControlPathsWithAbsolute(events []Event, absolute func(string) (string, error)) error {
 	controls := []struct {
 		name string
 		path string
@@ -34,7 +38,7 @@ func (dispatcher Dispatcher) validateControlPaths(events []Event) error {
 		{name: "receipt", path: dispatcher.ReceiptPath},
 	}
 	for _, event := range events {
-		checkout, err := filepath.Abs(event.Checkout)
+		checkout, err := absolute(event.Checkout)
 		if err != nil {
 			return fmt.Errorf("resolve checkout %s: %w", event.Checkout, err)
 		}
@@ -43,7 +47,7 @@ func (dispatcher Dispatcher) validateControlPaths(events []Event) error {
 			return fmt.Errorf("resolve checkout %s: %w", event.Checkout, err)
 		}
 		for _, control := range controls {
-			candidate, err := filepath.Abs(control.path)
+			candidate, err := absolute(control.path)
 			if err != nil {
 				return fmt.Errorf("resolve lifecycle hook %s: %w", control.name, err)
 			}
@@ -84,7 +88,11 @@ func resolveWithMissingTail(path string, eval func(string) (string, error)) (str
 }
 
 func verifyCheckout(event Event) (string, os.FileInfo, error) {
-	checkout, err := filepath.Abs(event.Checkout)
+	return verifyCheckoutWithPaths(event, filepath.Abs, os.Stat)
+}
+
+func verifyCheckoutWithPaths(event Event, absolute func(string) (string, error), inspect func(string) (os.FileInfo, error)) (string, os.FileInfo, error) {
+	checkout, err := absolute(event.Checkout)
 	if err != nil {
 		return "", nil, fmt.Errorf("resolve checkout: %w", err)
 	}
@@ -92,7 +100,7 @@ func verifyCheckout(event Event) (string, os.FileInfo, error) {
 	if err != nil {
 		return "", nil, fmt.Errorf("resolve checkout: %w", err)
 	}
-	info, err := os.Stat(physical)
+	info, err := inspect(physical)
 	if err != nil {
 		return "", nil, fmt.Errorf("inspect checkout: %w", err)
 	}

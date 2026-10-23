@@ -1,37 +1,32 @@
-// Package dashboard serves WB's local read-only operations dashboard and API.
+// Package dashboard serves the daemon's loopback listener: the read-only JSON
+// API, the redirect from the root to Cockpit, and the mounted subtrees (Cockpit
+// and the hub). Its server-rendered operations pages are retired.
 package dashboard
 
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/sneat-dev/wb/internal/discover"
-	"github.com/sneat-dev/wb/internal/runlog"
-	"github.com/sneat-dev/wb/internal/wbhome"
-	"github.com/sneat-dev/wb/internal/worktrees"
+	"github.com/sneat-dev/wb/internal/loopbackhost"
 )
 
 const APISchemaVersion = 1
 
 type Options struct {
-	ProjectsRoot        string
 	Version             string
 	DaemonPID           int
 	SchedulerGeneration uint64
-	Now                 func() time.Time
-	CacheTTL            time.Duration
-	InventoryIndexPath  string
-	InventoryIndexTTL   time.Duration
+	// Home is the path the listener's bare address redirects to: Cockpit's
+	// mount, which the daemon fills in. It is a field rather than an import
+	// because the Cockpit web package's own tests build this handler. Empty
+	// leaves the root unrouted, a 404.
+	Home string
 	// Mounts attaches extra subtrees to the same loopback listener, keyed by
 	// the path prefix each one owns (it must start and end with "/"). A
 	// self-hosted bench uses it for the hub API under /v0/workbench/ and the
@@ -46,10 +41,25 @@ type Options struct {
 	// than by opening the hub's store a second time. Nil when there is no hub.
 	Hub func(context.Context) HubHealth
 	// LogPath is the daemon's own runtime log file. When set, /api/v1/log
-	// serves a tail of it directly — the daemon is the log's only authority,
-	// so a reverse proxy in front of it never needs disk access of its own.
-	// Empty disables the endpoint (503).
+	// serves a tail of it to the owner — the daemon is the log's only
+	// authority, so a reverse proxy in front of it never needs disk access of
+	// its own. Empty disables the endpoint (503, to the owner only).
 	LogPath string
+	// Owner reports whether a request acts as the owner principal. It is the
+	// seam the daemon fills with Cockpit's own session check
+	// (cockpit.Server.IsOwner), so this package neither imports Cockpit nor
+	// has a second authentication mechanism. The log is file content, and
+	// file content is the owner's alone (cockpit#req:daemon-log-is-owner-only):
+	// with no Owner the log route refuses every request.
+	Owner func(*http.Request) bool
+	// Peers serves /api/v1/peers and /api/v1/peers/{id}
+	// (peer-connectivity#req:peers-api's "mounted...on every node"). The
+	// caller always supplies one, backed by an empty-list source when this
+	// daemon has no hub mounted, so a laptop-only install answers "no
+	// downstream peers" instead of answering 404.
+	// A nil value leaves the route unmounted (404) purely as a defensive
+	// default; every real caller sets it.
+	Peers http.Handler
 }
 
 // defaultLogTailBytes bounds an unqualified /api/v1/log request. It is large
@@ -104,67 +114,40 @@ type HubDeliveryMarker struct {
 	OccurredAt time.Time `json:"occurred_at"`
 }
 
-type Machine struct {
-	Name    string `json:"name"`
-	Version string `json:"wb_version"`
-}
-
-type Worktree struct {
-	Task           string    `json:"task"`
-	Repository     string    `json:"repository"`
-	Branch         string    `json:"branch"`
-	Owner          string    `json:"owner,omitempty"`
-	OwnerState     string    `json:"owner_state"`
-	AgeSeconds     int64     `json:"age_seconds,omitempty"`
-	LastActivityAt time.Time `json:"last_activity_at,omitempty"`
-}
-
-type Inventory struct {
-	SourceFingerprint string    `json:"source_fingerprint,omitempty"`
-	ObservedAt        time.Time `json:"observed_at,omitempty"`
-	CacheHit          bool      `json:"cache_hit"`
-}
-
-type Overview struct {
-	SchemaVersion int            `json:"schema_version"`
-	GeneratedAt   time.Time      `json:"generated_at"`
-	Machine       Machine        `json:"machine"`
-	Operations    runlog.Summary `json:"operations"`
-	Worktrees     []Worktree     `json:"worktrees"`
-	Diagnostics   int            `json:"diagnostics"`
-	Inventory     Inventory      `json:"inventory"`
-}
-
 type service struct {
-	options  Options
-	mu       sync.Mutex
-	cached   Overview
-	cachedAt time.Time
+	options Options
 }
 
-// NewHandler returns the dashboard UI and versioned read-only API.
+// NewHandler returns the daemon listener's versioned read-only API, the
+// redirect from its root to Cockpit, and every mounted subtree (Cockpit and
+// the hub).
 func NewHandler(options Options) http.Handler {
-	if options.Now == nil {
-		options.Now = time.Now
-	}
-	if options.CacheTTL <= 0 {
-		options.CacheTTL = 10 * time.Second
-	}
-	if options.InventoryIndexTTL <= 0 {
-		options.InventoryIndexTTL = time.Minute
-	}
 	server := &service{options: options}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /", server.index)
-	mux.HandleFunc("GET /api/v1/health", server.health)
-	mux.HandleFunc("GET /api/v1/overview", server.overview)
+	if options.Home != "" {
+		mux.HandleFunc("GET /{$}", loopbackOnly(server.root))
+	}
+	// Every other GET is answered 404, but only on a loopback Host: a request
+	// on another host name gets the 421 every route of this listener gives, so
+	// the listener never tells a rebinding page which paths exist. A
+	// non-GET request on a path nothing owns gets the mux's own 405.
+	mux.HandleFunc("GET /", loopbackOnly(notFound))
+	mux.HandleFunc("GET /api/v1/health", loopbackOnly(server.health))
 	mux.HandleFunc("GET /api/v1/log", server.log)
+	if options.Peers != nil {
+		// GET-qualified patterns, like every other route here: options.Peers
+		// already answers 405 to a non-GET request on its own
+		// (internal/peers.NewHandler's method check); one that never reaches
+		// it gets the mux's ordinary 405 for a path with no non-GET route.
+		mux.Handle("GET /api/v1/peers", options.Peers)
+		mux.Handle("GET /api/v1/peers/", options.Peers)
+	}
 	return securityHeaders(withMounts(options.Mounts, mux))
 }
 
 // withMounts routes a prefix to its own handler before the dashboard mux sees
 // the request. It is a prefix check rather than extra mux patterns because
-// the mux's catch-all "GET /" index conflicts with any subtree pattern under
+// the mux's root route conflicts with any subtree pattern under
 // Go's routing precedence rules, and because a mounted subtree serves every
 // method — the hub answers POST on enrollment and webhook paths.
 func withMounts(mounts map[string]http.Handler, next http.Handler) http.Handler {
@@ -192,9 +175,12 @@ func withMounts(mounts map[string]http.Handler, next http.Handler) http.Handler 
 	})
 }
 
-func (server *service) index(writer http.ResponseWriter, _ *http.Request) {
-	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = writer.Write([]byte(indexHTML))
+// root sends the bare address of the daemon's listener to Cockpit, which is
+// the daemon's one web interface. Only the exact path "/" answers: every other
+// path nothing owns is the mux's ordinary 404, where it used to be the retired
+// operations page.
+func (server *service) root(writer http.ResponseWriter, request *http.Request) {
+	http.Redirect(writer, request, server.options.Home, http.StatusFound)
 }
 
 func (server *service) health(writer http.ResponseWriter, request *http.Request) {
@@ -217,178 +203,79 @@ func (server *service) health(writer http.ResponseWriter, request *http.Request)
 	writeJSON(writer, http.StatusOK, payload)
 }
 
-func (server *service) overview(writer http.ResponseWriter, request *http.Request) {
-	overview, err := server.load(request.Context())
-	if err != nil {
-		writeJSON(writer, http.StatusInternalServerError, map[string]any{
-			"schema_version": APISchemaVersion,
-			"error":          "overview_unavailable",
-			"message":        err.Error(),
-		})
+// misdirected is the one message a request on another host name is answered
+// with.
+const misdirected = "this route answers only on a loopback host name"
+
+// notFound is the answer for a path this listener does not own.
+func notFound(writer http.ResponseWriter, request *http.Request) {
+	http.NotFound(writer, request)
+}
+
+// loopbackOnly refuses a request whose Host header does not name a loopback
+// host with status 421, before next runs (cockpit#req:host-header-check): the
+// health route holds the machine's name and its daemon's process id, and a
+// page that rebinds DNS to the loopback address must not read it, nor learn by
+// the answer to any path which ones exist. The rule is the one Cockpit's guard applies.
+func loopbackOnly(next http.HandlerFunc) http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		if !loopbackhost.Request(request) {
+			writeJSON(writer, http.StatusMisdirectedRequest, map[string]any{
+				"schema_version": APISchemaVersion,
+				"error":          "misdirected_request",
+				"message":        misdirected,
+			})
+			return
+		}
+		next(writer, request)
+	}
+}
+
+// log serves a tail of the daemon's own runtime log file as plain text to the
+// owner, so a reverse proxy in front of the daemon never reads the file from
+// disk itself. ?tail=<bytes> requests fewer or more than defaultLogTailBytes,
+// capped at maxLogTailBytes.
+func (server *service) log(writer http.ResponseWriter, request *http.Request) {
+	server.logOpened(writer, request, os.Open)
+}
+
+// logOpened is log over an injectable open. The owner check comes before
+// everything else, so a request that is not the owner's learns nothing: not
+// whether a log path is configured, not whether its query is valid, and the
+// file is never opened for it (cockpit#req:daemon-log-is-owner-only). Every
+// refusal and failure carries a closed code and a fixed message; the error an
+// open, stat or seek returns names the file's path and is never echoed.
+func (server *service) logOpened(writer http.ResponseWriter, request *http.Request, open func(string) (*os.File, error)) {
+	if server.options.Owner == nil {
+		writeLogError(writer, http.StatusForbidden, "log_owner_check_unavailable", "this daemon has no owner check for the runtime log, so it serves it to nobody")
 		return
 	}
-	writeJSON(writer, http.StatusOK, overview)
-}
-
-func (server *service) load(ctx context.Context) (Overview, error) {
-	server.mu.Lock()
-	defer server.mu.Unlock()
-	now := server.options.Now().UTC()
-	if !server.cachedAt.IsZero() && now.Sub(server.cachedAt) < server.options.CacheTTL {
-		return server.cached, nil
+	if !server.options.Owner(request) {
+		writeLogError(writer, http.StatusUnauthorized, "owner_session_required", "the runtime log is the owner's alone; run `wb cockpit` to sign in")
+		return
 	}
-	indexPath := server.options.InventoryIndexPath
-	indexPathUnavailable := false
-	if indexPath == "" {
-		if home, err := wbhome.EnsureRoot(server.options.ProjectsRoot); err == nil {
-			indexPath = filepath.Join(home, "cache", "fleet-inventory-v1.json")
-		} else {
-			indexPathUnavailable = true
-		}
-	}
-	overview, err := buildOverview(ctx, server.options.ProjectsRoot, server.options.Version, now, discover.LocalIndexOptions{
-		CachePath: indexPath,
-		MaxAge:    server.options.InventoryIndexTTL,
-		Now:       func() time.Time { return now },
-	})
-	if err != nil {
-		return Overview{}, err
-	}
-	if indexPathUnavailable {
-		overview.Diagnostics++
-	}
-	server.cached = overview
-	server.cachedAt = now
-	return overview, nil
-}
-
-// BuildOverview joins local worktree inventory with governed-command events.
-func BuildOverview(ctx context.Context, projectsRoot, version string, now time.Time) (Overview, error) {
-	return buildOverview(ctx, projectsRoot, version, now, discover.LocalIndexOptions{})
-}
-
-func buildOverview(_ context.Context, projectsRoot, version string, now time.Time, indexOptions discover.LocalIndexOptions) (Overview, error) {
-	indexed, err := discover.ScanLocalIndexed(projectsRoot, indexOptions)
-	if err != nil {
-		return Overview{}, err
-	}
-	name, _ := os.Hostname()
-	overview := Overview{
-		SchemaVersion: APISchemaVersion,
-		GeneratedAt:   now.UTC(),
-		Machine:       Machine{Name: name, Version: version},
-		Diagnostics:   len(indexed.Diagnostics),
-		Inventory: Inventory{
-			SourceFingerprint: indexed.SourceFingerprint,
-			ObservedAt:        indexed.ObservedAt,
-			CacheHit:          indexed.CacheHit,
-		},
-	}
-	var events []runlog.Event
-	for _, repository := range indexed.Repositories {
-		root := filepath.Join(repository.Path, ".worktrees")
-		entries, readErr := os.ReadDir(root)
-		if os.IsNotExist(readErr) {
-			continue
-		}
-		if readErr != nil {
-			overview.Diagnostics++
-			continue
-		}
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				continue
-			}
-			worktreePath := filepath.Join(root, entry.Name())
-			manifest, manifestErr := worktrees.ReadManifest(worktreePath)
-			if manifestErr != nil {
-				overview.Diagnostics++
-				continue
-			}
-			activity := worktrees.HeartbeatAt(worktreePath)
-			if activity.IsZero() {
-				activity = manifest.CreatedAt
-			}
-			ownerState := "idle"
-			if now.Sub(activity) <= worktrees.DefaultSessionFreshness {
-				ownerState = "active"
-			}
-			owner := strings.Trim(manifest.AgentID, "/")
-			if manifest.AgentRuntime != "" && owner != "" {
-				owner = manifest.AgentRuntime + "/" + owner
-			} else if owner == "" {
-				owner = manifest.Initiator
-			}
-			overview.Worktrees = append(overview.Worktrees, Worktree{
-				Task: manifest.EffortID, Repository: manifest.Repository,
-				Branch: manifest.Branch, Owner: owner, OwnerState: ownerState,
-				AgeSeconds:     int64(now.Sub(manifest.CreatedAt).Seconds()),
-				LastActivityAt: activity,
-			})
-			path := filepath.Join(worktreePath, ".wb", "local", "run", "events.jsonl")
-			worktreeEvents, eventErr := runlog.Read(path)
-			if eventErr != nil {
-				return Overview{}, fmt.Errorf("read run telemetry for %s: %w", manifest.Repository, eventErr)
-			}
-			events = append(events, worktreeEvents...)
-		}
-	}
-	sort.Slice(overview.Worktrees, func(i, j int) bool {
-		if overview.Worktrees[i].Repository == overview.Worktrees[j].Repository {
-			return overview.Worktrees[i].Task < overview.Worktrees[j].Task
-		}
-		return overview.Worktrees[i].Repository < overview.Worktrees[j].Repository
-	})
-	overview.Operations = runlog.Summarize(events, now.AddDate(0, 0, -14))
-	return overview, nil
-}
-
-// log serves a tail of the daemon's own runtime log file as plain text, so a
-// reverse proxy in front of the daemon never reads the file from disk itself.
-// ?tail=<bytes> requests fewer or more than defaultLogTailBytes, capped at
-// maxLogTailBytes.
-func (server *service) log(writer http.ResponseWriter, request *http.Request) {
 	if server.options.LogPath == "" {
-		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{
-			"schema_version": APISchemaVersion,
-			"error":          "log_unavailable",
-			"message":        "this daemon was not started with a runtime log path",
-		})
+		writeLogError(writer, http.StatusServiceUnavailable, "log_unavailable", "this daemon was not started with a runtime log path")
 		return
 	}
 	tail := int64(defaultLogTailBytes)
 	if raw := request.URL.Query().Get("tail"); raw != "" {
 		parsed, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil || parsed <= 0 {
-			writeJSON(writer, http.StatusBadRequest, map[string]any{
-				"schema_version": APISchemaVersion,
-				"error":          "invalid_tail",
-				"message":        "tail must be a positive number of bytes",
-			})
+			writeLogError(writer, http.StatusBadRequest, "invalid_tail", "tail must be a positive number of bytes")
 			return
 		}
-		tail = parsed
-		if tail > maxLogTailBytes {
-			tail = maxLogTailBytes
-		}
+		tail = min(parsed, maxLogTailBytes)
 	}
-	file, err := os.Open(server.options.LogPath)
+	file, err := open(server.options.LogPath)
 	if err != nil {
-		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{
-			"schema_version": APISchemaVersion,
-			"error":          "log_unavailable",
-			"message":        err.Error(),
-		})
+		writeLogError(writer, http.StatusServiceUnavailable, "log_unavailable", logUnreadable)
 		return
 	}
 	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	if err != nil {
-		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{
-			"schema_version": APISchemaVersion,
-			"error":          "log_unavailable",
-			"message":        err.Error(),
-		})
+		writeLogError(writer, http.StatusServiceUnavailable, "log_unavailable", logUnreadable)
 		return
 	}
 	start := info.Size() - tail
@@ -397,11 +284,7 @@ func (server *service) log(writer http.ResponseWriter, request *http.Request) {
 		start = 0
 	}
 	if _, err := file.Seek(start, io.SeekStart); err != nil {
-		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{
-			"schema_version": APISchemaVersion,
-			"error":          "log_unavailable",
-			"message":        err.Error(),
-		})
+		writeLogError(writer, http.StatusServiceUnavailable, "log_unavailable", logUnreadable)
 		return
 	}
 	writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -411,6 +294,20 @@ func (server *service) log(writer http.ResponseWriter, request *http.Request) {
 	_, _ = io.Copy(writer, file)
 }
 
+// logUnreadable is the one message a failed open, stat or seek of the runtime
+// log is answered with.
+const logUnreadable = "the runtime log file cannot be read"
+
+// writeLogError answers the log route with a closed code and a fixed message,
+// in the JSON error shape of this API, never stored.
+func writeLogError(writer http.ResponseWriter, status int, code, message string) {
+	writeJSON(writer, status, map[string]any{
+		"schema_version": APISchemaVersion,
+		"error":          code,
+		"message":        message,
+	})
+}
+
 func writeJSON(writer http.ResponseWriter, status int, value any) {
 	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
 	writer.Header().Set("Cache-Control", "no-store")
@@ -418,12 +315,24 @@ func writeJSON(writer http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(writer).Encode(value)
 }
 
+// Policy is the Content-Security-Policy of every response of the dashboard
+// listener that does not set its own.
+const Policy = "default-src 'self'; script-src 'self'; object-src 'none'; base-uri 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'self'"
+
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		// frame-ancestors 'self' / SAMEORIGIN: the dashboard may frame its own
 		// pages (e.g. a wrapper page embedding /workbench/dashboard/ and
 		// /api/v1/log side by side), but no other origin may frame it.
-		writer.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'self'")
+		//
+		// script-src 'self' with no 'unsafe-inline': a script runs only when it
+		// is a file of this origin. The pages on this origin share one storage
+		// with Cockpit, which holds the owner's session key
+		// (cockpit#req:session-key), so markup injected into any of them must
+		// not be able to run: an inline script, an inline event handler and a
+		// javascript: address are all refused. A mount that needs another
+		// policy sets its own after this one.
+		writer.Header().Set("Content-Security-Policy", Policy)
 		writer.Header().Set("Referrer-Policy", "no-referrer")
 		writer.Header().Set("X-Content-Type-Options", "nosniff")
 		writer.Header().Set("X-Frame-Options", "SAMEORIGIN")

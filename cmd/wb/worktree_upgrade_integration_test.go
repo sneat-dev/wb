@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // TestPreviousReleaseWorktreeUpgrade is intentionally black-box. It installs
@@ -58,7 +60,7 @@ func testPreviousReleaseWorktreeUpgrade(t *testing.T, sharedPlacement, localPlac
 		mustUpgradeWrite(t, filepath.Join(home, ".config", "wb", "worktrees.yaml"), "version: 1\nworktrees:\n  store: repository-local\n")
 	}
 
-	upgradeGit(t, root, nil, "init", "--bare", "--initial-branch=main", remote)
+	testenv.InitBareRemoteForTest(t, remote)
 	mustUpgradeMkdir(t, filepath.Dir(canonical))
 	upgradeGit(t, root, nil, "clone", remote, canonical)
 	resolvedCanonical, err := filepath.EvalSymlinks(canonical)
@@ -212,7 +214,7 @@ func TestHooksInstallReportsAndBlocksRawWorktreeAtAdmission(t *testing.T) {
 	canonical := filepath.Join(projects, "acme", "app")
 	environment := append(wbUpgradeEnv(home), "WB_EXECUTABLE="+binary)
 
-	upgradeGit(t, root, nil, "init", "--bare", "--initial-branch=main", remote)
+	testenv.InitBareRemoteForTest(t, remote)
 	mustUpgradeMkdir(t, filepath.Dir(canonical))
 	upgradeGit(t, root, nil, "clone", remote, canonical)
 	configureUpgradeGitUser(t, canonical)
@@ -413,7 +415,7 @@ func mustUpgradeWrite(t *testing.T, path, content string) {
 func mustUpgradeWriteExecutable(t *testing.T, path, content string) {
 	t.Helper()
 	mustUpgradeMkdir(t, filepath.Dir(path))
-	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(path, []byte(content), 0o755); err != nil {
 		t.Fatal(err)
 	}
 }

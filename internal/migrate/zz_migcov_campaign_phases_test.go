@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -33,6 +34,7 @@ func migCovClone(t *testing.T, name string, goMod string) string {
 	runCampaignGit(t, source, "-c", "user.name=WB Test", "-c", "user.email=wb@example.test", "commit", "-m", "seed")
 	remote := filepath.Join(root, name+".git")
 	runCampaignGit(t, root, "init", "--bare", "--initial-branch=main", remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	runCampaignGit(t, source, "remote", "add", "origin", remote)
 	runCampaignGit(t, source, "push", "-u", "origin", "main")
 	worktree := filepath.Join(root, name)
@@ -41,6 +43,7 @@ func migCovClone(t *testing.T, name string, goMod string) string {
 }
 
 func TestMigCovPreflightRepositoryCollectsCycleBootstraps(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	migCovWriteGoMod(t, root, "module example.com/app\n\ngo 1.24\n\nrequire example.com/dep v0.0.0\n")
 	depRoot := t.TempDir()
@@ -424,15 +427,13 @@ func TestMigCovVerifyRepositoryRunsAndReportsVerification(t *testing.T) {
 }
 
 func TestMigCovRepositoryComponentLayersSkipsUnknownModules(t *testing.T) {
+	t.Parallel()
 	// Children whose parent is unknown are ignored entirely.
 	c := &campaign{
 		modules:  map[string]*campaignModule{},
 		children: map[string][]string{"example.com/absent": {"example.com/alsomissing"}},
 	}
-	layers, err := c.repositoryComponentLayers()
-	if err != nil {
-		t.Fatalf("repositoryComponentLayers(unknown parent) = %v", err)
-	}
+	layers := c.repositoryComponentLayers()
 	if len(layers) == 0 || len(layers[0]) != 0 {
 		t.Fatalf("layers = %+v", layers)
 	}
@@ -441,28 +442,29 @@ func TestMigCovRepositoryComponentLayersSkipsUnknownModules(t *testing.T) {
 	parent := &campaignModule{path: "example.com/parent", repository: "github.com/acme/parent"}
 	c.modules["example.com/parent"] = parent
 	c.children = map[string][]string{"example.com/parent": {"example.com/alsomissing"}}
-	if _, err := c.repositoryComponentLayers(); err != nil {
-		t.Fatalf("repositoryComponentLayers(unknown child) = %v", err)
+	if layers := c.repositoryComponentLayers(); len(layers) != 1 || len(layers[0]) != 0 {
+		t.Fatalf("repositoryComponentLayers(unknown child) = %+v", layers)
 	}
 
 	// Two modules in the same repository never become a dependency edge.
 	sibling := &campaignModule{path: "example.com/parent/sub", repository: "github.com/acme/parent"}
 	c.modules["example.com/parent/sub"] = sibling
 	c.children = map[string][]string{"example.com/parent": {"example.com/parent/sub"}}
-	if _, err := c.repositoryComponentLayers(); err != nil {
-		t.Fatalf("repositoryComponentLayers(same repository) = %v", err)
+	if layers := c.repositoryComponentLayers(); len(layers) != 1 || len(layers[0]) != 0 {
+		t.Fatalf("repositoryComponentLayers(same repository) = %+v", layers)
 	}
 
 	// A module whose repository is not part of the campaign is ignored.
 	ghost := &campaignModule{path: "example.com/ghost", repository: "github.com/acme/ghost"}
 	c.modules["example.com/ghost"] = ghost
 	c.children = map[string][]string{"example.com/ghost": {"example.com/parent"}}
-	if _, err := c.repositoryComponentLayers(); err != nil {
-		t.Fatalf("repositoryComponentLayers(ghost repository) = %v", err)
+	if layers := c.repositoryComponentLayers(); len(layers) != 1 || len(layers[0]) != 0 {
+		t.Fatalf("repositoryComponentLayers(ghost repository) = %+v", layers)
 	}
 }
 
 func TestMigCovRepositoryComponentsCollapsesCycles(t *testing.T) {
+	t.Parallel()
 	repositories := map[string]*campaignRepository{
 		"github.com/acme/a": {repository: "github.com/acme/a"},
 		"github.com/acme/b": {repository: "github.com/acme/b"},
@@ -688,6 +690,7 @@ func TestMigCovCleanupCampaignWorktreesRefusesLockedAndDirty(t *testing.T) {
 }
 
 func TestMigCovAcquireCampaignLockReportsUnusableRoots(t *testing.T) {
+	t.Parallel()
 	file := filepath.Join(t.TempDir(), "file")
 	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
@@ -714,6 +717,7 @@ func TestMigCovAcquireCampaignLockReportsUnusableRoots(t *testing.T) {
 }
 
 func TestMigCovValidCampaignLockMetadataRejectsMalformedContents(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "lock")
 	for name, contents := range map[string]string{
@@ -745,7 +749,7 @@ func TestMigCovValidCampaignLockMetadataRejectsMalformedContents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = file.Close() }()
+	t.Cleanup(func() { _ = file.Close() })
 	if !validCampaignLockMetadata(file, "exact") {
 		t.Fatal("validCampaignLockMetadata(valid) = false")
 	}

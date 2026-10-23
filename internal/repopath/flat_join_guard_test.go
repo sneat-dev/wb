@@ -61,6 +61,7 @@ var repositorySlugArguments = regexp.MustCompile(`^(repository|slug|repo|tracked
 // stopped a new one from being written; this test fails the moment one is, and
 // it fails again when an allowlisted line disappears so the list cannot rot.
 func TestNoProductionCodeDerivesACanonicalClonePathFlat(t *testing.T) {
+	t.Parallel()
 	root := repoRoot(t)
 	var scanned int
 	type offence struct {

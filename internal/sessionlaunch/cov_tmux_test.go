@@ -10,6 +10,7 @@ import (
 )
 
 func TestSlCovStartDetachedRunsFixedArgvForAbsentSession(t *testing.T) {
+	t.Parallel()
 	log := filepath.Join(t.TempDir(), "new-session.log")
 	path := slCovScript(t, `case "$1" in
   list-panes) printf '0\t\n' ;;
@@ -30,6 +31,7 @@ esac
 }
 
 func TestSlCovStartDetachedRemovesTerminalSessionBeforeRecreating(t *testing.T) {
+	t.Parallel()
 	killLog := filepath.Join(t.TempDir(), "kill.log")
 	newLog := filepath.Join(t.TempDir(), "new.log")
 	path := slCovScript(t, `case "$1" in
@@ -55,7 +57,9 @@ esac
 }
 
 func TestSlCovStartDetachedSurfacesKillAndStartFailures(t *testing.T) {
+	t.Parallel()
 	t.Run("kill failure", func(t *testing.T) {
+		t.Parallel()
 		path := slCovScript(t, `case "$1" in
   list-panes) printf '1\t9\n' ;;
   capture-pane) printf 'previous crash\n' ;;
@@ -69,6 +73,7 @@ esac
 		}
 	})
 	t.Run("start failure", func(t *testing.T) {
+		t.Parallel()
 		path := slCovScript(t, `case "$1" in
   list-panes) printf '0\t\n' ;;
   new-session) printf 'duplicate session\n'; exit 4 ;;
@@ -80,6 +85,7 @@ esac
 		}
 	})
 	t.Run("failure inspection failure", func(t *testing.T) {
+		t.Parallel()
 		path := slCovScript(t, `case "$1" in
   list-panes) printf 'permission denied\n'; exit 2 ;;
 esac
@@ -92,6 +98,7 @@ esac
 }
 
 func TestSlCovPanePIDRejectsMalformedFieldShapes(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		output string
@@ -110,6 +117,7 @@ func TestSlCovPanePIDRejectsMalformedFieldShapes(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			path := slCovScript(t, "printf '"+strings.ReplaceAll(test.output, "\n", "\\n")+"'\nexit "+strconv.Itoa(test.code)+"\n")
 			pid, exists, err := (osTmux{executable: path}).PanePID(context.Background(), "wb-session-x")
 			if !test.valid {
@@ -126,7 +134,9 @@ func TestSlCovPanePIDRejectsMalformedFieldShapes(t *testing.T) {
 }
 
 func TestSlCovPaneFailureSurfacesCaptureAndParseFailures(t *testing.T) {
+	t.Parallel()
 	t.Run("capture failure", func(t *testing.T) {
+		t.Parallel()
 		path := slCovScript(t, `case "$1" in
   list-panes) printf '1\t5\n' ;;
   capture-pane) printf 'pane vanished\n'; exit 2 ;;
@@ -138,6 +148,7 @@ esac
 		}
 	})
 	t.Run("malformed fields", func(t *testing.T) {
+		t.Parallel()
 		path := slCovScript(t, `printf '1\t5'`)
 		_, _, err := (osTmux{executable: path}).PaneFailure(context.Background(), "wb-session-x")
 		if err == nil || !strings.Contains(err.Error(), "malformed failure fields") {
@@ -145,6 +156,7 @@ esac
 		}
 	})
 	t.Run("unexpected exit status", func(t *testing.T) {
+		t.Parallel()
 		path := slCovScript(t, `printf 'socket error\n'; exit 2`)
 		_, _, err := (osTmux{executable: path}).PaneFailure(context.Background(), "wb-session-x")
 		if err == nil || !strings.Contains(err.Error(), "socket error") {

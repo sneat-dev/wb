@@ -4,6 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 // TestMain pins WB_PROJECTS_ROOT for the whole package.
@@ -14,6 +17,11 @@ import (
 // removing a clone, an unpinned test would deposit receipts in a real home.
 // Pinning here rather than per-test means a future test cannot forget.
 func TestMain(m *testing.M) {
+	if len(os.Args) > 1 {
+		if helper, known := worktrees.SecureGitHelperForArgument(os.Args[1]); known {
+			os.Exit(helper(os.Args[2:]))
+		}
+	}
 	root, err := os.MkdirTemp("", "fleetsync-wbroot-")
 	if err != nil {
 		panic(err)
@@ -24,6 +32,10 @@ func TestMain(m *testing.M) {
 	if err := os.Setenv("WB_PROJECTS_ROOT", root); err != nil {
 		panic(err)
 	}
+	// Disable git's detached gc/maintenance for every git this binary
+	// starts, including Sync's own pulls and clones against t.TempDir()
+	// fixtures, so no background writer can race TempDir cleanup (task-21).
+	testenv.GitAutoMaintenanceOffProcess()
 	code := m.Run()
 	_ = os.RemoveAll(root)
 	os.Exit(code)

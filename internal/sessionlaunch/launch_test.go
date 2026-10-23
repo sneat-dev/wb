@@ -13,6 +13,7 @@ import (
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessionauthority"
 	"github.com/sneat-dev/wb/internal/sessionmove"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 type fakeTmux struct {
@@ -52,6 +53,7 @@ func (f *fakeTmux) PanePID(context.Context, string) (int, bool, error) {
 }
 
 func TestStartRegistersReadyBeforeReleaseAndReplaysWithoutRelaunch(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	store := sessionmove.NewStore(filepath.Join(root, "handoffs"))
 	request := completeLaunchTestRequest(t)
@@ -67,7 +69,7 @@ func TestStartRegistersReadyBeforeReleaseAndReplaysWithoutRelaunch(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = lock.Close() }()
+	t.Cleanup(func() { _ = lock.Close() })
 
 	worktree := filepath.Join(root, "worktree")
 	if err := os.MkdirAll(filepath.Join(worktree, ".wb", "handoffs"), 0o755); err != nil {
@@ -82,12 +84,12 @@ func TestStartRegistersReadyBeforeReleaseAndReplaysWithoutRelaunch(t *testing.T)
 		t.Fatal(err)
 	}
 	for _, name := range []string{"codex", "wb"} {
-		if err := os.WriteFile(filepath.Join(bin, name), []byte("fixture"), 0o755); err != nil {
+		if err := testenv.WriteExecutableFile(filepath.Join(bin, name), []byte("fixture"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
 	tmux := &fakeTmux{}
-	var execFence *os.File
+	var launcherFence *execFence
 	var attemptID string
 	launcherPID := os.Getpid()
 	now := time.Date(2026, time.August, 25, 15, 0, 0, 0, time.UTC)
@@ -122,7 +124,7 @@ func TestStartRegistersReadyBeforeReleaseAndReplaysWithoutRelaunch(t *testing.T)
 			t.Fatal(attemptErr)
 		}
 		attemptID = attempt.id
-		execFence, stateErr = attempt.acquireExecFence(tmux.pid)
+		launcherFence, stateErr = attempt.acquireExecFence(tmux.pid)
 		if stateErr != nil {
 			t.Fatal(stateErr)
 		}
@@ -146,7 +148,7 @@ func TestStartRegistersReadyBeforeReleaseAndReplaysWithoutRelaunch(t *testing.T)
 				prepared.AttemptID != attemptID || prepared.AttemptIndex != 1 {
 				t.Fatalf("prepared = %#v", prepared)
 			}
-			go func(fence *os.File) {
+			go func(fence *execFence) {
 				for {
 					if _, statErr := os.Stat(filepath.Join(store.Root, request.HandoffID, launchDirectoryName,
 						attemptsDirectoryName, attemptID, "release.json")); statErr == nil {
@@ -155,7 +157,7 @@ func TestStartRegistersReadyBeforeReleaseAndReplaysWithoutRelaunch(t *testing.T)
 					}
 					time.Sleep(time.Millisecond)
 				}
-			}(execFence)
+			}(launcherFence)
 			return "worklog-target", nil
 		},
 	}
@@ -193,6 +195,7 @@ func TestStartRegistersReadyBeforeReleaseAndReplaysWithoutRelaunch(t *testing.T)
 }
 
 func TestStartRetainsImmediateHarnessExitStatusAndDiagnostic(t *testing.T) {
+	t.Parallel()
 	fixture := newLauncherRetryFixture(t)
 	fence, _ := fixture.createReleasedAttempt(t, false, true)
 	fixture.tmux.pid = 919191
@@ -222,7 +225,7 @@ func TestPreflightLocalDistinguishesMissingTmuxAndHarness(t *testing.T) {
 	})
 	t.Run("missing harness", func(t *testing.T) {
 		bin := t.TempDir()
-		if err := os.WriteFile(filepath.Join(bin, "tmux"), []byte("fixture"), 0o755); err != nil {
+		if err := testenv.WriteExecutableFile(filepath.Join(bin, "tmux"), []byte("fixture"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		t.Setenv("PATH", bin)
@@ -259,7 +262,7 @@ func TestRunPrivateLauncherPublishesReadyThenExecsFixedArgvAfterRelease(t *testi
 		t.Fatal(err)
 	}
 	for _, name := range []string{"codex", "wb"} {
-		if err := os.WriteFile(filepath.Join(bin, name), []byte("fixture"), 0o755); err != nil {
+		if err := testenv.WriteExecutableFile(filepath.Join(bin, name), []byte("fixture"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -387,7 +390,7 @@ func TestRunPrivateLauncherReadsPrivateHandoverForNewStyleRequestsWithoutTouchin
 		t.Fatal(err)
 	}
 	for _, name := range []string{"codex", "wb"} {
-		if err := os.WriteFile(filepath.Join(bin, name), []byte("fixture"), 0o755); err != nil {
+		if err := testenv.WriteExecutableFile(filepath.Join(bin, name), []byte("fixture"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -498,7 +501,7 @@ func TestRunPrivateLauncherRecordsExecFailureBeforeReleasingFence(t *testing.T) 
 		t.Fatal(err)
 	}
 	for _, name := range []string{"codex", "wb"} {
-		if err := os.WriteFile(filepath.Join(bin, name), []byte("fixture"), 0o755); err != nil {
+		if err := testenv.WriteExecutableFile(filepath.Join(bin, name), []byte("fixture"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -576,6 +579,7 @@ func TestRunPrivateLauncherRecordsExecFailureBeforeReleasingFence(t *testing.T) 
 }
 
 func TestLaunchArtifactsRejectTrailingJSONAndSymlinks(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	handoff := filepath.Join(root, "handoff-123")
 	if err := os.MkdirAll(filepath.Join(handoff, "launch"), 0o700); err != nil {

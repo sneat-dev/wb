@@ -7,6 +7,7 @@ import (
 	"errors"
 	"reflect"
 	"strings"
+	"sync"
 
 	"github.com/sneat-dev/wb/api/githubapp"
 )
@@ -19,7 +20,16 @@ import (
 // file and so cannot be imported here. dalgostore_parity_test.go covers the
 // same journeys over the real DALgo adapter, which this map does not
 // serialize through.
+//
+// mu makes UpdateAtomic genuinely serializable — it holds the lock for the
+// whole callback, exactly the "serializable transaction semantics"
+// DocumentStore's own doc comment promises — and makes every method safe to
+// call from concurrent goroutines (hub/peer_admin_test.go's concurrent-
+// invite test relies on both: without it, two goroutines could interleave
+// their Get/Set calls and both "win", or the unsynchronized map access would
+// simply race under go test -race).
 type firestoreMemoryBackend struct {
+	mu        sync.Mutex
 	documents map[string]any
 
 	// Fault-injection hooks let tests exercise the provider stores' backend
@@ -50,7 +60,13 @@ func (b *firestoreMemoryBackend) putDocument(collection, id string, value any) {
 	b.documents[collection+"/"+id] = value
 }
 
-func (b *firestoreMemoryBackend) Get(_ context.Context, collection, id string, out any) (bool, error) {
+func (b *firestoreMemoryBackend) Get(ctx context.Context, collection, id string, out any) (bool, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.getLocked(ctx, collection, id, out)
+}
+
+func (b *firestoreMemoryBackend) getLocked(_ context.Context, collection, id string, out any) (bool, error) {
 	if b.failGet != nil {
 		if err := b.failGet(collection, id); err != nil {
 			return false, err
@@ -69,6 +85,8 @@ func (b *firestoreMemoryBackend) Get(_ context.Context, collection, id string, o
 // It ignores filters: none of the provider-owned stores use equality filters
 // today, since every collection path is already scoped to its owner.
 func (b *firestoreMemoryBackend) Query(_ context.Context, collection string, _ map[string]any, limit int, out any) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if b.failQuery != nil {
 		if err := b.failQuery(collection); err != nil {
 			return err
@@ -92,7 +110,13 @@ func (b *firestoreMemoryBackend) Query(_ context.Context, collection string, _ m
 	return nil
 }
 
-func (b *firestoreMemoryBackend) Set(_ context.Context, collection, id string, value any) error {
+func (b *firestoreMemoryBackend) Set(ctx context.Context, collection, id string, value any) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.setLocked(ctx, collection, id, value)
+}
+
+func (b *firestoreMemoryBackend) setLocked(_ context.Context, collection, id string, value any) error {
 	if b.failSet != nil {
 		if err := b.failSet(collection, id); err != nil {
 			return err
@@ -102,17 +126,27 @@ func (b *firestoreMemoryBackend) Set(_ context.Context, collection, id string, v
 	return nil
 }
 
+// UpdateAtomic holds the backend lock for update's entire run, so every Get
+// and Set the callback performs is one uninterrupted critical section
+// relative to every other call on this backend — the in-memory equivalent of
+// the serializable transaction DocumentStore's contract promises.
 func (b *firestoreMemoryBackend) UpdateAtomic(ctx context.Context, update func(githubapp.DocumentTransaction) error) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	return update(firestoreMemoryTransaction{backend: b})
 }
 
 type firestoreMemoryTransaction struct{ backend *firestoreMemoryBackend }
 
+// Get and Set call the backend's already-locked helpers directly (never the
+// exported, locking Get/Set) because UpdateAtomic already holds b.mu for the
+// whole transaction; calling back into the locking methods here would
+// deadlock on the same, non-reentrant mutex.
 func (tx firestoreMemoryTransaction) Get(ctx context.Context, collection, id string, out any) (bool, error) {
-	return tx.backend.Get(ctx, collection, id, out)
+	return tx.backend.getLocked(ctx, collection, id, out)
 }
 func (tx firestoreMemoryTransaction) Set(ctx context.Context, collection, id string, value any) error {
-	return tx.backend.Set(ctx, collection, id, value)
+	return tx.backend.setLocked(ctx, collection, id, value)
 }
 func (tx firestoreMemoryTransaction) Delete(_ context.Context, collection, id string) error {
 	if tx.backend.failDelete != nil {

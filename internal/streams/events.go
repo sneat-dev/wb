@@ -9,8 +9,36 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
+	"github.com/sneat-dev/wb/internal/provenance"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 )
+
+// stampProvenance fills every unset provenance field on event from the
+// environment (wb#631). It never overwrites a field a caller already set:
+// most stream events are constructed once and appended immediately, but this
+// keeps Append idempotent-safe for a caller that stamped its own value.
+func stampProvenance(event *Event) {
+	fields := provenance.FromEnv()
+	if event.HarnessSessionID == "" {
+		event.HarnessSessionID = fields.HarnessSessionID
+	}
+	if event.Harness == "" {
+		event.Harness = fields.Harness
+	}
+	if event.EffortLevel == "" {
+		event.EffortLevel = fields.EffortLevel
+	}
+	if event.AgentID == "" {
+		event.AgentID = fields.AgentID
+	}
+	if event.ToolUseID == "" {
+		event.ToolUseID = fields.ToolUseID
+	}
+	if event.WBVersion == "" {
+		event.WBVersion = fields.WBVersion
+	}
+}
 
 // EventSchemaVersion is the stream event-log format this binary writes.
 const EventSchemaVersion = 1
@@ -44,6 +72,18 @@ type Event struct {
 	// Evidence carries the exact facts the verb relied on. Values are
 	// redacted before the event is written.
 	Evidence map[string]string `json:"evidence,omitempty"`
+
+	// Provenance fields (wb#631, SDLC logging-gap analysis 2026-09-18): IDs
+	// only, stamped by Append from the environment at zero cost, never a
+	// prompt or response body. Additive and omitempty: a reader older than
+	// this change simply never sees them, and EventSchemaVersion did not
+	// need to move for a purely additive field.
+	HarnessSessionID string `json:"harness_session_id,omitempty"`
+	Harness          string `json:"harness,omitempty"`
+	EffortLevel      string `json:"effort_level,omitempty"`
+	AgentID          string `json:"agent_id,omitempty"`
+	ToolUseID        string `json:"tool_use_id,omitempty"`
+	WBVersion        string `json:"wb_version,omitempty"`
 }
 
 // EventAppender is the seam between a stream verb and the event log.
@@ -76,6 +116,10 @@ func (store *Store) EventLog(name string) *FileEventLog {
 // the verb's own work — callers log it — but it is reported rather than
 // swallowed here.
 func (log *FileEventLog) Append(event Event) error {
+	return log.appendInjected(event, nil, filewrite.OpenAppend)
+}
+
+func (log *FileEventLog) appendInjected(event Event, inj *filewrite.Injector, open func(string, os.FileMode, *filewrite.Injector) (*os.File, error)) error {
 	event.SchemaVersion = EventSchemaVersion
 	if event.Timestamp.IsZero() {
 		if log.Now != nil {
@@ -84,6 +128,7 @@ func (log *FileEventLog) Append(event Event) error {
 			event.Timestamp = time.Now().UTC()
 		}
 	}
+	stampProvenance(&event)
 	event = Redact(event)
 	line, err := json.Marshal(event)
 	if err != nil {
@@ -92,7 +137,7 @@ func (log *FileEventLog) Append(event Event) error {
 	if err := os.MkdirAll(filepath.Dir(log.Path), 0o700); err != nil {
 		return fmt.Errorf("create stream event directory: %w", err)
 	}
-	file, err := os.OpenFile(log.Path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	file, err := open(log.Path, 0o600, inj)
 	if err != nil {
 		return fmt.Errorf("open stream event log %s: %w", log.Path, err)
 	}
@@ -101,7 +146,7 @@ func (log *FileEventLog) Append(event Event) error {
 		return fmt.Errorf("lock stream event log: %w", err)
 	}
 	defer func() { _ = unix.Flock(int(file.Fd()), unix.LOCK_UN) }()
-	if _, err := file.Write(append(line, '\n')); err != nil {
+	if err := filewrite.Write(file, append(line, '\n'), log.Path, inj); err != nil {
 		return fmt.Errorf("append stream event: %w", err)
 	}
 	return nil

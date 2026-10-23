@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // stCovRequireGit skips only where Git itself is absent: the production port
@@ -42,6 +44,7 @@ func stCovHead(t *testing.T, dir string) string {
 }
 
 func TestExecGitCommitAllReportsWhetherAnythingWasCommitted(t *testing.T) {
+	t.Parallel()
 	root := stCovScratchRepo(t)
 	git := ExecGit{Timeout: time.Minute}
 	ctx := context.Background()
@@ -73,6 +76,7 @@ func TestExecGitCommitAllReportsWhetherAnythingWasCommitted(t *testing.T) {
 }
 
 func TestExecGitIsCleanReportsUncommittedWork(t *testing.T) {
+	t.Parallel()
 	root := stCovScratchRepo(t)
 	git := ExecGit{Timeout: time.Minute}
 	if err := os.WriteFile(filepath.Join(root, "untracked.txt"), []byte("x\n"), 0o644); err != nil {
@@ -88,6 +92,7 @@ func TestExecGitIsCleanReportsUncommittedWork(t *testing.T) {
 }
 
 func TestExecGitBranchCheckoutAndDeleteRoundTrip(t *testing.T) {
+	t.Parallel()
 	root := stCovScratchRepo(t)
 	git := ExecGit{Timeout: time.Minute}
 	ctx := context.Background()
@@ -124,6 +129,7 @@ func TestExecGitBranchCheckoutAndDeleteRoundTrip(t *testing.T) {
 }
 
 func TestExecGitResetHardAndRestoreToDiscardUncommittedWork(t *testing.T) {
+	t.Parallel()
 	root := stCovScratchRepo(t)
 	git := ExecGit{Timeout: time.Minute}
 	ctx := context.Background()
@@ -161,6 +167,7 @@ func TestExecGitResetHardAndRestoreToDiscardUncommittedWork(t *testing.T) {
 }
 
 func TestExecGitRebaseReportsConflictingPathsAndAbortRebaseRecovers(t *testing.T) {
+	t.Parallel()
 	root := stCovScratchRepo(t)
 	commitFile(t, root, "shared.txt", "base\n", "feat: add shared")
 	runGit(t, root, "checkout", "-b", "topic")
@@ -193,6 +200,7 @@ func TestExecGitRebaseReportsConflictingPathsAndAbortRebaseRecovers(t *testing.T
 }
 
 func TestExecGitRebaseFailsWithoutAPathWhenGitCannotRebaseAtAll(t *testing.T) {
+	t.Parallel()
 	root := stCovScratchRepo(t)
 	git := ExecGit{Timeout: time.Minute}
 	conflicts, err := git.Rebase(context.Background(), root, "main", "no-such-upstream")
@@ -205,6 +213,7 @@ func TestExecGitRebaseFailsWithoutAPathWhenGitCannotRebaseAtAll(t *testing.T) {
 }
 
 func TestExecGitCherryPickAppliesAndAbortsAConflictingPick(t *testing.T) {
+	t.Parallel()
 	root := stCovScratchRepo(t)
 	commitFile(t, root, "shared.txt", "base\n", "feat: shared base")
 	runGit(t, root, "checkout", "-b", "topic")
@@ -243,6 +252,7 @@ func TestExecGitCherryPickAppliesAndAbortsAConflictingPick(t *testing.T) {
 }
 
 func TestExecGitCommitsAheadCountsAgainstTheUpstreamItHas(t *testing.T) {
+	t.Parallel()
 	fixture := newRemoteStreamFixture(t)
 	git := ExecGit{Timeout: time.Minute}
 	ctx := context.Background()
@@ -270,6 +280,7 @@ func TestExecGitCommitsAheadCountsAgainstTheUpstreamItHas(t *testing.T) {
 }
 
 func TestExecGitFastForwardToRemoteAcceptsEqualHeads(t *testing.T) {
+	t.Parallel()
 	fixture := newRemoteStreamFixture(t)
 	git := ExecGit{Timeout: time.Minute}
 	ctx := context.Background()
@@ -287,6 +298,7 @@ func TestExecGitFastForwardToRemoteAcceptsEqualHeads(t *testing.T) {
 }
 
 func TestExecGitFastForwardToRemoteAcceptsALocalAheadBranch(t *testing.T) {
+	t.Parallel()
 	fixture := newRemoteStreamFixture(t)
 	commitFile(t, fixture.local, "local.txt", "local\n", "feat: local ahead")
 	local := strings.TrimSpace(runGit(t, fixture.local, "rev-parse", "stream/fixture"))
@@ -313,6 +325,7 @@ func TestExecGitFastForwardToRemoteAcceptsALocalAheadBranch(t *testing.T) {
 }
 
 func TestExecGitPushWithLeasePublishesAndVerifiesTheRef(t *testing.T) {
+	t.Parallel()
 	fixture := newRemoteStreamFixture(t)
 	git := ExecGit{Timeout: time.Minute}
 	ctx := context.Background()
@@ -345,6 +358,7 @@ func TestExecGitPushWithLeasePublishesAndVerifiesTheRef(t *testing.T) {
 }
 
 func TestExecGitPushWithLeaseRefusesAStaleLease(t *testing.T) {
+	t.Parallel()
 	fixture := newRemoteStreamFixture(t)
 	git := ExecGit{Timeout: time.Minute}
 	ctx := context.Background()
@@ -376,7 +390,7 @@ func TestExecGitPushWithLeaseRefusesAStaleLease(t *testing.T) {
 func stCovWriteExecutable(t *testing.T, dir, name, body string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(path, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return path
@@ -395,6 +409,7 @@ func stCovFakeBin(t *testing.T) string {
 }
 
 func TestExecBumperRequiredReadsTheLowestConsumerDeclaration(t *testing.T) {
+	t.Parallel()
 	bumper := ExecBumper{Timeout: time.Minute}
 	ctx := context.Background()
 	library := Library{Name: "acme.test/library", Target: "v1.2.3", Ecosystem: "go"}
@@ -425,6 +440,7 @@ func TestExecBumperRequiredReadsTheLowestConsumerDeclaration(t *testing.T) {
 }
 
 func TestExecBumperRequiredReadsNpmDeclarations(t *testing.T) {
+	t.Parallel()
 	bumper := ExecBumper{Timeout: time.Minute}
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "package.json"),
@@ -438,6 +454,7 @@ func TestExecBumperRequiredReadsNpmDeclarations(t *testing.T) {
 }
 
 func TestExecBumperRequiredReportsAnUnreadableConsumerManifest(t *testing.T) {
+	t.Parallel()
 	bumper := ExecBumper{Timeout: time.Minute}
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "package.json"), []byte("{not json"), 0o644); err != nil {
@@ -574,6 +591,7 @@ func TestExecBumperApplyNpmReportsAFailedInstall(t *testing.T) {
 }
 
 func TestExecBumperApplyRefusesAnUnsupportedEcosystem(t *testing.T) {
+	t.Parallel()
 	bumper := ExecBumper{Timeout: time.Minute}
 	err := bumper.Apply(context.Background(), t.TempDir(), Library{Name: "acme-crate", Ecosystem: "cargo"})
 	if err == nil {
@@ -585,6 +603,7 @@ func TestExecBumperApplyRefusesAnUnsupportedEcosystem(t *testing.T) {
 }
 
 func TestSyncRunBoundedReportsATimeoutRatherThanHanging(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("sleep"); err != nil {
 		t.Skip("sleep is not installed")
 	}
@@ -602,6 +621,7 @@ func TestSyncRunBoundedReportsATimeoutRatherThanHanging(t *testing.T) {
 }
 
 func TestExecGitRebaseFastForwardsACleanBranch(t *testing.T) {
+	t.Parallel()
 	root := stCovScratchRepo(t)
 	runGit(t, root, "checkout", "-b", "topic")
 	commitFile(t, root, "topic.txt", "topic\n", "feat: topic work")
@@ -626,6 +646,7 @@ func TestExecGitRebaseFastForwardsACleanBranch(t *testing.T) {
 }
 
 func TestExecGitRebaseRefusesAnUnknownBranch(t *testing.T) {
+	t.Parallel()
 	root := stCovScratchRepo(t)
 	git := ExecGit{Timeout: time.Minute}
 	conflicts, err := git.Rebase(context.Background(), root, "no-such-branch", "main")
@@ -638,6 +659,7 @@ func TestExecGitRebaseRefusesAnUnknownBranch(t *testing.T) {
 }
 
 func TestExecGitFastForwardToRemoteReportsAHeadItCannotRead(t *testing.T) {
+	t.Parallel()
 	fixture := newRemoteStreamFixture(t)
 	git := ExecGit{Timeout: time.Minute}
 	ctx := context.Background()
@@ -654,6 +676,7 @@ func TestExecGitFastForwardToRemoteReportsAHeadItCannotRead(t *testing.T) {
 }
 
 func TestExecGitFastForwardToRemoteFailsClosedOutsideARepository(t *testing.T) {
+	t.Parallel()
 	stCovRequireGit(t)
 	git := ExecGit{Timeout: time.Minute}
 	_, _, _, err := git.FastForwardToRemote(context.Background(), t.TempDir(), "stream/x", "origin/stream/x")
@@ -666,6 +689,7 @@ func TestExecGitFastForwardToRemoteFailsClosedOutsideARepository(t *testing.T) {
 }
 
 func TestExecGitFastForwardToRemoteRefusesToOverwriteUntrackedWork(t *testing.T) {
+	t.Parallel()
 	fixture := newRemoteStreamFixture(t)
 	runGit(t, fixture.other, "checkout", "stream/fixture")
 	commitFile(t, fixture.other, "remote.txt", "remote\n", "feat: remote advance")
@@ -698,6 +722,7 @@ func TestExecGitFastForwardToRemoteRefusesToOverwriteUntrackedWork(t *testing.T)
 }
 
 func TestExecGitFastForwardToRemoteRefusesACheckoutItCannotMake(t *testing.T) {
+	t.Parallel()
 	fixture := newRemoteStreamFixture(t)
 	// Give the stream branch a file main does not carry, publish it, then let
 	// the remote move on so the local stream branch is strictly behind it.
@@ -729,6 +754,7 @@ func TestExecGitFastForwardToRemoteRefusesACheckoutItCannotMake(t *testing.T) {
 }
 
 func TestExecGitCommitsAheadReportsAnUnreadableRange(t *testing.T) {
+	t.Parallel()
 	fixture := newRemoteStreamFixture(t)
 	git := ExecGit{Timeout: time.Minute}
 	// The upstream resolves, but the branch does not: the range cannot be
@@ -739,6 +765,7 @@ func TestExecGitCommitsAheadReportsAnUnreadableRange(t *testing.T) {
 }
 
 func TestExecGitRestoreToReportsAnUnknownRevision(t *testing.T) {
+	t.Parallel()
 	root := stCovScratchRepo(t)
 	git := ExecGit{Timeout: time.Minute}
 	if err := git.RestoreTo(context.Background(), root, "no-such-revision"); err == nil {
@@ -757,6 +784,7 @@ func TestExecGitRestoreToReportsAnUnknownRevision(t *testing.T) {
 }
 
 func TestExecGitPushWithLeaseReportsAnUnknownLocalBranch(t *testing.T) {
+	t.Parallel()
 	fixture := newRemoteStreamFixture(t)
 	git := ExecGit{Timeout: time.Minute}
 	if _, err := git.PushWithLease(context.Background(), fixture.local, "no-such-branch", ""); err == nil {
@@ -765,6 +793,7 @@ func TestExecGitPushWithLeaseReportsAnUnknownLocalBranch(t *testing.T) {
 }
 
 func TestExecGitIsCleanFailsClosedOutsideARepository(t *testing.T) {
+	t.Parallel()
 	stCovRequireGit(t)
 	git := ExecGit{Timeout: time.Minute}
 	if _, err := git.IsClean(context.Background(), t.TempDir()); err == nil {
@@ -773,6 +802,7 @@ func TestExecGitIsCleanFailsClosedOutsideARepository(t *testing.T) {
 }
 
 func TestExecBumperApplyReportsAGoModuleScanFailure(t *testing.T) {
+	t.Parallel()
 	bumper := ExecBumper{Timeout: time.Minute}
 	absent := filepath.Join(t.TempDir(), "absent")
 	err := bumper.Apply(context.Background(), absent, Library{Name: "acme.test/library", Ecosystem: "go"})
@@ -820,6 +850,7 @@ func TestExecGitCommitAllReportsAStagingOrCommitFailure(t *testing.T) {
 }
 
 func TestSyncRunBoundedDefaultsAnUnsetTimeout(t *testing.T) {
+	t.Parallel()
 	// A zero timeout means "use the default bound"; the command still runs.
 	if _, err := runBounded(context.Background(), 0, t.TempDir(), nil, "go", "version"); err != nil {
 		t.Fatalf("runBounded with a zero timeout: %v", err)
@@ -842,12 +873,14 @@ func stCovEqualLines(got, want []string) bool {
 // while the fetch URL cannot yet read it back; that re-read failure is
 // reported rather than silently claiming the push landed.
 func TestPushWithLeaseReportsAFailedRereadAfterThePush(t *testing.T) {
+	t.Parallel()
 	stCovRequireGit(t)
 	base := t.TempDir()
 	fetchRemote := filepath.Join(base, "fetch.git")
 	pushRemote := filepath.Join(base, "push.git")
 	for _, remote := range []string{fetchRemote, pushRemote} {
 		runGit(t, "", "init", "--bare", "--initial-branch=main", remote)
+		testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	}
 	work := filepath.Join(base, "work")
 	runGit(t, "", "clone", fetchRemote, work)
@@ -869,6 +902,7 @@ func TestPushWithLeaseReportsAFailedRereadAfterThePush(t *testing.T) {
 // A post-receive hook that rewrites the pushed ref makes the push exit 0 while
 // origin holds a different commit; the verification must catch that.
 func TestPushWithLeaseReportsAnOriginThatDisagreesAfterThePush(t *testing.T) {
+	t.Parallel()
 	stCovRequireGit(t)
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh is not installed")
@@ -876,6 +910,7 @@ func TestPushWithLeaseReportsAnOriginThatDisagreesAfterThePush(t *testing.T) {
 	base := t.TempDir()
 	remote := filepath.Join(base, "origin.git")
 	runGit(t, "", "init", "--bare", "--initial-branch=main", remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	work := filepath.Join(base, "work")
 	runGit(t, "", "clone", remote, work)
 	commitFile(t, work, "base.txt", "base\n", "feat: base")
@@ -888,7 +923,7 @@ func TestPushWithLeaseReportsAnOriginThatDisagreesAfterThePush(t *testing.T) {
 	mainSHA := strings.TrimSpace(runGit(t, work, "rev-parse", "main"))
 
 	hook := filepath.Join(remote, "hooks", "post-receive")
-	if err := os.WriteFile(hook, []byte("#!/bin/sh\ngit update-ref refs/heads/stream/hooked refs/heads/main\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(hook, []byte("#!/bin/sh\ngit update-ref refs/heads/stream/hooked refs/heads/main\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 

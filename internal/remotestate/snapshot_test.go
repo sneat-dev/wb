@@ -15,6 +15,7 @@ func identity() Snapshot {
 }
 
 func TestBuildListsOnlyNonCleanRepositoriesAndCountsAll(t *testing.T) {
+	t.Parallel()
 	repos := []RepositoryInput{
 		{Repository: "acme/clean", Path: "/p/clean", Tracking: gitops.TrackingState{Branch: "main", Upstream: "origin/main"}},
 		{Repository: "acme/dirty", Path: "/p/dirty", Status: gitops.RepoStatus{Modified: []string{"a.go"}, Untracked: []string{"b.txt"}, Conflicted: []string{"c.md"}, Stashed: []string{"stash@{0}"}}, Tracking: gitops.TrackingState{Branch: "main", Upstream: "origin/main", Ahead: 1, Behind: 2}},
@@ -92,6 +93,7 @@ func TestBuildListsOnlyNonCleanRepositoriesAndCountsAll(t *testing.T) {
 }
 
 func TestBuildRedactsUnpushedSubjectsToCounts(t *testing.T) {
+	t.Parallel()
 	attribution := []gitops.UnpushedBranch{{Branch: "feature", Worktree: "/p/feature", Commits: []string{"abc feat", "def fix"}}}
 	repos := []RepositoryInput{{Repository: "acme/x", Path: "/p/x", Status: gitops.RepoStatus{Unpushed: []string{"abc feat", "def fix"}, UnpushedBranches: attribution}, Tracking: gitops.TrackingState{Branch: "main", Upstream: "origin/main", Ahead: 2}}}
 
@@ -109,6 +111,7 @@ func TestBuildRedactsUnpushedSubjectsToCounts(t *testing.T) {
 }
 
 func TestBuildSummarisesTrackingOnlyAttention(t *testing.T) {
+	t.Parallel()
 	repos := []RepositoryInput{
 		{Repository: "acme/ahead", Path: "/p/ahead", Tracking: gitops.TrackingState{Branch: "main", Upstream: "origin/main", Ahead: 2}},
 		{Repository: "acme/noup", Path: "/p/noup", Tracking: gitops.TrackingState{Branch: "feature", Configured: true}},
@@ -139,6 +142,7 @@ func TestBuildSummarisesTrackingOnlyAttention(t *testing.T) {
 }
 
 func TestBuildSummaryOmitsCleanTracking(t *testing.T) {
+	t.Parallel()
 	repos := []RepositoryInput{
 		{Repository: "acme/dirty", Path: "/p/dirty", Status: gitops.RepoStatus{Modified: []string{"a.go"}}, Tracking: gitops.TrackingState{Branch: "main", Upstream: "origin/main"}},
 	}
@@ -154,6 +158,7 @@ func TestBuildSummaryOmitsCleanTracking(t *testing.T) {
 }
 
 func TestBuildCarriesWorktrees(t *testing.T) {
+	t.Parallel()
 	lastCommit := time.Date(2026, 9, 6, 10, 0, 0, 0, time.UTC)
 	wts := []worktrees.ListResult{
 		{Task: "task-7", TaskSummary: "Fix snapshot", Repository: "acme/z", Branch: "agent/task-7", HeadSHA: "abc123", WorktreeDir: "/wt/task-7/acme/z", OwnerState: "active", Owner: "codex", LastCommit: lastCommit, OpenPullRequest: &worktrees.PullRequest{Number: 17, URL: "https://github.com/acme/z/pull/17", State: "open"}},
@@ -178,6 +183,7 @@ func TestBuildCarriesWorktrees(t *testing.T) {
 }
 
 func TestEncodeDecodeRoundTrip(t *testing.T) {
+	t.Parallel()
 	snap := Build(identity(), []RepositoryInput{{Repository: "acme/x", Path: "/p/x", Status: gitops.RepoStatus{Stashed: []string{"stash@{0}"}}}}, nil, RedactNone)
 	data, err := Encode(snap)
 	if err != nil {
@@ -193,6 +199,7 @@ func TestEncodeDecodeRoundTrip(t *testing.T) {
 }
 
 func TestDecodeRejectsNewerSchema(t *testing.T) {
+	t.Parallel()
 	_, err := Decode([]byte("schema_version: 99\nlogin: a\nmachine: b\n"))
 	if err == nil || !strings.Contains(err.Error(), "schema_version 99") {
 		t.Fatalf("err = %v, want newer-schema error", err)
@@ -200,12 +207,14 @@ func TestDecodeRejectsNewerSchema(t *testing.T) {
 }
 
 func TestDecodeRejectsGarbage(t *testing.T) {
+	t.Parallel()
 	if _, err := Decode([]byte("{not yaml")); err == nil {
 		t.Fatal("expected YAML error")
 	}
 }
 
 func TestHeartbeatIsLaterOfPublishedAndLastSeen(t *testing.T) {
+	t.Parallel()
 	published := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
 
 	zeroLastSeen := Snapshot{PublishedAt: published}
@@ -247,6 +256,7 @@ func dqCovBuildIndex(t *testing.T, snap Snapshot) map[string]WorktreeState {
 // a superseded head is "superseded". It also proves the navigable PR evidence
 // falls back to the merged pull request when no open one exists.
 func TestBuildDerivesTerminalWorktreeLifecyclesAndCarriesTheirPullRequest(t *testing.T) {
+	t.Parallel()
 	merged := &worktrees.PullRequest{Number: 7, URL: "https://github.com/acme/b/pull/7", State: "closed"}
 	open := &worktrees.PullRequest{Number: 12, URL: "https://github.com/acme/c/pull/12", State: "open"}
 	wts := []worktrees.ListResult{
@@ -279,6 +289,7 @@ func TestBuildDerivesTerminalWorktreeLifecyclesAndCarriesTheirPullRequest(t *tes
 // specific reason, that supersession wins when both are present, and that a
 // worktree with neither keeps a clean attention state.
 func TestBuildFlagsSupersessionAndAbsorptionRejectionsForReview(t *testing.T) {
+	t.Parallel()
 	wts := []worktrees.ListResult{
 		{Task: "supersession", Repository: "acme/a", Branch: "agent/a", HeadSHA: "aaa", WorktreeDir: "/wt/a", OwnerState: "active", SupersessionRejection: "receipt does not verify"},
 		{Task: "absorption", Repository: "acme/b", Branch: "agent/b", HeadSHA: "bbb", WorktreeDir: "/wt/b", OwnerState: "active", AbsorbedByRejection: "content is not contained"},

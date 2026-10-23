@@ -65,12 +65,13 @@ func dqCovZeroFileSizeLimit(t *testing.T) {
 // TestDqCovStoreSaveReportsUnwritableTemporaryFile proves a state file that
 // cannot be written is reported and never published over an existing record.
 func TestDqCovStoreSaveReportsUnwritableTemporaryFile(t *testing.T) {
+	t.Parallel()
 	if dqCovSpawnFileSizeLimitedChild(t) {
 		return
 	}
 	directory := t.TempDir()
 	path := filepath.Join(directory, "state.json")
-	state := NewStarting(nil, "127.0.0.1:8766", Provenance{Executable: "/wb"}, "owner", time.Unix(1, 0))
+	state := NewStartingAt(nil, "127.0.0.1:8766", Provenance{Executable: "/wb"}, "owner", "", "", time.Unix(1, 0))
 
 	dqCovZeroFileSizeLimit(t)
 	err := (Store{Path: path}).Save(state)
@@ -92,6 +93,7 @@ func TestDqCovStoreSaveReportsUnwritableTemporaryFile(t *testing.T) {
 // TestDqCovPersistRecordReportsUnwritableOperationFile proves a durable
 // transition that cannot be written is reported instead of being published.
 func TestDqCovPersistRecordReportsUnwritableOperationFile(t *testing.T) {
+	t.Parallel()
 	if dqCovSpawnFileSizeLimitedChild(t) {
 		return
 	}

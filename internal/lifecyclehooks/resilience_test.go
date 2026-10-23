@@ -16,6 +16,7 @@ import (
 )
 
 func TestPlanRejectsControlStateInsideCheckoutIncludingSymlinkedParent(t *testing.T) {
+	t.Parallel()
 	dispatcher, repository := testDispatcher(t)
 	event := Event{Name: EventCheckoutUpdated, Repository: "github.com/acme/app", Checkout: repository, OldSHA: "a", NewSHA: "b", Cause: "pull"}
 	dispatcher.StateDir = filepath.Join(repository, ".wb-state")
@@ -38,6 +39,7 @@ func TestPlanRejectsControlStateInsideCheckoutIncludingSymlinkedParent(t *testin
 }
 
 func TestVerifyCheckoutPinsRepositoryAndQueuedHead(t *testing.T) {
+	t.Parallel()
 	repository, head := initLifecycleGitRepository(t, "acme/app")
 	event := Event{Name: EventCheckoutUpdated, Repository: "github.com/acme/app", Checkout: repository, NewSHA: head}
 	physical, info, err := verifyCheckout(event)
@@ -56,6 +58,7 @@ func TestVerifyCheckoutPinsRepositoryAndQueuedHead(t *testing.T) {
 }
 
 func TestStartWorkerIfIdleDoesNotSpawnDuplicateWorker(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := testDispatcher(t)
 	if err := dispatcher.ensureState(); err != nil {
 		t.Fatal(err)
@@ -64,7 +67,7 @@ func TestStartWorkerIfIdleDoesNotSpawnDuplicateWorker(t *testing.T) {
 	if err := worker.Lock(); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = worker.Unlock() }()
+	t.Cleanup(func() { _ = worker.Unlock() })
 	var launches atomic.Int32
 	dispatcher.LaunchWorker = func(WorkerRequest) error { launches.Add(1); return nil }
 	started, err := dispatcher.startWorkerIfIdle()
@@ -74,6 +77,7 @@ func TestStartWorkerIfIdleDoesNotSpawnDuplicateWorker(t *testing.T) {
 }
 
 func TestStartWorkerIfIdleSuppressesStartingProcessStampede(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := testDispatcher(t)
 	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
 	dispatcher.Now = func() time.Time { return now }
@@ -92,6 +96,7 @@ func TestStartWorkerIfIdleSuppressesStartingProcessStampede(t *testing.T) {
 }
 
 func TestResumeStartsWorkerForStrandedPendingItem(t *testing.T) {
+	t.Parallel()
 	dispatcher, repository := testDispatcher(t)
 	cfg, _, err := Load(dispatcher.ConfigPath)
 	if err != nil {
@@ -110,6 +115,7 @@ func TestResumeStartsWorkerForStrandedPendingItem(t *testing.T) {
 }
 
 func TestAsyncFailureIsWarnedOnNextDispatchExactlyOnce(t *testing.T) {
+	t.Parallel()
 	dispatcher, repository := testDispatcher(t)
 	dispatcher.Run = func(context.Context, Invocation) error { return errors.New("index unavailable") }
 	event := Event{Name: EventCheckoutUpdated, Repository: "github.com/acme/app", Checkout: repository, OldSHA: "a", NewSHA: "b", Cause: "pull"}
@@ -134,6 +140,7 @@ func TestAsyncFailureIsWarnedOnNextDispatchExactlyOnce(t *testing.T) {
 }
 
 func TestCorruptQueueItemIsQuarantinedWithoutBlockingValidWork(t *testing.T) {
+	t.Parallel()
 	dispatcher, repository := testDispatcher(t)
 	event := Event{Name: EventCheckoutUpdated, Repository: "github.com/acme/app", Checkout: repository, OldSHA: "a", NewSHA: "b", Cause: "pull"}
 	if _, err := dispatcher.Dispatch(context.Background(), []Event{event}); err != nil {
@@ -157,6 +164,7 @@ func TestCorruptQueueItemIsQuarantinedWithoutBlockingValidWork(t *testing.T) {
 }
 
 func TestReceiptIndexSurvivesCorruptStreamAndStatusReportsMalformedLines(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := testDispatcher(t)
 	receipt := Receipt{SchemaVersion: receiptSchemaVersion, ID: "20260101T000000.000000000Z-indexed", Status: "failed", Executor: "index", Repository: "github.com/acme/app"}
 	if err := appendReceipt(dispatcher.ReceiptPath, receipt); err != nil {
@@ -187,6 +195,7 @@ func TestReceiptIndexSurvivesCorruptStreamAndStatusReportsMalformedLines(t *test
 }
 
 func TestCorruptReceiptIndexFallsBackToValidStream(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := testDispatcher(t)
 	receipt := Receipt{SchemaVersion: receiptSchemaVersion, ID: "20260101T000000.000000000Z-fallback", Status: "failed"}
 	if err := appendReceipt(dispatcher.ReceiptPath, receipt); err != nil {
@@ -202,6 +211,7 @@ func TestCorruptReceiptIndexFallsBackToValidStream(t *testing.T) {
 }
 
 func TestGCDryRunThenRemovesOnlyOldSeenReceiptsAndDiagnostics(t *testing.T) {
+	t.Parallel()
 	dispatcher, _ := testDispatcher(t)
 	if err := dispatcher.ensureState(); err != nil {
 		t.Fatal(err)
@@ -302,6 +312,7 @@ func containsText(values []string, want string) bool {
 }
 
 func TestReceiptJSONRemainsStableForRetention(t *testing.T) {
+	t.Parallel()
 	receipt := Receipt{SchemaVersion: receiptSchemaVersion, ID: "id", Status: "succeeded"}
 	raw, err := json.Marshal(receipt)
 	if err != nil || !strings.Contains(string(raw), `"schema_version":2`) {

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // DefaultBranch must follow origin/HEAD after a refresh, which is the path a
@@ -198,6 +200,7 @@ func TestLgCovPushSetUpstreamPublishesAndTracks(t *testing.T) {
 	lgCovGitIdentity(t)
 	origin := t.TempDir()
 	gitIn(t, origin, "init", "-q", "--bare", "-b", "main")
+	testenv.ConfigureGitAutoMaintenanceOff(t, origin)
 
 	local := t.TempDir()
 	gitIn(t, local, "init", "-q", "-b", "main")

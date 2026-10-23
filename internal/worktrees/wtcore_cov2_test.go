@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
@@ -132,6 +133,7 @@ func TestWTCoreCovDirtyCaptureRejectsUnsafePaths(t *testing.T) {
 // TestWTCoreCovDirtyCaptureRejectsInvalidDestination asserts publication never
 // begins without a private run directory and a valid claim identity.
 func TestWTCoreCovDirtyCaptureRejectsInvalidDestination(t *testing.T) {
+	t.Parallel()
 	material := dirtyCaptureMaterial{Manifest: dirtyCaptureManifest{Version: 1}}
 	if _, err := materializeDirtyCapture(nil, "claim", material); err == nil {
 		t.Fatal("nil run directory was accepted")
@@ -140,7 +142,7 @@ func TestWTCoreCovDirtyCaptureRejectsInvalidDestination(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = runDir.Close() }()
+	t.Cleanup(func() { _ = runDir.Close() })
 	if _, err := materializeDirtyCapture(runDir, "not a claim id", material); err == nil {
 		t.Fatal("invalid claim id was accepted")
 	}
@@ -150,6 +152,7 @@ func TestWTCoreCovDirtyCaptureRejectsInvalidDestination(t *testing.T) {
 // expectation never matches, and that a changed receipt produces the
 // diagnostic naming both sides.
 func TestWTCoreCovDirtyCaptureMatchesRequiresADigest(t *testing.T) {
+	t.Parallel()
 	actual := DirtyWorktreeEvidence{SHA256: "aa", Bytes: 1, Files: 1}
 	if dirtyCaptureMatches(DirtyWorktreeEvidence{}, actual) {
 		t.Fatal("an empty expectation must never match")
@@ -453,10 +456,10 @@ func TestWTCoreCovActiveClaimSummariesStructuralFailures(t *testing.T) {
 // missing descriptor, fails closed when its lock file is not a regular file,
 // and honours an exhausted deadline instead of blocking forever.
 func TestWTCoreCovRepositoryRegistrationLockBoundaries(t *testing.T) {
-	if _, err := acquireRepositoryRegistrationLock(nil); err == nil {
+	if _, err := acquireRepositoryRegistrationLock(nil, time.Now, time.Sleep); err == nil {
 		t.Fatal("a nil canonical repository was accepted")
 	}
-	if _, err := acquireRepositoryRegistrationLock(&canonicalRepository{}); err == nil {
+	if _, err := acquireRepositoryRegistrationLock(&canonicalRepository{}, time.Now, time.Sleep); err == nil {
 		t.Fatal("a canonical repository without a Git descriptor was accepted")
 	}
 
@@ -480,7 +483,7 @@ func TestWTCoreCovRepositoryRegistrationLockBoundaries(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(fixture.canonical, ".git", repositoryRegistrationLockName), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := acquireRepositoryRegistrationLock(canonical); err == nil {
+	if _, err := acquireRepositoryRegistrationLock(canonical, time.Now, time.Sleep); err == nil {
 		t.Fatal("a lock path that is a directory was accepted")
 	}
 
@@ -489,12 +492,69 @@ func TestWTCoreCovRepositoryRegistrationLockBoundaries(t *testing.T) {
 	originalTimeout := repositoryRegistrationLockTimeout
 	repositoryRegistrationLockTimeout = 0
 	t.Cleanup(func() { repositoryRegistrationLockTimeout = originalTimeout })
-	acquired, err := acquireRepositoryRegistrationLock(canonical)
+	acquired, err := acquireRepositoryRegistrationLock(canonical, time.Now, time.Sleep)
 	if err == nil {
 		_ = acquired.release()
 		t.Fatal("an exhausted lock deadline was not reported")
 	}
 	if !strings.Contains(err.Error(), "repository registration lock") {
 		t.Fatalf("error %q does not name the lock", err)
+	}
+}
+
+// TestWTCoreCovRepositoryRegistrationLockRetriesThenTimesOutOnContention
+// proves the second loop (flock contention, once the lock file itself is
+// open) retries at 20ms steps on a fake clock — no real wait — until the
+// deadline passes, then fails naming the timeout, exactly as a second WB
+// process contending for the same canonical repository would observe it.
+func TestWTCoreCovRepositoryRegistrationLockRetriesThenTimesOutOnContention(t *testing.T) {
+	fixture := newGitFixture(t)
+	canonical, err := openCanonicalRepository(fixture.canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer canonical.close()
+
+	holder, err := acquireRepositoryRegistrationLock(canonical, time.Now, time.Sleep)
+	if err != nil {
+		t.Fatalf("acquire the holding lock: %v", err)
+	}
+	defer func() {
+		if err := holder.release(); err != nil {
+			t.Errorf("release holding lock: %v", err)
+		}
+	}()
+
+	originalTimeout := repositoryRegistrationLockTimeout
+	repositoryRegistrationLockTimeout = 60 * time.Millisecond
+	t.Cleanup(func() { repositoryRegistrationLockTimeout = originalTimeout })
+
+	// A fake clock: sleep advances the virtual time instantly instead of
+	// waiting in real time, so the deadline elapses at full test speed while
+	// the real flock call above still genuinely contends on the held lock.
+	virtual := time.Now()
+	var slept []time.Duration
+	fakeNow := func() time.Time { return virtual }
+	fakeSleep := func(d time.Duration) {
+		slept = append(slept, d)
+		virtual = virtual.Add(d)
+	}
+
+	waiter, err := acquireRepositoryRegistrationLock(canonical, fakeNow, fakeSleep)
+	if err == nil {
+		_ = waiter.release()
+		t.Fatal("a contended lock was acquired despite the holder still owning it")
+	}
+	if !strings.Contains(err.Error(), "held the repository registration lock") {
+		t.Fatalf("error = %v, want the held-lock message", err)
+	}
+	wantSleeps := int(repositoryRegistrationLockTimeout/(20*time.Millisecond)) + 1
+	if len(slept) != wantSleeps {
+		t.Fatalf("acquireRepositoryRegistrationLock slept %d times, want exactly %d (%s timeout in 20ms steps)", len(slept), wantSleeps, repositoryRegistrationLockTimeout)
+	}
+	for _, d := range slept {
+		if d != 20*time.Millisecond {
+			t.Fatalf("acquireRepositoryRegistrationLock slept %v, want every wait to be 20ms", slept)
+		}
 	}
 }

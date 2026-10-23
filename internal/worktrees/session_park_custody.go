@@ -2,11 +2,8 @@ package worktrees
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"time"
 
@@ -20,16 +17,17 @@ import (
 )
 
 type ParkedSessionWorkLogPrepareOptions struct {
-	ProjectsRoot  string
-	Request       sessionpark.RemoteRequest
-	RequestDigest sessionmove.Digest
-	Member        sessionpark.RemoteMember
-	ReceivedAt    time.Time
-	Session       session.Record
-	AttemptID     string
-	AttemptIndex  uint64
-	WorktreeDir   string
-	PinnedCommit  string
+	beforeProjectionRepair func()
+	ProjectsRoot           string
+	Request                sessionpark.RemoteRequest
+	RequestDigest          sessionmove.Digest
+	Member                 sessionpark.RemoteMember
+	ReceivedAt             time.Time
+	Session                session.Record
+	AttemptID              string
+	AttemptIndex           uint64
+	WorktreeDir            string
+	PinnedCommit           string
 }
 
 type ParkedSessionWorkLogPrepareResult struct {
@@ -40,47 +38,116 @@ type ParkedSessionWorkLogPrepareResult struct {
 	Replayed         bool
 }
 
+type parkedTargetPreparation struct {
+	targetValue   string
+	worktree      string
+	claim         workLogClaim
+	manifest      Manifest
+	receivedEvent LocalWorkLogEvent
+	ownerEvent    LocalWorkLogEvent
+}
+
 // PrepareParkedSessionWorkLog installs the deterministic target claim before
 // publishing any owner record. The same prepared successor is attached to
 // every member only after that member's immutable claim, manifest, and
 // received evidence corroborate the exact pinned checkout.
 func PrepareParkedSessionWorkLog(ctx context.Context, options ParkedSessionWorkLogPrepareOptions) (ParkedSessionWorkLogPrepareResult, error) {
 	var result ParkedSessionWorkLogPrepareResult
+	prepared, err := prepareParkedTarget(ctx, options)
+	if err != nil {
+		return result, err
+	}
+	claim := prepared.claim
+	home, err := wbhome.Root(options.ProjectsRoot)
+	if err != nil {
+		return result, err
+	}
+	locked, err := openLockedWorkLogRun(home, claim.EffortID, claim.RunID, claim.ClaimID, true)
+	if err != nil {
+		return result, err
+	}
+	defer locked.close()
+	runDir := locked.directory
+	result.Replayed, err = publishPreparedTargetClaim(runDir, claim,
+		"immutable parked target Work Log claim conflicts with admitted bundle", "")
+	if err != nil {
+		return result, err
+	}
+	if err := ensureWorkLogRunIndex(runDir, claim.EffortID, claim.RunID); err != nil {
+		return result, err
+	}
+	if err := ensureExternalManifest(prepared.worktree, prepared.manifest); err != nil {
+		return result, err
+	}
+	prepared.receivedEvent, _, err = appendLocalEventWithoutCustody(prepared.worktree, prepared.receivedEvent)
+	if err != nil {
+		return result, err
+	}
+	prepared.ownerEvent, _, err = appendLocalEventWithoutCustody(prepared.worktree, prepared.ownerEvent)
+	if err != nil {
+		return result, err
+	}
+	outbox, err := openWorkLogOutbox(home, claim.EffortID, true)
+	if err != nil {
+		return result, err
+	}
+	public := preparedTargetPublicEvent(claim)
+	err = writeJSONImmutableAt(outbox, claim.RunID+"-"+claim.ClaimID+"-claimed.json", public, true)
+	_ = outbox.Close()
+	if err != nil {
+		return result, err
+	}
+	if err := writeWorkLogProjection(prepared.worktree, activeTargetProjection(claim)); err != nil {
+		return result, err
+	}
+	if options.beforeProjectionRepair != nil {
+		options.beforeProjectionRepair()
+	}
+	if _, err := repairCurrentLocalProjection(prepared.worktree); err != nil {
+		return result, err
+	}
+	result.WorkLogReference, result.ClaimID = prepared.targetValue, claim.ClaimID
+	result.ReceivedEvent, result.OwnerEvent = prepared.receivedEvent, prepared.ownerEvent
+	return result, nil
+}
+
+// prepareParkedTarget validates immutable admission and checkout identity, then
+// builds every deterministic value needed by the publication transaction.
+func prepareParkedTarget(ctx context.Context, options ParkedSessionWorkLogPrepareOptions) (parkedTargetPreparation, error) {
+	var prepared parkedTargetPreparation
 	request, member := options.Request, options.Member
 	targetValue, err := sessionpark.TargetWorkLogReference(request, options.RequestDigest, member)
 	if err != nil {
-		return result, err
+		return prepared, err
 	}
 	targetReference, _ := sessionmove.ParseWorkLogReference(targetValue)
-	sourceReference, err := sessionmove.ParseWorkLogReference(member.SourceWorkLogReference)
-	if err != nil {
-		return result, err
-	}
+	// TargetWorkLogReference already parsed and validated this exact source.
+	sourceReference, _ := sessionmove.ParseWorkLogReference(member.SourceWorkLogReference)
 	worktree, err := filepath.Abs(options.WorktreeDir)
 	if err != nil || filepath.Clean(worktree) != worktree || worktree != options.WorktreeDir {
-		return result, fmt.Errorf("parked target Work Log requires one clean absolute worktree path")
+		return prepared, fmt.Errorf("parked target Work Log requires one clean absolute worktree path")
 	}
 	if options.PinnedCommit != member.Commit {
-		return result, fmt.Errorf("parked target Work Log pin does not match admitted member commit")
+		return prepared, fmt.Errorf("parked target Work Log pin does not match admitted member commit")
 	}
 	if err := validateParkedTargetSession(request, options.Session); err != nil {
-		return result, err
+		return prepared, err
 	}
 	if !validExternalAttempt(options.AttemptID, options.AttemptIndex) {
-		return result, fmt.Errorf("launcher attempt identity is invalid for parked target owner evidence")
+		return prepared, fmt.Errorf("launcher attempt identity is invalid for parked target owner evidence")
 	}
 	branch, err := git(ctx, worktree, "branch", "--show-current")
 	wantBranch := sessionpark.MemberPin(request.ResumeID, member.MemberID)
 	if err != nil || branch != wantBranch {
-		return result, fmt.Errorf("target worktree branch %q does not match parked member pin %q", branch, wantBranch)
+		return prepared, fmt.Errorf("target worktree branch %q does not match parked member pin %q", branch, wantBranch)
 	}
 	head, err := git(ctx, worktree, "rev-parse", "HEAD")
 	if err != nil || head != member.Commit {
-		return result, fmt.Errorf("target worktree HEAD %q does not match parked member commit %q", head, member.Commit)
+		return prepared, fmt.Errorf("target worktree HEAD %q does not match parked member commit %q", head, member.Commit)
 	}
 	remote, err := gitremote.Parse(member.RepositoryRemote)
 	if err != nil || remote.Identity.Repository != member.Repository {
-		return result, fmt.Errorf("parked target repository identity does not match admitted member")
+		return prepared, fmt.Errorf("parked target repository identity does not match admitted member")
 	}
 	receivedAt := options.ReceivedAt.UTC()
 	if receivedAt.IsZero() {
@@ -108,60 +175,11 @@ func PrepareParkedSessionWorkLog(ctx context.Context, options ParkedSessionWorkL
 		ModelProvenance: provenance, ModelDeclaredBy: request.PredecessorWBSessionID,
 		ParentClaimID: sourceReference.ClaimID, AcquiredVia: "parked_session_resume", ExternalHandoff: evidence,
 	}
-	home, err := wbhome.Root(options.ProjectsRoot)
-	if err != nil {
-		return result, err
-	}
-	runDir, _, err := openWorkLogRun(home, claim.EffortID, claim.RunID, true)
-	if err != nil {
-		return result, err
-	}
-	defer func() { _ = runDir.Close() }()
-	unlock, err := lockClaim(runDir, claim.ClaimID)
-	if err != nil {
-		return result, err
-	}
-	defer unlock()
-	claims, err := openPrivateChild(runDir, "claims", true)
-	if err != nil {
-		return result, err
-	}
-	var existing workLogClaim
-	readErr := readJSONAt(claims, claim.ClaimID+".json", &existing)
-	result.Replayed = readErr == nil
-	if readErr == nil && !reflect.DeepEqual(existing, claim) {
-		_ = claims.Close()
-		return result, fmt.Errorf("immutable parked target Work Log claim conflicts with admitted bundle")
-	}
-	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
-		_ = claims.Close()
-		return result, readErr
-	}
-	if err := writeJSONImmutableAt(claims, claim.ClaimID+".json", claim, true); err != nil {
-		_ = claims.Close()
-		return result, err
-	}
-	_ = claims.Close()
-	if err := ensureWorkLogRunIndex(runDir, claim.EffortID, claim.RunID); err != nil {
-		return result, err
-	}
-	manifest := Manifest{
-		Version: 1, EffortID: claim.EffortID, ParentEffort: ParentEffort(claim.EffortID), EffortKind: EffortKindFor(claim.EffortID),
-		Repository: claim.Repository, Worktree: claim.Worktree, Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA,
-		CreatedAt: receivedAt, Initiator: claim.Initiator, AgentID: claim.AgentID, AgentRuntime: claim.AgentRuntime,
-		Model: model, RunID: claim.RunID, ClaimID: claim.ClaimID, Provenance: ProvenanceCreated,
-	}
-	if err := ensureExternalManifest(worktree, manifest); err != nil {
-		return result, err
-	}
+	manifest := preparedTargetManifest(claim, receivedAt, model)
 	extra := parkedLocalEventExtra(request, member, targetValue)
 	receivedEvent := LocalWorkLogEvent{
 		ID:   externalLocalEventID("park-target-received-"+member.MemberID, options.RequestDigest, ""),
 		Type: LocalEventHandoff, At: receivedAt, Message: "parked session member received", Result: "received", Extra: extra,
-	}
-	receivedEvent, _, err = appendLocalEventWithoutCustody(worktree, receivedEvent)
-	if err != nil {
-		return result, err
 	}
 	owner := OwnerRegistration{Agent: options.Session.Runtime + "/" + options.Session.WBSessionID, Model: options.Session.Model,
 		Effort: claim.EffortID, PID: options.Session.PID, WBVersion: buildinfo.Version(), Command: "session receive-park", At: options.Session.StartedAt.UTC()}
@@ -171,52 +189,31 @@ func PrepareParkedSessionWorkLog(ctx context.Context, options ParkedSessionWorkL
 		ID:   externalLocalEventID("park-target-owner-"+member.MemberID, options.RequestDigest, options.AttemptID),
 		Type: LocalEventOwner, At: owner.At, Message: "parked successor launcher attempt prepared", Owner: &owner, Extra: ownerExtra,
 	}
-	ownerEvent, _, err = appendLocalEventWithoutCustody(worktree, ownerEvent)
-	if err != nil {
-		return result, err
-	}
-	outbox, err := openWorkLogOutbox(home, claim.EffortID, true)
-	if err != nil {
-		return result, err
-	}
-	public := workLogPublicEvent{Version: 1, Type: "worktree.claimed", At: claim.RecordedAt,
+	return parkedTargetPreparation{
+		targetValue: targetValue, worktree: worktree,
+		claim: claim, manifest: manifest, receivedEvent: receivedEvent, ownerEvent: ownerEvent,
+	}, nil
+}
+
+func preparedTargetPublicEvent(claim workLogClaim) workLogPublicEvent {
+	return workLogPublicEvent{Version: 1, Type: "worktree.claimed", At: claim.RecordedAt,
 		EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID, Repository: claim.Repository,
-		Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA, Lifecycle: "active", ExternalHandoff: evidence}
-	err = writeJSONImmutableAt(outbox, claim.RunID+"-"+claim.ClaimID+"-claimed.json", public, true)
-	_ = outbox.Close()
-	if err != nil {
-		return result, err
-	}
-	projection := workLogProjection{Version: 1, EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID, Lifecycle: "active"}
-	if err := writeWorkLogProjection(worktree, projection); err != nil {
-		return result, err
-	}
-	if _, err := repairCurrentLocalProjection(worktree); err != nil {
-		return result, err
-	}
-	result.WorkLogReference, result.ClaimID = targetValue, claim.ClaimID
-	result.ReceivedEvent, result.OwnerEvent = receivedEvent, ownerEvent
-	return result, nil
+		Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA, Lifecycle: "active", ExternalHandoff: claim.ExternalHandoff}
+}
+
+func activeTargetProjection(claim workLogClaim) workLogProjection {
+	return workLogProjection{Version: 1, EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID, Lifecycle: "active"}
 }
 
 func expectedParkedSessionClaimID(claim workLogClaim) (string, error) {
-	evidence := claim.ExternalHandoff
-	if evidence == nil || evidence.Version != externalHandoffEvidenceVersion || evidence.Protocol != "parked_session_resume" ||
-		evidence.HandoffID == "" || evidence.MemberID == "" || evidence.PredecessorWBSessionID == "" ||
-		evidence.SuccessorWBSessionID != claim.AgentID || evidence.SourceWorkLogReference == "" ||
-		evidence.TargetWorkLogReference == "" || evidence.SuccessorTmuxName != "wb-session-"+claim.AgentID {
-		return "", fmt.Errorf("private parked successor claim metadata is invalid")
-	}
-	source, err := sessionmove.ParseWorkLogReference(evidence.SourceWorkLogReference)
-	if err != nil || source.EffortID != claim.EffortID || source.RunID != claim.RunID || source.ClaimID != claim.ParentClaimID {
-		return "", fmt.Errorf("private parked source Work Log lineage is invalid")
-	}
-	target, err := sessionmove.ParseWorkLogReference(evidence.TargetWorkLogReference)
-	if err != nil || target.EffortID != claim.EffortID || target.RunID != claim.RunID || target.ClaimID != claim.ClaimID {
-		return "", fmt.Errorf("private parked target Work Log lineage is invalid")
+	evidence, err := validateExternalSuccessorClaimLineage(claim, externalSuccessorClaimPolicy{
+		label: "parked", protocol: "parked_session_resume", requireMember: true,
+	})
+	if err != nil {
+		return "", err
 	}
 	return sessionpark.TargetWorkLogClaimID(sessionmove.Digest(evidence.RequestDigest), claim.AgentID,
-		evidence.MemberID, claim.Repository, source.ClaimID)
+		evidence.MemberID, claim.Repository, claim.ParentClaimID)
 }
 
 type ParkedTargetCompletionOptions struct {
@@ -244,16 +241,12 @@ func RecordParkedTargetCompleted(options ParkedTargetCompletionOptions) (LocalWo
 	if err != nil {
 		return LocalWorkLogEvent{}, err
 	}
-	runDir, _, err := openWorkLogRun(home, target.EffortID, target.RunID, false)
+	locked, err := openLockedWorkLogRun(home, target.EffortID, target.RunID, target.ClaimID, false)
 	if err != nil {
 		return LocalWorkLogEvent{}, err
 	}
-	defer func() { _ = runDir.Close() }()
-	unlock, err := lockClaim(runDir, target.ClaimID)
-	if err != nil {
-		return LocalWorkLogEvent{}, err
-	}
-	defer unlock()
+	defer locked.close()
+	runDir := locked.directory
 	if options.hooks.beforeCompletionBarrier != nil {
 		if err := options.hooks.beforeCompletionBarrier(); err != nil {
 			return LocalWorkLogEvent{}, err
@@ -276,13 +269,14 @@ func RecordParkedTargetCompleted(options ParkedTargetCompletionOptions) (LocalWo
 	var claim workLogClaim
 	err = readJSONAt(claims, target.ClaimID+".json", &claim)
 	_ = claims.Close()
-	if err != nil || claim.Worktree != options.WorktreeDir || claim.Branch != sessionpark.MemberPin(options.Request.ResumeID, options.Member.MemberID) ||
-		claim.BaseSHA != options.Member.Commit || claim.Lifecycle != "active" || claim.AgentID != options.Request.SuccessorWBSessionID ||
-		claim.ExternalHandoff == nil || claim.ExternalHandoff.TargetWorkLogReference != targetValue {
+	if err != nil {
 		return LocalWorkLogEvent{}, fmt.Errorf("parked target Work Log claim does not corroborate receipt member")
 	}
+	if err := corroborateParkedTargetClaim(claim, options, target, targetValue); err != nil {
+		return LocalWorkLogEvent{}, err
+	}
 	projection, err := readWorkLogProjection(options.WorktreeDir)
-	if err != nil || projection != (workLogProjection{Version: 1, EffortID: target.EffortID, RunID: target.RunID, ClaimID: target.ClaimID, Lifecycle: "active"}) {
+	if err != nil || projection != activeTargetProjection(claim) {
 		return LocalWorkLogEvent{}, fmt.Errorf("parked target Work Log projection conflicts with receipt member")
 	}
 	if err := corroborateClaim(options.WorktreeDir, options.Member.Commit, projection, claim); err != nil {
@@ -292,6 +286,25 @@ func RecordParkedTargetCompleted(options ParkedTargetCompletionOptions) (LocalWo
 	if err != nil {
 		return LocalWorkLogEvent{}, err
 	}
+	if err := validateParkedTargetOwner(events, options); err != nil {
+		return LocalWorkLogEvent{}, err
+	}
+	event := parkedTargetCompletionEvent(options, targetValue)
+	event, _, err = appendLocalEventUnderLock(options.WorktreeDir, journal, event)
+	return event, err
+}
+
+func corroborateParkedTargetClaim(claim workLogClaim, options ParkedTargetCompletionOptions, target sessionmove.WorkLogReference, targetValue string) error {
+	if claim.Worktree != options.WorktreeDir || claim.Branch != sessionpark.MemberPin(options.Request.ResumeID, options.Member.MemberID) ||
+		claim.BaseSHA != options.Member.Commit || claim.Lifecycle != "active" || claim.AgentID != options.Request.SuccessorWBSessionID ||
+		claim.EffortID != target.EffortID || claim.RunID != target.RunID || claim.ClaimID != target.ClaimID ||
+		claim.ExternalHandoff == nil || claim.ExternalHandoff.TargetWorkLogReference != targetValue {
+		return fmt.Errorf("parked target Work Log claim does not corroborate receipt member")
+	}
+	return nil
+}
+
+func validateParkedTargetOwner(events []LocalWorkLogEvent, options ParkedTargetCompletionOptions) error {
 	wantOwnerID := externalLocalEventID("park-target-owner-"+options.Member.MemberID, options.RequestDigest, options.Successor.AttemptID)
 	ownerFound := false
 	latestOwnerID := ""
@@ -305,18 +318,20 @@ func RecordParkedTargetCompleted(options ParkedTargetCompletionOptions) (LocalWo
 		}
 	}
 	if !ownerFound || latestOwnerID != wantOwnerID || ownerPIDStatus(options.Successor.PID) != "active" {
-		return LocalWorkLogEvent{}, fmt.Errorf("parked target member does not have the winning live successor as latest owner")
+		return fmt.Errorf("parked target member does not have the winning live successor as latest owner")
 	}
+	return nil
+}
+
+func parkedTargetCompletionEvent(options ParkedTargetCompletionOptions, targetValue string) LocalWorkLogEvent {
 	extra := parkedLocalEventExtra(options.Request, options.Member, targetValue)
 	extra["attempt_id"], extra["attempt_index"], extra["pid"] = options.Successor.AttemptID, options.Successor.AttemptIndex, options.Successor.PID
-	event := LocalWorkLogEvent{
+	return LocalWorkLogEvent{
 		Version: 1,
 		ID:      externalLocalEventID("park-target-completed-"+options.Member.MemberID, options.RequestDigest, ""),
 		Type:    LocalEventHandoff, At: options.Successor.StartedAt.UTC(), Message: "parked successor proved live; target member custody completed",
 		Result: "completed", Extra: extra,
 	}
-	event, _, err = appendLocalEventUnderLock(options.WorktreeDir, journal, event)
-	return event, err
 }
 
 func validateParkedTargetSession(request sessionpark.RemoteRequest, record session.Record) error {

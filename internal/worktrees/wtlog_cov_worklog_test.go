@@ -3,6 +3,7 @@ package worktrees
 import (
 	"context"
 	"encoding/json"
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,38 +12,40 @@ import (
 )
 
 func TestWtLogCovSameEvidencePointers(t *testing.T) {
-	if !sameFinalizeReport(nil, nil) || sameFinalizeReport(&workLogFinalizeReport{Result: "x"}, nil) || sameFinalizeReport(nil, &workLogFinalizeReport{Result: "x"}) {
+	t.Parallel()
+	if !worktreeclaims.SameFinalizeReport(nil, nil) || worktreeclaims.SameFinalizeReport(&workLogFinalizeReport{Result: "x"}, nil) || worktreeclaims.SameFinalizeReport(nil, &workLogFinalizeReport{Result: "x"}) {
 		t.Fatal("sameFinalizeReport nil handling is wrong")
 	}
-	if !sameFinalizeReport(&workLogFinalizeReport{Result: "x"}, &workLogFinalizeReport{Result: "x"}) {
+	if !worktreeclaims.SameFinalizeReport(&workLogFinalizeReport{Result: "x"}, &workLogFinalizeReport{Result: "x"}) {
 		t.Fatal("equal finalize reports must match")
 	}
-	if sameFinalizeReport(&workLogFinalizeReport{Result: "x"}, &workLogFinalizeReport{Result: "y"}) {
+	if worktreeclaims.SameFinalizeReport(&workLogFinalizeReport{Result: "x"}, &workLogFinalizeReport{Result: "y"}) {
 		t.Fatal("different finalize reports must not match")
 	}
 
-	if !sameOrphanedEvidence(nil, nil) || sameOrphanedEvidence(&workLogOrphanedEvidence{Version: 1}, nil) || sameOrphanedEvidence(nil, &workLogOrphanedEvidence{Version: 1}) {
+	if !worktreeclaims.SameOrphanedEvidence(nil, nil) || worktreeclaims.SameOrphanedEvidence(&workLogOrphanedEvidence{Version: 1}, nil) || worktreeclaims.SameOrphanedEvidence(nil, &workLogOrphanedEvidence{Version: 1}) {
 		t.Fatal("sameOrphanedEvidence nil handling is wrong")
 	}
-	if !sameOrphanedEvidence(&workLogOrphanedEvidence{Version: 1, Actor: "a"}, &workLogOrphanedEvidence{Version: 1, Actor: "a"}) {
+	if !worktreeclaims.SameOrphanedEvidence(&workLogOrphanedEvidence{Version: 1, Actor: "a"}, &workLogOrphanedEvidence{Version: 1, Actor: "a"}) {
 		t.Fatal("equal orphaned evidence must match")
 	}
-	if sameOrphanedEvidence(&workLogOrphanedEvidence{Version: 1}, &workLogOrphanedEvidence{Version: 2}) {
+	if worktreeclaims.SameOrphanedEvidence(&workLogOrphanedEvidence{Version: 1}, &workLogOrphanedEvidence{Version: 2}) {
 		t.Fatal("different orphaned evidence must not match")
 	}
 
-	if !sameDirtyWorktreeEvidence(nil, nil) || sameDirtyWorktreeEvidence(&DirtyWorktreeEvidence{SHA256: "a"}, nil) {
+	if !worktreeclaims.SameDirtyWorktreeEvidence(nil, nil) || worktreeclaims.SameDirtyWorktreeEvidence(&DirtyWorktreeEvidence{SHA256: "a"}, nil) {
 		t.Fatal("sameDirtyWorktreeEvidence nil handling is wrong")
 	}
-	if !sameDirtyWorktreeEvidence(&DirtyWorktreeEvidence{SHA256: "a", Files: 2}, &DirtyWorktreeEvidence{SHA256: "a", Files: 2}) {
+	if !worktreeclaims.SameDirtyWorktreeEvidence(&DirtyWorktreeEvidence{SHA256: "a", Files: 2}, &DirtyWorktreeEvidence{SHA256: "a", Files: 2}) {
 		t.Fatal("equal dirty evidence must match")
 	}
-	if sameDirtyWorktreeEvidence(&DirtyWorktreeEvidence{SHA256: "a"}, &DirtyWorktreeEvidence{SHA256: "b"}) {
+	if worktreeclaims.SameDirtyWorktreeEvidence(&DirtyWorktreeEvidence{SHA256: "a"}, &DirtyWorktreeEvidence{SHA256: "b"}) {
 		t.Fatal("different dirty evidence must not match")
 	}
 }
 
 func TestWtLogCovValidateProjection(t *testing.T) {
+	t.Parallel()
 	claimID := strings.Repeat("a", 64)
 	valid := workLogProjection{Version: 1, EffortID: "effort", RunID: "run", ClaimID: claimID, Lifecycle: "active"}
 	if err := validateProjection(valid); err != nil {
@@ -68,6 +71,7 @@ func TestWtLogCovValidateProjection(t *testing.T) {
 }
 
 func TestWtLogCovNormalizeTaskSummary(t *testing.T) {
+	t.Parallel()
 	if got, err := NormalizeTaskSummary("  "); err != nil || got != "" {
 		t.Fatalf("blank summary = %q/%v", got, err)
 	}
@@ -98,6 +102,7 @@ func TestWtLogCovNormalizeTaskSummary(t *testing.T) {
 }
 
 func TestWtLogCovValidExecutionIdentifier(t *testing.T) {
+	t.Parallel()
 	if !ValidExecutionIdentifier("unknown", true) {
 		t.Fatal("unknown must be allowed when allowUnknown is set")
 	}
@@ -115,6 +120,7 @@ func TestWtLogCovValidExecutionIdentifier(t *testing.T) {
 }
 
 func TestWtLogCovValidateNewExecutionIdentity(t *testing.T) {
+	t.Parallel()
 	if err := validateNewExecutionIdentity(ClaimExecutionIdentity{Model: "claude-sonnet"}); err != nil {
 		t.Fatalf("plain identity rejected: %v", err)
 	}
@@ -134,6 +140,7 @@ func TestWtLogCovValidateNewExecutionIdentity(t *testing.T) {
 }
 
 func TestWtLogCovValidateCorrectionIdentity(t *testing.T) {
+	t.Parallel()
 	model := "claude-sonnet"
 	empty := ""
 	bad := "sk-secret"
@@ -176,6 +183,7 @@ func TestWtLogCovValidateCorrectionIdentity(t *testing.T) {
 }
 
 func TestWtLogCovIdentityFromClaim(t *testing.T) {
+	t.Parallel()
 	legacy := identityFromClaim(workLogClaim{})
 	if legacy.Model != "unknown" || legacy.ModelProvenance != modelProvenanceUnknown {
 		t.Fatalf("legacy identity = %#v", legacy)
@@ -195,6 +203,7 @@ func TestWtLogCovIdentityFromClaim(t *testing.T) {
 }
 
 func TestWtLogCovClaimIDDerivations(t *testing.T) {
+	t.Parallel()
 	result := CreateResult{Repository: "acme/app", WorktreeDir: "/tmp/wt", Branch: "wb/x", Base: "main", BaseSHA: "abc"}
 	direct := workLogClaimID("effort", result)
 	if direct != WorkLogClaimID("effort", result) {
@@ -224,6 +233,7 @@ func TestWtLogCovClaimIDDerivations(t *testing.T) {
 }
 
 func TestWtLogCovDeclaredBy(t *testing.T) {
+	t.Parallel()
 	if got := declaredBy(WorkLogOptions{Initiator: "operator", AgentID: "agent"}); got != "operator" {
 		t.Fatalf("declaredBy initiator = %q", got)
 	}
@@ -235,43 +245,8 @@ func TestWtLogCovDeclaredBy(t *testing.T) {
 	}
 }
 
-func TestWtLogCovRemovedTerminalExpectations(t *testing.T) {
-	valid := TerminalWorkLogExpectation{Task: "task", Repository: "acme/app", Worktree: "/tmp/wt", Branch: "wb/x", Base: "main", FinalCommit: "sha"}
-	if err := validateRemovedTerminalExpectation(valid); err != nil {
-		t.Fatalf("valid expectation rejected: %v", err)
-	}
-	for name, mutate := range map[string]func(*TerminalWorkLogExpectation){
-		"task":     func(e *TerminalWorkLogExpectation) { e.Task = "../x" },
-		"repo":     func(e *TerminalWorkLogExpectation) { e.Repository = " " },
-		"worktree": func(e *TerminalWorkLogExpectation) { e.Worktree = "" },
-		"branch":   func(e *TerminalWorkLogExpectation) { e.Branch = "" },
-		"commit":   func(e *TerminalWorkLogExpectation) { e.FinalCommit = "" },
-	} {
-		expectation := valid
-		mutate(&expectation)
-		if err := validateRemovedTerminalExpectation(expectation); err == nil {
-			t.Errorf("invalid expectation %q was accepted", name)
-		}
-	}
-
-	claim := workLogClaim{Version: 1, EffortID: "task", RunID: "run", ClaimID: strings.Repeat("a", 64),
-		Task: "task", Repository: "acme/app", Worktree: "/tmp/wt", Branch: "wb/x", Base: "main", Lifecycle: "active"}
-	if !matchesRemovedTerminalExpectation(claim, valid) {
-		t.Fatal("matching claim was not recognized")
-	}
-	wrongBranch := valid
-	wrongBranch.Branch = "wb/other"
-	if matchesRemovedTerminalExpectation(claim, wrongBranch) {
-		t.Fatal("claim with a different branch matched")
-	}
-	terminalClaim := claim
-	terminalClaim.Lifecycle = "terminal"
-	if matchesRemovedTerminalExpectation(terminalClaim, valid) {
-		t.Fatal("terminal lifecycle must not match an active expectation")
-	}
-}
-
 func TestWtLogCovValidateStaticWorkLogClaim(t *testing.T) {
+	t.Parallel()
 	base := workLogClaim{Version: 1, EffortID: "effort", RunID: "run", Task: "effort",
 		Repository: "acme/app", Worktree: "/tmp/wt", Branch: "wb/x", Base: "main",
 		BaseSHA: strings.Repeat("a", 40), Lifecycle: "active"}
@@ -379,11 +354,12 @@ func TestWtLogCovValidateStaticWorkLogClaim(t *testing.T) {
 }
 
 func TestWtLogCovPrivateDirectoryHelpers(t *testing.T) {
+	t.Parallel()
 	root, err := os.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = root.Close() }()
+	t.Cleanup(func() { _ = root.Close() })
 
 	if _, err := openPrivateChild(root, "../escape", true); err == nil {
 		t.Fatal("unsafe private directory segment was accepted")
@@ -617,6 +593,7 @@ func TestWtLogCovReadWorkLogProjectionRoundTrip(t *testing.T) {
 }
 
 func TestWtLogCovRelocationRecordValidation(t *testing.T) {
+	t.Parallel()
 	source := filepath.Join(t.TempDir(), "source")
 	destination := filepath.Join(t.TempDir(), "destination")
 	claim := workLogClaim{ClaimID: strings.Repeat("f", 64), Task: "task", Repository: "acme/app", Branch: "wb/x"}
@@ -685,6 +662,7 @@ func TestWtLogCovRelocationRecordValidation(t *testing.T) {
 }
 
 func TestWtLogCovSameRelocationBinding(t *testing.T) {
+	t.Parallel()
 	intent := workLogRelocationIntent{OperationID: "op", ClaimID: "claim", Task: "task", Repository: "acme/app",
 		Branch: "wb/x", HeadSHA: "head", Source: "/a/b", Destination: "/a/c", To: "local"}
 	receipt := intent
@@ -714,6 +692,7 @@ func TestWtLogCovSameRelocationBinding(t *testing.T) {
 }
 
 func TestWtLogCovRelocationNameAndOperationID(t *testing.T) {
+	t.Parallel()
 	if got := relocationIntentName("claim", "op"); got != "claim-op.intent.json" {
 		t.Fatalf("intent name = %q", got)
 	}
@@ -721,17 +700,11 @@ func TestWtLogCovRelocationNameAndOperationID(t *testing.T) {
 		t.Fatalf("receipt name = %q", got)
 	}
 	at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	first, err := relocationOperationID("claim", "/a", "/b", "head", at)
-	if err != nil {
-		t.Fatal(err)
-	}
+	first := relocationOperationID("claim", "/a", "/b", "head", at)
 	if !validSafeSegment(first) {
 		t.Fatalf("operation id %q is not a safe segment", first)
 	}
-	second, err := relocationOperationID("claim", "/a", "/b", "head", at)
-	if err != nil {
-		t.Fatal(err)
-	}
+	second := relocationOperationID("claim", "/a", "/b", "head", at)
 	if first == second {
 		t.Fatal("operation ids must be unique per call")
 	}

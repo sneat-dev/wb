@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/checkoutmarker"
+	"github.com/sneat-dev/wb/internal/checkoutsetup"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 type checkoutFixture struct {
@@ -23,7 +25,7 @@ func newCheckoutFixture(t *testing.T) checkoutFixture {
 	t.Helper()
 	root := t.TempDir()
 	origin := filepath.Join(root, "origin.git")
-	runCommand(t, root, "git", "init", "-q", "--bare", origin)
+	testenv.InitBareRemoteForTest(t, origin)
 	projectsRoot := filepath.Join(root, "projects")
 	canonical := filepath.Join(projectsRoot, "sneat-co", "backstage")
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
@@ -114,7 +116,7 @@ func TestWorktreeMarkerFleetCoversClonesAndTheirWorktrees(t *testing.T) {
 	if code != exitOK {
 		t.Fatalf("fleet marker exited %d: %s%s", code, stdout, stderr)
 	}
-	var outcomes []markerOutcome
+	var outcomes []checkoutsetup.MarkerOutcome
 	if err := json.Unmarshal([]byte(stdout), &outcomes); err != nil {
 		t.Fatalf("fleet output is not JSON: %v\n%s", err, stdout)
 	}

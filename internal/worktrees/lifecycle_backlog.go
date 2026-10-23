@@ -15,6 +15,7 @@ import (
 	"github.com/sneat-dev/wb/internal/repopath"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
 )
 
 const lifecycleBacklogVersion = 1
@@ -88,6 +89,10 @@ type DiscardedLifecycleBacklogProof struct {
 // its no-follow directory boundary and accepts only one exact completed
 // discarded identity whose checkout is both absent and no longer registered.
 func FindDiscardedLifecycleBacklogProof(ctx context.Context, projectsRoot, repository, target, task, worktree, branch, head string) (*DiscardedLifecycleBacklogProof, error) {
+	return findDiscardedLifecycleBacklogProofWithRead(ctx, projectsRoot, repository, target, task, worktree, branch, head, readLifecycleBacklogEntries)
+}
+
+func findDiscardedLifecycleBacklogProofWithRead(ctx context.Context, projectsRoot, repository, target, task, worktree, branch, head string, readEntries func(*os.File) ([]os.DirEntry, error)) (*DiscardedLifecycleBacklogProof, error) {
 	projectsRoot = filepath.Clean(projectsRoot)
 	if _, _, err := splitRepository(repository); err != nil {
 		return nil, fmt.Errorf("invalid discarded cleanup repository: %w", err)
@@ -104,7 +109,7 @@ func FindDiscardedLifecycleBacklogProof(ctx context.Context, projectsRoot, repos
 		return nil, fmt.Errorf("open discarded cleanup backlog: %w", err)
 	}
 	defer func() { _ = directory.Close() }()
-	entries, err := directory.ReadDir(-1)
+	entries, err := readEntries(directory)
 	if err != nil {
 		return nil, fmt.Errorf("read discarded cleanup backlog: %w", err)
 	}
@@ -190,6 +195,11 @@ func lifecycleBacklogPath(home, id string) string {
 	return filepath.Join(lifecycleBacklogDirectory(home), id+".json")
 }
 
+// readLifecycleBacklogEntries reads the already-owned journal directory; callers retain its lifetime.
+func readLifecycleBacklogEntries(directory *os.File) ([]os.DirEntry, error) {
+	return directory.ReadDir(-1)
+}
+
 func openLifecycleBacklogDirectory(home string, create bool) (*os.File, error) {
 	homeDirectory, err := openAbsoluteDirectoryNoFollow(home, create)
 	if err != nil {
@@ -231,6 +241,10 @@ func persistLifecycleBacklog(home string, record *lifecycleBacklogRecord, stage 
 }
 
 func validateLifecycleBacklog(record lifecycleBacklogRecord) error {
+	return validateLifecycleBacklogWithRel(record, filepath.Rel)
+}
+
+func validateLifecycleBacklogWithRel(record lifecycleBacklogRecord, relative func(string, string) (string, error)) error {
 	if record.Version != lifecycleBacklogVersion || !validClaimID(record.ID) || !validSafeSegment(record.Task) {
 		return fmt.Errorf("invalid lifecycle backlog identity")
 	}
@@ -259,7 +273,7 @@ func validateLifecycleBacklog(record lifecycleBacklogRecord) error {
 			return fmt.Errorf("lifecycle backlog marked external but its worktree is nested under the WB worktrees root")
 		}
 	} else {
-		relativeWorktree, err := filepath.Rel(filepath.Clean(record.WorktreesRoot), filepath.Clean(record.WorktreeDir))
+		relativeWorktree, err := relative(filepath.Clean(record.WorktreesRoot), filepath.Clean(record.WorktreeDir))
 		if err != nil {
 			return fmt.Errorf("resolve lifecycle backlog worktree: %w", err)
 		}
@@ -273,7 +287,16 @@ func validateLifecycleBacklog(record lifecycleBacklogRecord) error {
 		// corroborated the Git common directory; recovery only needs to prove this
 		// private path remained inside the exact managed task hierarchy.
 		if !managedPath && !hostedPath && !legacyPath {
-			return fmt.Errorf("lifecycle backlog worktree path does not match managed layout")
+			// This durable journal was created after inventory corroborated the
+			// immutable claim and Git identity. It must remain readable after
+			// sealing that claim and removing the checkout. Reuse the exact
+			// operation geometry without requiring a live active claim.
+			claim := workLogClaim{Task: record.Task, EffortID: record.Task, RunID: parts[0],
+				Repository: record.Repository, Worktree: record.WorktreeDir}
+			layout, layoutErr := claimedSharedWorktreeLayout(record.WorktreeDir, claim)
+			if layoutErr != nil || filepath.Clean(layout.WorktreesRoot) != filepath.Clean(record.WorktreesRoot) {
+				return fmt.Errorf("lifecycle backlog worktree path does not match managed layout")
+			}
 		}
 	}
 	if record.Detached {
@@ -341,6 +364,10 @@ type LifecycleBacklogQuarantine struct {
 }
 
 func loadResumableLifecycleBacklog(ctx context.Context, home, projectsRoot string, worktreesRoots []string, tasks map[string]bool, filter, disposition string) ([]lifecycleBacklogRecord, []LifecycleBacklogQuarantine, error) {
+	return loadResumableLifecycleBacklogWithRead(ctx, home, projectsRoot, worktreesRoots, tasks, filter, disposition, readLifecycleBacklogEntries)
+}
+
+func loadResumableLifecycleBacklogWithRead(ctx context.Context, home, projectsRoot string, worktreesRoots []string, tasks map[string]bool, filter, disposition string, readEntries func(*os.File) ([]os.DirEntry, error)) ([]lifecycleBacklogRecord, []LifecycleBacklogQuarantine, error) {
 	directory, err := openLifecycleBacklogDirectory(home, false)
 	if errors.Is(err, os.ErrNotExist) || errors.Is(err, unix.ENOENT) {
 		return nil, nil, nil
@@ -349,7 +376,7 @@ func loadResumableLifecycleBacklog(ctx context.Context, home, projectsRoot strin
 		return nil, nil, fmt.Errorf("read lifecycle cleanup backlog: %w", err)
 	}
 	defer func() { _ = directory.Close() }()
-	entries, err := directory.ReadDir(-1)
+	entries, err := readEntries(directory)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read lifecycle cleanup backlog: %w", err)
 	}
@@ -435,12 +462,17 @@ func loadResumableLifecycleBacklog(ctx context.Context, home, projectsRoot strin
 }
 
 // resumeLifecycleBacklog finishes the exact residual checkout and local-ref
-// deletion this record's own interrupted run left behind. It refuses if the
-// worktree registration or remote branch still exists, or if the local ref
-// moved. The private record is therefore a recovery hint, never authority to
-// delete a different checkout or branch.
+// deletion this record's own interrupted run left behind. It refuses a live
+// remote branch except at retiring_remote with --remote and the recorded exact
+// SHA lease; it also refuses a surviving registration or a moved local ref.
+// The private record is therefore a recovery hint, never authority to delete
+// a different checkout or branch.
 func resumeLifecycleBacklog(ctx context.Context, home string, record *lifecycleBacklogRecord, deleteRemote bool) error {
-	if err := validateLifecycleBacklog(*record); err != nil {
+	return resumeLifecycleBacklogWithPorts(ctx, home, record, deleteRemote, productionCleanupBacklogPorts())
+}
+
+func resumeLifecycleBacklogWithPorts(ctx context.Context, home string, record *lifecycleBacklogRecord, deleteRemote bool, ports cleanupBacklogPorts) error {
+	if err := ports.ValidateRecord(*record); err != nil {
 		return err
 	}
 	// This is the one caller allowed to reclaim a lock an interrupted run left
@@ -454,7 +486,7 @@ func resumeLifecycleBacklog(ctx context.Context, home string, record *lifecycleB
 		Legacy:        filepath.Clean(record.WorktreesRoot) == filepath.Join(filepath.Clean(record.ProjectsRoot), ".wb", "worktrees"),
 	}
 	lockRoot := lifecycleTaskLockRoot(home, layout)
-	task, err := acquireCleanupTaskAtReclaimingInterrupted(lockRoot, record.Task, true)
+	task, err := ports.AcquireTask(lockRoot, record.Task, true)
 	if err != nil {
 		lockErr := fmt.Errorf("lock lifecycle backlog task %s: %w", record.Task, err)
 		if !errors.Is(err, os.ErrNotExist) {
@@ -466,21 +498,20 @@ func resumeLifecycleBacklog(ctx context.Context, home string, record *lifecycleB
 		// private write, not a deletion, which is why it is allowed without the
 		// lock that guards deletions. A record that still owes any of them
 		// keeps the original error: work needs the lock WB can no longer take.
-		return completeVacantLifecycleBacklog(ctx, home, record, lockErr)
+		return ports.CompleteVacant(ctx, home, record, lockErr)
 	}
 	defer func() {
-		_ = task.lock.release()
-		task.close()
+		ports.ReleaseTask(task)
 	}()
-	canonical, err := openCanonicalRepository(record.CanonicalDir)
+	canonical, err := ports.OpenCanonical(record.CanonicalDir)
 	if err != nil {
 		return err
 	}
-	defer canonical.close()
-	if err := canonical.validate(); err != nil {
+	defer ports.CloseCanonical(canonical)
+	if err := ports.ValidateCanonical(canonical); err != nil {
 		return err
 	}
-	if remoteHead, err := detachedAwareRemoteBranchHead(ctx, record); err != nil {
+	if remoteHead, err := ports.RemoteHead(ctx, record); err != nil {
 		return err
 	} else if remoteHead != "" && !record.PreserveLocalBranch {
 		// A record sealed at retiring_remote was interrupted *during* the remote
@@ -501,16 +532,14 @@ func resumeLifecycleBacklog(ctx context.Context, home string, record *lifecycleB
 		if record.RemoteHeadSHA == "" || remoteHead != record.RemoteHeadSHA {
 			return fmt.Errorf("resume lifecycle backlog %s: origin/%s advanced from %s to %s since the interrupted run observed it", record.ID, record.Branch, record.RemoteHeadSHA, remoteHead)
 		}
-		if err := runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "",
-			"push", "--force-with-lease=refs/heads/"+record.Branch+":"+record.RemoteHeadSHA,
-			"origin", ":refs/heads/"+record.Branch); err != nil {
+		if err := ports.DeleteRemote(ctx, canonical, record); err != nil {
 			return fmt.Errorf("resume exact remote branch retirement %s: %w", record.Branch, err)
 		}
-		if err := persistLifecycleBacklog(home, record, lifecycleStageRemoteRetired); err != nil {
+		if err := ports.Persist(home, record, lifecycleStageRemoteRetired); err != nil {
 			return err
 		}
 	}
-	registrations, err := registeredWorktreePathsCanonical(ctx, canonical)
+	registrations, err := ports.Registrations(ctx, canonical)
 	if err != nil {
 		return err
 	}
@@ -522,17 +551,17 @@ func resumeLifecycleBacklog(ctx context.Context, home string, record *lifecycleB
 	// named the exact path, and the registration check above proved Git has
 	// already let go of it, so finishing that deletion is what resuming means.
 	// Anything still registered was refused and returned above.
-	if _, err := os.Lstat(record.WorktreeDir); err == nil {
-		worktree, openErr := openCleanupWorktree(task, CleanupResult{ListResult: ListResult{WorktreeDir: record.WorktreeDir, External: record.External}})
+	if _, err := ports.Lstat(record.WorktreeDir); err == nil {
+		worktree, openErr := ports.OpenWorktree(task, CleanupResult{ListResult: ListResult{WorktreeDir: record.WorktreeDir, External: record.External}})
 		if openErr != nil {
 			return fmt.Errorf("resume lifecycle backlog %s: %w", record.ID, openErr)
 		}
-		if _, removeErr := removeUnregisteredWorktreeResidue(worktree, record.WorktreeDir); removeErr != nil {
-			worktree.close()
+		if _, removeErr := ports.RemoveResidue(worktree, record.WorktreeDir); removeErr != nil {
+			ports.CloseWorktree(worktree)
 			return fmt.Errorf("resume lifecycle backlog %s: %w", record.ID, removeErr)
 		}
-		parentErr := worktree.removeEmptyParent(nil, nil)
-		worktree.close()
+		parentErr := ports.RemoveParent(worktree)
+		ports.CloseWorktree(worktree)
 		if parentErr != nil {
 			return fmt.Errorf("resume lifecycle backlog %s: %w", record.ID, parentErr)
 		}
@@ -543,32 +572,32 @@ func resumeLifecycleBacklog(ctx context.Context, home string, record *lifecycleB
 	if !record.Detached {
 		// A detached checkout owns no ref: removing the checkout is the whole
 		// of its retirement.
-		exists, err = localBranchExistsCanonical(ctx, canonical, record.Branch)
+		exists, err = ports.LocalExists(ctx, canonical, record.Branch)
 		if err != nil {
 			return err
 		}
 	}
 	if exists && !record.PreserveLocalBranch {
-		head, err := gitCanonical(ctx, canonical, "rev-parse", "refs/heads/"+record.Branch)
+		head, err := ports.LocalHead(ctx, canonical, record.Branch)
 		if err != nil {
 			return err
 		}
 		if head != record.HeadSHA {
 			return fmt.Errorf("resume lifecycle backlog %s: branch moved from %s to %s", record.ID, record.HeadSHA, head)
 		}
-		if err := persistLifecycleBacklog(home, record, lifecycleStageRemovingLocalBranch); err != nil {
+		if err := ports.Persist(home, record, lifecycleStageRemovingLocalBranch); err != nil {
 			return err
 		}
-		if err := runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "", "update-ref", "-d", "refs/heads/"+record.Branch, record.HeadSHA); err != nil {
+		if err := ports.DeleteLocal(ctx, canonical, record); err != nil {
 			return fmt.Errorf("resume exact local branch deletion %s: %w", record.Branch, err)
 		}
 	}
 	if record.RecoveryKind == "create_work_log_failed" && record.WorkLogClaim != "" {
-		if err := sealCreateFailureBacklogClaim(home, *record); err != nil {
+		if err := ports.SealClaim(home, *record); err != nil {
 			return err
 		}
 	}
-	return persistLifecycleBacklog(home, record, lifecycleStageComplete)
+	return ports.Persist(home, record, lifecycleStageComplete)
 }
 
 // completeVacantLifecycleBacklog closes a record whose task namespace no longer
@@ -578,6 +607,10 @@ func resumeLifecycleBacklog(ctx context.Context, home string, record *lifecycleB
 // journal. Anything still present returns lockErr unchanged, so a record that
 // still owes a deletion is never quietly marked done.
 func completeVacantLifecycleBacklog(ctx context.Context, home string, record *lifecycleBacklogRecord, lockErr error) error {
+	return completeVacantLifecycleBacklogObserved(ctx, home, record, lockErr, nil)
+}
+
+func completeVacantLifecycleBacklogObserved(ctx context.Context, home string, record *lifecycleBacklogRecord, lockErr error, observe func(*canonicalRepository)) error {
 	if _, err := os.Lstat(record.WorktreeDir); !errors.Is(err, os.ErrNotExist) {
 		return lockErr
 	}
@@ -586,6 +619,9 @@ func completeVacantLifecycleBacklog(ctx context.Context, home string, record *li
 		return lockErr
 	}
 	defer canonical.close()
+	if observe != nil {
+		observe(canonical)
+	}
 	if err := canonical.validate(); err != nil {
 		return lockErr
 	}
@@ -615,22 +651,18 @@ func sealCreateFailureBacklogClaim(home string, record lifecycleBacklogRecord) e
 		return fmt.Errorf("open failed-create Work Log run: %w", err)
 	}
 	defer func() { _ = runDir.Close() }()
-	claims, err := openPrivateChild(runDir, "claims", false)
+	claim, err := readWorkLogClaimAt(runDir, record.WorkLogClaim)
 	if err != nil {
 		return err
 	}
-	var claim workLogClaim
-	if err := readJSONAt(claims, record.WorkLogClaim+".json", &claim); err != nil {
-		_ = claims.Close()
-		return err
-	}
-	_ = claims.Close()
 	if claim.ClaimID != record.WorkLogClaim || claim.EffortID != record.WorkLogEffort || claim.RunID != record.WorkLogRun ||
 		claim.Task != record.Task || claim.Repository != record.Repository || claim.Worktree != record.WorktreeDir ||
 		claim.Branch != record.Branch || claim.Base != record.Base || claim.Lifecycle != "active" {
 		return fmt.Errorf("failed-create Work Log claim does not match durable cleanup receipt")
 	}
-	if _, err := writeWorkLogTerminal(home, runDir, claim, record.HeadSHA, "create_failed", "", "", nil); err != nil {
+	if _, err := sealWorkLogTerminal(home, runDir, worktreeclaims.TerminalSealRequest{
+		Claim: claim, FinalCommit: record.HeadSHA, Disposition: "create_failed",
+	}); err != nil {
 		return fmt.Errorf("seal failed-create Work Log claim: %w", err)
 	}
 	return nil

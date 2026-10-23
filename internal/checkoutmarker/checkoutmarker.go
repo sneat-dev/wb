@@ -37,6 +37,9 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/filewrite"
+	"github.com/sneat-dev/wb/internal/worktreesecure"
 )
 
 // FileName is the marker's name in every checkout.
@@ -117,7 +120,9 @@ func canonicalBody(descriptor Descriptor) string {
 	return fmt.Sprintf(`# This is a canonical clone — do not write here
 
 `+"`%s`"+` is the shared canonical clone of **%s**. Every linked worktree in the
-fleet is cut from it, so it must stay clean and stay on `+"`%s`"+`.
+fleet is cut from it, so it must stay clean. Its base branch is `+"`%s`"+`, but another
+checked-out branch is a normal state: landing, cleanup and worktree creation
+never need this clone on the base branch.
 
 Uncommitted work left here is invisible to WB and one routine checkout away
 from being destroyed. It has happened: a `+"`git checkout origin/main -- .`"+` run
@@ -200,9 +205,6 @@ type Result struct {
 	ExcludeWritten bool
 }
 
-// Changed reports whether anything on disk moved.
-func (r Result) Changed() bool { return r.MarkerWritten || r.ExcludeWritten }
-
 // Apply writes the marker and its ignore rule, and is safe to run repeatedly.
 //
 // The ignore rule goes first. A marker written before its rule exists is a
@@ -255,12 +257,49 @@ func stripGeneratedAt(contents string) string {
 // reports whether it had to. Every other line in that file is preserved: it is
 // the user's, and WB only ever adds to it.
 func EnsureExclude(excludePath string) (bool, error) {
+	return ensureExcludeWithAbs(excludePath, filepath.Abs)
+}
+
+func ensureExcludeWithAbs(excludePath string, absolutePath func(string) (string, error)) (bool, error) {
 	if excludePath == "" {
 		return false, fmt.Errorf("no exclude file was resolved for this checkout")
 	}
-	existing, err := os.ReadFile(excludePath)
+	absolute, err := absolutePath(excludePath)
+	if err != nil {
+		return false, fmt.Errorf("resolve exclude path %s: %w", excludePath, err)
+	}
+	name := filepath.Base(absolute)
+	if name == string(filepath.Separator) || name == "." {
+		return false, fmt.Errorf("exclude file path must name a file: %s", excludePath)
+	}
+	parent := filepath.Dir(absolute)
+	directory, err := worktreesecure.OpenAbsoluteDirectoryNoFollow(normalizeExcludeParent(parent), true)
+	if err != nil {
+		return false, fmt.Errorf("create %s: %w", parent, err)
+	}
+	defer func() { _ = directory.Close() }()
+	return ensureExcludeAt(directory, name, excludePath)
+}
+
+// EnsureExcludeForGitDir writes only below a held canonical Git directory.
+// The info child is created and opened without following a planted symlink.
+func EnsureExcludeForGitDir(gitDirectory *os.File) (bool, error) {
+	if gitDirectory == nil {
+		return false, fmt.Errorf("canonical Git directory descriptor is unavailable")
+	}
+	fd, err := worktreesecure.OpenOrCreateNoFollowDirectory(int(gitDirectory.Fd()), "info")
+	if err != nil {
+		return false, fmt.Errorf("open canonical Git info directory: %w", err)
+	}
+	info := os.NewFile(uintptr(fd), "wb-canonical-git-info")
+	defer func() { _ = info.Close() }()
+	return ensureExcludeAt(info, "exclude", "canonical Git info/exclude")
+}
+
+func ensureExcludeAt(directory *os.File, name, displayPath string) (bool, error) {
+	existing, err := filewrite.ReadAt(directory, name)
 	if err != nil && !os.IsNotExist(err) {
-		return false, fmt.Errorf("read %s: %w", excludePath, err)
+		return false, fmt.Errorf("read %s: %w", displayPath, err)
 	}
 	patterns := []string{ExcludePattern, WorktreesExcludePattern}
 	present := make(map[string]bool, len(patterns))
@@ -280,9 +319,6 @@ func EnsureExclude(excludePath string) (bool, error) {
 	if len(missing) == 0 {
 		return false, nil
 	}
-	if err := os.MkdirAll(filepath.Dir(excludePath), 0o755); err != nil {
-		return false, fmt.Errorf("create %s: %w", filepath.Dir(excludePath), err)
-	}
 	var builder strings.Builder
 	builder.Write(existing)
 	if len(existing) > 0 && !strings.HasSuffix(string(existing), "\n") {
@@ -292,8 +328,8 @@ func EnsureExclude(excludePath string) (bool, error) {
 	for _, pattern := range missing {
 		builder.WriteString(pattern + "\n")
 	}
-	if err := writeFileAtomically(excludePath, builder.String()); err != nil {
-		return false, err
+	if err := filewrite.WriteBytesAtomicAt(directory, name, []byte(builder.String()), 0o644); err != nil {
+		return false, fmt.Errorf("replace %s: %w", displayPath, err)
 	}
 	return true, nil
 }
@@ -302,24 +338,34 @@ func EnsureExclude(excludePath string) (bool, error) {
 // directory, so an interrupted write can never leave a half-written marker or,
 // far worse, a truncated exclude file that stops ignoring the marker.
 func writeFileAtomically(path, contents string) error {
+	return writeFileAtomicallyInjected(path, contents, nil)
+}
+
+// writeFileAtomicallyInjected is writeFileAtomically's test seam (task-9
+// PR-8): every production call site reaches it only through
+// writeFileAtomically, which always passes a nil *filewrite.Injector, so
+// production behaviour is unchanged. A test passes its own Injector to
+// reach the create/write/close/chmod/rename failure branches
+// deterministically.
+func writeFileAtomicallyInjected(path, contents string, inj *filewrite.Injector) error {
 	directory := filepath.Dir(path)
-	temporary, err := os.CreateTemp(directory, ".wb-marker-*")
+	temporary, err := filewrite.CreateTemp(directory, ".wb-marker-*", inj)
 	if err != nil {
 		return fmt.Errorf("stage a replacement for %s: %w", path, err)
 	}
 	name := temporary.Name()
 	defer func() { _ = os.Remove(name) }()
-	if _, err := temporary.WriteString(contents); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.Write(temporary, []byte(contents), name, inj); err != nil {
+		_ = filewrite.Close(temporary, name, inj)
 		return fmt.Errorf("write %s: %w", name, err)
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, name, inj); err != nil {
 		return fmt.Errorf("close %s: %w", name, err)
 	}
-	if err := os.Chmod(name, 0o644); err != nil {
+	if err := filewrite.ChmodPath(name, 0o644, inj); err != nil {
 		return fmt.Errorf("set permissions on %s: %w", name, err)
 	}
-	if err := os.Rename(name, path); err != nil {
+	if err := filewrite.Rename(name, path, inj); err != nil {
 		return fmt.Errorf("replace %s: %w", path, err)
 	}
 	return nil

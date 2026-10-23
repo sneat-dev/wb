@@ -11,12 +11,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/progress"
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
-
-var beforeConflictCandidateRefreshCreate = func() {}
-var beforeConflictCandidateRefreshFinalRevalidation = func() {}
 
 // WorktreeMergeConflictCandidateRefresh is the unconsumed candidate created
 // while a failed conflict receipt still owns its merger lane. The existing
@@ -60,7 +59,11 @@ func (options WorktreeMergeConflictCandidateRefreshOptions) RefreshTask() string
 // non-terminal, unpublished prepare conflict owns the lane that ordinary
 // prepare would need to create the replacement. It writes no receipt or
 // acknowledgement; callers pass the returned candidate to supersede-validation-failed.
-func PrepareConflictWorktreeMergeReplacement(ctx context.Context, options WorktreeMergeConflictCandidateRefreshOptions) (result WorktreeMergeConflictCandidateRefresh, retErr error) {
+func PrepareConflictWorktreeMergeReplacement(ctx context.Context, options WorktreeMergeConflictCandidateRefreshOptions) (WorktreeMergeConflictCandidateRefresh, error) {
+	return prepareConflictWorktreeMergeReplacement(ctx, options, defaultRunner, readWorktreeMergeReceipt, worktreeMergeReceiptSHA256, os.ReadFile, nil, nil)
+}
+
+func prepareConflictWorktreeMergeReplacement(ctx context.Context, options WorktreeMergeConflictCandidateRefreshOptions, run runner.Runner, readReceipt func(string) (WorktreeMergeReceipt, error), hashReceipt func(string) (string, error), readClaim func(string) ([]byte, error), beforeCreate, beforeFinalRevalidation func()) (result WorktreeMergeConflictCandidateRefresh, retErr error) {
 	if err := requireConflictCandidateRefreshExpectations(options); err != nil {
 		return result, err
 	}
@@ -71,7 +74,7 @@ func PrepareConflictWorktreeMergeReplacement(ctx context.Context, options Worktr
 	if err != nil {
 		return result, err
 	}
-	receipt, err := readWorktreeMergeReceipt(receiptPath)
+	receipt, err := readReceipt(receiptPath)
 	if err != nil {
 		return result, err
 	}
@@ -86,7 +89,7 @@ func PrepareConflictWorktreeMergeReplacement(ctx context.Context, options Worktr
 	defer func() { _ = lock.Release() }()
 	reportWorktreeMergeProgress(options.Progress, "acquire_lane", progress.Completed, receipt.Lane)
 
-	state, err := inspectConflictCandidateRefresh(ctx, options, receiptPath)
+	state, err := inspectConflictCandidateRefresh(ctx, options, run, readReceipt, hashReceipt, readClaim, receiptPath)
 	if err != nil {
 		return result, err
 	}
@@ -100,8 +103,10 @@ func PrepareConflictWorktreeMergeReplacement(ctx context.Context, options Worktr
 	if !options.Apply {
 		return result, nil
 	}
-	beforeConflictCandidateRefreshCreate()
-	if err := revalidateConflictCandidateRefresh(ctx, options, receiptPath, state); err != nil {
+	if beforeCreate != nil {
+		beforeCreate()
+	}
+	if err := revalidateConflictCandidateRefresh(ctx, options, run, readReceipt, hashReceipt, readClaim, receiptPath, state); err != nil {
 		return WorktreeMergeConflictCandidateRefresh{}, err
 	}
 	listed, err := worktrees.List(ctx, worktrees.ListOptions{ProjectsRoot: options.ProjectsRoot, Task: result.Candidate.Task, Base: state.receipt.Target, Workers: 1})
@@ -129,9 +134,6 @@ func PrepareConflictWorktreeMergeReplacement(ctx context.Context, options Worktr
 	if err != nil {
 		return WorktreeMergeConflictCandidateRefresh{}, fmt.Errorf("create conflict replacement worktree: %w", err)
 	}
-	if len(created) != 1 {
-		return WorktreeMergeConflictCandidateRefresh{}, fmt.Errorf("conflict replacement creation returned %d repositories", len(created))
-	}
 	candidateTask := result.Candidate.Task
 	createdNew, completed := len(listed) == 0, false
 	defer func() {
@@ -146,7 +148,7 @@ func PrepareConflictWorktreeMergeReplacement(ctx context.Context, options Worktr
 	if created[0].BaseSHA != state.currentTarget || filepath.Clean(created[0].CanonicalDir) != filepath.Clean(state.canonical) {
 		return WorktreeMergeConflictCandidateRefresh{}, errors.New("target or canonical identity drifted while creating conflict replacement candidate")
 	}
-	candidate, claim, err := validateValidationFailureReplacement(ctx, options.ProjectsRoot, state.receipt, created[0].WorktreeDir)
+	candidate, claim, err := validateValidationFailureReplacementWithRunner(ctx, run, options.ProjectsRoot, state.receipt, created[0].WorktreeDir)
 	if err != nil {
 		return WorktreeMergeConflictCandidateRefresh{}, err
 	}
@@ -154,23 +156,25 @@ func PrepareConflictWorktreeMergeReplacement(ctx context.Context, options Worktr
 		return WorktreeMergeConflictCandidateRefresh{}, errors.New("conflict replacement candidate has an unexpected identity")
 	}
 	reportWorktreeMergeProgress(options.Progress, "merge_required_roots", progress.Started, candidate.Worktree)
-	if err := mergePublishedForwardRepairRoots(ctx, candidate.Worktree, state.roots, options.Timeout, options.Retry); err != nil {
+	if err := mergePublishedForwardRepairRootsWithRunner(ctx, run, candidate.Worktree, state.roots, options.Timeout, options.Retry); err != nil {
 		return WorktreeMergeConflictCandidateRefresh{}, err
 	}
-	candidate.SHA, err = mergeRevision(ctx, candidate.Worktree, "HEAD")
+	candidate.SHA, err = mergeRevision(ctx, run, candidate.Worktree, "HEAD")
 	if err != nil {
 		return WorktreeMergeConflictCandidateRefresh{}, err
 	}
-	if err := requireCleanMergeWorktree(ctx, candidate.Worktree); err != nil {
+	if err := requireCleanMergeWorktreeWithRunner(ctx, run, candidate.Worktree); err != nil {
 		return WorktreeMergeConflictCandidateRefresh{}, fmt.Errorf("conflict replacement candidate is not clean: %w", err)
 	}
 	reportWorktreeMergeProgress(options.Progress, "merge_required_roots", progress.Completed, shortMergeRevision(candidate.SHA))
-	beforeConflictCandidateRefreshFinalRevalidation()
-	if err := revalidateConflictCandidateRefresh(ctx, options, receiptPath, state); err != nil {
+	if beforeFinalRevalidation != nil {
+		beforeFinalRevalidation()
+	}
+	if err := revalidateConflictCandidateRefresh(ctx, options, run, readReceipt, hashReceipt, readClaim, receiptPath, state); err != nil {
 		return WorktreeMergeConflictCandidateRefresh{}, err
 	}
 	for _, root := range state.roots {
-		contains, ancestorErr := isMergeAncestor(ctx, candidate.Worktree, root.SHA, candidate.SHA)
+		contains, ancestorErr := isMergeAncestorWithRunner(ctx, run, candidate.Worktree, root.SHA, candidate.SHA)
 		if ancestorErr != nil || !contains {
 			if ancestorErr == nil {
 				ancestorErr = fmt.Errorf("conflict replacement candidate %s does not contain required %s root %s", candidate.SHA, root.Kind, root.SHA)
@@ -213,26 +217,26 @@ func validateConflictCandidateRefreshReceipt(receipt WorktreeMergeReceipt, recei
 	return nil
 }
 
-func inspectConflictCandidateRefresh(ctx context.Context, options WorktreeMergeConflictCandidateRefreshOptions, receiptPath string) (conflictCandidateRefreshState, error) {
-	receipt, err := readWorktreeMergeReceipt(receiptPath)
+func inspectConflictCandidateRefresh(ctx context.Context, options WorktreeMergeConflictCandidateRefreshOptions, run runner.Runner, readReceipt func(string) (WorktreeMergeReceipt, error), hashReceipt func(string) (string, error), readClaim func(string) ([]byte, error), receiptPath string) (conflictCandidateRefreshState, error) {
+	receipt, err := readReceipt(receiptPath)
 	if err != nil {
 		return conflictCandidateRefreshState{}, err
 	}
 	if err := validateConflictCandidateRefreshReceipt(receipt, receiptPath); err != nil {
 		return conflictCandidateRefreshState{}, err
 	}
-	receiptHash, err := worktreeMergeReceiptSHA256(receiptPath)
+	receiptHash, err := hashReceipt(receiptPath)
 	if err != nil || receiptHash != options.ExpectedReceiptSHA256 {
 		if err == nil {
 			err = fmt.Errorf("receipt SHA256 %s does not match expected %s", receiptHash, options.ExpectedReceiptSHA256)
 		}
 		return conflictCandidateRefreshState{}, err
 	}
-	claim, observed, err := validatePrepareFailureSupersessionCandidate(ctx, options.ProjectsRoot, receipt)
+	claim, observed, err := validatePrepareFailureSupersessionCandidateWithRunner(ctx, run, options.ProjectsRoot, receipt)
 	if err != nil {
 		return conflictCandidateRefreshState{}, fmt.Errorf("validate failed candidate: %w", err)
 	}
-	claimBytes, err := os.ReadFile(claim.ClaimPath)
+	claimBytes, err := readClaim(claim.ClaimPath)
 	if err != nil {
 		return conflictCandidateRefreshState{}, fmt.Errorf("read immutable failed candidate claim: %w", err)
 	}
@@ -241,14 +245,14 @@ func inspectConflictCandidateRefresh(ctx context.Context, options WorktreeMergeC
 	if claimHash != options.ExpectedImmutableClaimSHA256 {
 		return conflictCandidateRefreshState{}, fmt.Errorf("immutable claim SHA256 %s does not match expected %s", claimHash, options.ExpectedImmutableClaimSHA256)
 	}
-	remote, _, err := runCommand(ctx, 0, 0, receipt.Candidate.Worktree, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
+	remote, _, err := runCommand(ctx, run, 0, 0, receipt.Candidate.Worktree, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
 	if err != nil {
 		return conflictCandidateRefreshState{}, fmt.Errorf("inspect failed candidate publication state: %w", err)
 	}
 	if strings.TrimSpace(remote) != "" {
 		return conflictCandidateRefreshState{}, errors.New("failed conflict candidate is published")
 	}
-	sources, repository, canonical, err := inspectPublishedForwardRepairSources(ctx, options.ProjectsRoot, options.Sources, receipt.Target)
+	sources, repository, canonical, err := inspectPublishedForwardRepairSourcesWithRunner(ctx, run, options.ProjectsRoot, options.Sources, receipt.Target)
 	if err != nil {
 		return conflictCandidateRefreshState{}, err
 	}
@@ -261,7 +265,7 @@ func inspectConflictCandidateRefresh(ctx context.Context, options WorktreeMergeC
 	if err := requireExpectedPublishedForwardRepairSources(sources, options.ExpectedSourceSHAs); err != nil {
 		return conflictCandidateRefreshState{}, err
 	}
-	currentTarget, err := fetchExactMergeTarget(ctx, receipt.Candidate.Worktree, receipt.Target)
+	currentTarget, err := fetchExactMergeTargetWithRunner(ctx, run, receipt.Candidate.Worktree, receipt.Target)
 	if err != nil {
 		return conflictCandidateRefreshState{}, err
 	}
@@ -278,8 +282,8 @@ func inspectConflictCandidateRefresh(ctx context.Context, options WorktreeMergeC
 	return conflictCandidateRefreshState{receipt: receipt, receiptHash: receiptHash, claimHash: claimHash, observed: observed, currentTarget: currentTarget, canonical: canonical, sources: sources, roots: roots}, nil
 }
 
-func revalidateConflictCandidateRefresh(ctx context.Context, options WorktreeMergeConflictCandidateRefreshOptions, receiptPath string, expected conflictCandidateRefreshState) error {
-	current, err := inspectConflictCandidateRefresh(ctx, options, receiptPath)
+func revalidateConflictCandidateRefresh(ctx context.Context, options WorktreeMergeConflictCandidateRefreshOptions, run runner.Runner, readReceipt func(string) (WorktreeMergeReceipt, error), hashReceipt func(string) (string, error), readClaim func(string) ([]byte, error), receiptPath string, expected conflictCandidateRefreshState) error {
+	current, err := inspectConflictCandidateRefresh(ctx, options, run, readReceipt, hashReceipt, readClaim, receiptPath)
 	if err != nil {
 		return fmt.Errorf("revalidate conflict replacement evidence: %w", err)
 	}
@@ -290,16 +294,17 @@ func revalidateConflictCandidateRefresh(ctx context.Context, options WorktreeMer
 }
 
 func writeConflictCandidateRefreshPrompt(receipt WorktreeMergeReceipt, target string, sources []WorktreeMergeSource, roots []WorktreeMergeValidationFailureSealRoot, actor, reason string) (string, error) {
-	file, err := os.CreateTemp("", "wb-conflict-candidate-refresh-prompt-*.txt")
-	if err != nil {
-		return "", err
-	}
-	path := file.Name()
-	if err := file.Chmod(0o600); err != nil {
-		_ = file.Close()
-		_ = os.Remove(path)
-		return "", err
-	}
+	return writeConflictCandidateRefreshPromptInjected(receipt, target, sources, roots, actor, reason, nil)
+}
+
+// writeConflictCandidateRefreshPromptInjected is
+// writeConflictCandidateRefreshPrompt's test seam (task-9 PR-9): every
+// production call site reaches it only through
+// writeConflictCandidateRefreshPrompt, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged. A test passes
+// its own Injector to reach the scratch prompt file's create/chmod/write/
+// close failure branches deterministically.
+func writeConflictCandidateRefreshPromptInjected(receipt WorktreeMergeReceipt, target string, sources []WorktreeMergeSource, roots []WorktreeMergeValidationFailureSealRoot, actor, reason string, inj *filewrite.Injector) (string, error) {
 	var body strings.Builder
 	fmt.Fprintf(&body, "WB prepares one receipt-bound conflict replacement for %s.\nTarget: %s@%s.\n", receipt.ReceiptPath, receipt.Target, target)
 	for _, source := range sources {
@@ -309,13 +314,8 @@ func writeConflictCandidateRefreshPrompt(receipt WorktreeMergeReceipt, target st
 		fmt.Fprintf(&body, "- immutable root %s %s\n", root.Kind, root.SHA)
 	}
 	fmt.Fprintf(&body, "Actor: %s\nReason: %s\n", actor, reason)
-	if _, err := file.WriteString(body.String()); err != nil {
-		_ = file.Close()
-		_ = os.Remove(path)
-		return "", err
-	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(path)
+	path, err := writeWorktreeMergeScratchPromptInjected("wb-conflict-candidate-refresh-prompt-*.txt", body.String(), inj)
+	if err != nil {
 		return "", err
 	}
 	return filepath.Clean(path), nil

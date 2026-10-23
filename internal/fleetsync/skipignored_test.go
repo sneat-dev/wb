@@ -25,6 +25,7 @@ func markedRepo(t *testing.T) discover.Repo {
 }
 
 func TestSyncSkipsMarkedRepo(t *testing.T) {
+	t.Parallel()
 	repo := markedRepo(t)
 
 	res := Sync(context.Background(), repo, "", false, false)
@@ -37,6 +38,7 @@ func TestSyncSkipsMarkedRepo(t *testing.T) {
 // The marker also protects the clone from archived-repo cleanup: wb must not
 // delete a checkout the user told it to leave alone.
 func TestSyncKeepsMarkedArchivedClone(t *testing.T) {
+	t.Parallel()
 	repo := markedRepo(t)
 	repo.Archived = true
 
@@ -51,6 +53,7 @@ func TestSyncKeepsMarkedArchivedClone(t *testing.T) {
 }
 
 func TestSyncMarkedRepoStatusString(t *testing.T) {
+	t.Parallel()
 	if got := SkippedIgnored.String(); got != "skipped (ignored)" {
 		t.Fatalf("SkippedIgnored.String() = %q, want %q", got, "skipped (ignored)")
 	}
@@ -58,6 +61,7 @@ func TestSyncMarkedRepoStatusString(t *testing.T) {
 
 // A malformed marker must fail loudly rather than being read as "not marked".
 func TestSyncFailsOnMalformedMarker(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	git(t, dir, "init", "-q", "-b", "main")
 	git(t, dir, "config", "--local", gitops.SkipSyncKey, "garbage")

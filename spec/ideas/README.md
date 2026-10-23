@@ -20,13 +20,15 @@ Pre-spec one-pagers that can later promote into one or more WB features.
 | [efficient-agent-pipeline](efficient-agent-pipeline.md) | Draft | 2026-09-17 | ai | — |
 | [fleet-liveness-audit](fleet-liveness-audit.md) | Draft | 2026-07-25 | alex | — |
 | [graph-assisted-fleet-optimization](graph-assisted-fleet-optimization.md) | Draft | 2026-09-05 | alex | — |
+| [integration-branch-batch-landing](integration-branch-batch-landing.md) | Specifying | 2026-10-22 | alex | pr-land-waivers, integration-branch-batches |
 | [mechanical-worktree-merge](mechanical-worktree-merge.md) | Implemented | 2026-08-27 | alex | mechanical-worktree-merge |
 | [migration-release-handoff](migration-release-handoff.md) | Draft | 2026-07-21 | alex | — |
 | [mutation-requires-an-isolated-worktree](mutation-requires-an-isolated-worktree.md) | Draft | 2026-09-17 | ai | — |
-| [quality-diff-and-thresholds](quality-diff-and-thresholds.md) | Draft | 2026-07-21 | alex | — |
+| [quality-diff-and-thresholds](quality-diff-and-thresholds.md) | Approved | 2026-07-21 | alex | — |
 | [scratch-has-an-owner](scratch-has-an-owner.md) | Draft | 2026-09-18 | ai | — |
 | [secret-vault-injection](secret-vault-injection.md) | Draft | 2026-08-27 | alex | — |
 | [unify-session-move-and-park-continuation-storage](unify-session-move-and-park-continuation-storage.md) | Draft | 2026-08-27 | alex | — |
+| [wb-cockpit](wb-cockpit.md) | Specified | 2026-10-01 | alex | cockpit, cockpit-actions, cockpit-views, work-loss-risk |
 
 ## Open Questions
 

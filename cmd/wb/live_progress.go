@@ -1,178 +1,25 @@
 package main
 
 import (
-	"fmt"
 	"io"
-	"strings"
-	"sync"
 	"time"
+
+	cliprogress "github.com/sneat-dev/wb/internal/cli/progress"
 )
 
-// liveProgress renders one replaceable terminal line. Commands keep their
-// machine-readable report on stdout and send short-lived human progress here,
-// on stderr. The mutex lets parallel repository workers report safely.
-type liveProgress struct {
-	out       io.Writer
-	enabled   bool
-	heartbeat time.Duration
+type liveProgress cliprogress.Live
 
-	mu         sync.Mutex
-	started    time.Time
-	last       string
-	lineWidth  int
-	finished   bool
-	done       chan struct{}
-	stopped    chan struct{}
-	startOnce  sync.Once
-	stopOnce   sync.Once
-	finishOnce sync.Once
-}
-
-const universalProgressHeartbeat = 10 * time.Second
+const universalProgressHeartbeat = cliprogress.Heartbeat
 
 func newLiveProgress(out io.Writer, enabled bool) *liveProgress {
-	return newLiveProgressWithHeartbeat(out, enabled, universalProgressHeartbeat)
+	return (*liveProgress)(cliprogress.NewLive(out, enabled))
 }
-
 func newLiveProgressWithHeartbeat(out io.Writer, enabled bool, heartbeat time.Duration) *liveProgress {
-	return &liveProgress{
-		out: out, enabled: enabled, heartbeat: heartbeat,
-		done: make(chan struct{}), stopped: make(chan struct{}),
-	}
+	return (*liveProgress)(cliprogress.NewLiveWithHeartbeat(out, enabled, heartbeat))
 }
+func (p *liveProgress) start(message string)     { (*cliprogress.Live)(p).Start(message) }
+func (p *liveProgress) update(message string)    { (*cliprogress.Live)(p).Update(message) }
+func (p *liveProgress) finish(message string)    { (*cliprogress.Live)(p).Finish(message) }
+func (p *liveProgress) printLine(message string) { (*cliprogress.Live)(p).PrintLine(message) }
 
-func (progress *liveProgress) start(message string) {
-	if progress == nil || !progress.enabled {
-		return
-	}
-	progress.startOnce.Do(func() {
-		progress.mu.Lock()
-		progress.started = time.Now()
-		progress.last = message
-		progress.renderLocked(message, false)
-		progress.mu.Unlock()
-		if progress.heartbeat > 0 {
-			go progress.runHeartbeat()
-		} else {
-			close(progress.stopped)
-		}
-	})
-}
-
-func (progress *liveProgress) update(message string) {
-	if progress == nil || !progress.enabled {
-		return
-	}
-	progress.mu.Lock()
-	defer progress.mu.Unlock()
-	if progress.finished {
-		return
-	}
-	progress.last = message
-	progress.renderLocked(progress.withElapsed(message), false)
-}
-
-func (progress *liveProgress) finish(message string) {
-	if progress == nil || !progress.enabled {
-		return
-	}
-	progress.finishOnce.Do(func() {
-		progress.start(message)
-		progress.mu.Lock()
-		progress.finished = true
-		progress.mu.Unlock()
-		progress.stopOnce.Do(func() { close(progress.done) })
-		<-progress.stopped
-		progress.mu.Lock()
-		defer progress.mu.Unlock()
-		progress.renderLocked(progress.withElapsed(message), true)
-	})
-}
-
-func (progress *liveProgress) withElapsed(message string) string {
-	if progress.started.IsZero() {
-		return message
-	}
-	return fmt.Sprintf("%s (%s)", message, time.Since(progress.started).Round(time.Millisecond))
-}
-
-func (progress *liveProgress) renderLocked(message string, newline bool) {
-	padding := progress.lineWidth - len(message)
-	if padding < 0 {
-		padding = 0
-	}
-	_, _ = fmt.Fprintf(progress.out, "\r%s%s", message, strings.Repeat(" ", padding))
-	if newline {
-		_, _ = fmt.Fprintln(progress.out)
-	}
-	progress.lineWidth = len(message)
-}
-
-// printLine writes one immediate, already-terminated line and returns
-// without touching the replaceable-line/elapsed-suffix/heartbeat machinery
-// the rest of this type provides. Use it for callers whose message already
-// carries its own timing — `wb run`'s queued/admitted/done receipts compute
-// their own elapsed durations, so wrapping them in withElapsed would print a
-// redundant second duration.
-func (progress *liveProgress) printLine(message string) {
-	if progress == nil || !progress.enabled {
-		return
-	}
-	progress.mu.Lock()
-	defer progress.mu.Unlock()
-	_, _ = fmt.Fprintln(progress.out, message)
-	progress.lineWidth = 0
-}
-
-func (progress *liveProgress) runHeartbeat() {
-	defer close(progress.stopped)
-	ticker := time.NewTicker(progress.heartbeat)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			progress.mu.Lock()
-			if !progress.finished && progress.last != "" {
-				progress.renderLocked(progress.withElapsed(progress.last), false)
-			}
-			progress.mu.Unlock()
-		case <-progress.done:
-			return
-		}
-	}
-}
-
-// progressLineWriter turns replaceable carriage-return updates into
-// newline-delimited stderr events for non-terminal agent tools.
-type progressLineWriter struct {
-	out     io.Writer
-	mu      sync.Mutex
-	started bool
-}
-
-func (writer *progressLineWriter) Write(payload []byte) (int, error) {
-	writer.mu.Lock()
-	defer writer.mu.Unlock()
-	text := string(payload)
-	if strings.HasPrefix(text, "\r") {
-		text = strings.TrimPrefix(text, "\r")
-		if writer.started {
-			text = "\n" + text
-		}
-		writer.started = true
-	}
-	if text == "\n" {
-		writer.started = false
-	}
-	if _, err := io.WriteString(writer.out, text); err != nil {
-		return 0, err
-	}
-	return len(payload), nil
-}
-
-func progressOutput(out io.Writer, interactive bool) io.Writer {
-	if interactive {
-		return out
-	}
-	return &progressLineWriter{out: out}
-}
+func (p *liveProgress) Enabled() bool { return (*cliprogress.Live)(p).Enabled() }

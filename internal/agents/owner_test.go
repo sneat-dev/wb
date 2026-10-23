@@ -8,8 +8,11 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // fakeHarnessScript is a deterministic stand-in for the real coding harness. It
@@ -67,7 +70,7 @@ func writeFakeHarness(t *testing.T) (path string, deps OwnerDeps) {
 	}
 	directory := t.TempDir()
 	path = filepath.Join(directory, HarnessCodex)
-	if err := os.WriteFile(path, []byte(fakeHarnessScript), 0o700); err != nil {
+	if err := testenv.WriteExecutableFile(path, []byte(fakeHarnessScript), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	deps = DefaultOwnerDeps()
@@ -234,22 +237,67 @@ func TestRunOwnerTerminatesTheWholeWorkerProcessGroupOnTimeout(t *testing.T) {
 	// only a process-group kill can stop the tree.
 	script := `#!/bin/sh
 trap '' TERM
-sh -c 'trap "" TERM; sleep 600' &
+sh -c 'trap "" TERM; printf ready > grandchild-ready; sleep 600' &
 echo $! > grandchild.pid
+while [ ! -f grandchild-ready ]; do sleep 0.01; done
+printf ready > harness-ready
 sleep 600
 `
-	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+	if err := testenv.WriteExecutableFile(path, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	deps := DefaultOwnerDeps()
 	deps.LookPath = func(string) (string, error) { return path, nil }
 
-	// A generous run bound gives the harness time to install its trap and spawn
-	// the grandchild even on a loaded machine; an 8-minute landing validation
-	// runs this beside several other shards.
-	store, record, worktree := ownedRun(t, "HANG_MODE", 8*time.Second)
-	if err := RunOwner(context.Background(), store, record.AgentID, deps); err != nil {
-		t.Fatalf("RunOwner: %v", err)
+	// Expire the caller only after the real harness and grandchild installed
+	// their traps. Startup latency must not stand in for process-tree evidence.
+	store, record, worktree := ownedRun(t, "HANG_MODE", 0)
+	ctx := &ownerFixtureDeadline{Context: context.Background(), done: make(chan struct{})}
+	ownerDone := make(chan error, 1)
+	go func() { ownerDone <- RunOwner(ctx, store, record.AgentID, deps) }()
+	joined := false
+	t.Cleanup(func() {
+		ctx.trigger()
+		if !joined {
+			select {
+			case err := <-ownerDone:
+				joined = true
+				if err != nil {
+					t.Errorf("owner cleanup: %v", err)
+				}
+			case <-time.After(30 * time.Second):
+				t.Error("owner did not join after fixture deadline")
+			}
+		}
+	})
+	readyDeadline := time.Now().Add(30 * time.Second)
+	for {
+		if raw, err := os.ReadFile(filepath.Join(worktree, "harness-ready")); err == nil && string(raw) == "ready" {
+			break
+		}
+		select {
+		case err := <-ownerDone:
+			joined = true
+			t.Fatalf("owner finished before harness readiness: %v", err)
+		default:
+		}
+		if time.Now().After(readyDeadline) {
+			t.Fatal("harness and grandchild did not report readiness")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	ctx.trigger()
+	if ctx.Err() != context.DeadlineExceeded {
+		t.Fatal("ready harness did not receive caller deadline")
+	}
+	select {
+	case err := <-ownerDone:
+		joined = true
+		if err != nil {
+			t.Fatalf("RunOwner: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("owner did not finish after ready harness deadline")
 	}
 	loaded, err := store.Load(record.AgentID)
 	if err != nil {
@@ -367,12 +415,13 @@ func TestRunOwnerRunsToCompletionWithoutABound(t *testing.T) {
 }
 
 func TestBoundedLogCapsGrowthWithoutFailingTheWriter(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "events.jsonl")
 	file, err := os.Create(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = file.Close() }()
+	t.Cleanup(func() { _ = file.Close() })
 	log := &boundedLog{writer: file, remaining: 10}
 
 	written, err := log.Write([]byte("0123456789ABCDEF"))
@@ -422,12 +471,14 @@ func TestRunOwnerSurvivesAMissingFinalMessage(t *testing.T) {
 }
 
 func TestExitCodeOfToleratesAProcessThatNeverStarted(t *testing.T) {
+	t.Parallel()
 	if code := exitCodeOf(&exec.Cmd{}); code != nil {
 		t.Fatalf("exitCodeOf on a process that never started = %v, want nil", *code)
 	}
 }
 
 func TestSummarizeLogToleratesAMissingLog(t *testing.T) {
+	t.Parallel()
 	if summary := summarizeLog(filepath.Join(t.TempDir(), "absent.jsonl")); summary.TurnCompleted || summary.Usage != nil {
 		t.Fatalf("a missing log must yield an empty summary: %#v", summary)
 	}
@@ -488,7 +539,7 @@ func TestStopRunTerminatesTheWorkerAndLeavesTheOwnerToRecordIt(t *testing.T) {
 		time.Sleep(25 * time.Millisecond)
 	}
 
-	stopped, err := StopRun(store, record.AgentID)
+	stopped, err := StopRun(store, record.AgentID, DefaultOwnerDeps())
 	if err != nil {
 		t.Fatalf("StopRun: %v", err)
 	}
@@ -507,10 +558,10 @@ func TestStopRunTerminatesTheWorkerAndLeavesTheOwnerToRecordIt(t *testing.T) {
 	if final.State != StateFailed {
 		t.Fatalf("a stopped worker must reach a terminal outcome, got %s", final.State)
 	}
-	if _, err := StopRun(store, record.AgentID); err == nil {
+	if _, err := StopRun(store, record.AgentID, DefaultOwnerDeps()); err == nil {
 		t.Fatal("stopping a terminal run must be refused")
 	}
-	if _, err := StopRun(store, "agt-00000000000000000000000000000000"); err == nil {
+	if _, err := StopRun(store, "agt-00000000000000000000000000000000", DefaultOwnerDeps()); err == nil {
 		t.Fatal("stopping an unknown run must be refused")
 	}
 }
@@ -526,11 +577,21 @@ func TestStopRunEscalatesPastAWorkerThatIgnoresTermination(t *testing.T) {
 	// reports readiness by touching a file, because signalling before the shell
 	// has installed its trap would kill it outright and never exercise
 	// escalation.
-	if err := os.WriteFile(path, []byte("#!/bin/sh\ntrap '' TERM\n: > ignored-termination.ready\nwhile true; do sleep 1; done\n"), 0o700); err != nil {
+	if err := testenv.WriteExecutableFile(path, []byte("#!/bin/sh\ntrap '' TERM\n: > ignored-termination.ready\nwhile true; do sleep 1; done\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	deps := DefaultOwnerDeps()
 	deps.LookPath = func(string) (string, error) { return path, nil }
+	// The real StopGrace exists to give a well-behaved worker time to exit
+	// on its own; this test's whole point is a worker that never will, so
+	// shrinking the grace (and its poll interval) here, as a struct field
+	// rather than a package-level var, only removes dead wall-clock time —
+	// it never changes what is exercised: StopRun still polls, still times
+	// the grace period out, and still escalates to SIGKILL. Sleep stays the
+	// real time.Sleep (DefaultOwnerDeps' default): this loop genuinely
+	// waits on a real OS process, which no fake clock can shortcut.
+	deps.StopGrace = 200 * time.Millisecond
+	deps.StopPollInterval = 5 * time.Millisecond
 
 	store, record, worktree := ownedRun(t, "ignore termination", time.Minute)
 	done := make(chan struct{})
@@ -562,7 +623,7 @@ func TestStopRunEscalatesPastAWorkerThatIgnoresTermination(t *testing.T) {
 		time.Sleep(25 * time.Millisecond)
 	}
 
-	if _, err := StopRun(store, record.AgentID); err != nil {
+	if _, err := StopRun(store, record.AgentID, deps); err != nil {
 		t.Fatalf("StopRun: %v", err)
 	}
 	loaded, err := store.Load(record.AgentID)
@@ -584,24 +645,96 @@ func TestStopRunEscalatesPastAWorkerThatIgnoresTermination(t *testing.T) {
 }
 
 func TestStopRunRefusesARunWithNoLiveWorker(t *testing.T) {
+	t.Parallel()
 	store := newTestStore(t)
 	record := sampleRecord(t)
 	if err := store.Create(record); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := StopRun(store, record.AgentID); err == nil {
+	if _, err := StopRun(store, record.AgentID, DefaultOwnerDeps()); err == nil {
 		t.Fatal("a run with no recorded worker must be refused")
 	}
 	record.WorkerPID = 999999999
 	if err := store.Save(record); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := StopRun(store, record.AgentID); err == nil || !strings.Contains(err.Error(), "already gone") {
+	if _, err := StopRun(store, record.AgentID, DefaultOwnerDeps()); err == nil || !strings.Contains(err.Error(), "already gone") {
 		t.Fatalf("a dead worker must be reported: %v", err)
 	}
 }
 
+// TestWaitForProcessExitPollsUntilAliveReportsFalse proves StopRun's grace
+// poll (waitForProcessExit) sleeps exactly once per still-alive check, at
+// exactly pollInterval, and stops the instant alive() reports false — on a
+// fake clock, so no real process and no real wait are needed to prove the
+// exact call count.
+func TestWaitForProcessExitPollsUntilAliveReportsFalse(t *testing.T) {
+	t.Parallel()
+	virtual := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	var slept []time.Duration
+	now := func() time.Time { return virtual }
+	sleep := func(d time.Duration) {
+		slept = append(slept, d)
+		virtual = virtual.Add(d)
+	}
+	remainingAliveChecks := 3
+	alive := func() bool {
+		if remainingAliveChecks <= 0 {
+			return false
+		}
+		remainingAliveChecks--
+		return true
+	}
+
+	exited := waitForProcessExit(now, sleep, 10*time.Millisecond, virtual.Add(time.Hour), alive)
+
+	if !exited {
+		t.Fatal("waitForProcessExit = false, want true once alive() reported false")
+	}
+	if len(slept) != 3 {
+		t.Fatalf("waitForProcessExit slept %d times, want 3 (once per still-alive check)", len(slept))
+	}
+	for _, d := range slept {
+		if d != 10*time.Millisecond {
+			t.Fatalf("waitForProcessExit slept %v, want every wait to be the 10ms poll interval", slept)
+		}
+	}
+}
+
+// TestWaitForProcessExitReturnsFalseWhenDeadlinePasses proves the timeout
+// branch: a worker that never exits makes waitForProcessExit stop polling
+// once now() reaches the deadline, reporting false — StopRun's signal to
+// escalate to SIGKILL — never blocking past it.
+func TestWaitForProcessExitReturnsFalseWhenDeadlinePasses(t *testing.T) {
+	t.Parallel()
+	virtual := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	deadline := virtual.Add(50 * time.Millisecond)
+	var slept []time.Duration
+	now := func() time.Time { return virtual }
+	sleep := func(d time.Duration) {
+		slept = append(slept, d)
+		virtual = virtual.Add(d)
+	}
+	alive := func() bool { return true }
+
+	exited := waitForProcessExit(now, sleep, 20*time.Millisecond, deadline, alive)
+
+	if exited {
+		t.Fatal("waitForProcessExit = true, want false: alive() never reported false")
+	}
+	wantSleeps := int(50*time.Millisecond/(20*time.Millisecond)) + 1
+	if len(slept) != wantSleeps {
+		t.Fatalf("waitForProcessExit slept %d times, want exactly %d (50ms deadline in 20ms steps)", len(slept), wantSleeps)
+	}
+	for _, d := range slept {
+		if d != 20*time.Millisecond {
+			t.Fatalf("waitForProcessExit slept %v, want every wait to be the 20ms poll interval", slept)
+		}
+	}
+}
+
 func TestSpawnOwnerStartsADetachedProcessAndReportsItsPID(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("the detached owner uses a POSIX session")
 	}
@@ -631,6 +764,7 @@ func TestSpawnOwnerStartsADetachedProcessAndReportsItsPID(t *testing.T) {
 }
 
 func TestProcessAliveIsFalseForNonsensePIDs(t *testing.T) {
+	t.Parallel()
 	for _, pid := range []int{0, -1, -9999} {
 		if processAlive(pid) {
 			t.Fatalf("processAlive(%d) = true", pid)
@@ -642,6 +776,7 @@ func TestProcessAliveIsFalseForNonsensePIDs(t *testing.T) {
 }
 
 func TestTerminateOwnerIgnoresAnAlreadyGoneProcessGroup(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("process groups are a POSIX concept")
 	}
@@ -653,3 +788,22 @@ func TestTerminateOwnerIgnoresAnAlreadyGoneProcessGroup(t *testing.T) {
 		t.Fatalf("terminateOwner on a gone group = %v, want nil", err)
 	}
 }
+
+// ownerFixtureDeadline controls only the negative caller-deadline observation;
+// process creation, group cancellation and durable owner state stay native.
+type ownerFixtureDeadline struct {
+	context.Context
+	done chan struct{}
+	once sync.Once
+}
+
+func (c *ownerFixtureDeadline) Done() <-chan struct{} { return c.done }
+func (c *ownerFixtureDeadline) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+func (c *ownerFixtureDeadline) trigger() { c.once.Do(func() { close(c.done) }) }

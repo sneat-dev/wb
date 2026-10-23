@@ -41,6 +41,7 @@ type fixedViewer struct{ viewer Viewer }
 func (resolver fixedViewer) Viewer(*http.Request) (Viewer, error) { return resolver.viewer, nil }
 
 func TestRemoteStateWorktreeReadModelFiltersAuthorizedMachines(t *testing.T) {
+	t.Parallel()
 	laptopPublished := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
 	vmPublished := laptopPublished.Add(time.Hour)
 	lastActivity := laptopPublished.Add(-time.Minute)
@@ -105,7 +106,15 @@ func TestRemoteStateWorktreeReadModelFiltersAuthorizedMachines(t *testing.T) {
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
-			filtered, err := model.Worktrees(context.Background(), viewer, test.filter)
+			t.Parallel()
+			// Each subtest gets its own readSnapshotStore, sharing the same
+			// (read-only, never mutated) records slice as the outer store: all
+			// seven run in parallel with each other, and ListLatest counts
+			// calls on its receiver, so racing them over one shared store
+			// raced that counter under -race.
+			perTestModel := model
+			perTestModel.Store = &readSnapshotStore{records: store.records}
+			filtered, err := perTestModel.Worktrees(context.Background(), viewer, test.filter)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -117,6 +126,7 @@ func TestRemoteStateWorktreeReadModelFiltersAuthorizedMachines(t *testing.T) {
 }
 
 func TestRemoteStateWorktreeReadModelFailsClosedBeforeReadingSnapshots(t *testing.T) {
+	t.Parallel()
 	store := &readSnapshotStore{}
 	model := RemoteStateWorktreeReadModel{Store: store, Access: machineAccess{}}
 	_, err := model.Worktrees(context.Background(), Viewer{}, WorktreeFilter{})
@@ -137,6 +147,7 @@ func TestRemoteStateWorktreeReadModelFailsClosedBeforeReadingSnapshots(t *testin
 }
 
 func TestWorktreeHandlerFiltersRowsWithoutLocalPathFields(t *testing.T) {
+	t.Parallel()
 	published := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
 	store := &readSnapshotStore{records: []machinesnapshot.StoredSnapshot{storedMachine("alex", "vm", published, published, []machinesnapshot.Worktree{{
 		Repository: "sneat-dev/wb", Task: "dashboard.api", Stream: "dashboard", Branch: "feature/dashboard-api",
@@ -167,6 +178,7 @@ func TestWorktreeHandlerFiltersRowsWithoutLocalPathFields(t *testing.T) {
 }
 
 func TestWorktreeHandlerRejectsInvalidAttentionFilterAndAnonymousViewer(t *testing.T) {
+	t.Parallel()
 	model := RemoteStateWorktreeReadModel{Store: &readSnapshotStore{}, Access: machineAccess{}}
 	handler := NewHandler(HandlerOptions{Service: Service{Worktrees: model}})
 

@@ -25,22 +25,22 @@ func repositoryTransferCleanupIdentityMatches(file *os.File, device, inode uint6
 }
 
 func openRepositoryTransferCleanupQuarantine(parent *os.File, _ string, name string) (*os.File, bool, error) {
-	fd, err := unix.Openat(int(parent.Fd()), name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	held, err := openDirectoryAtNoFollow(int(parent.Fd()), name, name,
+		"open replacement quarantine "+name, "wrap replacement quarantine "+name)
 	if errors.Is(err, unix.ENOENT) {
 		return nil, true, nil
 	}
 	if err != nil {
 		return nil, false, err
 	}
-	held := os.NewFile(uintptr(fd), name)
-	if held == nil {
-		_ = unix.Close(fd)
-		return nil, false, fmt.Errorf("open replacement quarantine")
-	}
 	return held, false, nil
 }
 
 func retireRepositoryTransferReplacement(path string, held *os.File) error {
+	return retireRepositoryTransferReplacementWithObservation(path, held, nil)
+}
+
+func retireRepositoryTransferReplacementWithObservation(path string, held *os.File, observe func(string, *os.File)) error {
 	parentPath := filepath.Dir(path)
 	parent, err := openAbsoluteDirectoryNoFollow(parentPath, false)
 	if err != nil {
@@ -54,11 +54,20 @@ func retireRepositoryTransferReplacement(path string, held *os.File) error {
 	if err := removeDirectoryContentsAt(held, path, 0); err != nil {
 		return err
 	}
+	if observe != nil {
+		observe("identity", parent)
+	}
 	if !directoryEntryStillMatches(parent, name, held) {
 		return fmt.Errorf("replacement quarantine changed during retirement: %s", path)
 	}
+	if observe != nil {
+		observe("unlink", parent)
+	}
 	if err := unlinkResidueEntry(parent, parentPath, name, unix.AT_REMOVEDIR); err != nil {
 		return err
+	}
+	if observe != nil {
+		observe("absence", parent)
 	}
 	absent, err := noFollowChildAbsent(int(parent.Fd()), name)
 	if err != nil || !absent {

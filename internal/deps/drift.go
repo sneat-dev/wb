@@ -161,12 +161,9 @@ func partitionExcludedRepositories(repositories []Repository, patterns []string)
 	return retained, excluded
 }
 
-// DriftFailed reports whether the complete report should exit non-zero.
-func DriftFailed(report DriftReport, failOnDrift bool) bool {
-	return DriftFailedWith(report, failOnDrift, false)
-}
-
-// DriftFailedWith adds the behind-latest gate to DriftFailed. Behind-latest
+// DriftFailedWith reports whether the complete report should exit non-zero:
+// any error, drift when failOnDrift is set, and the behind-latest gate when
+// failOnBehind is set. Behind-latest
 // is a separate opt-in because it can only be observed with --online, and a
 // fleet that has deliberately not yet adopted a release is not the same
 // finding as one whose repositories disagree with each other.
@@ -387,9 +384,6 @@ func classifyDriftGroups(repositories []DriftRepository, options DriftOptions, o
 		groups = append(groups, group)
 	}
 	sort.Slice(groups, func(i, j int) bool {
-		if groups[i].Dependency == groups[j].Dependency {
-			return groups[i].Classification < groups[j].Classification
-		}
 		return groups[i].Dependency < groups[j].Dependency
 	})
 	return groups

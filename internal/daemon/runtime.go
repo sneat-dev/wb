@@ -86,17 +86,6 @@ func SocketPath(projectsRoot string) (string, error) {
 	return filepath.Join(runtime, SocketFileName), nil
 }
 
-// LegacyStatePath is the lifecycle record a daemon wrote before the runtime
-// directory followed WB's home. It exists for detection only; nothing here
-// reads it as this build's own state.
-func LegacyStatePath(projectsRoot string) string {
-	legacy := LegacyRuntimeDir(projectsRoot)
-	if legacy == "" {
-		return ""
-	}
-	return filepath.Join(legacy, StateFileName)
-}
-
 // IsForeignHome reports whether a record was written for a different WB home
 // than the one this invocation resolves.
 //

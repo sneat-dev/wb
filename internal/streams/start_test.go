@@ -14,6 +14,7 @@ import (
 // request open to main, and the whole set recorded in WB-owned state outside
 // every repository.
 func TestStartGroupsWorktreesUnderOneNameWithDraftPullRequests(t *testing.T) {
+	t.Parallel()
 	engine, _, hub, worktrees := newTestEngine(t)
 	for _, repository := range []string{"acme/library", "acme/app", "acme/site"} {
 		writeCanonical(t, engine.ProjectsRoot, repository, map[string]string{
@@ -89,6 +90,7 @@ func TestStartGroupsWorktreesUnderOneNameWithDraftPullRequests(t *testing.T) {
 }
 
 func TestStartDoesNotReserveAStreamWhenWorktreePlanningFails(t *testing.T) {
+	t.Parallel()
 	engine, _, _, worktrees := newTestEngine(t)
 	writeCanonical(t, engine.ProjectsRoot, "acme/library", map[string]string{
 		".github/workflows/ci.yml": cancellingWorkflow,
@@ -112,6 +114,7 @@ func TestStartDoesNotReserveAStreamWhenWorktreePlanningFails(t *testing.T) {
 // repository that already carries an open stream refuses, names the holding
 // stream, and names the sanctioned commands.
 func TestStartRefusesARepositoryThatAlreadyCarriesAnOpenStream(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _ := newTestEngine(t)
 	for _, repository := range []string{"acme/library", "acme/app"} {
 		writeCanonical(t, engine.ProjectsRoot, repository, map[string]string{
@@ -146,6 +149,7 @@ func TestStartRefusesARepositoryThatAlreadyCarriesAnOpenStream(t *testing.T) {
 }
 
 func TestStartRefusesAStreamNameThatAlreadyExists(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _ := newTestEngine(t)
 	writeCanonical(t, engine.ProjectsRoot, "acme/library", map[string]string{
 		".github/workflows/ci.yml": cancellingWorkflow,
@@ -168,6 +172,7 @@ func TestStartRefusesAStreamNameThatAlreadyExists(t *testing.T) {
 // broken refuses the start before any worktree is created, and the refusal
 // names the command that satisfies it.
 func TestStartRefusesBeforeCreatingAnythingWhenHooksAreUnhealthy(t *testing.T) {
+	t.Parallel()
 	engine, _, _, worktrees := newTestEngine(t)
 	writeCanonical(t, engine.ProjectsRoot, "acme/library", map[string]string{
 		".github/workflows/ci.yml": cancellingWorkflow,
@@ -196,6 +201,7 @@ func TestStartRefusesBeforeCreatingAnythingWhenHooksAreUnhealthy(t *testing.T) {
 // REQ: push-hook-defers-to-ci-on-stream-branches — start reports, per member,
 // a stream-PR workflow that will not cancel a superseded run.
 func TestStartReportsAMemberWhoseStreamWorkflowDoesNotCancelInProgress(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _ := newTestEngine(t)
 	writeCanonical(t, engine.ProjectsRoot, "acme/library", map[string]string{
 		".github/workflows/ci.yml": "name: CI\non:\n  pull_request:\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo build\n",
@@ -221,6 +227,7 @@ func TestStartReportsAMemberWhoseStreamWorkflowDoesNotCancelInProgress(t *testin
 // REQ: stream-start-proves-the-fleet-is-ready — a red default branch is
 // reported per member, never silently passed.
 func TestStartReportsARedDefaultBranch(t *testing.T) {
+	t.Parallel()
 	engine, _, hub, _ := newTestEngine(t)
 	path := writeCanonical(t, engine.ProjectsRoot, "acme/library", map[string]string{
 		".github/workflows/ci.yml": cancellingWorkflow,
@@ -241,6 +248,7 @@ func TestStartReportsARedDefaultBranch(t *testing.T) {
 // REQ: stream-start-proves-the-fleet-is-ready — two members publishing the
 // same npm package name is an ambiguous provider identity, and it refuses.
 func TestStartRefusesTwoMembersDeclaringTheSamePackageName(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _ := newTestEngine(t)
 	for _, repository := range []string{"acme/library", "acme/fork"} {
 		writeCanonical(t, engine.ProjectsRoot, repository, map[string]string{
@@ -263,6 +271,7 @@ func TestStartRefusesTwoMembersDeclaringTheSamePackageName(t *testing.T) {
 // REQ: stream-membership-is-proposed-from-the-transitive-graph — a transitive
 // consumer left out of the stream is named, never silently dropped.
 func TestStartNamesTransitiveConsumersLeftOut(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _ := newTestEngine(t)
 	for _, repository := range []string{"acme/library", "acme/app"} {
 		writeCanonical(t, engine.ProjectsRoot, repository, map[string]string{
@@ -283,6 +292,7 @@ func TestStartNamesTransitiveConsumersLeftOut(t *testing.T) {
 // REQ: stream-branch-with-draft-pr — a member whose pull request could not be
 // opened is recorded with its reason instead of stranding the whole start.
 func TestStartRecordsAMemberWhosePullRequestCouldNotBeOpened(t *testing.T) {
+	t.Parallel()
 	engine, _, hub, worktrees := newTestEngine(t)
 	for _, repository := range []string{"acme/library", "acme/app"} {
 		writeCanonical(t, engine.ProjectsRoot, repository, map[string]string{
@@ -310,6 +320,7 @@ func TestStartRecordsAMemberWhosePullRequestCouldNotBeOpened(t *testing.T) {
 }
 
 func TestJoinAddsAMemberToAnExistingStream(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _ := newTestEngine(t)
 	for _, repository := range []string{"acme/library", "acme/app"} {
 		writeCanonical(t, engine.ProjectsRoot, repository, map[string]string{
@@ -338,6 +349,7 @@ func TestJoinAddsAMemberToAnExistingStream(t *testing.T) {
 }
 
 func TestJoinIsIdempotentForAMemberAlreadyInTheStream(t *testing.T) {
+	t.Parallel()
 	engine, _, _, worktrees := newTestEngine(t)
 	writeCanonical(t, engine.ProjectsRoot, "acme/library", map[string]string{
 		".github/workflows/ci.yml": cancellingWorkflow,
@@ -357,6 +369,7 @@ func TestJoinIsIdempotentForAMemberAlreadyInTheStream(t *testing.T) {
 }
 
 func TestJoinRefusesASecondLibrary(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _ := newTestEngine(t)
 	for _, repository := range []string{"acme/library", "acme/other"} {
 		writeCanonical(t, engine.ProjectsRoot, repository, map[string]string{
@@ -381,6 +394,7 @@ func TestJoinRefusesASecondLibrary(t *testing.T) {
 }
 
 func TestStartAssignsTheLibraryRoleFromTheExplicitFlag(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _ := newTestEngine(t)
 	for _, repository := range []string{"acme/app", "acme/library"} {
 		writeCanonical(t, engine.ProjectsRoot, repository, map[string]string{
@@ -401,6 +415,7 @@ func TestStartAssignsTheLibraryRoleFromTheExplicitFlag(t *testing.T) {
 }
 
 func TestStartRejectsALibraryThatIsNotAMember(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _ := newTestEngine(t)
 	writeCanonical(t, engine.ProjectsRoot, "acme/app", map[string]string{
 		".github/workflows/ci.yml": cancellingWorkflow,

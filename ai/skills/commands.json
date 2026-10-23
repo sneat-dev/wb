@@ -16,6 +16,9 @@
     "ci": [
       "wb-ci"
     ],
+    "cockpit": [
+      "wb-daemon"
+    ],
     "commands": [
       "wb-install"
     ],
@@ -51,6 +54,9 @@
     "install": [
       "wb-install"
     ],
+    "integration": [
+      "wb-merge"
+    ],
     "land": [
       "wb",
       "wb-worktrees",
@@ -61,6 +67,9 @@
     ],
     "migrate": [
       "wb-migrate"
+    ],
+    "peers": [
+      "wb-fleet"
     ],
     "pr": [
       "wb-merge"

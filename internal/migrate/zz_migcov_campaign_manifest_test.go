@@ -21,13 +21,14 @@ func migCovModfileParsed(t *testing.T, contents string) (*modfile.File, string) 
 }
 
 func TestMigCovReplaceGoModuleDropsOldReplacementsAndKeepsRelativePrefix(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	goMod := migCovWriteGoMod(t, dir, "module example.com/app\n\ngo 1.24\n\nrequire example.com/dep v1.0.0\n\nreplace example.com/dep => ../old\n")
 	replacementRoot := filepath.Join(dir, "sub", "dep")
 	if err := os.MkdirAll(replacementRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := replaceGoModule(dir, goMod, "example.com/dep", replacementRoot); err != nil {
+	if err := replaceGoModule(dir, goMod, "example.com/dep", replacementRoot, runIn); err != nil {
 		t.Fatalf("replaceGoModule() error = %v", err)
 	}
 	got := mustReadCampaignFile(t, goMod)
@@ -45,7 +46,7 @@ func TestMigCovReplaceGoModuleDropsOldReplacementsAndKeepsRelativePrefix(t *test
 	if err := os.MkdirAll(target, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := replaceGoModule(versioned, versionedMod, "example.com/dep", target); err != nil {
+	if err := replaceGoModule(versioned, versionedMod, "example.com/dep", target, runIn); err != nil {
 		t.Fatalf("replaceGoModule(versioned) error = %v", err)
 	}
 	if got := mustReadCampaignFile(t, versionedMod); strings.Contains(got, "../pinned") || !strings.Contains(got, "replace example.com/dep => ./dep") {
@@ -54,27 +55,29 @@ func TestMigCovReplaceGoModuleDropsOldReplacementsAndKeepsRelativePrefix(t *test
 }
 
 func TestMigCovReplaceGoModuleReportsInputFailures(t *testing.T) {
-	if err := replaceGoModule(t.TempDir(), filepath.Join(t.TempDir(), "go.mod"), "example.com/dep", t.TempDir()); err == nil {
+	t.Parallel()
+	if err := replaceGoModule(t.TempDir(), filepath.Join(t.TempDir(), "go.mod"), "example.com/dep", t.TempDir(), runIn); err == nil {
 		t.Fatal("replaceGoModule(missing go.mod) succeeded")
 	}
 	brokenDir := t.TempDir()
 	broken := migCovWriteGoMod(t, brokenDir, "this is not a go.mod\n")
-	if err := replaceGoModule(brokenDir, broken, "example.com/dep", t.TempDir()); err == nil {
+	if err := replaceGoModule(brokenDir, broken, "example.com/dep", t.TempDir(), runIn); err == nil {
 		t.Fatal("replaceGoModule(unparseable go.mod) succeeded")
 	}
 
 	// A relative module root cannot be made relative to an absolute one.
 	mixedDir := t.TempDir()
 	mixed := migCovWriteGoMod(t, mixedDir, "module example.com/app\n\ngo 1.24\n")
-	if err := replaceGoModule("relative-module-root", mixed, "example.com/dep", t.TempDir()); err == nil {
+	if err := replaceGoModule("relative-module-root", mixed, "example.com/dep", t.TempDir(), runIn); err == nil {
 		t.Fatal("replaceGoModule(mixed relative/absolute roots) succeeded")
 	}
 }
 
 func TestMigCovDropCampaignReplaceRemovesOnlyTheNamedReplacement(t *testing.T) {
+	t.Parallel()
 	contents := "module example.com/app\n\ngo 1.24\n\nrequire (\n\texample.com/dep v1.0.0\n\texample.com/other v1.0.0\n)\n\nreplace example.com/other => ../other\n\nreplace example.com/dep v1.0.0 => ../dep\n"
 	parsed, dir := migCovModfileParsed(t, contents)
-	if err := dropCampaignReplace(dir, parsed, "example.com/dep"); err != nil {
+	if err := dropCampaignReplace(dir, parsed, "example.com/dep", runIn); err != nil {
 		t.Fatalf("dropCampaignReplace() error = %v", err)
 	}
 	got := mustReadCampaignFile(t, filepath.Join(dir, "go.mod"))
@@ -85,12 +88,13 @@ func TestMigCovDropCampaignReplaceRemovesOnlyTheNamedReplacement(t *testing.T) {
 		t.Fatalf("unrelated replacement was removed: %s", got)
 	}
 
-	if err := dropCampaignReplace(t.TempDir(), parsed, "example.com/dep"); err == nil {
+	if err := dropCampaignReplace(t.TempDir(), parsed, "example.com/dep", runIn); err == nil {
 		t.Fatal("dropCampaignReplace() without a go.mod succeeded")
 	}
 }
 
 func TestMigCovHasCampaignReplaceDistinguishesCampaignFromForeignRoots(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	campaignRoot := filepath.Join(dir, "dep")
 	contents := "module example.com/app\n\ngo 1.24\n\nrequire example.com/dep v1.0.0\n\nreplace example.com/dep => ./dep\n"
@@ -114,6 +118,7 @@ func TestMigCovHasCampaignReplaceDistinguishesCampaignFromForeignRoots(t *testin
 }
 
 func TestMigCovUpdateGoModuleReportsInputFailures(t *testing.T) {
+	t.Parallel()
 	if _, err := updateGoModule(t.TempDir(), Spec{}, "example.com/app", nil); err == nil {
 		t.Fatal("updateGoModule(missing go.mod) succeeded")
 	}
@@ -150,6 +155,7 @@ func TestMigCovUpdateGoModuleReportsTidyFailure(t *testing.T) {
 }
 
 func TestMigCovFinalizeGoModuleRemovesCampaignReplacements(t *testing.T) {
+	t.Parallel()
 	if _, err := finalizeGoModule(t.TempDir(), Spec{}, "example.com/app", nil, nil); err == nil {
 		t.Fatal("finalizeGoModule(missing go.mod) succeeded")
 	}
@@ -201,6 +207,7 @@ func TestMigCovFinalizeGoModuleRemovesCampaignReplacements(t *testing.T) {
 }
 
 func TestMigCovPreflightPublishedReleasesCoversEveryGate(t *testing.T) {
+	t.Parallel()
 	if _, err := preflightPublishedReleases(t.TempDir(), Spec{}, "example.com/app", nil, nil); err == nil {
 		t.Fatal("preflightPublishedReleases(missing go.mod) succeeded")
 	}
@@ -250,6 +257,7 @@ func TestMigCovPreflightPublishedReleasesCoversEveryGate(t *testing.T) {
 }
 
 func TestMigCovVerifyGoModuleRunsTheConfiguredCommands(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if results := verifyGoModule(dir, VerifyNone); len(results) != 0 {
 		t.Fatalf("verifyGoModule(none) = %+v, want no commands", results)
@@ -355,6 +363,7 @@ func TestMigCovRequiredChecksGreenRejectsUnusablePullRequests(t *testing.T) {
 }
 
 func TestMigCovCampaignReportMarkdownRendersEverySection(t *testing.T) {
+	t.Parallel()
 	emptyChanges := []string{}
 	changedFiles := []string{"a.go", "b.go"}
 	changedPass := 3
@@ -433,6 +442,7 @@ func TestMigCovCampaignReportMarkdownRendersEverySection(t *testing.T) {
 }
 
 func TestMigCovCampaignReportJSONAndWriteCampaignReports(t *testing.T) {
+	t.Parallel()
 	report := CampaignReport{
 		SchemaVersion: 1,
 		Migration:     ReportMigration{ID: "example", Format: MigrationFormatV1},

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,7 +46,7 @@ func TestWtLogCovCorroborateExistingRunPrompt(t *testing.T) {
 	if err := corroborateExistingRunPrompt(home, "effort", "archive-run", WorkLogOptions{}); err == nil || !strings.Contains(err.Error(), "already has an original prompt") {
 		t.Fatalf("archive without supplied bytes error = %v", err)
 	}
-	same := WorkLogOptions{originalPromptContents: body}
+	same := WorkLogOptions{snapshot: worktreeclaims.PromptSnapshot{Contents: body}}
 	if err := corroborateExistingRunPrompt(home, "effort", "archive-run", same); err != nil {
 		t.Fatalf("identical prompt bytes rejected without metadata: %v", err)
 	}
@@ -55,7 +56,7 @@ func TestWtLogCovCorroborateExistingRunPrompt(t *testing.T) {
 	if err := corroborateExistingRunPrompt(home, "effort", "archive-run", same); err != nil {
 		t.Fatalf("identical prompt bytes with metadata rejected: %v", err)
 	}
-	different := WorkLogOptions{originalPromptContents: []byte("other bytes\n")}
+	different := WorkLogOptions{snapshot: worktreeclaims.PromptSnapshot{Contents: []byte("other bytes\n")}}
 	if err := corroborateExistingRunPrompt(home, "effort", "archive-run", different); err == nil || !strings.Contains(err.Error(), "different original prompt bytes") {
 		t.Fatalf("different prompt bytes error = %v", err)
 	}
@@ -171,7 +172,7 @@ func wtLogCovRemovedTerminalHome(t *testing.T) (string, string, TerminalWorkLogE
 
 	terminalClaim := claim
 	terminalClaim.Lifecycle = "terminal"
-	terminal := workLogTerminalRecord{workLogClaim: terminalClaim, FinalCommit: "final-commit",
+	terminal := workLogTerminalRecord{Claim: terminalClaim, FinalCommit: "final-commit",
 		Disposition: "removed", SealedAt: time.Now().UTC()}
 	terminals, err := openPrivateChild(runDir, "terminals", true)
 	if err != nil {
@@ -230,6 +231,25 @@ func TestWtLogCovValidateRemovedTerminalWorkLogs(t *testing.T) {
 	}
 	if !validClaimID(claimID) {
 		t.Fatalf("claim id = %q", claimID)
+	}
+}
+
+//nolint:paralleltest // wtLogCovRemovedTerminalHome calls t.Setenv for its private WB home.
+func TestReadRemovedTerminalWorkLogClaimBaseUsesExactSealedEvidence(t *testing.T) {
+	_, projectsRoot, expectation, _ := wtLogCovRemovedTerminalHome(t)
+	base, err := ReadRemovedTerminalWorkLogClaimBase(projectsRoot, expectation)
+	if err != nil || base != strings.Repeat("a", 40) {
+		t.Fatalf("read exact removed claim base = %q, %v", base, err)
+	}
+	wrongHead := expectation
+	wrongHead.FinalCommit = "different-commit"
+	if base, err := ReadRemovedTerminalWorkLogClaimBase(projectsRoot, wrongHead); err == nil || base != "" {
+		t.Fatalf("mismatched terminal head returned base %q, %v", base, err)
+	}
+	invalid := expectation
+	invalid.Branch = ""
+	if base, err := ReadRemovedTerminalWorkLogClaimBase(projectsRoot, invalid); err == nil || base != "" {
+		t.Fatalf("incomplete expectation returned base %q, %v", base, err)
 	}
 }
 

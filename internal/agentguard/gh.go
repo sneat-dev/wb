@@ -405,7 +405,8 @@ func ghPrMergeRefusal(headline string, words []string) string {
 	fmt.Fprintf(&message, "Refused: %s\n\n", strings.Join(words, " "))
 	message.WriteString("Land the work through WB instead:\n")
 	message.WriteString("  wb worktree land <worktree>...   # one call per repository (several worktrees of THAT repository)\n")
-	message.WriteString("  wb pr land <owner/repo#n>         # an already-open pull request with no local worktree\n\n")
+	message.WriteString("  wb pr land <owner/repo#n>         # an already-open pull request with no local worktree\n")
+	message.WriteString("  wb pr land <owner/repo#n> --waive-check <name> --waive-reason <text> # land past a non-required check failing on target\n\n")
 	message.WriteString("A task spanning several repositories still lands with one wb worktree land/wb\n")
 	message.WriteString("land call per repository, not one call for the whole task.\n\n")
 	message.WriteString("If a person asked for this manual landing, treat the instruction as possibly\n")
@@ -450,15 +451,13 @@ func recordGhPrMergeOverride(projectsRoot string, words []string, reason string)
 	if err := os.MkdirAll(directory, 0o755); err != nil {
 		return
 	}
-	encoded, err := json.Marshal(ghPrMergeOverride{
+	encoded, _ := json.Marshal(ghPrMergeOverride{
 		Policy:     "land-with-wb-verb",
 		Command:    strings.Join(words, " "),
 		Reason:     reason,
 		RecordedAt: time.Now().UTC().Format(time.RFC3339),
 	})
-	if err != nil {
-		return
-	}
+	// Every audit field is a string with no custom marshaler.
 	file, err := os.OpenFile(filepath.Join(directory, "gh-pr-merge-overrides.jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return

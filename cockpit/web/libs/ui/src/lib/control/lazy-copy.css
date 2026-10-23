@@ -1,0 +1,75 @@
+:host {
+  display: inline-flex;
+  flex: none;
+}
+
+.lazy-copy {
+  --glyph-size: 0.875rem;
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  justify-content: center;
+  height: 1.75rem;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background var(--transition),
+    border-color var(--transition);
+}
+
+.lazy-copy:hover {
+  background: var(--surface-hover);
+}
+
+.lazy-copy.done {
+  border-color: var(--ok-border);
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+.lazy-copy.failed {
+  border-color: var(--bad-border);
+  background: var(--bad-soft);
+  color: var(--bad);
+}
+
+.lazy-copy.quiet {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-2);
+}
+
+.lazy-copy.quiet:hover {
+  border-color: var(--border);
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.lazy-copy.quiet.done {
+  color: var(--ok);
+}
+
+.lazy-copy.quiet.failed {
+  color: var(--bad);
+}
+
+.lazy-copy.icon-only {
+  min-width: 1.75rem;
+}
+
+@media (max-width: 30rem) {
+  .lazy-copy {
+    height: 2.75rem;
+  }
+
+  .lazy-copy.icon-only {
+    min-width: 2.75rem;
+  }
+}

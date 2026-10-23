@@ -14,9 +14,11 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/progress"
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestGetRevalidatesStaleCacheWithConditionalHeaders(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	now := time.Date(2026, 8, 30, 10, 0, 0, 0, time.UTC)
 	request := GetRequest{
@@ -81,6 +83,7 @@ func TestGetRevalidatesStaleCacheWithConditionalHeaders(t *testing.T) {
 }
 
 func TestGetDoesNotAcceptFailedCommandForFreshResponse(t *testing.T) {
+	t.Parallel()
 	observer := &Observer{
 		StateDir: t.TempDir(),
 		Run: func(_ context.Context, _ string, _ ...string) commandResult {
@@ -106,6 +109,7 @@ func TestGetDoesNotAcceptFailedCommandForFreshResponse(t *testing.T) {
 }
 
 func TestGetDoesNotAcceptNonzeroExitCodeWithoutCommandError(t *testing.T) {
+	t.Parallel()
 	observer := &Observer{
 		StateDir: t.TempDir(),
 		Run: func(_ context.Context, _ string, _ ...string) commandResult {
@@ -129,6 +133,7 @@ func TestGetDoesNotAcceptNonzeroExitCodeWithoutCommandError(t *testing.T) {
 }
 
 func TestGetHonoursRateLimitResetAndJitterBackoff(t *testing.T) {
+	t.Parallel()
 	var (
 		mu     sync.Mutex
 		calls  int
@@ -181,6 +186,7 @@ func TestGetHonoursRateLimitResetAndJitterBackoff(t *testing.T) {
 }
 
 func TestGetHonoursRetryAfterHTTPDateWithInjectedClock(t *testing.T) {
+	t.Parallel()
 	var sleeps []time.Duration
 	now := time.Date(2026, 8, 30, 10, 0, 0, 0, time.UTC)
 	observer := &Observer{
@@ -222,6 +228,7 @@ func TestGetHonoursRetryAfterHTTPDateWithInjectedClock(t *testing.T) {
 }
 
 func TestGetRetriesTransientGitHubServiceFailuresWithProgress(t *testing.T) {
+	t.Parallel()
 	statuses := []int{502, 503, 504, 200}
 	var sleeps []time.Duration
 	var events []progress.Event
@@ -281,6 +288,7 @@ func TestGetRetriesTransientGitHubServiceFailuresWithProgress(t *testing.T) {
 }
 
 func TestGetRetriesTemporaryNetworkFailure(t *testing.T) {
+	t.Parallel()
 	var calls int
 	var sleeps []time.Duration
 	observer := &Observer{
@@ -309,8 +317,10 @@ func TestGetRetriesTemporaryNetworkFailure(t *testing.T) {
 }
 
 func TestGetDoesNotRetryAuthenticationOrOrdinaryForbiddenFailures(t *testing.T) {
+	t.Parallel()
 	for _, status := range []int{401, 403} {
 		t.Run(fmt.Sprintf("HTTP_%d", status), func(t *testing.T) {
+			t.Parallel()
 			calls := 0
 			observer := &Observer{
 				StateDir: t.TempDir(),
@@ -335,6 +345,7 @@ func TestGetDoesNotRetryAuthenticationOrOrdinaryForbiddenFailures(t *testing.T) 
 }
 
 func TestReadRetriesTransientFailureAndReportsProgress(t *testing.T) {
+	t.Parallel()
 	var calls int
 	var sleeps []time.Duration
 	var events []progress.Event
@@ -367,6 +378,7 @@ func TestReadRetriesTransientFailureAndReportsProgress(t *testing.T) {
 }
 
 func TestReadDoesNotRetryOrdinaryForbiddenFailure(t *testing.T) {
+	t.Parallel()
 	var calls int
 	observer := &Observer{
 		Sleep: func(context.Context, time.Duration) error {
@@ -385,6 +397,7 @@ func TestReadDoesNotRetryOrdinaryForbiddenFailure(t *testing.T) {
 }
 
 func TestGetForcesMethodGETForQueryRequests(t *testing.T) {
+	t.Parallel()
 	var observed []string
 	observer := &Observer{
 		StateDir: t.TempDir(),
@@ -415,6 +428,7 @@ func TestGetForcesMethodGETForQueryRequests(t *testing.T) {
 }
 
 func TestGetSeparatesExactHeadCacheKeys(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	var calls int
 	observer := &Observer{
@@ -446,6 +460,7 @@ func TestGetSeparatesExactHeadCacheKeys(t *testing.T) {
 }
 
 func TestGetCoalescesAcrossProcesses(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	binDir := t.TempDir()
 	logPath := filepath.Join(t.TempDir(), "gh.log")
@@ -454,7 +469,7 @@ func TestGetCoalescesAcrossProcesses(t *testing.T) {
 		"echo call >> " + shellQuote(logPath) + "\n" +
 		"sleep 0.2\n" +
 		"printf 'HTTP/2 200 OK\\nETag: \"etag-process\"\\n\\n{\"ok\":true}'\n"
-	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(ghPath, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -492,6 +507,7 @@ func TestGetCoalescesAcrossProcesses(t *testing.T) {
 }
 
 func TestGetCoalescesZeroFreshWindowAcrossProcesses(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	binDir := t.TempDir()
 	logPath := filepath.Join(t.TempDir(), "gh.log")
@@ -500,7 +516,7 @@ func TestGetCoalescesZeroFreshWindowAcrossProcesses(t *testing.T) {
 		"echo call >> " + shellQuote(logPath) + "\n" +
 		"sleep 0.2\n" +
 		"printf 'HTTP/2 200 OK\\nETag: \"etag-zero\"\\n\\n{\"ok\":true}'\n"
-	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(ghPath, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -539,6 +555,7 @@ func TestGetCoalescesZeroFreshWindowAcrossProcesses(t *testing.T) {
 }
 
 func TestWriteCacheEntryUsesPrivatePermissions(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	observer := &Observer{StateDir: stateDir}
 	cacheTarget, lockTarget, err := observer.pathsForKey("permissions")
@@ -579,6 +596,7 @@ func TestWriteCacheEntryUsesPrivatePermissions(t *testing.T) {
 }
 
 func TestGetRefetchesWhenCachedBodyDigestIsCorrupt(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	request := GetRequest{
 		Repository:  "acme/app",
@@ -636,6 +654,7 @@ func TestGetRefetchesWhenCachedBodyDigestIsCorrupt(t *testing.T) {
 }
 
 func TestGetRefetchesWhenCachedBodyDigestIsMissing(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	request := GetRequest{
 		Repository:  "acme/app",
@@ -685,6 +704,7 @@ func TestGetRefetchesWhenCachedBodyDigestIsMissing(t *testing.T) {
 }
 
 func TestReadRecoversFromSignalKilledThenSucceeds(t *testing.T) {
+	t.Parallel()
 	var calls int
 	var sleeps []time.Duration
 	var events []progress.Event
@@ -727,6 +747,7 @@ func TestReadRecoversFromSignalKilledThenSucceeds(t *testing.T) {
 }
 
 func TestGetRecoversFromServiceUnavailableWithTelemetry(t *testing.T) {
+	t.Parallel()
 	statuses := []int{503, 200}
 	observer := &Observer{
 		StateDir:   t.TempDir(),
@@ -763,6 +784,7 @@ func TestGetRecoversFromServiceUnavailableWithTelemetry(t *testing.T) {
 }
 
 func TestReadDoesNotRetryNotFound(t *testing.T) {
+	t.Parallel()
 	var calls int
 	observer := &Observer{
 		Sleep: func(context.Context, time.Duration) error {
@@ -784,6 +806,7 @@ func TestReadDoesNotRetryNotFound(t *testing.T) {
 }
 
 func TestReadExhaustedRetriesNameLastCauseAndAreTransient(t *testing.T) {
+	t.Parallel()
 	var calls int
 	var sleeps []time.Duration
 	observer := &Observer{
@@ -818,6 +841,7 @@ func TestReadExhaustedRetriesNameLastCauseAndAreTransient(t *testing.T) {
 }
 
 func TestApiGetPerAttemptTimeoutFloorIsAtLeastThirtySeconds(t *testing.T) {
+	t.Parallel()
 	var deadlines []time.Duration
 	observer := &Observer{
 		StateDir: t.TempDir(),
@@ -844,6 +868,7 @@ func TestApiGetPerAttemptTimeoutFloorIsAtLeastThirtySeconds(t *testing.T) {
 }
 
 func TestReadPerAttemptTimeoutIsFreshNotSharedAcrossAttempts(t *testing.T) {
+	t.Parallel()
 	var deadlines []time.Duration
 	var calls int
 	observer := &Observer{
@@ -884,6 +909,7 @@ func TestReadPerAttemptTimeoutIsFreshNotSharedAcrossAttempts(t *testing.T) {
 // is clamped to the ~50ms of budget actually left, so the loop stops at
 // roughly the 200ms cap.
 func TestReadClampsAttemptTimeoutToRemainingBudget(t *testing.T) {
+	t.Parallel()
 	var mu sync.Mutex
 	var attempts int
 	var timeouts []time.Duration
@@ -934,6 +960,7 @@ func TestReadClampsAttemptTimeoutToRemainingBudget(t *testing.T) {
 // ErrTransientRetriesExhausted decorated with resume guidance the caller
 // never asked for.
 func TestReadReturnsContextErrorInsteadOfTransientForCancelledCaller(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	var calls int
 	observer := &Observer{
@@ -968,6 +995,7 @@ func TestReadReturnsContextErrorInsteadOfTransientForCancelledCaller(t *testing.
 // cancellation arriving alongside a retryable HTTP status must surface as the
 // caller's context error, not ErrTransientRetriesExhausted.
 func TestGetReturnsContextErrorInsteadOfTransientForCancelledCaller(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	observer := &Observer{
 		StateDir: t.TempDir(),
@@ -1006,6 +1034,7 @@ func TestGetReturnsContextErrorInsteadOfTransientForCancelledCaller(t *testing.T
 // cannot make an authoritative failure look like a recoverable saturated-host
 // kill.
 func TestReadDoesNotRetryWhenOnlyCommandOutputMentionsSignalKilled(t *testing.T) {
+	t.Parallel()
 	var calls int
 	observer := &Observer{
 		Sleep: func(context.Context, time.Duration) error {
@@ -1032,6 +1061,7 @@ func TestReadDoesNotRetryWhenOnlyCommandOutputMentionsSignalKilled(t *testing.T)
 }
 
 func TestHelperProcessObserve(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("GO_WANT_HELPER_PROCESS_OBSERVE") != "1" {
 		return
 	}

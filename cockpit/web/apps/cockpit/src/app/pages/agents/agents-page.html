@@ -1,0 +1,47 @@
+<app-list page="agents" [columns]="columns" [extraChips]="runtimeChips()" [panelLabel]="panelLabel">
+  <ng-template appCell="agent" let-a>
+    <span class="agent">
+      <strong class="name">{{ name(a) }}</strong>
+      <span class="work">
+        @if (tasks(a); as names) {
+          @if (names.length === 1) {
+            <a class="task" tabindex="-1" [routerLink]="taskLink(names[0]).path" [queryParams]="taskLink(names[0]).query">{{ names[0] }}</a>
+          } @else if (names.length > 1) {
+            <span class="muted">{{ names.length }} tasks</span>
+          }
+          @if (repository(a); as repo) {
+            <span class="muted">{{ repo }}</span>
+          } @else if (names.length === 0) {
+            <span class="muted">{{ fallback(a) }}</span>
+          }
+        }
+      </span>
+    </span>
+  </ng-template>
+  <ng-template appCell="state" let-a>
+    <span class="state" [class.has-activity]="!!a.activity">
+      <app-state-badge kind="agent-state" size="small" [value]="a.state" />
+      @if (a.activity) {
+        <app-state-badge kind="agent-activity" size="small" [value]="a.activity" />
+      } @else if (reportsActivity(a)) {
+        <span class="muted">state not reported</span>
+      }
+    </span>
+  </ng-template>
+  <ng-template appCell="time" let-a>
+    <span class="time">
+      <span [class.quiet]="!running(a)">{{ time(a) }}</span>
+      @if (a.exit_code !== undefined && a.state !== 'completed') {
+        <span class="exit" [attr.title]="'Exit code ' + a.exit_code">exit {{ a.exit_code }}</span>
+      }
+    </span>
+  </ng-template>
+  <ng-template appCell="machine" let-a><app-machine-cell [id]="a.machine_id" /></ng-template>
+  <ng-template appListPanel let-a><app-agent-panel [id]="a.id" /></ng-template>
+  @if (truncatedMachines().length > 0) {
+    <p class="note" listFooter role="note">Showing the first 200 agents of {{ truncatedMachines().join(', ') }}; {{ truncatedMachines().length === 1 ? 'it has' : 'they have' }} more.</p>
+  }
+  @if (silentMachines().length > 0) {
+    <p class="note" listFooter>Agents are reported only by machines that publish them; {{ silentMachines().join(', ') }} {{ silentMachines().length === 1 ? 'reports' : 'report' }} none.</p>
+  }
+</app-list>

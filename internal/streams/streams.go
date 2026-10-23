@@ -321,10 +321,6 @@ type MemberLink struct {
 // Branch renders the stream branch name for one stream name.
 func Branch(name string) string { return streambranch.Name(name) }
 
-// IsStreamBranch reports whether a branch name — or a full `refs/heads/…` ref
-// — is inside the stream namespace.
-func IsStreamBranch(ref string) bool { return streambranch.Is(ref) }
-
 // validName is the stream-name rule. It is deliberately the same shape as the
 // worktree task and remote-claim name rule, because a stream name is a task
 // name: a stream that could not also be a task name would introduce the second

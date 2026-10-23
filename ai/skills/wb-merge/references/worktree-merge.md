@@ -12,8 +12,10 @@ wb worktree merge resume <candidate-worktree-or-receipt> --progress --format jso
 wb worktree merge revert <landing-receipt> --route auto --progress --format json
 wb worktree merge acknowledge-landed-failed <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-missing-cleanup <merge-receipt> --apply --actor <operator> --reason <reason>
+wb worktree merge acknowledge-target-absorbed [merge-receipt...] --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-stranded-landing <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-absorbed-conflict <merge-receipt> --apply --actor <operator> --reason <reason>
+wb worktree merge acknowledge-retired-prepare-candidate <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-retired-publication <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-retired-unpublished-validation-failure <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-receipt-collision <merge-receipt> --expected-receipt-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --expected-target <sha> --expected-candidate <sha> --expected-current-source <sha> --expected-historical-refresh-source <sha> --apply --actor <operator> --reason <reason>
@@ -87,8 +89,9 @@ pushing. Resuming a published receipt whose target has not moved is a no-op:
 no merge, revalidation, or push runs.
 
 `--route auto` direct-pushes only when authoritative GitHub branch and ruleset
-evidence permits it; otherwise it uses a pull request or refuses unsupported
-merge-queue policy. PR text comes from the exact candidate commits. Both routes
+evidence permits it; otherwise it uses a pull request. A merge-queue target
+always takes the pull-request route, which enqueues the exact candidate and lets
+GitHub's queue merge it (`--route direct` is refused there). PR text comes from the exact candidate commits. Both routes
 wait for exact-head evidence, verify the fetched remote target receipt, and
 fast-forward a clean canonical checkout already on the target.
 
@@ -174,6 +177,25 @@ acknowledgement. A subsequent `merge resume --cleanup` revalidates the receipt,
 target ancestry, acknowledgement, and absent assets before completing. It never
 creates replacement Work Logs or weakens cleanup for live or partial assets.
 
+A non-complete receipt whose every recorded source, candidate, and landing
+commit is already an ancestor of the freshly fetched remote target has nothing
+left to land, for example a `prepared` candidate later merged through an
+ordinary pull request. `merge prepare` and `land` no longer stay refused behind
+it: the lane scan proves that ancestry, writes an immutable
+`<receipt>.<sha12>.target-absorbed.ack.json` bound to the receipt's exact
+bytes, and moves on without rewriting the receipt. Live heads of the
+candidate branch, local and remote, must be on the target too, so work
+committed on the candidate after prepare keeps the lane. A landed receipt
+qualifies only once post-target CI passed for its exact landing commit and it
+has been untouched for 15 minutes. A failed fetch, a missing object, or an
+unwritable acknowledgement keeps the lane blocked as before. `preparing` and
+`landed_post_target_ci_failed` receipts are never released this way, and a
+squash- or rebase-merged pull request never proves ancestry, so its receipt
+still needs an explicit acknowledgement. `acknowledge-target-absorbed` runs the same proof ahead of the next
+lander, for named receipts or the whole report store; it is a dry-run unless
+`--apply` is passed with `--actor` and `--reason`, which every written
+acknowledgement records.
+
 When post-target CI fails but a forward fix is preferable to a revert, commit
 the fix on the same preserved source and rerun `merge prepare`. WB accepts only
 an additive source advance, proves the fetched target still contains the failed
@@ -191,6 +213,20 @@ candidate branch and SHA, active claims, clean worktrees, and remote branch.
 It writes an append-only acknowledgement, never force-pushes or rewrites the
 receipt. A normal prepare can then consume that proof when one source advances
 cleanly by descent, preserving the published predecessor and pull request.
+
+For the narrow historical shape where a failed `prepare/conflict` receipt has
+an empty candidate SHA, its clean candidate worktree still sits exactly at the
+receipt target SHA, and that recorded target branch was deleted after the same
+commit reached the repository's current default branch, use
+`acknowledge-retired-prepare-candidate` first without `--apply`. It requires
+the exact unchanged receipt bytes, a complete source identity distinct from the
+candidate (without claiming those sources landed), an unpublished candidate
+branch, the absent recorded target ref, and fresh ancestry of both the candidate
+and acknowledgement's default target SHA into the current default target. The
+append-only sidecar permits only that exact current-layout candidate to be
+adopted; ordinary cleanup repeats the fresh-default and unpublished-candidate
+proof before removal. It never rewrites the failed receipt and does not free or
+terminalize the historical merge lane.
 
 For the one audited preparing-receipt collision recovery, use
 `acknowledge-receipt-collision` only with all six explicit expected digests and
@@ -292,7 +328,15 @@ target: an identical blob there (an unrelated later commit landed the same
 content), or, automatically for a `*.jsonl` append-only ledger path, every
 line the source added relative to the merge-base present verbatim as a line
 in the target's copy (`lines_absorbed`, with per-path added/matched line
-counts recorded in the sidecar). Repeatable `--derived-path <path>` audits an
+counts recorded in the sidecar). A root `go.mod`/`go.sum` pair may instead
+be proved by strict monotonic dependency upgrades: the require set and all
+non-version module directives remain unchanged, and checksum-line churn is
+limited to the upgraded versions. This pair is recorded together as
+`go_dependency_upgrade`; unrelated module or checksum changes refuse closed.
+If the conflict receipt has no candidate SHA and its candidate worktree is
+also gone, WB uses the canonical clone to resolve immutable Git objects,
+but refuses while any receipted local source/candidate branch still exists
+or the candidate branch is published remotely. Repeatable `--derived-path <path>` audits an
 operator exclusion for one known generated-index shape -- exactly
 `README.md` nested anywhere under a repo-root `spec/` directory
 (`spec/**/README.md`) -- and only when that exact path also exists on the
@@ -300,7 +344,7 @@ fetched target; every other shape, or a path absent from the target, refuses
 closed. Every excused path is recorded in the sidecar alongside the actor and
 reason, and both the dry-run and applied reports list them. It never reads or
 requires a receipted source worktree, never rewrites the historical receipt
-or any Work Log, and never deletes the preserved, unpublished candidate
+or any Work Log, and never deletes a preserved, unpublished candidate
 worktree. It writes a separate audited acknowledgement and frees the merger
 lane for a fresh candidate. A source worktree that still exists, a receipt
 that already published a candidate or recorded a landing SHA, an invalid or

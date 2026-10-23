@@ -81,6 +81,25 @@ func ParseRefUpdates(r io.Reader) ([]RefUpdate, error) {
 	return updates, nil
 }
 
+// OnlyRemoteRefDeletions reports whether Git's pre-push ref list is non-empty
+// and every line deletes a remote ref. Such a push sends nothing from the
+// checkout it runs in, so no property of that checkout (its branch, its
+// working tree) can make it unsafe: it is how `wb pr land`, `wb worktree land`
+// and `wb worktree cleanup` retire a merged branch from the canonical clone,
+// whatever that clone has checked out (sneat-dev/wb#824).
+func OnlyRemoteRefDeletions(r io.Reader) (bool, error) {
+	updates, err := ParseRefUpdates(r)
+	if err != nil || len(updates) == 0 {
+		return false, err
+	}
+	for _, update := range updates {
+		if !isDeletion(update) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
 func isZeroOID(value string) bool {
 	return value == zeroOID40 || value == zeroOID64
 }
@@ -110,12 +129,6 @@ type Classification struct {
 	Tier   pushTier
 	Reason string
 }
-
-// RunLint reports whether the Tier 1 lint/vet block should run.
-func (c Classification) RunLint() bool { return c.Tier >= TierLint }
-
-// IsPublication reports whether the pushed refs require publication policy.
-func (c Classification) IsPublication() bool { return c.Tier >= TierPublication }
 
 // ExitCode is the fixed process-exit encoding `wb hooks push-tier` uses to
 // hand its decision to the calling shell template: 0, 1, or 2.
@@ -148,9 +161,6 @@ func ClassifyPushTier(updates []RefUpdate, defaultBranch string, lookup PRLookup
 		}
 	}
 	if best == tierIrrelevant {
-		if reason == "" {
-			reason = "every pushed ref carries no local verification requirement of its own"
-		}
 		return Classification{Tier: TierSkip, Reason: reason + "; skipping language validation"}
 	}
 	return Classification{Tier: best, Reason: reason}

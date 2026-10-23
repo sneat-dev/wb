@@ -16,6 +16,7 @@ import (
 )
 
 func TestSDCovNewSynchestraDelivererConstructorBranches(t *testing.T) {
+	t.Parallel()
 	executable := testExecutable(t)
 	missing := filepath.Join(t.TempDir(), "missing-synchestra")
 	plain := filepath.Join(t.TempDir(), "plain-synchestra")
@@ -86,6 +87,7 @@ func TestSDCovNewSynchestraDelivererConstructorBranches(t *testing.T) {
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			deliverer, err := newSynchestraDeliverer(test.config, test.options, test.lookPath, test.runner, test.sleep)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("newSynchestraDeliverer error = %v, want containing %q", err, test.want)
@@ -98,6 +100,7 @@ func TestSDCovNewSynchestraDelivererConstructorBranches(t *testing.T) {
 }
 
 func TestSDCovSleepWithContextBranches(t *testing.T) {
+	t.Parallel()
 	if err := sleepWithContext(context.Background(), 0); err != nil {
 		t.Fatalf("zero-delay sleep error = %v", err)
 	}
@@ -113,7 +116,7 @@ func TestSDCovSleepWithContextBranches(t *testing.T) {
 	}
 
 	expiring, expire := context.WithTimeout(context.Background(), 5*time.Millisecond)
-	defer expire()
+	t.Cleanup(func() { expire() })
 	if err := sleepWithContext(expiring, time.Hour); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expiring sleep error = %v", err)
 	}
@@ -134,6 +137,7 @@ func TestSDCovSynchestraDeliverFailureBranches(t *testing.T) {
 	}
 
 	t.Run("request refusal", func(t *testing.T) {
+		t.Parallel()
 		runner := &scriptedCommandRunner{}
 		deliverer := newTestSynchestraDeliverer(t, sessionmove.SynchestraConfig{Runner: "hetzner-vm1"}, SynchestraOptions{}, runner, sdCovNoSleep)
 		if _, err := deliverer.Deliver(context.Background(), []byte("not-json")); err == nil ||
@@ -155,6 +159,7 @@ func TestSDCovSynchestraDeliverFailureBranches(t *testing.T) {
 		}
 	})
 	t.Run("resume identity mismatch", func(t *testing.T) {
+		t.Parallel()
 		runner := &scriptedCommandRunner{}
 		dispatch := resumeIdentity()
 		dispatch.Runner = "other-runner"
@@ -169,6 +174,7 @@ func TestSDCovSynchestraDeliverFailureBranches(t *testing.T) {
 		}
 	})
 	t.Run("resume command failure", func(t *testing.T) {
+		t.Parallel()
 		runner := &scriptedCommandRunner{responses: []scriptedCommandResponse{{err: errors.New("exit status 5")}}}
 		dispatch := resumeIdentity()
 		deliverer := newTestSynchestraDeliverer(t, sessionmove.SynchestraConfig{Runner: "hetzner-vm1"},
@@ -179,6 +185,7 @@ func TestSDCovSynchestraDeliverFailureBranches(t *testing.T) {
 		}
 	})
 	t.Run("resume response decode failure", func(t *testing.T) {
+		t.Parallel()
 		runner := &scriptedCommandRunner{responses: []scriptedCommandResponse{{stdout: []byte("not-json")}}}
 		dispatch := resumeIdentity()
 		deliverer := newTestSynchestraDeliverer(t, sessionmove.SynchestraConfig{Runner: "hetzner-vm1"},
@@ -189,6 +196,7 @@ func TestSDCovSynchestraDeliverFailureBranches(t *testing.T) {
 		}
 	})
 	t.Run("resume response identity mismatch", func(t *testing.T) {
+		t.Parallel()
 		status := mutateSynchestraOutput(t, encodeSynchestraStatusOutput(t, request, raw, "dsp_resume_branch", "queued", ""),
 			func(output *synchestraInvocationOutput) { output.Resolved.Runner = "other-runner" })
 		runner := &scriptedCommandRunner{responses: []scriptedCommandResponse{{stdout: status}}}
@@ -201,6 +209,7 @@ func TestSDCovSynchestraDeliverFailureBranches(t *testing.T) {
 		}
 	})
 	t.Run("cancelled delivery", func(t *testing.T) {
+		t.Parallel()
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		runner := &scriptedCommandRunner{responses: []scriptedCommandResponse{{err: errors.New("signal: killed")}}}
@@ -211,6 +220,7 @@ func TestSDCovSynchestraDeliverFailureBranches(t *testing.T) {
 		}
 	})
 	t.Run("invoke stderr diagnostic", func(t *testing.T) {
+		t.Parallel()
 		runner := &scriptedCommandRunner{responses: []scriptedCommandResponse{{
 			stderr: []byte("runner unavailable\n"), err: errors.New("exit status 3"),
 		}}}
@@ -221,6 +231,7 @@ func TestSDCovSynchestraDeliverFailureBranches(t *testing.T) {
 		}
 	})
 	t.Run("poll sleep failure", func(t *testing.T) {
+		t.Parallel()
 		queued := encodeSynchestraInvocationOutput(t, request, raw, "dsp_sleep", "queued", "")
 		runner := &scriptedCommandRunner{responses: []scriptedCommandResponse{{stdout: queued}}}
 		sleepErr := errors.New("clock unavailable")
@@ -231,6 +242,7 @@ func TestSDCovSynchestraDeliverFailureBranches(t *testing.T) {
 		}
 	})
 	t.Run("poll command failure", func(t *testing.T) {
+		t.Parallel()
 		runner := &scriptedCommandRunner{responses: []scriptedCommandResponse{
 			{stdout: encodeSynchestraInvocationOutput(t, request, raw, "dsp_poll_run", "queued", "")},
 			{err: errors.New("exit status 6")},
@@ -242,6 +254,7 @@ func TestSDCovSynchestraDeliverFailureBranches(t *testing.T) {
 		}
 	})
 	t.Run("poll decode failure", func(t *testing.T) {
+		t.Parallel()
 		runner := &scriptedCommandRunner{responses: []scriptedCommandResponse{
 			{stdout: encodeSynchestraInvocationOutput(t, request, raw, "dsp_poll_decode", "queued", "")},
 			{stdout: []byte("not-json")},
@@ -253,6 +266,7 @@ func TestSDCovSynchestraDeliverFailureBranches(t *testing.T) {
 		}
 	})
 	t.Run("poll identity failure", func(t *testing.T) {
+		t.Parallel()
 		poll := mutateSynchestraOutput(t, encodeSynchestraStatusOutput(t, request, raw, "dsp_poll_id", "queued", ""),
 			func(output *synchestraInvocationOutput) { output.Resolved.Runner = "other-runner" })
 		runner := &scriptedCommandRunner{responses: []scriptedCommandResponse{
@@ -268,6 +282,7 @@ func TestSDCovSynchestraDeliverFailureBranches(t *testing.T) {
 }
 
 func TestSDCovDecodeSynchestraInvocationOutputBranches(t *testing.T) {
+	t.Parallel()
 	if _, err := decodeSynchestraInvocationOutput([]byte(`{"resolved":{}} {}`)); err == nil ||
 		!strings.Contains(err.Error(), "trailing JSON value") {
 		t.Fatalf("trailing value error = %v", err)
@@ -299,6 +314,7 @@ func sdCovSynchestraInvocationOutput(t *testing.T, request sessionmove.Request, 
 }
 
 func TestSDCovValidateSynchestraInvocationOutputBranches(t *testing.T) {
+	t.Parallel()
 	request, raw := courierTestRequest(t)
 	baseline := sdCovSynchestraInvocationOutput(t, request, raw, "dsp_valid", "queued", "")
 
@@ -377,6 +393,7 @@ func TestSDCovValidateSynchestraInvocationOutputBranches(t *testing.T) {
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			output := sdCovCloneInvocationOutput(t, baseline)
 			test.mutate(&output)
 			_, err := validateSynchestraInvocationOutput(output, "hetzner-vm1", request, raw, "")
@@ -387,6 +404,7 @@ func TestSDCovValidateSynchestraInvocationOutputBranches(t *testing.T) {
 	}
 
 	t.Run("expected dispatch mismatch", func(t *testing.T) {
+		t.Parallel()
 		output := sdCovCloneInvocationOutput(t, baseline)
 		_, err := validateSynchestraInvocationOutput(output, "hetzner-vm1", request, raw, "dsp_expected")
 		if err == nil || !strings.Contains(err.Error(), "does not match persisted dispatch") {
@@ -394,6 +412,7 @@ func TestSDCovValidateSynchestraInvocationOutputBranches(t *testing.T) {
 		}
 	})
 	t.Run("status route resolves", func(t *testing.T) {
+		t.Parallel()
 		output := sdCovSynchestraInvocationOutput(t, request, raw, "dsp_status", "queued", "")
 		output.Resolved.Operation = "status"
 		output.Resolved.DispatchID = "dsp_status"
@@ -416,6 +435,7 @@ func sdCovAttempt(ids []string, attempts []synchestraAttemptOutput, active strin
 }
 
 func TestSDCovValidateSynchestraAttemptHistoryBranches(t *testing.T) {
+	t.Parallel()
 	queued := func(id string, number int) synchestraAttemptOutput {
 		return synchestraAttemptOutput{
 			ProtocolVersion: synchestraDispatchProtocolVersion, ID: id, DispatchID: "dsp_history",
@@ -467,6 +487,7 @@ func TestSDCovValidateSynchestraAttemptHistoryBranches(t *testing.T) {
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			err := validateSynchestraAttemptHistory(test.dispatch, test.attempts)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("validate error = %v, want containing %q", err, test.want)
@@ -474,6 +495,7 @@ func TestSDCovValidateSynchestraAttemptHistoryBranches(t *testing.T) {
 		})
 	}
 	t.Run("valid history", func(t *testing.T) {
+		t.Parallel()
 		attempts := []synchestraAttemptOutput{queued("a", 1), queued("b", 2)}
 		if err := validateSynchestraAttemptHistory(sdCovAttempt([]string{"a", "b"}, attempts, "a"), attempts); err != nil {
 			t.Fatalf("valid history error = %v", err)
@@ -482,6 +504,7 @@ func TestSDCovValidateSynchestraAttemptHistoryBranches(t *testing.T) {
 }
 
 func TestSDCovValidateSynchestraResumeIdentityBranches(t *testing.T) {
+	t.Parallel()
 	request, raw := courierTestRequest(t)
 	valid := sessionmove.SynchestraDispatch{
 		SchemaVersion: sessionmove.SynchestraDispatchSchemaVersion,
@@ -502,6 +525,7 @@ func TestSDCovValidateSynchestraResumeIdentityBranches(t *testing.T) {
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			identity := valid
 			mutate(&identity)
 			err := validateSynchestraResumeIdentity(identity, "hetzner-vm1", request, raw)
@@ -522,6 +546,7 @@ func TestSDCovSynchestraTerminalReceiptBranches(t *testing.T) {
 		t.Fatalf("missing dispatch error = %v", err)
 	}
 	t.Run("unsupported status", func(t *testing.T) {
+		t.Parallel()
 		output := sdCovSynchestraInvocationOutput(t, request, raw, "dsp_terminal", "paused", "")
 		if _, _, err := synchestraTerminalReceipt(output, request, raw); err == nil ||
 			!strings.Contains(err.Error(), "unsupported") {
@@ -544,6 +569,7 @@ func TestSDCovSynchestraTerminalReceiptBranches(t *testing.T) {
 		}
 	})
 	t.Run("receipt is not a result", func(t *testing.T) {
+		t.Parallel()
 		garbage := []byte(`{"unexpected":true}`)
 		badArtifact := encodeSynchestraReceiptArtifact(t, request, raw, garbage)
 		output := sdCovSynchestraInvocationOutput(t, request, raw, "dsp_terminal", "completed", badArtifact)
@@ -659,6 +685,7 @@ func TestSDCovDecodeSynchestraReceiptArtifactBranches(t *testing.T) {
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			if _, err := decodeSynchestraReceiptArtifact(test.reference, request, raw); err == nil ||
 				!strings.Contains(err.Error(), test.want) {
 				t.Fatalf("decode error = %v, want containing %q", err, test.want)
@@ -667,6 +694,7 @@ func TestSDCovDecodeSynchestraReceiptArtifactBranches(t *testing.T) {
 	}
 
 	t.Run("identity mismatches", func(t *testing.T) {
+		t.Parallel()
 		mutations := map[string]func(*synchestraReceiptArtifact){
 			"invocation":     func(value *synchestraReceiptArtifact) { value.InvocationID = "other" },
 			"handler":        func(value *synchestraReceiptArtifact) { value.Handler = "other.handler" },
@@ -675,6 +703,7 @@ func TestSDCovDecodeSynchestraReceiptArtifactBranches(t *testing.T) {
 		}
 		for name, mutate := range mutations {
 			t.Run(name, func(t *testing.T) {
+				t.Parallel()
 				artifact := valid
 				mutate(&artifact)
 				if _, err := decodeSynchestraReceiptArtifact(sdCovReceiptArtifactRef(t, artifact), request, raw); err == nil {

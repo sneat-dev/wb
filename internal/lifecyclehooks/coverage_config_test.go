@@ -9,6 +9,7 @@ import (
 )
 
 func TestHkCovLoadMissingConfigIsNotConfigured(t *testing.T) {
+	t.Parallel()
 	_, found, err := Load(filepath.Join(t.TempDir(), "absent", "wb.yaml"))
 	if err != nil || found {
 		t.Fatalf("found=%t err=%v, want not configured without error", found, err)
@@ -16,6 +17,7 @@ func TestHkCovLoadMissingConfigIsNotConfigured(t *testing.T) {
 }
 
 func TestHkCovLoadRejectsMalformedYAML(t *testing.T) {
+	t.Parallel()
 	cases := map[string]string{
 		"tab indentation":   "hooks:\n\tversion: 1\n",
 		"unterminated flow": "hooks: {version: 1",
@@ -23,6 +25,7 @@ func TestHkCovLoadRejectsMalformedYAML(t *testing.T) {
 	}
 	for name, raw := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			path := hkCovWriteFile(t, filepath.Join(t.TempDir(), "wb.yaml"), raw, 0o600)
 			_, _, err := Load(path)
 			if err == nil || !strings.Contains(err.Error(), "parse lifecycle hooks config") {
@@ -33,6 +36,7 @@ func TestHkCovLoadRejectsMalformedYAML(t *testing.T) {
 }
 
 func TestHkCovLoadRejectsSecondDocumentAndMultipleDocuments(t *testing.T) {
+	t.Parallel()
 	single := "hooks:\n  version: 1\n  executors:\n    index:\n      run: /nonexistent/indexer\n      cwd: repository\n      mode: coalesced\n      failure: warn\n  bindings:\n    - on: [checkout-updated]\n      match:\n        repositories:\n          include: [github.com/*/*]\n      execute: [index]\n"
 	cases := map[string]string{
 		"second document malformed": single + "---\nfoo: [1, 2\n",
@@ -41,6 +45,7 @@ func TestHkCovLoadRejectsSecondDocumentAndMultipleDocuments(t *testing.T) {
 	}
 	for name, raw := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			path := hkCovWriteFile(t, filepath.Join(t.TempDir(), "wb.yaml"), raw, 0o600)
 			_, _, err := Load(path)
 			if err == nil || !strings.Contains(err.Error(), "parse lifecycle hooks config") {
@@ -51,6 +56,7 @@ func TestHkCovLoadRejectsSecondDocumentAndMultipleDocuments(t *testing.T) {
 }
 
 func TestHkCovLoadRejectsNonMappingTopLevel(t *testing.T) {
+	t.Parallel()
 	path := hkCovWriteFile(t, filepath.Join(t.TempDir(), "wb.yaml"), "- hooks\n- version\n", 0o600)
 	_, _, err := Load(path)
 	if err == nil || !strings.Contains(err.Error(), "top level must be a mapping") {
@@ -59,6 +65,7 @@ func TestHkCovLoadRejectsNonMappingTopLevel(t *testing.T) {
 }
 
 func TestHkCovLoadRejectsDuplicateHooksSection(t *testing.T) {
+	t.Parallel()
 	raw := "hooks:\n  version: 1\nhooks:\n  version: 1\n"
 	path := hkCovWriteFile(t, filepath.Join(t.TempDir(), "wb.yaml"), raw, 0o600)
 	_, _, err := Load(path)
@@ -68,6 +75,7 @@ func TestHkCovLoadRejectsDuplicateHooksSection(t *testing.T) {
 }
 
 func TestHkCovMappingValueHandlesEmptyDocument(t *testing.T) {
+	t.Parallel()
 	var document yaml.Node
 	if err := yaml.Unmarshal([]byte("# only a comment\n"), &document); err != nil {
 		t.Fatal(err)
@@ -79,6 +87,7 @@ func TestHkCovMappingValueHandlesEmptyDocument(t *testing.T) {
 }
 
 func TestHkCovLoadRejectsInvalidHooksConfigurations(t *testing.T) {
+	t.Parallel()
 	base := "hooks:\n  version: 1\n  executors:\n    index:\n      run: /usr/bin/true\n      cwd: repository\n      mode: coalesced\n      failure: warn\n  bindings:\n    - on: [checkout-updated]\n      match:\n        repositories:\n          include: [github.com/*/*]\n      execute: [index]\n"
 	cases := []struct {
 		name string
@@ -104,6 +113,7 @@ func TestHkCovLoadRejectsInvalidHooksConfigurations(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			path := hkCovWriteFile(t, filepath.Join(t.TempDir(), "wb.yaml"), testCase.raw, 0o600)
 			_, _, err := Load(path)
 			if err == nil || !strings.Contains(err.Error(), testCase.want) {
@@ -114,6 +124,7 @@ func TestHkCovLoadRejectsInvalidHooksConfigurations(t *testing.T) {
 }
 
 func TestHkCovBindingMatchesRequiresConfiguredEvent(t *testing.T) {
+	t.Parallel()
 	binding := Binding{On: []string{EventCheckoutUpdated}, Match: Match{Repositories: RepositoryMatch{Include: []string{"github.com/*/*"}}}}
 	if binding.matches(Event{Name: "some-other-event", Repository: "github.com/acme/app"}) {
 		t.Fatal("binding without the matching event must not match")

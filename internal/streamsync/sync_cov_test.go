@@ -104,6 +104,7 @@ func (bumper stCovBumper) Required(ctx context.Context, dir string, library Libr
 }
 
 func TestResultFailedNamesEveryReason(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		result Result
@@ -117,6 +118,7 @@ func TestResultFailedNamesEveryReason(t *testing.T) {
 		{name: "clean", result: Result{StreamRebase: RebaseResult{Rebased: true}}, want: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			if got := test.result.Failed(); got != test.want {
 				t.Fatalf("Failed() = %t, want %t", got, test.want)
 			}
@@ -125,9 +127,11 @@ func TestResultFailedNamesEveryReason(t *testing.T) {
 }
 
 func TestSyncReportsUnreadableGitState(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("cleanliness", func(t *testing.T) {
+		t.Parallel()
 		git := newFakeGit()
 		engine := &Engine{Git: stCovIsCleanErrGit{fakeGit: git, err: errors.New("status unreadable")}, Bumper: newFakeBumper(), Verifier: &fakeVerifier{}, Events: &fakeEvents{}}
 		if _, err := engine.sync(ctx, baseOptions()); err == nil || !strings.Contains(err.Error(), "status unreadable") {
@@ -139,6 +143,7 @@ func TestSyncReportsUnreadableGitState(t *testing.T) {
 	})
 
 	t.Run("fetch", func(t *testing.T) {
+		t.Parallel()
 		engine := &Engine{Git: stCovFetchErrGit{fakeGit: newFakeGit(), err: errors.New("origin unreachable")}, Bumper: newFakeBumper(), Verifier: &fakeVerifier{}, Events: &fakeEvents{}}
 		if _, err := engine.sync(ctx, baseOptions()); err == nil || !strings.Contains(err.Error(), "re-read origin before rebasing") {
 			t.Fatalf("error = %v, want a fetch failure", err)
@@ -146,6 +151,7 @@ func TestSyncReportsUnreadableGitState(t *testing.T) {
 	})
 
 	t.Run("local head", func(t *testing.T) {
+		t.Parallel()
 		git := newFakeGit()
 		engine := &Engine{Git: &stCovHeadCounterGit{fakeGit: git, revision: "stream/checkout", failAt: 0, err: errors.New("head unreadable")}, Bumper: newFakeBumper(), Verifier: &fakeVerifier{}, Events: &fakeEvents{}}
 		if _, err := engine.sync(ctx, baseOptions()); err == nil || !strings.Contains(err.Error(), "head unreadable") {
@@ -157,6 +163,7 @@ func TestSyncReportsUnreadableGitState(t *testing.T) {
 // A stream branch that cannot be rebased at all is a refusal to continue: the
 // tree is restored, the reason is recorded, and no agent branch is touched.
 func TestSyncReportsAStreamRebaseFailure(t *testing.T) {
+	t.Parallel()
 	git := newFakeGit()
 	engine := &Engine{Git: stCovRebaseErrGit{fakeGit: git, branch: "stream/checkout", err: errors.New("rebase exploded")}, Bumper: newFakeBumper(), Verifier: &fakeVerifier{}, Events: &fakeEvents{}}
 	options := baseOptions()
@@ -184,6 +191,7 @@ func TestSyncReportsAStreamRebaseFailure(t *testing.T) {
 }
 
 func TestSyncReportsAHeadFailureAfterTheRebase(t *testing.T) {
+	t.Parallel()
 	git := newFakeGit()
 	// The first read is BaseBefore; the second is BaseAfter, after the rebase.
 	engine := &Engine{Git: &stCovHeadCounterGit{fakeGit: git, revision: "stream/checkout", failAt: 1, err: errors.New("post-rebase head unreadable")}, Bumper: newFakeBumper(), Verifier: &fakeVerifier{}, Events: &fakeEvents{}}
@@ -193,6 +201,7 @@ func TestSyncReportsAHeadFailureAfterTheRebase(t *testing.T) {
 }
 
 func TestSyncReportsAnAgentRebaseFailure(t *testing.T) {
+	t.Parallel()
 	git := newFakeGit()
 	engine := &Engine{Git: stCovRebaseErrGit{fakeGit: git, branch: "agent/one", err: errors.New("agent rebase exploded")}, Bumper: newFakeBumper(), Verifier: &fakeVerifier{}, Events: &fakeEvents{}}
 	options := baseOptions()
@@ -214,6 +223,7 @@ func TestSyncReportsAnAgentRebaseFailure(t *testing.T) {
 }
 
 func TestSyncReportsACheckoutFailureAfterAgentRebases(t *testing.T) {
+	t.Parallel()
 	git := newFakeGit()
 	engine := &Engine{Git: stCovCheckoutErrGit{fakeGit: git, err: errors.New("checkout refused")}, Bumper: newFakeBumper(), Verifier: &fakeVerifier{}, Events: &fakeEvents{}}
 	options := baseOptions()
@@ -225,6 +235,7 @@ func TestSyncReportsACheckoutFailureAfterAgentRebases(t *testing.T) {
 }
 
 func TestSyncReportsABatchVerificationFailure(t *testing.T) {
+	t.Parallel()
 	engine, _, _, _, _ := newTestEngine()
 	engine.Verifier = stCovVerifierFunc(func(context.Context, string) (VerificationRun, error) {
 		return VerificationRun{}, errors.New("suite could not start")
@@ -238,11 +249,13 @@ func TestSyncReportsABatchVerificationFailure(t *testing.T) {
 }
 
 func TestBumpReportsAnUnreadableOrAbsentLibrary(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	options := baseOptions()
 	library := Library{Name: "L", Target: "v2.0.0", Ecosystem: "go"}
 
 	t.Run("unreadable requirement", func(t *testing.T) {
+		t.Parallel()
 		bumper := stCovBumper{fakeBumper: newFakeBumper(), requiredErr: map[string]error{"L": errors.New("manifest unreadable")}}
 		engine := &Engine{Git: newFakeGit(), Bumper: bumper, Verifier: &fakeVerifier{}, Events: &fakeEvents{}}
 		outcome := engine.bump(ctx, options, library)
@@ -252,6 +265,7 @@ func TestBumpReportsAnUnreadableOrAbsentLibrary(t *testing.T) {
 	})
 
 	t.Run("library not declared", func(t *testing.T) {
+		t.Parallel()
 		bumper := newFakeBumper()
 		bumper.missing["L"] = true
 		engine := &Engine{Git: newFakeGit(), Bumper: bumper, Verifier: &fakeVerifier{}, Events: &fakeEvents{}}
@@ -263,6 +277,7 @@ func TestBumpReportsAnUnreadableOrAbsentLibrary(t *testing.T) {
 }
 
 func TestBumpReportsAFailedCommitAndRestoresTheWorktree(t *testing.T) {
+	t.Parallel()
 	git := newFakeGit()
 	git.heads["HEAD"] = "pre-bump-head"
 	bumper := newFakeBumper()
@@ -281,10 +296,12 @@ func TestBumpReportsAFailedCommitAndRestoresTheWorktree(t *testing.T) {
 }
 
 func TestRestoreAfterFailedBumpReportsEveryRefusal(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	options := baseOptions()
 
 	t.Run("unreadable pre-bump head", func(t *testing.T) {
+		t.Parallel()
 		engine := &Engine{Git: newFakeGit(), Bumper: newFakeBumper(), Verifier: &fakeVerifier{}, Events: &fakeEvents{}}
 		outcome := BumpResult{Action: BumpFailed, Detail: "apply failed"}
 		engine.restoreAfterFailedBump(ctx, options, &outcome, "", errors.New("no head"))
@@ -294,6 +311,7 @@ func TestRestoreAfterFailedBumpReportsEveryRefusal(t *testing.T) {
 	})
 
 	t.Run("restore refused", func(t *testing.T) {
+		t.Parallel()
 		git := newFakeGit()
 		engine := &Engine{Git: stCovRestoreErrGit{fakeGit: git, err: errors.New("restore refused")}, Bumper: newFakeBumper(), Verifier: &fakeVerifier{}, Events: &fakeEvents{}}
 		outcome := BumpResult{Action: BumpFailed, Detail: "apply failed"}
@@ -305,6 +323,7 @@ func TestRestoreAfterFailedBumpReportsEveryRefusal(t *testing.T) {
 }
 
 func TestBumpCommitsKeepsOnlyWrittenBumps(t *testing.T) {
+	t.Parallel()
 	result := Result{Bumps: []BumpResult{
 		{Library: Library{Name: "no-sha"}, Action: BumpApplied, Commit: ""},
 		{Library: Library{Name: "not-applied"}, Action: BumpNotRequired, Commit: "sha-x"},
@@ -323,6 +342,7 @@ func TestBumpCommitsKeepsOnlyWrittenBumps(t *testing.T) {
 }
 
 func TestFailureSummaryNamesABatchFailure(t *testing.T) {
+	t.Parallel()
 	result := Result{
 		StreamRebase: RebaseResult{Rebased: true},
 		Batch:        &BatchResult{Passed: false},
@@ -339,6 +359,7 @@ func TestFailureSummaryNamesABatchFailure(t *testing.T) {
 }
 
 func TestSyncWithoutAnEventSinkStillRuns(t *testing.T) {
+	t.Parallel()
 	engine, _, bumper, _, _ := newTestEngine()
 	engine.Events = nil
 	options := baseOptions()

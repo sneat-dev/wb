@@ -161,6 +161,7 @@ func TestMigCovApplyRefusesMissingFileAndUnwritableDirectory(t *testing.T) {
 }
 
 func TestMigCovIgnoredDirectoryAndMatchPath(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{".git", ".hg", ".svn", "node_modules", "vendor", ".venv", "dist", "build", ".cache"} {
 		if !ignoredDirectory(name) {
 			t.Errorf("ignoredDirectory(%q) = false, want true", name)
@@ -220,6 +221,7 @@ func TestMigCovScopeMatchesExcludeThenInclude(t *testing.T) {
 }
 
 func TestMigCovReviewFindingsSkipsUnmatchedAndExcluded(t *testing.T) {
+	t.Parallel()
 	source := []byte("package p\n\nvar a = legacy.One\nvar b = legacy.Two\n")
 	rules := []ReviewRule{
 		{ID: "other-language", Language: "python", Pattern: "legacy", Message: "python only"},
@@ -234,6 +236,7 @@ func TestMigCovReviewFindingsSkipsUnmatchedAndExcluded(t *testing.T) {
 }
 
 func TestMigCovSortFindingsOrdersByPathThenRule(t *testing.T) {
+	t.Parallel()
 	findings := []Finding{
 		{Path: "b.go", RuleID: "a"},
 		{Path: "a.go", RuleID: "z"},

@@ -10,6 +10,7 @@ import (
 )
 
 func TestValidateInGitDBAcceptsGeneratedCollection(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("ingitdb"); err != nil {
 		t.Skip("ingitdb is not installed")
 	}
@@ -51,6 +52,7 @@ The commits belong to active work and must be preserved.
 `
 
 func TestLoadDirectoryReturnsSortedDedicatedRecords(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	second := strings.Replace(validRecord, "sneat-co/schoolus", "sneat-co/debtus", 1)
 	if err := os.WriteFile(filepath.Join(dir, "b.md"), []byte(validRecord), 0o600); err != nil {
@@ -69,11 +71,13 @@ func TestLoadDirectoryReturnsSortedDedicatedRecords(t *testing.T) {
 }
 
 func TestLoadDirectoryRejectsMixedRunsAndDuplicateRepositories(t *testing.T) {
+	t.Parallel()
 	for name, second := range map[string]string{
 		"mixed":     strings.Replace(validRecord, "sync-20260908T145950Z", "other-run", 1),
 		"duplicate": validRecord,
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			dir := t.TempDir()
 			_ = os.WriteFile(filepath.Join(dir, "one.md"), []byte(validRecord), 0o600)
 			_ = os.WriteFile(filepath.Join(dir, "two.md"), []byte(second), 0o600)
@@ -85,6 +89,7 @@ func TestLoadDirectoryRejectsMixedRunsAndDuplicateRepositories(t *testing.T) {
 }
 
 func TestParseRejectsUnknownFrontmatterAndMissingBody(t *testing.T) {
+	t.Parallel()
 	if _, err := Parse([]byte(strings.Replace(validRecord, "title:", "unknown: value\ntitle:", 1))); err == nil || !strings.Contains(err.Error(), "field unknown") {
 		t.Fatalf("unknown field error = %v", err)
 	}
@@ -95,6 +100,7 @@ func TestParseRejectsUnknownFrontmatterAndMissingBody(t *testing.T) {
 }
 
 func TestRecordNameCannotCreateDirectories(t *testing.T) {
+	t.Parallel()
 	got := RecordName("sync-1", "sneat-co/schoolus")
 	if got != "sync-1--sneat-co%2Fschoolus.md" || strings.ContainsAny(got, `/\\`) {
 		t.Fatalf("RecordName = %q", got)
@@ -102,6 +108,7 @@ func TestRecordNameCannotCreateDirectories(t *testing.T) {
 }
 
 func TestMergeRootCollectionsPreservesExistingRegistrations(t *testing.T) {
+	t.Parallel()
 	existing := []byte("# user collections\ntasks: data/tasks\n")
 	merged, changed, err := MergeRootCollections(existing)
 	if err != nil || !changed {
@@ -118,6 +125,7 @@ func TestMergeRootCollectionsPreservesExistingRegistrations(t *testing.T) {
 }
 
 func TestMergeRootCollectionsRefusesAnIncompatibleRegistration(t *testing.T) {
+	t.Parallel()
 	if _, _, err := MergeRootCollections([]byte("sync_reports: other/path\n")); err == nil || !strings.Contains(err.Error(), "incompatible") {
 		t.Fatalf("error = %v", err)
 	}

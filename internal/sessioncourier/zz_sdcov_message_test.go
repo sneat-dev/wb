@@ -12,6 +12,7 @@ import (
 )
 
 func TestSDCovValidateMessagePayloadBranches(t *testing.T) {
+	t.Parallel()
 	if _, err := validateMessagePayload(nil); err == nil || !strings.Contains(err.Error(), "non-empty") {
 		t.Fatalf("empty payload error = %v", err)
 	}
@@ -41,6 +42,7 @@ func TestSDCovValidateMessagePayloadBranches(t *testing.T) {
 }
 
 func TestSDCovDecodeMessageReceiptBranches(t *testing.T) {
+	t.Parallel()
 	message, raw := courierTestMessage(t)
 	receipt := courierTestMessageReceipt(message, raw)
 	receiptRaw, err := sessionmove.EncodeMessageReceipt(receipt)
@@ -88,6 +90,7 @@ func TestSDCovSSHMessageDelivererFailureBranches(t *testing.T) {
 	}
 
 	t.Run("default remote wb command", func(t *testing.T) {
+		t.Parallel()
 		runner := &fakeCommandRunner{response: receiptRaw}
 		deliverer := newTestSSHMessageDeliverer(t, sessionmove.SSHConfig{Host: "target"}, runner)
 		got, err := deliverer.DeliverMessage(context.Background(), raw)
@@ -99,6 +102,7 @@ func TestSDCovSSHMessageDelivererFailureBranches(t *testing.T) {
 		}
 	})
 	t.Run("payload refusal", func(t *testing.T) {
+		t.Parallel()
 		runner := &fakeCommandRunner{}
 		deliverer := newTestSSHMessageDeliverer(t, sessionmove.SSHConfig{Host: "target"}, runner)
 		if _, err := deliverer.DeliverMessage(context.Background(), []byte("{}")); err == nil || !strings.Contains(err.Error(), "validate SSH session message") {
@@ -109,6 +113,7 @@ func TestSDCovSSHMessageDelivererFailureBranches(t *testing.T) {
 		}
 	})
 	t.Run("cancelled context", func(t *testing.T) {
+		t.Parallel()
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		runner := &fakeCommandRunner{err: errors.New("signal: killed")}
@@ -119,6 +124,7 @@ func TestSDCovSSHMessageDelivererFailureBranches(t *testing.T) {
 		}
 	})
 	t.Run("silent failure", func(t *testing.T) {
+		t.Parallel()
 		runner := &fakeCommandRunner{err: errors.New("exit status 255")}
 		deliverer := newTestSSHMessageDeliverer(t, sessionmove.SSHConfig{Host: "target"}, runner)
 		_, err := deliverer.DeliverMessage(context.Background(), raw)
@@ -127,6 +133,7 @@ func TestSDCovSSHMessageDelivererFailureBranches(t *testing.T) {
 		}
 	})
 	t.Run("stderr failure", func(t *testing.T) {
+		t.Parallel()
 		runner := &fakeCommandRunner{err: errors.New("exit status 255"), stderr: []byte("remote closed connection\n")}
 		deliverer := newTestSSHMessageDeliverer(t, sessionmove.SSHConfig{Host: "target"}, runner)
 		_, err := deliverer.DeliverMessage(context.Background(), raw)
@@ -135,6 +142,7 @@ func TestSDCovSSHMessageDelivererFailureBranches(t *testing.T) {
 		}
 	})
 	t.Run("oversized receipt", func(t *testing.T) {
+		t.Parallel()
 		runner := &fakeCommandRunner{response: bytes.Repeat([]byte("z"), maxMessageCourierBytes+1)}
 		deliverer := newTestSSHMessageDeliverer(t, sessionmove.SSHConfig{Host: "target"}, runner)
 		_, err := deliverer.DeliverMessage(context.Background(), raw)
@@ -143,6 +151,7 @@ func TestSDCovSSHMessageDelivererFailureBranches(t *testing.T) {
 		}
 	})
 	t.Run("undecodable receipt", func(t *testing.T) {
+		t.Parallel()
 		runner := &fakeCommandRunner{response: []byte("not-a-receipt")}
 		deliverer := newTestSSHMessageDeliverer(t, sessionmove.SSHConfig{Host: "target"}, runner)
 		_, err := deliverer.DeliverMessage(context.Background(), raw)
@@ -167,6 +176,7 @@ func TestSDCovSSHMessageDelivererFailureBranches(t *testing.T) {
 }
 
 func TestSDCovNewSSHMessageDelivererConstructorError(t *testing.T) {
+	t.Parallel()
 	lookups := 0
 	if _, err := newSSHMessageDeliverer(sessionmove.SSHConfig{Host: "target;touch"}, func(string) (string, error) {
 		lookups++

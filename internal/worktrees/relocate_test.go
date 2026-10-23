@@ -119,6 +119,7 @@ func TestRelocateFinalizesIntentAfterMoveCrashWindow(t *testing.T) {
 }
 
 func TestRelocateRefusesExternalAndDirtyWorktrees(t *testing.T) {
+	t.Parallel()
 	if eligible, reason := relocationEligibility(ListResult{External: true, Clean: true}); eligible || reason == "" {
 		t.Fatalf("external relocation eligibility = %t, %q", eligible, reason)
 	}

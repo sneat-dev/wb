@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -35,6 +36,9 @@ type fetchCacheFixture struct {
 
 func newFetchCacheFixture(t *testing.T) fetchCacheFixture {
 	t.Helper()
+	// spec/plans/coverage-to-100 task-17: this fixture's real git repo now
+	// reaches orchestrate's runCommand through task-24's guarded runner.Real,
+	// so every caller needs the escape hatch once, here.
 	realGit, err := exec.LookPath("git")
 	if err != nil {
 		t.Fatal(err)
@@ -74,6 +78,7 @@ func (fixture fetchCacheFixture) seedRepository(t *testing.T, name, packageJSON 
 		t.Fatal(err)
 	}
 	runTestGit(t, fixture.root, "clone", "--bare", seed, remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
 		t.Fatal(err)
 	}

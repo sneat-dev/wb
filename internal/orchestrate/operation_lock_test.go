@@ -122,7 +122,6 @@ func TestAcquireOperationLockRefusesLiveLegacyOwner(t *testing.T) {
 
 func TestAcquireOperationLockPreservesInvalidMetadata(t *testing.T) {
 	t.Setenv(wbhome.EnvOverride, t.TempDir())
-	githubDir := t.TempDir()
 	for _, test := range []struct {
 		name     string
 		contents string
@@ -132,6 +131,8 @@ func TestAcquireOperationLockPreservesInvalidMetadata(t *testing.T) {
 		{name: "trailing data", contents: "operation=invalid-metadata\npid=6954\nextra\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			githubDir := t.TempDir()
 			const operation = "invalid-metadata"
 			path := operationLockTestPath(t, githubDir, operation)
 			if err := os.WriteFile(path, []byte(test.contents), 0o600); err != nil {
@@ -206,7 +207,9 @@ func TestOperationLockReleasePreservesLateReplacement(t *testing.T) {
 	if err := os.WriteFile(path, []byte(successor), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_ = lock.Release()
+	if err := lock.Release(); err == nil {
+		t.Fatal("release accepted a late successor lock")
+	}
 	if contents, err := os.ReadFile(path); err != nil || string(contents) != successor {
 		t.Fatalf("late successor was removed: contents=%q err=%v", contents, err)
 	}

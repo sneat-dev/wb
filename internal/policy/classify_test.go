@@ -6,6 +6,7 @@ import (
 )
 
 func TestClassify(t *testing.T) {
+	t.Parallel()
 	loaded := loadSample(t)
 	const self = "github.com/acme/cal/backend"
 	cases := []struct {
@@ -26,6 +27,7 @@ func TestClassify(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.importPath, func(t *testing.T) {
+			t.Parallel()
 			got := loaded.Classify(tc.importPath, self)
 			if got.Group != tc.want {
 				t.Fatalf("Classify(%q).Group = %q, want %q", tc.importPath, got.Group, tc.want)
@@ -35,6 +37,7 @@ func TestClassify(t *testing.T) {
 }
 
 func TestClassifyUnclassifiedWhenNoCatchAll(t *testing.T) {
+	t.Parallel()
 	body := `
 groups:
   - {name: only, match: ["github.com/acme/..."]}
@@ -53,6 +56,7 @@ types:
 }
 
 func TestClassifyRecordsPrecedenceAndShadowedMatches(t *testing.T) {
+	t.Parallel()
 	loaded := loadSample(t)
 	got := loaded.Classify("github.com/acme/ext-cal/backend/facade4cal", "")
 	if got.Group != "extension-contract" {
@@ -70,6 +74,7 @@ func TestClassifyRecordsPrecedenceAndShadowedMatches(t *testing.T) {
 }
 
 func TestDetectType(t *testing.T) {
+	t.Parallel()
 	loaded := loadSample(t)
 	cases := map[string]string{
 		"github.com/acme/cal/backend":     "extension-implementation",
@@ -90,6 +95,7 @@ func TestDetectType(t *testing.T) {
 }
 
 func TestDetectIsFirstMatchWins(t *testing.T) {
+	t.Parallel()
 	body := `
 groups:
   - {name: g, match: ["..."]}
@@ -115,6 +121,7 @@ types:
 }
 
 func TestValidateReportsShadowedDetectPattern(t *testing.T) {
+	t.Parallel()
 	body := `
 groups:
   - {name: g, match: ["..."]}

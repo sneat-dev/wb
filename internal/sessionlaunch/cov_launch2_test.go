@@ -44,6 +44,7 @@ func slCovRepo(t *testing.T, branch string) (string, string) {
 }
 
 func TestSlCovVerifyPinnedWorktreeParkedNeutral(t *testing.T) {
+	t.Parallel()
 	storeRoot := t.TempDir()
 	handoffID := "handoff-123"
 	neutral := filepath.Join(storeRoot, handoffID, sessionpark.LocalNeutralDirName)
@@ -57,6 +58,7 @@ func TestSlCovVerifyPinnedWorktreeParkedNeutral(t *testing.T) {
 		t.Fatalf("exact parked-neutral root = %v", err)
 	}
 	t.Run("wrong worktree", func(t *testing.T) {
+		t.Parallel()
 		broken := plan
 		broken.WorktreeDir = filepath.Join(storeRoot, handoffID, "other")
 		if err := verifyPinnedWorktree(context.Background(), broken); err == nil {
@@ -64,6 +66,7 @@ func TestSlCovVerifyPinnedWorktreeParkedNeutral(t *testing.T) {
 		}
 	})
 	t.Run("wrong permissions", func(t *testing.T) {
+		t.Parallel()
 		public := filepath.Join(storeRoot, "handoff-public", sessionpark.LocalNeutralDirName)
 		if err := os.MkdirAll(public, 0o755); err != nil {
 			t.Fatal(err)
@@ -75,6 +78,7 @@ func TestSlCovVerifyPinnedWorktreeParkedNeutral(t *testing.T) {
 		}
 	})
 	t.Run("missing root", func(t *testing.T) {
+		t.Parallel()
 		broken := plan
 		broken.WorktreeDir = filepath.Join(storeRoot, handoffID, sessionpark.LocalNeutralDirName, "missing")
 		if err := verifyPinnedWorktree(context.Background(), broken); err == nil {
@@ -102,6 +106,7 @@ func TestSlCovVerifyPinnedWorktreeAgainstRealGit(t *testing.T) {
 		t.Fatalf("clean pinned worktree = %v", err)
 	}
 	t.Run("wrong head", func(t *testing.T) {
+		t.Parallel()
 		broken := plan
 		broken.PinnedCommit = strings.Repeat("a", 40)
 		if err := verifyPinnedWorktree(context.Background(), broken); err == nil {
@@ -109,12 +114,16 @@ func TestSlCovVerifyPinnedWorktreeAgainstRealGit(t *testing.T) {
 		}
 	})
 	t.Run("wrong branch", func(t *testing.T) {
+		t.Parallel()
 		broken := plan
 		broken.PinnedBranch = "wb-session/other"
 		if err := verifyPinnedWorktree(context.Background(), broken); err == nil {
 			t.Fatal("accepted a foreign branch")
 		}
 	})
+	// Left serial (not parallel with its siblings): it writes an untracked
+	// file into the shared repo worktree that a sibling ("legacy empty
+	// pinned branch falls back") asserts is clean.
 	t.Run("dirty pinned worktree", func(t *testing.T) {
 		slCovWrite(t, filepath.Join(repo, "untracked.txt"), 0o644, "dirty\n")
 		t.Cleanup(func() { _ = os.Remove(filepath.Join(repo, "untracked.txt")) })
@@ -122,6 +131,7 @@ func TestSlCovVerifyPinnedWorktreeAgainstRealGit(t *testing.T) {
 			t.Fatalf("dirty pinned worktree = %v", err)
 		}
 		t.Run("dirty parked-local worktree is allowed", func(t *testing.T) {
+			t.Parallel()
 			parked := plan
 			parked.RootMode = string(sessionauthority.LaunchRootParkedLocal)
 			if err := verifyPinnedWorktree(context.Background(), parked); err != nil {
@@ -130,6 +140,7 @@ func TestSlCovVerifyPinnedWorktreeAgainstRealGit(t *testing.T) {
 		})
 	})
 	t.Run("legacy empty pinned branch falls back", func(t *testing.T) {
+		t.Parallel()
 		legacy := plan
 		legacy.PinnedBranch = ""
 		if err := verifyPinnedWorktree(context.Background(), legacy); err != nil {
@@ -179,6 +190,7 @@ func slCovAuthorityPlan(t *testing.T) (sessionauthority.Launch, launchPlan, reso
 }
 
 func TestSlCovValidatePlanForOptionsRejectsEveryDivergence(t *testing.T) {
+	t.Parallel()
 	authority, plan, resolved, options, worktree := slCovAuthorityPlan(t)
 	if err := validatePlanForOptions(plan, options, resolved, worktree); err != nil {
 		t.Fatalf("consistent legacy plan = %v", err)
@@ -219,6 +231,7 @@ func TestSlCovValidatePlanForOptionsRejectsEveryDivergence(t *testing.T) {
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			broken, brokenOptions := plan, options
 			mutate(&broken, &brokenOptions)
 			if err := validatePlanForOptions(broken, brokenOptions, resolved, worktree); err == nil {
@@ -227,6 +240,7 @@ func TestSlCovValidatePlanForOptionsRejectsEveryDivergence(t *testing.T) {
 		})
 	}
 	t.Run("parked authority exact fields", func(t *testing.T) {
+		t.Parallel()
 		broken := plan
 		broken.PinnedBranch = "wb-session/other"
 		brokenOptions := options
@@ -236,6 +250,7 @@ func TestSlCovValidatePlanForOptionsRejectsEveryDivergence(t *testing.T) {
 		}
 	})
 	t.Run("legacy optional fields may be empty", func(t *testing.T) {
+		t.Parallel()
 		sparse := plan
 		sparse.PinnedBranch, sparse.AuthorityFile, sparse.ContinuationKind, sparse.ContinuationDigest = "", "", "", ""
 		if err := validatePlanForOptions(sparse, options, resolved, worktree); err != nil {
@@ -318,10 +333,11 @@ func slCovNewAuthorityFixture(t *testing.T) *slCovAuthorityFixture {
 		WBExecutable: slCovExecutable(t, binDir, "wb"), HarnessExecutable: slCovExecutable(t, binDir, spec.Executable),
 		HarnessArgs: spec.Args,
 	}
-	handoff, err := os.Open(handoffDir)
+	handoffFD, err := unix.Open(handoffDir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
+	handoff := os.NewFile(uintptr(handoffFD), handoffDir)
 	state, err := openLaunchStateFromHandoff(handoffID, handoff, true)
 	if err != nil {
 		t.Fatal(err)
@@ -329,10 +345,11 @@ func slCovNewAuthorityFixture(t *testing.T) *slCovAuthorityFixture {
 	if _, _, _, err := state.savePlan(plan); err != nil {
 		t.Fatal(err)
 	}
-	fenceHandoff, err := os.Open(handoffDir)
+	fenceFD, err := unix.Open(handoffDir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
+	fenceHandoff := os.NewFile(uintptr(fenceFD), handoffDir)
 	tmux := &slCovFlexTmux{}
 	sessions := filepath.Join(t.TempDir(), "sessions")
 	deps := dependencies{
@@ -365,9 +382,11 @@ func (fixture *slCovAuthorityFixture) options() Options {
 }
 
 func TestSlCovStartWithAuthorityRejectsEveryGate(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("missing fence", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		options := fixture.options()
 		options.Fence = nil
@@ -376,6 +395,7 @@ func TestSlCovStartWithAuthorityRejectsEveryGate(t *testing.T) {
 		}
 	})
 	t.Run("unheld fence", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		fixture.fence.held = false
 		if _, err := startWithDependencies(ctx, fixture.options(), fixture.deps); err == nil {
@@ -383,6 +403,7 @@ func TestSlCovStartWithAuthorityRejectsEveryGate(t *testing.T) {
 		}
 	})
 	t.Run("pinned commit mismatch", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		options := fixture.options()
 		options.PinnedCommit = strings.Repeat("d", 40)
@@ -391,6 +412,7 @@ func TestSlCovStartWithAuthorityRejectsEveryGate(t *testing.T) {
 		}
 	})
 	t.Run("relative worktree", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		options := fixture.options()
 		options.WorktreeDir = "relative"
@@ -399,6 +421,7 @@ func TestSlCovStartWithAuthorityRejectsEveryGate(t *testing.T) {
 		}
 	})
 	t.Run("unclean store root", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		options := fixture.options()
 		options.StoreRoot = fixture.root + "/"
@@ -407,6 +430,7 @@ func TestSlCovStartWithAuthorityRejectsEveryGate(t *testing.T) {
 		}
 	})
 	t.Run("retain error", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		fixture.fence.retainErr = errors.New("retain failed")
 		if _, err := startWithDependencies(ctx, fixture.options(), fixture.deps); err == nil || !strings.Contains(err.Error(), "retain failed") {
@@ -414,6 +438,7 @@ func TestSlCovStartWithAuthorityRejectsEveryGate(t *testing.T) {
 		}
 	})
 	t.Run("unopenable aggregate", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		if err := os.MkdirAll(filepath.Join(fixture.root, "collide"), 0o700); err != nil {
 			t.Fatal(err)
@@ -429,6 +454,7 @@ func TestSlCovStartWithAuthorityRejectsEveryGate(t *testing.T) {
 		}
 	})
 	t.Run("corrupt plan", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		slCovWrite(t, filepath.Join(fixture.root, fixture.handoffID, launchDirectoryName, "plan.json"), 0o600, "{}\n")
 		if _, err := startWithDependencies(ctx, fixture.options(), fixture.deps); err == nil {
@@ -436,6 +462,7 @@ func TestSlCovStartWithAuthorityRejectsEveryGate(t *testing.T) {
 		}
 	})
 	t.Run("unsupported harness", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		if err := os.Remove(filepath.Join(fixture.root, fixture.handoffID, launchDirectoryName, "plan.json")); err != nil {
 			t.Fatal(err)
@@ -449,6 +476,7 @@ func TestSlCovStartWithAuthorityRejectsEveryGate(t *testing.T) {
 		}
 	})
 	t.Run("harness lookup error", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		if err := os.Remove(filepath.Join(fixture.root, fixture.handoffID, launchDirectoryName, "plan.json")); err != nil {
 			t.Fatal(err)
@@ -459,6 +487,7 @@ func TestSlCovStartWithAuthorityRejectsEveryGate(t *testing.T) {
 		}
 	})
 	t.Run("harness not executable", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		if err := os.Remove(filepath.Join(fixture.root, fixture.handoffID, launchDirectoryName, "plan.json")); err != nil {
 			t.Fatal(err)
@@ -471,6 +500,7 @@ func TestSlCovStartWithAuthorityRejectsEveryGate(t *testing.T) {
 		}
 	})
 	t.Run("wb executable lookup error", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		if err := os.Remove(filepath.Join(fixture.root, fixture.handoffID, launchDirectoryName, "plan.json")); err != nil {
 			t.Fatal(err)
@@ -481,6 +511,7 @@ func TestSlCovStartWithAuthorityRejectsEveryGate(t *testing.T) {
 		}
 	})
 	t.Run("wb executable not executable", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		if err := os.Remove(filepath.Join(fixture.root, fixture.handoffID, launchDirectoryName, "plan.json")); err != nil {
 			t.Fatal(err)
@@ -493,6 +524,7 @@ func TestSlCovStartWithAuthorityRejectsEveryGate(t *testing.T) {
 		}
 	})
 	t.Run("plan publication failure", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		if err := os.Remove(filepath.Join(fixture.root, fixture.handoffID, launchDirectoryName, "plan.json")); err != nil {
 			t.Fatal(err)
@@ -503,6 +535,7 @@ func TestSlCovStartWithAuthorityRejectsEveryGate(t *testing.T) {
 		}
 	})
 	t.Run("invalid planned executables", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		broken := fixture.plan
 		broken.WBExecutable = filepath.Join(t.TempDir(), "absent-wb")
@@ -522,6 +555,7 @@ func TestSlCovStartWithAuthorityRejectsEveryGate(t *testing.T) {
 		}
 	})
 	t.Run("pane probe error", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		fixture.tmux.panePIDErr = errors.New("pane probe failed")
 		if _, err := startWithDependencies(ctx, fixture.options(), fixture.deps); err == nil || !strings.Contains(err.Error(), "pane probe failed") {
@@ -529,6 +563,7 @@ func TestSlCovStartWithAuthorityRejectsEveryGate(t *testing.T) {
 		}
 	})
 	t.Run("corrupt abandonment", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		attempt, err := fixture.state.createAttempt()
 		if err != nil {
@@ -543,6 +578,7 @@ func TestSlCovStartWithAuthorityRejectsEveryGate(t *testing.T) {
 		}
 	})
 	t.Run("abandonment conflicts with live tmux", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		slCovSealAbandonment(t, fixture, 6301)
 		fixture.tmux.pid, fixture.tmux.exists = 6301, true
@@ -551,6 +587,7 @@ func TestSlCovStartWithAuthorityRejectsEveryGate(t *testing.T) {
 		}
 	})
 	t.Run("unbound abandonment", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		slCovSealAbandonment(t, fixture, 6302)
 		attempt, err := latestAttempt(fixture.state)
@@ -573,6 +610,7 @@ func TestSlCovStartWithAuthorityRejectsEveryGate(t *testing.T) {
 		}
 	})
 	t.Run("verify pinned failure after abandonment", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		slCovSealAbandonment(t, fixture, 6303)
 		fixture.deps.verifyPinned = func(context.Context, launchPlan) error { return errors.New("pinned changed") }
@@ -581,6 +619,7 @@ func TestSlCovStartWithAuthorityRejectsEveryGate(t *testing.T) {
 		}
 	})
 	t.Run("tmux start failure without adoption", func(t *testing.T) {
+		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		fixture.tmux.startErr = errors.New("duplicate session")
 		if _, err := startWithDependencies(ctx, fixture.options(), fixture.deps); err == nil || !strings.Contains(err.Error(), "duplicate session") {
@@ -624,6 +663,7 @@ func mustPlanDigest(t *testing.T, fixture *slCovAuthorityFixture) sessionmove.Di
 }
 
 func TestSlCovAuthorityFixtureHarnessSpecMatches(t *testing.T) {
+	t.Parallel()
 	fixture := slCovNewAuthorityFixture(t)
 	spec, err := harnessSpecForAuthority(fixture.authority, fixture.worktree)
 	if err != nil {

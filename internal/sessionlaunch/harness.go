@@ -23,11 +23,6 @@ type HarnessSpec struct {
 	Args       []string
 }
 
-func ValidateHarnessSelection(sourceRuntime, requested string) error {
-	_, err := NormalizeRuntime(sourceRuntime, requested)
-	return err
-}
-
 // NormalizeRuntime maps spoken harness names to the closed launch runtimes.
 // Empty requested keeps the source runtime. "claude" and "claude-code" both
 // select Claude Code; "codex" selects Codex.
@@ -97,24 +92,14 @@ func harnessSpecForAuthority(authority sessionauthority.Launch, worktree string)
 		}
 		args = append(args, prompt)
 		return HarnessSpec{Runtime: runtime, Model: model, Executable: "codex", Args: args}, nil
-	case RuntimeClaudeCode:
+	default: // NormalizeRuntime admits only Codex or Claude Code.
 		args := make([]string, 0, 5)
 		if model != "" {
 			args = append(args, "--model", model)
 		}
 		args = append(args, "--name", authority.SuccessorWBSessionID, prompt)
 		return HarnessSpec{Runtime: runtime, Model: model, Executable: "claude", Args: args}, nil
-	default:
-		return HarnessSpec{}, fmt.Errorf("requested harness %q is unsupported; supported harnesses are %q and %q", runtime, RuntimeCodex, RuntimeClaudeCode)
 	}
-}
-
-func launchPrompt(request sessionmove.Request) string {
-	return launchPromptForAuthority(sessionauthority.Launch{
-		AggregateID: request.HandoffID, SuccessorWBSessionID: request.SuccessorWBSessionID,
-		PredecessorWBSessionID: request.PredecessorWBSessionID, ContinuationKind: requestContinuationKind(request),
-		ContinuationPath: request.HandoverPath,
-	})
 }
 
 func launchPromptForAuthority(authority sessionauthority.Launch) string {

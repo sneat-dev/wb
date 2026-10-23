@@ -15,6 +15,7 @@ import (
 	"github.com/sneat-dev/wb/internal/canonicalrescue"
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/envguard"
+	"github.com/sneat-dev/wb/internal/filewrite"
 )
 
 type RunOptions struct {
@@ -169,6 +170,15 @@ func shouldReplicateStdin(hook string, blockCount int, stdinIsTerminal bool) boo
 }
 
 func runTemplate(policy Policy, block HookBlock, options RunOptions, context eventContext, layout ExecutionLayout) (int, error) {
+	return runTemplateInjected(policy, block, options, context, layout, nil)
+}
+
+// runTemplateInjected is runTemplate's test seam (task-9 PR-9): every
+// production call site reaches it only through runTemplate, which always
+// passes a nil *filewrite.Injector, so production behaviour is unchanged. A
+// test passes its own Injector to reach the built-in template scratch
+// file's create/write/close failure branches deterministically.
+func runTemplateInjected(policy Policy, block HookBlock, options RunOptions, context eventContext, layout ExecutionLayout, inj *filewrite.Injector) (int, error) {
 	templatePath := block.Hook.Template
 	cleanup := func() {}
 	if block.Hook.Builtin {
@@ -176,18 +186,12 @@ func runTemplate(policy Policy, block HookBlock, options RunOptions, context eve
 		if !ok {
 			return 2, fmt.Errorf("unknown built-in template %q", block.Hook.Template)
 		}
-		temporary, err := os.CreateTemp("", "wb-hook-*.sh")
+		path, err := filewrite.CreateScratch("", "wb-hook-*.sh", 0, []byte(content), inj)
+		if path != "" {
+			templatePath = path
+			cleanup = func() { _ = os.Remove(path) }
+		}
 		if err != nil {
-			return 2, err
-		}
-		templatePath = temporary.Name()
-		cleanup = func() { _ = os.Remove(templatePath) }
-		if _, err := temporary.WriteString(content); err != nil {
-			_ = temporary.Close()
-			cleanup()
-			return 2, err
-		}
-		if err := temporary.Close(); err != nil {
 			cleanup()
 			return 2, err
 		}
@@ -303,7 +307,7 @@ func annotatePushEvent(event *Event, options RunOptions, policy Policy, pushedRe
 	// The ref recorded is the one that decided the tier: the highest-tier
 	// update in this push, so a mixed push is attributed to the ref that made
 	// it a publication push rather than to whichever came first.
-	classification := ClassifyPushTier(updates, detectDefaultBranch(policy.RepoRoot), NewCachedGHPRLookup(policy.RepoRoot))
+	classification := ClassifyPushTier(updates, DetectDefaultBranch(policy.RepoRoot), NewCachedGHPRLookup(policy.RepoRoot))
 	tier := int(classification.Tier)
 	event.Tier = &tier
 	event.Ref = decidingRef(updates, classification, policy.RepoRoot)
@@ -311,7 +315,7 @@ func annotatePushEvent(event *Event, options RunOptions, policy Policy, pushedRe
 
 // decidingRef names the pushed ref the classification came from.
 func decidingRef(updates []RefUpdate, classification Classification, repoRoot string) string {
-	defaultBranch := detectDefaultBranch(repoRoot)
+	defaultBranch := DetectDefaultBranch(repoRoot)
 	lookup := NewCachedGHPRLookup(repoRoot)
 	for _, update := range updates {
 		if tier, _ := classifyOneRef(update, defaultBranch, lookup); tier == classification.Tier {

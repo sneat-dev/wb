@@ -28,6 +28,7 @@ func wtLogCovBacklogRecord(t *testing.T, disposition string) (string, string, li
 }
 
 func TestWtLogCovValidateLifecycleBacklog(t *testing.T) {
+	t.Parallel()
 	projectsRoot, worktreesRoot, record := wtLogCovBacklogRecord(t, "removed")
 	if err := validateLifecycleBacklog(record); err != nil {
 		t.Fatalf("valid backlog record rejected: %v", err)
@@ -136,6 +137,7 @@ func TestWtLogCovValidateLifecycleBacklog(t *testing.T) {
 }
 
 func TestWtLogCovLifecycleBacklogIdentityAndPaths(t *testing.T) {
+	t.Parallel()
 	_, _, record := wtLogCovBacklogRecord(t, "removed")
 	result := ListResult{Task: record.Task, Repository: record.Repository, CanonicalDir: record.CanonicalDir,
 		WorktreeDir: record.WorktreeDir, Branch: record.Branch, HeadSHA: record.HeadSHA}
@@ -341,5 +343,15 @@ func TestWtLogCovSealCreateFailureBacklogClaim(t *testing.T) {
 	missing.WorkLogRun = "other-run"
 	if err := sealCreateFailureBacklogClaim(fixture.home, missing); err == nil {
 		t.Fatal("missing run was sealed")
+	}
+	missingClaim := record
+	missingClaim.WorkLogClaim = strings.Repeat("b", 64)
+	if err := sealCreateFailureBacklogClaim(fixture.home, missingClaim); err == nil {
+		t.Fatal("missing immutable claim was sealed")
+	}
+	conflicting := record
+	conflicting.HeadSHA = strings.Repeat("c", 40)
+	if err := sealCreateFailureBacklogClaim(fixture.home, conflicting); err == nil || !strings.Contains(err.Error(), "seal failed-create Work Log claim") {
+		t.Fatalf("conflicting terminal seal error = %v", err)
 	}
 }

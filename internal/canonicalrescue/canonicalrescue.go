@@ -99,6 +99,10 @@ type Options struct {
 // Refusing a linked worktree is deliberate. A worktree with uncommitted work is
 // simply work in progress; there is nothing to rescue and nothing at risk.
 func Inspect(ctx context.Context, path string, options Options) (Report, error) {
+	return inspectGit(ctx, path, options, git)
+}
+
+func inspectGit(ctx context.Context, path string, options Options, query func(context.Context, string, ...string) (string, error)) (Report, error) {
 	location := agentguard.Classify(options.ProjectsRoot, path)
 	if location.Kind != agentguard.KindCanonical {
 		return Report{}, fmt.Errorf(
@@ -107,12 +111,12 @@ func Inspect(ctx context.Context, path string, options Options) (Report, error) 
 		)
 	}
 	report := Report{Path: location.Root, Repository: location.Slug()}
-	branch, err := git(ctx, location.Root, "rev-parse", "--abbrev-ref", "HEAD")
+	branch, err := query(ctx, location.Root, "rev-parse", "--abbrev-ref", "HEAD")
 	if err != nil {
 		return Report{}, err
 	}
 	report.Branch = branch
-	head, err := git(ctx, location.Root, "rev-parse", "HEAD")
+	head, err := query(ctx, location.Root, "rev-parse", "HEAD")
 	if err != nil {
 		return Report{}, err
 	}
@@ -280,28 +284,32 @@ func Push(ctx context.Context, report Report, remote string) (Report, error) {
 // exact rescue commit which captures the canonical clone's complete dirty
 // state. It is the rescue route through managed hooks, not a hook bypass.
 func VerifyAttestedPush(ctx context.Context, root, projectsRoot, branch, commit string, input io.Reader) error {
+	return verifyAttestedPushGit(ctx, root, projectsRoot, branch, commit, input, git)
+}
+
+func verifyAttestedPushGit(ctx context.Context, root, projectsRoot, branch, commit string, input io.Reader, query func(context.Context, string, ...string) (string, error)) error {
 	branch, commit = strings.TrimSpace(branch), strings.TrimSpace(commit)
 	if !strings.HasPrefix(branch, "rescue/") || commit == "" {
 		return fmt.Errorf("invalid canonical rescue push attestation")
 	}
-	if _, err := git(ctx, root, "check-ref-format", "--branch", branch); err != nil {
+	if _, err := query(ctx, root, "check-ref-format", "--branch", branch); err != nil {
 		return fmt.Errorf("invalid canonical rescue branch %q: %w", branch, err)
 	}
-	report, err := Inspect(ctx, root, Options{ProjectsRoot: projectsRoot, Branch: branch})
+	report, err := inspectGit(ctx, root, Options{ProjectsRoot: projectsRoot, Branch: branch}, query)
 	if err != nil {
 		return err
 	}
 	if !report.Dirty() {
 		return fmt.Errorf("canonical rescue push attestation requires the dirty clone it preserves")
 	}
-	localCommit, err := branchCommit(ctx, root, branch)
+	localCommit, err := branchCommitGit(ctx, root, branch, query)
 	if err != nil {
 		return err
 	}
 	if localCommit != commit {
 		return fmt.Errorf("canonical rescue branch %s points to %s, attestation names %s", branch, localCommit, commit)
 	}
-	parents, err := git(ctx, root, "rev-list", "--parents", "-n", "1", commit)
+	parents, err := query(ctx, root, "rev-list", "--parents", "-n", "1", commit)
 	if err != nil {
 		return err
 	}
@@ -313,7 +321,7 @@ func VerifyAttestedPush(ctx context.Context, root, projectsRoot, branch, commit 
 	if err != nil {
 		return err
 	}
-	commitTree, err := git(ctx, root, "rev-parse", commit+"^{tree}")
+	commitTree, err := query(ctx, root, "rev-parse", commit+"^{tree}")
 	if err != nil {
 		return err
 	}
@@ -458,10 +466,14 @@ func verifyCaptured(ctx context.Context, report Report) error {
 }
 
 // branchCommit resolves a local branch to its commit, or "" when it does not
-// exist. A failed lookup is not an error: `git rev-parse --verify --quiet`
-// exits non-zero for an absent ref, which is the answer, not a fault.
+// exist. Git branch --list returns empty successful output for an absent
+// branch; command failures still propagate to the caller.
 func branchCommit(ctx context.Context, root, branch string) (string, error) {
-	output, err := git(ctx, root, "branch", "--list", "--format=%(objectname)", branch)
+	return branchCommitGit(ctx, root, branch, git)
+}
+
+func branchCommitGit(ctx context.Context, root, branch string, query func(context.Context, string, ...string) (string, error)) (string, error) {
+	output, err := query(ctx, root, "branch", "--list", "--format=%(objectname)", branch)
 	if err != nil {
 		return "", err
 	}

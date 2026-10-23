@@ -19,6 +19,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/sneat-dev/wb/internal/filewrite"
 )
 
 // Role names why WB needs to write to a declared path. The role is what makes
@@ -201,18 +203,26 @@ func CanonicalRequirement(canonicalPath string) Requirement {
 // removes a `.wb-writable-probe-*` entry in it, because creating the checkout
 // root is the permission being tested and no read-only check answers it.
 func OSProbe(path string) error {
+	return osProbeInjected(path, nil)
+}
+
+// osProbeInjected is OSProbe's test seam (task-9 PR-9): every production
+// call site reaches it only through OSProbe, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged (and OSProbe
+// keeps its exact `func(path string) error` shape, since it is assigned
+// directly to the Probe type). A test passes its own Injector to reach the
+// probe reservation's create/close failure branches deterministically.
+func osProbeInjected(path string, inj *filewrite.Injector) error {
 	directory, err := nearestExistingDirectory(path)
 	if err != nil {
 		return err
 	}
-	probe, err := os.CreateTemp(directory, ".wb-writable-probe-")
+	name, err := filewrite.CreateScratch(directory, ".wb-writable-probe-", 0, nil, inj)
 	if err != nil {
+		if name != "" {
+			_ = os.Remove(name)
+		}
 		return err
-	}
-	name := probe.Name()
-	if closeErr := probe.Close(); closeErr != nil {
-		_ = os.Remove(name)
-		return closeErr
 	}
 	if removeErr := os.Remove(name); removeErr != nil {
 		return removeErr
@@ -223,6 +233,12 @@ func OSProbe(path string) error {
 // nearestExistingDirectory returns path itself when it is a directory, else
 // its nearest existing ancestor directory.
 func nearestExistingDirectory(path string) (string, error) {
+	return nearestExistingDirectoryWithStat(path, os.Stat)
+}
+
+// nearestExistingDirectoryWithStat preserves native stat errors while allowing
+// tests to model an unavailable volume root on hosts where all roots exist.
+func nearestExistingDirectoryWithStat(path string, stat func(string) (os.FileInfo, error)) (string, error) {
 	// A symlink at the declared path is refused rather than probed through.
 	// WB never writes state or a store through a symlinked leaf (see
 	// wbhome.EnsureHome), and a dangling one would otherwise be probed through
@@ -233,7 +249,7 @@ func nearestExistingDirectory(path string) (string, error) {
 	}
 	current := filepath.Clean(path)
 	for {
-		info, err := os.Stat(current)
+		info, err := stat(current)
 		if err == nil {
 			if !info.IsDir() {
 				// The declared path exists as a non-directory: WB cannot write

@@ -8,11 +8,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // This file covers the parts of internal/session that need POSIX process and
@@ -32,6 +35,7 @@ const gpCovHarnessHelperEnv = "GPCOV_HARNESS_HELPER_PID_FILE"
 // the parent can read it, and outlives the parent's observation; run as part of
 // the ordinary suite it only confirms it was not invoked as a helper.
 func TestGpCovHarnessHelperProcess(t *testing.T) {
+	t.Parallel()
 	pidFile := strings.TrimSpace(os.Getenv(gpCovHarnessHelperEnv))
 	if pidFile == "" {
 		if executable, err := os.Executable(); err != nil || executable == "" {
@@ -64,7 +68,7 @@ func gpCovHarnessNamedProcess(t *testing.T, name string) (namedPID, childPID int
 		t.Fatalf("read the test binary: %v", err)
 	}
 	named := filepath.Join(t.TempDir(), name)
-	if err := os.WriteFile(named, raw, 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(named, raw, 0o755); err != nil {
 		t.Fatalf("write the %s-named copy: %v", name, err)
 	}
 	pidFile := filepath.Join(t.TempDir(), "child.pid")
@@ -109,6 +113,7 @@ func gpCovWaitForPID(t *testing.T, path string) int {
 }
 
 func TestGpCovMarkParkedRejectsADanglingMarkerSymlink(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	registered, err := Register(dir, Record{PID: os.Getpid(), WBSessionID: "wbs-gp-dangling", Runtime: "codex"})
 	if err != nil {
@@ -133,6 +138,7 @@ func TestGpCovMarkParkedRejectsADanglingMarkerSymlink(t *testing.T) {
 }
 
 func TestGpCovMarkResumedRejectsADanglingMarkerSymlink(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	registered, err := Register(dir, Record{PID: os.Getpid(), WBSessionID: "wbs-gp-resume-dangling", Runtime: "codex"})
 	if err != nil {
@@ -154,6 +160,7 @@ func TestGpCovMarkResumedRejectsADanglingMarkerSymlink(t *testing.T) {
 }
 
 func TestGpCovMarkResumedReportsAResumedMarkerThatCannotBeCreated(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	// NAME_MAX is 255, so this session ID's parked marker name fits exactly
 	// while its resumed marker name (one byte longer) cannot be created. The
@@ -178,6 +185,7 @@ func TestGpCovMarkResumedReportsAResumedMarkerThatCannotBeCreated(t *testing.T) 
 }
 
 func TestGpCovLookupExactRejectsUnsafeRecordModes(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	record, err := Register(dir, Record{PID: os.Getpid(), WBSessionID: "wbs-gp-exact-mode", Runtime: "codex"})
 	if err != nil {
@@ -208,6 +216,7 @@ func TestGpCovLookupExactRejectsUnsafeRecordModes(t *testing.T) {
 }
 
 func TestGpCovProcessEvidenceReadsTheRealProcessTable(t *testing.T) {
+	t.Parallel()
 	for _, pid := range []int{0, -1, -4242} {
 		if evidence, ok := processEvidence(pid); ok {
 			t.Fatalf("processEvidence(%d) = (%#v, true), want no evidence", pid, evidence)
@@ -227,8 +236,8 @@ func TestGpCovProcessEvidenceReadsTheRealProcessTable(t *testing.T) {
 	if want := filepath.Base(os.Args[0]); filepath.Base(ownEvidence.Executable) != want {
 		t.Fatalf("own executable = %q, want a path ending in %q", ownEvidence.Executable, want)
 	}
-	if len(ownEvidence.Args) == 0 || filepath.Base(ownEvidence.Args[0]) != filepath.Base(os.Args[0]) {
-		t.Fatalf("own args = %#v, want the running command line", ownEvidence.Args)
+	if !slices.Equal(ownEvidence.Args, os.Args) {
+		t.Fatalf("own args = %#v, want exact running argv %#v", ownEvidence.Args, os.Args)
 	}
 
 	namedPID, childPID := gpCovHarnessNamedProcess(t, "cursor-agent")
@@ -241,20 +250,27 @@ func TestGpCovProcessEvidenceReadsTheRealProcessTable(t *testing.T) {
 	if got := filepath.Base(namedEvidence.Executable); got != "cursor-agent" {
 		t.Fatalf("named executable = %q, want a path ending in %q", namedEvidence.Executable, "cursor-agent")
 	}
+	if len(namedEvidence.Args) != 2 || filepath.Base(namedEvidence.Args[0]) != "cursor-agent" ||
+		namedEvidence.Args[1] != "-test.run=^TestGpCovHarnessHelperProcess$" {
+		t.Fatalf("named process argv = %#v, want the exact helper invocation", namedEvidence.Args)
+	}
 
 	childEvidence, ok := processEvidence(childPID)
 	if !ok {
 		t.Fatalf("processEvidence(%d) for the sleeping child reported no evidence", childPID)
 	}
-	// The kernel command name is a fixed-width field that an exec rewrites but
-	// does not clear, so only the NUL-terminated prefix identifies the child on
-	// platforms that leave the rest of the field alone.
-	if got, _, _ := strings.Cut(childEvidence.Executable, "\x00"); filepath.Base(got) != "sleep" {
+	// The kernel command name is a fixed-width field; only the bytes before
+	// its first NUL identify this child, even when stale bytes follow it.
+	if got := filepath.Base(childEvidence.Executable); got != "sleep" {
 		t.Fatalf("child executable = %q, want the process named sleep", childEvidence.Executable)
+	}
+	if len(childEvidence.Args) != 2 || filepath.Base(childEvidence.Args[0]) != "sleep" || childEvidence.Args[1] != "30" {
+		t.Fatalf("sleep argv = %#v, want exactly [/bin/sleep 30]", childEvidence.Args)
 	}
 }
 
 func TestGpCovProcessEvidenceRefusesAProcessThatHasExited(t *testing.T) {
+	t.Parallel()
 	exitPath := ""
 	for _, candidate := range []string{"/usr/bin/true", "/bin/true"} {
 		if _, err := os.Stat(candidate); err == nil {
@@ -287,6 +303,7 @@ func TestGpCovProcessEvidenceRefusesAProcessThatHasExited(t *testing.T) {
 }
 
 func TestGpCovParentPIDReportsTheRealAncestorAndRefusesRoot(t *testing.T) {
+	t.Parallel()
 	parent, ok := parentPID(os.Getpid())
 	if !ok {
 		t.Fatalf("parentPID(%d) reported no parent for a running process", os.Getpid())
@@ -375,6 +392,7 @@ func gpCovWithoutFileWrites(t *testing.T, fn func()) {
 }
 
 func TestGpCovLifecycleMarkersReportWriteFailures(t *testing.T) {
+	t.Parallel()
 	if gpCovSpawnFileSizeLimitedChild(t) {
 		return
 	}

@@ -121,37 +121,68 @@ type LoadWorkLogOptions struct {
 	IncludePromptBodies bool
 }
 
+// workLogViewPorts scopes repository and private-read dependencies to one view.
+type workLogViewPorts struct {
+	repositoryRoot  func(context.Context, string) (string, error)
+	homeRoot        func(string) (string, error)
+	lifecycleOwners func(string, string) ([]OwnerView, error)
+	owners          func(string) ([]OwnerView, error)
+	manifest        func(string) (Manifest, error)
+	prompts         func(string, bool) ([]PromptRecord, error)
+	activeClaim     func(string, string) (workLogClaim, workLogProjection, string, error)
+	relocation      func(string, workLogClaim, string) (workLogRelocationResolution, error)
+	originalPrompt  func(string, workLogClaim, []PromptRecord) (*OriginalPromptView, error)
+	terminal        func(string, string) (*workLogTerminalRecord, error)
+	reportBody      func(string) (string, error)
+	git             func(context.Context, string) WorkLogGitEvidence
+}
+
+func defaultWorkLogViewPorts() workLogViewPorts {
+	return workLogViewPorts{
+		repositoryRoot: RepositoryRootFor, homeRoot: wbhome.Root,
+		lifecycleOwners: lifecycleOwnerViews, owners: ownerViews,
+		manifest: ReadManifest, prompts: listPromptRecords,
+		activeClaim: activeWorkLogClaim, relocation: latestRelocationResolution,
+		originalPrompt: loadOriginalPrompt, terminal: readWorkLogTerminalRecord,
+		reportBody: readWorkLogFinalizeReportBody, git: observeWorkLogGit,
+	}
+}
+
 // LoadWorkLogView assembles the local recovery record an agent needs to resume
 // work. It is read-only with respect to Git state and prompt archives. The
 // only mutation it may perform is the existing one-way legacy projection
 // migration that activeWorkLogClaim already performs when corroborating a
 // claim.
 func LoadWorkLogView(ctx context.Context, options LoadWorkLogOptions) (WorkLogView, error) {
+	return defaultWorkLogViewPorts().loadWorkLogView(ctx, options)
+}
+
+func (p workLogViewPorts) loadWorkLogView(ctx context.Context, options LoadWorkLogOptions) (WorkLogView, error) {
 	worktree := strings.TrimSpace(options.Worktree)
 	if worktree == "" {
 		worktree = "."
 	}
-	root, err := RepositoryRootFor(ctx, worktree)
+	root, err := p.repositoryRoot(ctx, worktree)
 	if err != nil {
 		return WorkLogView{}, err
 	}
 	view := WorkLogView{Worktree: root, Prompts: []PromptRecord{}}
-	home, homeErr := wbhome.Root(options.ProjectsRoot)
+	home, homeErr := p.homeRoot(options.ProjectsRoot)
 	if homeErr == nil {
-		owners, ownersErr := lifecycleOwnerViews(home, root)
+		owners, ownersErr := p.lifecycleOwners(home, root)
 		if ownersErr != nil {
 			return WorkLogView{}, ownersErr
 		}
 		view.Owners = owners
 	} else {
-		owners, ownersErr := ownerViews(root)
+		owners, ownersErr := p.owners(root)
 		if ownersErr != nil {
 			return WorkLogView{}, ownersErr
 		}
 		view.Owners = owners
 	}
 
-	if manifest, manifestErr := ReadManifest(root); manifestErr == nil {
+	if manifest, manifestErr := p.manifest(root); manifestErr == nil {
 		copy := manifest
 		view.Manifest = &copy
 	} else if !errors.Is(manifestErr, errManifestNotFound) {
@@ -160,7 +191,7 @@ func LoadWorkLogView(ctx context.Context, options LoadWorkLogOptions) (WorkLogVi
 		view.Notes = append(view.Notes, "no .wb/local/manifest.yaml; record one with wb worktree set or recreate under a valid effort path")
 	}
 
-	prompts, err := listPromptRecords(root, options.IncludePromptBodies)
+	prompts, err := p.prompts(root, options.IncludePromptBodies)
 	if err != nil {
 		return WorkLogView{}, err
 	}
@@ -171,26 +202,16 @@ func LoadWorkLogView(ctx context.Context, options LoadWorkLogOptions) (WorkLogVi
 
 	if homeErr != nil {
 		view.Notes = append(view.Notes, fmt.Sprintf("could not resolve WB home: %v", homeErr))
-	} else if claim, projection, claimPath, claimErr := activeWorkLogClaim(home, root); claimErr == nil {
+	} else if claim, projection, claimPath, claimErr := p.activeClaim(home, root); claimErr == nil {
 		resolvedRepository, resolvedWorktree := claim.Repository, claim.Worktree
 		if filepath.Clean(root) != filepath.Clean(claim.Worktree) {
-			if resolution, resolutionErr := latestRelocationResolution(home, claim, root); resolutionErr == nil && resolution.receipt != nil {
+			if resolution, resolutionErr := p.relocation(home, claim, root); resolutionErr == nil && resolution.receipt != nil {
 				resolvedRepository, resolvedWorktree = resolution.repository, resolution.worktree
 			}
 		}
-		view.Claim = &WorkLogClaimView{
-			EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID,
-			Task: claim.Task, Repository: resolvedRepository, Worktree: resolvedWorktree,
-			Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA,
-			Lifecycle: claim.Lifecycle, RecordedAt: claim.RecordedAt,
-			Initiator: claim.Initiator, AgentID: claim.AgentID, AgentRuntime: claim.AgentRuntime,
-			Model: claim.Model, ModelProvenance: claim.ModelProvenance,
-			CLI: claim.CLI, Provider: claim.Provider, TaskSummary: claim.TaskSummary,
-			PromptDigest: claim.PromptDigest, PromptArchive: claim.PromptArchive,
-			ClaimPath: claimPath,
-		}
+		view.Claim = newWorkLogClaimView(claim, resolvedRepository, resolvedWorktree, claimPath)
 		if options.IncludePromptBodies {
-			if original, originalErr := loadOriginalPrompt(home, claim, prompts); originalErr == nil {
+			if original, originalErr := p.originalPrompt(home, claim, prompts); originalErr == nil {
 				view.OriginalPrompt = original
 			} else if originalErr != nil {
 				view.Notes = append(view.Notes, fmt.Sprintf("original prompt unavailable: %v", originalErr))
@@ -199,18 +220,9 @@ func LoadWorkLogView(ctx context.Context, options LoadWorkLogOptions) (WorkLogVi
 	} else if errors.Is(claimErr, errWorkLogProjectionNotFound) {
 		view.Notes = append(view.Notes, "no active work-log projection; this checkout may predate Hybrid Work Log create")
 	} else if projection.Lifecycle == "terminal" {
-		if terminal, terminalErr := readWorkLogTerminalRecord(home, root); terminalErr == nil && terminal != nil {
-			claim := terminal.workLogClaim
-			view.Claim = &WorkLogClaimView{
-				EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID,
-				Task: claim.Task, Repository: claim.Repository, Worktree: claim.Worktree,
-				Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA,
-				Lifecycle: claim.Lifecycle, RecordedAt: claim.RecordedAt,
-				Initiator: claim.Initiator, AgentID: claim.AgentID, AgentRuntime: claim.AgentRuntime,
-				Model: claim.Model, ModelProvenance: claim.ModelProvenance,
-				CLI: claim.CLI, Provider: claim.Provider, TaskSummary: claim.TaskSummary,
-				PromptDigest: claim.PromptDigest, PromptArchive: claim.PromptArchive,
-			}
+		if terminal, terminalErr := p.terminal(home, root); terminalErr == nil && terminal != nil {
+			claim := terminal.Claim
+			view.Claim = newWorkLogClaimView(claim, claim.Repository, claim.Worktree, "")
 			view.Terminal = &WorkLogTerminalView{
 				Disposition: terminal.Disposition, FinalCommit: terminal.FinalCommit, SealedAt: terminal.SealedAt,
 			}
@@ -219,7 +231,7 @@ func LoadWorkLogView(ctx context.Context, options LoadWorkLogOptions) (WorkLogVi
 				view.Terminal.TerminalMessage = terminal.FinalizeReport.Message
 				view.Terminal.ReportPath = terminal.FinalizeReport.ReportPath
 				if options.IncludePromptBodies && terminal.FinalizeReport.ReportPath != "" {
-					if body, bodyErr := readWorkLogFinalizeReportBody(terminal.FinalizeReport.ReportPath); bodyErr == nil {
+					if body, bodyErr := p.reportBody(terminal.FinalizeReport.ReportPath); bodyErr == nil {
 						view.FinalizeReportBody = body
 					} else {
 						view.Notes = append(view.Notes, fmt.Sprintf("finalize report unavailable: %v", bodyErr))
@@ -227,7 +239,7 @@ func LoadWorkLogView(ctx context.Context, options LoadWorkLogOptions) (WorkLogVi
 				}
 			}
 			if options.IncludePromptBodies {
-				if original, originalErr := loadOriginalPrompt(home, claim, prompts); originalErr == nil {
+				if original, originalErr := p.originalPrompt(home, claim, prompts); originalErr == nil {
 					view.OriginalPrompt = original
 				} else if originalErr != nil {
 					view.Notes = append(view.Notes, fmt.Sprintf("original prompt unavailable: %v", originalErr))
@@ -252,8 +264,22 @@ func LoadWorkLogView(ctx context.Context, options LoadWorkLogOptions) (WorkLogVi
 		}
 	}
 
-	view.Git = observeWorkLogGit(ctx, root)
+	view.Git = p.git(ctx, root)
 	return view, nil
+}
+
+func newWorkLogClaimView(claim workLogClaim, repository, worktree, claimPath string) *WorkLogClaimView {
+	return &WorkLogClaimView{
+		EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID,
+		Task: claim.Task, Repository: repository, Worktree: worktree,
+		Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA,
+		Lifecycle: claim.Lifecycle, RecordedAt: claim.RecordedAt,
+		Initiator: claim.Initiator, AgentID: claim.AgentID, AgentRuntime: claim.AgentRuntime,
+		Model: claim.Model, ModelProvenance: claim.ModelProvenance,
+		CLI: claim.CLI, Provider: claim.Provider, TaskSummary: claim.TaskSummary,
+		PromptDigest: claim.PromptDigest, PromptArchive: claim.PromptArchive,
+		ClaimPath: claimPath,
+	}
 }
 
 func loadOriginalPrompt(home string, claim workLogClaim, prompts []PromptRecord) (*OriginalPromptView, error) {
@@ -290,6 +316,10 @@ func loadOriginalPrompt(home string, claim workLogClaim, prompts []PromptRecord)
 }
 
 func listPromptRecords(worktree string, includeBodies bool) ([]PromptRecord, error) {
+	return listPromptRecordsObserved(worktree, includeBodies, nil)
+}
+
+func listPromptRecordsObserved(worktree string, includeBodies bool, observe workLogProjectionObservation) ([]PromptRecord, error) {
 	directory, err := openJournalSubdirectory(worktree, promptsDirectory, false)
 	if errors.Is(err, os.ErrNotExist) {
 		return []PromptRecord{}, nil
@@ -299,9 +329,15 @@ func listPromptRecords(worktree string, includeBodies bool) ([]PromptRecord, err
 	}
 	defer func() { _ = directory.Close() }()
 
+	if observe != nil {
+		observe(workLogPromptNamesRead, directory)
+	}
 	names, err := directory.Readdirnames(-1)
 	if err != nil {
 		return nil, fmt.Errorf("read prompt sequence: %w", err)
+	}
+	if observe != nil {
+		observe(workLogPromptNamesRewind, directory)
 	}
 	if _, err := directory.Seek(0, 0); err != nil {
 		return nil, fmt.Errorf("rewind prompt sequence: %w", err)
@@ -314,6 +350,9 @@ func listPromptRecords(worktree string, includeBodies bool) ([]PromptRecord, err
 		if match == nil {
 			continue
 		}
+		if observe != nil {
+			observe(workLogPromptRecordRead, directory)
+		}
 		content, err := readBytesAt(directory, name)
 		if err != nil {
 			return nil, err
@@ -322,10 +361,7 @@ func listPromptRecords(worktree string, includeBodies bool) ([]PromptRecord, err
 		if err != nil {
 			return nil, fmt.Errorf("prompt %s: %w", name, err)
 		}
-		ordinal, err := strconv.Atoi(match[1])
-		if err != nil {
-			continue
-		}
+		ordinal, _ := strconv.Atoi(match[1]) // exactly four ASCII digits: representable on every Go architecture.
 		if header.Seq != ordinal {
 			return nil, fmt.Errorf("prompt %s records seq %d but its ordinal is %d", name, header.Seq, ordinal)
 		}
@@ -355,27 +391,16 @@ func parsePromptFile(content []byte) (PromptHeader, string, error) {
 	}
 	text := string(content)
 	end := strings.Index(text[4:], "\n---\n")
-	if end < 0 {
-		return PromptHeader{}, "", fmt.Errorf("unterminated YAML frontmatter")
-	}
+	// ParsePromptHeader already required this exact delimiter on the same immutable bytes.
 	body := strings.TrimPrefix(text[4+end+5:], "\n")
 	return header, body, nil
 }
 
 func observeWorkLogGit(ctx context.Context, worktree string) WorkLogGitEvidence {
-	evidence := WorkLogGitEvidence{}
-	if branch, err := git(ctx, worktree, "branch", "--show-current"); err == nil {
-		evidence.Branch = strings.TrimSpace(branch)
+	local := observeLocalGit(ctx, worktree)
+	return WorkLogGitEvidence{
+		Branch: local.Branch, Head: local.Head, Dirty: local.Dirty, Status: local.Status,
 	}
-	if head, err := git(ctx, worktree, "rev-parse", "HEAD"); err == nil {
-		evidence.Head = strings.TrimSpace(head)
-	}
-	if status, err := git(ctx, worktree, "status", "--porcelain"); err == nil {
-		trimmed := strings.TrimSpace(status)
-		evidence.Status = trimmed
-		evidence.Dirty = trimmed != ""
-	}
-	return evidence
 }
 
 // FormatWorkLogViewText renders the agent bootstrap dump. Private prompt bodies
@@ -384,64 +409,10 @@ func observeWorkLogGit(ctx context.Context, worktree string) WorkLogGitEvidence 
 func FormatWorkLogViewText(view WorkLogView) string {
 	var b strings.Builder
 	b.WriteString("# WB work log\n\n")
-	b.WriteString("## Worktree\n")
-	b.WriteString(view.Worktree)
-	b.WriteString("\n\n")
-
-	if view.Manifest != nil {
-		b.WriteString("## Manifest\n")
-		fmt.Fprintf(&b, "effort_id: %s\n", view.Manifest.EffortID)
-		if view.Manifest.ParentEffort != "" {
-			fmt.Fprintf(&b, "parent_effort: %s\n", view.Manifest.ParentEffort)
-		}
-		fmt.Fprintf(&b, "effort_kind: %s\n", view.Manifest.EffortKind)
-		fmt.Fprintf(&b, "repository: %s\n", view.Manifest.Repository)
-		fmt.Fprintf(&b, "branch: %s\n", view.Manifest.Branch)
-		fmt.Fprintf(&b, "base: %s\n", view.Manifest.Base)
-		fmt.Fprintf(&b, "base_sha: %s\n", view.Manifest.BaseSHA)
-		fmt.Fprintf(&b, "provenance: %s\n", view.Manifest.Provenance)
-		if view.Manifest.RunID != "" {
-			fmt.Fprintf(&b, "run_id: %s\n", view.Manifest.RunID)
-		}
-		if view.Manifest.ClaimID != "" {
-			fmt.Fprintf(&b, "claim_id: %s\n", view.Manifest.ClaimID)
-		}
-		if view.Manifest.Model != "" {
-			fmt.Fprintf(&b, "model: %s\n", view.Manifest.Model)
-		}
-		b.WriteString("\n")
-	}
-
-	if view.Claim != nil {
-		b.WriteString("## Claim\n")
-		fmt.Fprintf(&b, "effort_id: %s\n", view.Claim.EffortID)
-		fmt.Fprintf(&b, "run_id: %s\n", view.Claim.RunID)
-		fmt.Fprintf(&b, "claim_id: %s\n", view.Claim.ClaimID)
-		fmt.Fprintf(&b, "lifecycle: %s\n", view.Claim.Lifecycle)
-		fmt.Fprintf(&b, "repository: %s\n", view.Claim.Repository)
-		fmt.Fprintf(&b, "branch: %s\n", view.Claim.Branch)
-		if view.Claim.Model != "" {
-			fmt.Fprintf(&b, "model: %s\n", view.Claim.Model)
-		}
-		if view.Claim.PromptDigest != "" {
-			fmt.Fprintf(&b, "prompt_sha256: %s\n", view.Claim.PromptDigest)
-		}
-		b.WriteString("\n")
-	}
+	writeWorkLogIdentitySections(&b, view)
 
 	if view.Terminal != nil {
-		b.WriteString("## Terminal\n")
-		fmt.Fprintf(&b, "disposition: %s\n", view.Terminal.Disposition)
-		fmt.Fprintf(&b, "sealed_at: %s\n", view.Terminal.SealedAt.UTC().Format(time.RFC3339))
-		if view.Terminal.TerminalResult != "" {
-			fmt.Fprintf(&b, "terminal_result: %s\n", view.Terminal.TerminalResult)
-		}
-		if view.Terminal.TerminalMessage != "" {
-			fmt.Fprintf(&b, "terminal_message: %s\n", view.Terminal.TerminalMessage)
-		}
-		if view.Terminal.ReportPath != "" {
-			fmt.Fprintf(&b, "report_path: %s\n", view.Terminal.ReportPath)
-		}
+		writeWorkLogTerminalHeader(&b, view.Terminal)
 		b.WriteString("\n")
 		if view.FinalizeReportBody != "" {
 			b.WriteString("### Finalize report\n")
@@ -504,27 +475,7 @@ func FormatWorkLogViewText(view WorkLogView) string {
 		}
 	}
 
-	b.WriteString("## Git\n")
-	if view.Git.Branch != "" {
-		fmt.Fprintf(&b, "branch: %s\n", view.Git.Branch)
-	}
-	if view.Git.Head != "" {
-		fmt.Fprintf(&b, "head: %s\n", view.Git.Head)
-	}
-	fmt.Fprintf(&b, "dirty: %t\n", view.Git.Dirty)
-	if view.Git.Status != "" {
-		b.WriteString("status:\n")
-		b.WriteString(view.Git.Status)
-		b.WriteString("\n")
-	}
-	b.WriteString("\n")
-
-	if len(view.Notes) > 0 {
-		b.WriteString("## Notes\n")
-		for _, note := range view.Notes {
-			fmt.Fprintf(&b, "- %s\n", note)
-		}
-	}
+	writeWorkLogStatusSections(&b, view)
 	return b.String()
 }
 
@@ -535,64 +486,10 @@ func FormatWorkLogViewText(view WorkLogView) string {
 func FormatWorktreeInfoText(view WorkLogView) string {
 	var b strings.Builder
 	b.WriteString("# WB worktree info\n\n")
-	b.WriteString("## Worktree\n")
-	b.WriteString(view.Worktree)
-	b.WriteString("\n\n")
-
-	if view.Manifest != nil {
-		b.WriteString("## Manifest\n")
-		fmt.Fprintf(&b, "effort_id: %s\n", view.Manifest.EffortID)
-		if view.Manifest.ParentEffort != "" {
-			fmt.Fprintf(&b, "parent_effort: %s\n", view.Manifest.ParentEffort)
-		}
-		fmt.Fprintf(&b, "effort_kind: %s\n", view.Manifest.EffortKind)
-		fmt.Fprintf(&b, "repository: %s\n", view.Manifest.Repository)
-		fmt.Fprintf(&b, "branch: %s\n", view.Manifest.Branch)
-		fmt.Fprintf(&b, "base: %s\n", view.Manifest.Base)
-		fmt.Fprintf(&b, "base_sha: %s\n", view.Manifest.BaseSHA)
-		fmt.Fprintf(&b, "provenance: %s\n", view.Manifest.Provenance)
-		if view.Manifest.RunID != "" {
-			fmt.Fprintf(&b, "run_id: %s\n", view.Manifest.RunID)
-		}
-		if view.Manifest.ClaimID != "" {
-			fmt.Fprintf(&b, "claim_id: %s\n", view.Manifest.ClaimID)
-		}
-		if view.Manifest.Model != "" {
-			fmt.Fprintf(&b, "model: %s\n", view.Manifest.Model)
-		}
-		b.WriteString("\n")
-	}
-
-	if view.Claim != nil {
-		b.WriteString("## Claim\n")
-		fmt.Fprintf(&b, "effort_id: %s\n", view.Claim.EffortID)
-		fmt.Fprintf(&b, "run_id: %s\n", view.Claim.RunID)
-		fmt.Fprintf(&b, "claim_id: %s\n", view.Claim.ClaimID)
-		fmt.Fprintf(&b, "lifecycle: %s\n", view.Claim.Lifecycle)
-		fmt.Fprintf(&b, "repository: %s\n", view.Claim.Repository)
-		fmt.Fprintf(&b, "branch: %s\n", view.Claim.Branch)
-		if view.Claim.Model != "" {
-			fmt.Fprintf(&b, "model: %s\n", view.Claim.Model)
-		}
-		if view.Claim.PromptDigest != "" {
-			fmt.Fprintf(&b, "prompt_sha256: %s\n", view.Claim.PromptDigest)
-		}
-		b.WriteString("\n")
-	}
+	writeWorkLogIdentitySections(&b, view)
 
 	if view.Terminal != nil {
-		b.WriteString("## Terminal\n")
-		fmt.Fprintf(&b, "disposition: %s\n", view.Terminal.Disposition)
-		fmt.Fprintf(&b, "sealed_at: %s\n", view.Terminal.SealedAt.UTC().Format(time.RFC3339))
-		if view.Terminal.TerminalResult != "" {
-			fmt.Fprintf(&b, "terminal_result: %s\n", view.Terminal.TerminalResult)
-		}
-		if view.Terminal.TerminalMessage != "" {
-			fmt.Fprintf(&b, "terminal_message: %s\n", view.Terminal.TerminalMessage)
-		}
-		if view.Terminal.ReportPath != "" {
-			fmt.Fprintf(&b, "report_path: %s\n", view.Terminal.ReportPath)
-		}
+		writeWorkLogTerminalHeader(&b, view.Terminal)
 		b.WriteString("Report body is omitted. Use bare 'wb worktree log' for the private agent dump.\n\n")
 	}
 
@@ -607,14 +504,81 @@ func FormatWorktreeInfoText(view WorkLogView) string {
 	}
 	b.WriteString("Prompt bodies are omitted. Use `wb worktree log` for the private agent dump.\n\n")
 
+	writeWorkLogStatusSections(&b, view)
+	return b.String()
+}
+
+func writeWorkLogTerminalHeader(b *strings.Builder, terminal *WorkLogTerminalView) {
+	b.WriteString("## Terminal\n")
+	fmt.Fprintf(b, "disposition: %s\n", terminal.Disposition)
+	fmt.Fprintf(b, "sealed_at: %s\n", terminal.SealedAt.UTC().Format(time.RFC3339))
+	if terminal.TerminalResult != "" {
+		fmt.Fprintf(b, "terminal_result: %s\n", terminal.TerminalResult)
+	}
+	if terminal.TerminalMessage != "" {
+		fmt.Fprintf(b, "terminal_message: %s\n", terminal.TerminalMessage)
+	}
+	if terminal.ReportPath != "" {
+		fmt.Fprintf(b, "report_path: %s\n", terminal.ReportPath)
+	}
+}
+
+func writeWorkLogIdentitySections(b *strings.Builder, view WorkLogView) {
+	b.WriteString("## Worktree\n")
+	b.WriteString(view.Worktree)
+	b.WriteString("\n\n")
+
+	if view.Manifest != nil {
+		b.WriteString("## Manifest\n")
+		fmt.Fprintf(b, "effort_id: %s\n", view.Manifest.EffortID)
+		if view.Manifest.ParentEffort != "" {
+			fmt.Fprintf(b, "parent_effort: %s\n", view.Manifest.ParentEffort)
+		}
+		fmt.Fprintf(b, "effort_kind: %s\n", view.Manifest.EffortKind)
+		fmt.Fprintf(b, "repository: %s\n", view.Manifest.Repository)
+		fmt.Fprintf(b, "branch: %s\n", view.Manifest.Branch)
+		fmt.Fprintf(b, "base: %s\n", view.Manifest.Base)
+		fmt.Fprintf(b, "base_sha: %s\n", view.Manifest.BaseSHA)
+		fmt.Fprintf(b, "provenance: %s\n", view.Manifest.Provenance)
+		if view.Manifest.RunID != "" {
+			fmt.Fprintf(b, "run_id: %s\n", view.Manifest.RunID)
+		}
+		if view.Manifest.ClaimID != "" {
+			fmt.Fprintf(b, "claim_id: %s\n", view.Manifest.ClaimID)
+		}
+		if view.Manifest.Model != "" {
+			fmt.Fprintf(b, "model: %s\n", view.Manifest.Model)
+		}
+		b.WriteString("\n")
+	}
+
+	if view.Claim != nil {
+		b.WriteString("## Claim\n")
+		fmt.Fprintf(b, "effort_id: %s\n", view.Claim.EffortID)
+		fmt.Fprintf(b, "run_id: %s\n", view.Claim.RunID)
+		fmt.Fprintf(b, "claim_id: %s\n", view.Claim.ClaimID)
+		fmt.Fprintf(b, "lifecycle: %s\n", view.Claim.Lifecycle)
+		fmt.Fprintf(b, "repository: %s\n", view.Claim.Repository)
+		fmt.Fprintf(b, "branch: %s\n", view.Claim.Branch)
+		if view.Claim.Model != "" {
+			fmt.Fprintf(b, "model: %s\n", view.Claim.Model)
+		}
+		if view.Claim.PromptDigest != "" {
+			fmt.Fprintf(b, "prompt_sha256: %s\n", view.Claim.PromptDigest)
+		}
+		b.WriteString("\n")
+	}
+}
+
+func writeWorkLogStatusSections(b *strings.Builder, view WorkLogView) {
 	b.WriteString("## Git\n")
 	if view.Git.Branch != "" {
-		fmt.Fprintf(&b, "branch: %s\n", view.Git.Branch)
+		fmt.Fprintf(b, "branch: %s\n", view.Git.Branch)
 	}
 	if view.Git.Head != "" {
-		fmt.Fprintf(&b, "head: %s\n", view.Git.Head)
+		fmt.Fprintf(b, "head: %s\n", view.Git.Head)
 	}
-	fmt.Fprintf(&b, "dirty: %t\n", view.Git.Dirty)
+	fmt.Fprintf(b, "dirty: %t\n", view.Git.Dirty)
 	if view.Git.Status != "" {
 		b.WriteString("status:\n")
 		b.WriteString(view.Git.Status)
@@ -625,8 +589,7 @@ func FormatWorktreeInfoText(view WorkLogView) string {
 	if len(view.Notes) > 0 {
 		b.WriteString("## Notes\n")
 		for _, note := range view.Notes {
-			fmt.Fprintf(&b, "- %s\n", note)
+			fmt.Fprintf(b, "- %s\n", note)
 		}
 	}
-	return b.String()
 }

@@ -46,6 +46,7 @@ func guardedStore(t *testing.T) githubapp.DocumentStore {
 }
 
 func TestGetReturnsStoredDocument(t *testing.T) {
+	t.Parallel()
 	ctx, store := context.Background(), newStore(t)
 	want := widget{Name: "alpha", Kind: "gear", Count: 3}
 	if err := store.Set(ctx, "widgets", "w1", want); err != nil {
@@ -62,6 +63,7 @@ func TestGetReturnsStoredDocument(t *testing.T) {
 }
 
 func TestSetReplacesTheWholeDocument(t *testing.T) {
+	t.Parallel()
 	ctx, store := context.Background(), newStore(t)
 	if err := store.Set(ctx, "widgets", "w1", widget{Name: "alpha", Kind: "gear", Count: 3}); err != nil {
 		t.Fatalf("Set: %v", err)
@@ -79,6 +81,7 @@ func TestSetReplacesTheWholeDocument(t *testing.T) {
 }
 
 func TestGetReportsAMissingDocumentWithoutAnError(t *testing.T) {
+	t.Parallel()
 	ctx, store := context.Background(), newStore(t)
 	got := widget{Name: "untouched"}
 	found, err := store.Get(ctx, "widgets", "missing", &got)
@@ -91,6 +94,7 @@ func TestGetReportsAMissingDocumentWithoutAnError(t *testing.T) {
 }
 
 func TestGetSurfacesEngineErrors(t *testing.T) {
+	t.Parallel()
 	found, err := guardedStore(t).Get(context.Background(), "widgets", "w1", &widget{})
 	if err == nil || found {
 		t.Fatalf("Get = (%v, %v), want an engine error", found, err)
@@ -98,12 +102,14 @@ func TestGetSurfacesEngineErrors(t *testing.T) {
 }
 
 func TestGetRejectsANilOut(t *testing.T) {
+	t.Parallel()
 	if _, err := newStore(t).Get(context.Background(), "widgets", "w1", nil); err == nil {
 		t.Fatal("Get with a nil out must fail")
 	}
 }
 
 func TestNestedCollectionPathsAddressDistinctDocuments(t *testing.T) {
+	t.Parallel()
 	ctx, store := context.Background(), newStore(t)
 	const first = "installations/1/repository_generations/gen-a/chunks"
 	const second = "installations/2/repository_generations/gen-a/chunks"
@@ -126,6 +132,7 @@ func TestNestedCollectionPathsAddressDistinctDocuments(t *testing.T) {
 }
 
 func TestNestedCollectionQueriesAreScopedToTheirParent(t *testing.T) {
+	t.Parallel()
 	ctx, store := context.Background(), newStore(t)
 	const first = "installations/1/chunks"
 	const second = "installations/2/chunks"
@@ -145,6 +152,7 @@ func TestNestedCollectionQueriesAreScopedToTheirParent(t *testing.T) {
 }
 
 func TestInvalidCollectionPathsAndIDsAreErrors(t *testing.T) {
+	t.Parallel()
 	ctx, store := context.Background(), newStore(t)
 	for name, test := range map[string]struct{ collection, id string }{
 		"even segment count": {"installations/1", "w1"},
@@ -154,6 +162,7 @@ func TestInvalidCollectionPathsAndIDsAreErrors(t *testing.T) {
 		"blank id":           {"widgets", "  "},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			if _, err := store.Get(ctx, test.collection, test.id, &widget{}); err == nil {
 				t.Error("Get accepted an invalid address")
 			}
@@ -180,6 +189,7 @@ func TestInvalidCollectionPathsAndIDsAreErrors(t *testing.T) {
 }
 
 func TestQueryRejectsAnInvalidCollectionPath(t *testing.T) {
+	t.Parallel()
 	var got []widget
 	if err := newStore(t).Query(context.Background(), "installations/1", nil, 0, &got); err == nil {
 		t.Fatal("Query accepted an even-segment collection path")
@@ -187,12 +197,14 @@ func TestQueryRejectsAnInvalidCollectionPath(t *testing.T) {
 }
 
 func TestQueryReadsAWholeCollectionWhenFiltersAreEmpty(t *testing.T) {
+	t.Parallel()
 	ctx, store := context.Background(), seededStore(t)
 	for name, filters := range map[string]map[string]any{
 		"nil filters":   nil,
 		"empty filters": {},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			var got []widget
 			if err := store.Query(ctx, "widgets", filters, 0, &got); err != nil {
 				t.Fatalf("Query: %v", err)
@@ -205,6 +217,7 @@ func TestQueryReadsAWholeCollectionWhenFiltersAreEmpty(t *testing.T) {
 }
 
 func TestQueryAppliesEqualityFiltersAndLimits(t *testing.T) {
+	t.Parallel()
 	ctx, store := context.Background(), seededStore(t)
 	var matching []widget
 	if err := store.Query(ctx, "widgets", map[string]any{"kind": "gear"}, 0, &matching); err != nil {
@@ -233,6 +246,7 @@ func TestQueryAppliesEqualityFiltersAndLimits(t *testing.T) {
 }
 
 func TestQueryReplacesTheTargetSliceAndReportsNoMatches(t *testing.T) {
+	t.Parallel()
 	ctx, store := context.Background(), seededStore(t)
 	got := []widget{{Name: "stale"}}
 	if err := store.Query(ctx, "widgets", map[string]any{"kind": "absent"}, 0, &got); err != nil {
@@ -244,6 +258,7 @@ func TestQueryReplacesTheTargetSliceAndReportsNoMatches(t *testing.T) {
 }
 
 func TestQueryRejectsAWrongResultType(t *testing.T) {
+	t.Parallel()
 	ctx, store := context.Background(), newStore(t)
 	var notASlice widget
 	var notStructs []string
@@ -256,6 +271,7 @@ func TestQueryRejectsAWrongResultType(t *testing.T) {
 		"slice of strings":    &notStructs,
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			err := store.Query(ctx, "widgets", nil, 0, out)
 			if err == nil || !strings.Contains(err.Error(), "slice of structs") {
 				t.Fatalf("Query = %v, want a result-type error", err)
@@ -265,6 +281,7 @@ func TestQueryRejectsAWrongResultType(t *testing.T) {
 }
 
 func TestQuerySurfacesEngineErrors(t *testing.T) {
+	t.Parallel()
 	var got []widget
 	if err := guardedStore(t).Query(context.Background(), "widgets", nil, 0, &got); err == nil {
 		t.Fatal("Query must surface an engine error")
@@ -272,6 +289,7 @@ func TestQuerySurfacesEngineErrors(t *testing.T) {
 }
 
 func TestSetSurfacesEngineErrors(t *testing.T) {
+	t.Parallel()
 	if err := newStore(t).Set(context.Background(), "widgets", "w1", unserializable{}); err == nil {
 		t.Fatal("Set must surface an engine error")
 	}
@@ -281,6 +299,7 @@ func TestSetSurfacesEngineErrors(t *testing.T) {
 // outside a transaction: dal.DB is only a read session plus a transaction
 // coordinator, so Set must not assume the optional write capability.
 func TestSetFallsBackToATransaction(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := readOnlySessionDB{DB: dalgo2memory.New(dalgo2memory.FirestoreProfile())}
 	if _, isSetter := dal.As[dal.Setter](db); isSetter {
@@ -306,6 +325,7 @@ func TestSetFallsBackToATransaction(t *testing.T) {
 type readOnlySessionDB struct{ dal.DB }
 
 func TestUpdateAtomicReadsWritesAndDeletes(t *testing.T) {
+	t.Parallel()
 	ctx, store := context.Background(), newStore(t)
 	if err := store.Set(ctx, "widgets", "w1", widget{Name: "alpha", Count: 1}); err != nil {
 		t.Fatalf("Set: %v", err)
@@ -347,6 +367,7 @@ func TestUpdateAtomicReadsWritesAndDeletes(t *testing.T) {
 }
 
 func TestUpdateAtomicPropagatesAWorkerError(t *testing.T) {
+	t.Parallel()
 	ctx, store := context.Background(), newStore(t)
 	sentinel := errors.New("worker refused")
 	if err := store.UpdateAtomic(ctx, func(githubapp.DocumentTransaction) error {
@@ -357,6 +378,7 @@ func TestUpdateAtomicPropagatesAWorkerError(t *testing.T) {
 }
 
 func TestUpdateAtomicSurfacesTransactionalEngineErrors(t *testing.T) {
+	t.Parallel()
 	ctx, store := context.Background(), guardedStore(t)
 	err := store.UpdateAtomic(ctx, func(tx githubapp.DocumentTransaction) error {
 		_, getErr := tx.Get(ctx, "widgets", "w1", &widget{})
@@ -368,6 +390,7 @@ func TestUpdateAtomicSurfacesTransactionalEngineErrors(t *testing.T) {
 }
 
 func TestUpdateAtomicRequiresACallback(t *testing.T) {
+	t.Parallel()
 	if err := newStore(t).UpdateAtomic(context.Background(), nil); err == nil {
 		t.Fatal("UpdateAtomic with a nil callback must fail")
 	}

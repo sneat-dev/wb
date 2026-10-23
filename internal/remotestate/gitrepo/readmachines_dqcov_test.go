@@ -78,6 +78,7 @@ func TestDQCovListReportsUnreadableSnapshotFile(t *testing.T) {
 // TestDQCovReadMachinesReportsMissingRootAsEmpty proves an absent machines/
 // directory is an empty projection, not an error.
 func TestDQCovReadMachinesReportsMissingRootAsEmpty(t *testing.T) {
+	t.Parallel()
 	p := New(Options{ClonePath: filepath.Join(t.TempDir(), "p", "wb-state"), CloneURL: "file:///nowhere"})
 	if err := os.MkdirAll(p.opts.ClonePath, 0o755); err != nil {
 		t.Fatal(err)

@@ -15,7 +15,9 @@ import (
 )
 
 func TestSlCovStateArtifactReplayReadFailures(t *testing.T) {
+	t.Parallel()
 	t.Run("plan replay read", func(t *testing.T) {
+		t.Parallel()
 		state, root := slCovOpenState(t)
 		plan := slCovPlan("handoff-123")
 		if err := os.Symlink(filepath.Join(root, "target"), filepath.Join(slCovStateDir(root), "plan.json")); err != nil {
@@ -26,6 +28,7 @@ func TestSlCovStateArtifactReplayReadFailures(t *testing.T) {
 		}
 	})
 	t.Run("ready replay read", func(t *testing.T) {
+		t.Parallel()
 		state, root := slCovOpenState(t)
 		plan := slCovPlan("handoff-123")
 		_, planDigest, _, err := state.savePlan(plan)
@@ -46,6 +49,7 @@ func TestSlCovStateArtifactReplayReadFailures(t *testing.T) {
 		}
 	})
 	t.Run("release replay read", func(t *testing.T) {
+		t.Parallel()
 		state, root, attempt, plan, planDigest := slCovAttempt(t)
 		_ = state
 		record := slCovReadyRecord(plan, 8102, time.Now())
@@ -63,6 +67,7 @@ func TestSlCovStateArtifactReplayReadFailures(t *testing.T) {
 		}
 	})
 	t.Run("abandonment replay read", func(t *testing.T) {
+		t.Parallel()
 		_, root, attempt, plan, planDigest := slCovAttempt(t)
 		fence, err := attempt.acquireExecFence(8103)
 		if err != nil {
@@ -79,6 +84,7 @@ func TestSlCovStateArtifactReplayReadFailures(t *testing.T) {
 }
 
 func TestSlCovValidateAbandonmentReadyDigestAbsenceAndFenceError(t *testing.T) {
+	t.Parallel()
 	const pid = 8201
 	base := func(t *testing.T) (*launcherRetryFixture, *launchAttempt, launcherAbandonment) {
 		t.Helper()
@@ -98,6 +104,7 @@ func TestSlCovValidateAbandonmentReadyDigestAbsenceAndFenceError(t *testing.T) {
 		return fx, attempt, abandonment
 	}
 	t.Run("unreadable ready without a digest", func(t *testing.T) {
+		t.Parallel()
 		fx, attempt, abandonment := base(t)
 		fence, err := attempt.acquireExecFence(pid)
 		if err != nil {
@@ -114,6 +121,7 @@ func TestSlCovValidateAbandonmentReadyDigestAbsenceAndFenceError(t *testing.T) {
 		}
 	})
 	t.Run("unreadable exec fence", func(t *testing.T) {
+		t.Parallel()
 		fx, attempt, abandonment := base(t)
 		slCovWrite(t, filepath.Join(slCovAttemptDir(fx.store.Root, attempt.id), execDirectoryName, itoaSlCovLauncher(pid)+".lock"), 0o644, "")
 		if err := validateAbandonment(context.Background(), fx.deps, attempt.state, attempt, fx.plan, fx.planDigest, abandonment); err == nil {
@@ -161,7 +169,9 @@ func TestSlCovRunPrivateLauncherRemainingGates(t *testing.T) {
 }
 
 func TestSlCovValidatePrivatePlanHarnessSpecAndExecutable(t *testing.T) {
+	t.Parallel()
 	t.Run("unsupported requested harness", func(t *testing.T) {
+		t.Parallel()
 		request := completeLaunchTestRequest(t)
 		request.RequestedHarness = "bogus"
 		store := sessionmove.NewStore(filepath.Join(t.TempDir(), sessionmove.DirName))
@@ -192,6 +202,7 @@ func TestSlCovValidatePrivatePlanHarnessSpecAndExecutable(t *testing.T) {
 		}
 	})
 	t.Run("absolute but invalid harness executable", func(t *testing.T) {
+		t.Parallel()
 		fx := newLauncherRetryFixture(t)
 		state, err := fx.store.Load(fx.request.HandoffID)
 		if err != nil {

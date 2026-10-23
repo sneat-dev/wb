@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // pushTierTestRepo builds a real, minimal Git repository with a real "origin"
@@ -19,7 +21,7 @@ func pushTierTestRepo(t *testing.T) string {
 	root := t.TempDir()
 	bare := filepath.Join(root, "remote.git")
 	repo := filepath.Join(root, "work")
-	pushTierGit(t, root, "init", "--bare", "--initial-branch=main", bare)
+	testenv.InitBareRemoteForTest(t, bare)
 	pushTierGit(t, root, "init", "-b", "main", repo)
 	pushTierGit(t, repo, "config", "user.name", "wb-test")
 	pushTierGit(t, repo, "config", "user.email", "wb-test@example.invalid")
@@ -74,7 +76,7 @@ func fakeGHOnPath(t *testing.T, withGH bool, openBranch string) string {
 			"  echo '[]'\n" +
 			"fi\n"
 		ghPath := filepath.Join(dir, "gh")
-		if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
+		if err := testenv.WriteExecutableFile(ghPath, []byte(script), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}

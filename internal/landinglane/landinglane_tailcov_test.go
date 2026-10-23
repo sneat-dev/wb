@@ -33,6 +33,7 @@ func tailCovWantError(t *testing.T, what string, err error, want string) {
 // fields the refusal message renders, including the model-qualified runtime
 // and the two placeholder strings.
 func TestTailCovConflictErrorRendersModelAndFallbackDetails(t *testing.T) {
+	t.Parallel()
 	record := Record{
 		Lane:       "lane-acme-app-main-deadbeef",
 		Repository: "acme/app",
@@ -73,6 +74,7 @@ func TestTailCovConflictErrorRendersModelAndFallbackDetails(t *testing.T) {
 // error's message and its Unwrap, which callers use to inspect the parse
 // failure underneath.
 func TestTailCovCorruptRecordErrorNamesPathAndUnwraps(t *testing.T) {
+	t.Parallel()
 	home := tailCovLaneHome(t)
 	lane := LaneID("acme/app", "main")
 	if err := os.MkdirAll(filepath.Join(home, DirName), 0o700); err != nil {
@@ -110,6 +112,7 @@ func TestTailCovCorruptRecordErrorNamesPathAndUnwraps(t *testing.T) {
 // TestTailCovAcquireValidatesInputs covers the fast input guards: a lane
 // always needs a repository, a target, and the acquiring session's identity.
 func TestTailCovAcquireValidatesInputs(t *testing.T) {
+	t.Parallel()
 	home := tailCovLaneHome(t)
 	base := AcquireRequest{
 		Repository: "acme/app",
@@ -143,6 +146,7 @@ func TestTailCovAcquireValidatesInputs(t *testing.T) {
 // IsOwnerLive override so the package's own registry-backed liveness check
 // decides: the registered live owner is protected, an unregistered one is not.
 func TestTailCovAcquireUsesSessionRegistryLiveness(t *testing.T) {
+	t.Parallel()
 	home := tailCovLaneHome(t)
 	sessionDir := t.TempDir()
 	pid := os.Getpid()
@@ -194,6 +198,7 @@ func TestTailCovAcquireUsesSessionRegistryLiveness(t *testing.T) {
 // TestTailCovDefaultOwnerLiveRequiresRegistryEntry pins every branch of the
 // registry-backed liveness predicate directly.
 func TestTailCovDefaultOwnerLiveRequiresRegistryEntry(t *testing.T) {
+	t.Parallel()
 	pid := os.Getpid()
 	if defaultOwnerLive("", Owner{PID: pid, WBSessionID: "wbs-x"}) {
 		t.Error("an empty session directory must report not live")
@@ -226,6 +231,7 @@ func TestTailCovDefaultOwnerLiveRequiresRegistryEntry(t *testing.T) {
 // enrichment: a confirmed-dead owner whose last heartbeat is older than the
 // stale window has that timestamp recorded for the reader.
 func TestTailCovAcquireNotesStaleHeartbeatOnDeadOwnerTakeover(t *testing.T) {
+	t.Parallel()
 	home := tailCovLaneHome(t)
 	staleAfter := 10 * time.Minute
 	if _, err := Acquire(home, AcquireRequest{
@@ -280,6 +286,7 @@ func TestTailCovAcquireNotesStaleHeartbeatOnDeadOwnerTakeover(t *testing.T) {
 // is reported as an I/O error rather than being mistaken for corruption (or,
 // worse, for an absent record).
 func TestTailCovAcquireSurfacesUnreadableRecord(t *testing.T) {
+	t.Parallel()
 	home := tailCovLaneHome(t)
 	lane := LaneID("acme/app", "main")
 	if err := os.MkdirAll(filepath.Join(home, DirName, lane+".json"), 0o700); err != nil {
@@ -325,6 +332,7 @@ func tailCovAssertLaneEntryPointsFail(t *testing.T, home, want string) {
 // failures: the lanes directory cannot be created, and the lock file itself
 // cannot be opened.
 func TestTailCovLaneEntryPointsReportLockFileFailures(t *testing.T) {
+	t.Parallel()
 	blocked := tailCovLaneHome(t)
 	if err := os.WriteFile(filepath.Join(blocked, DirName), []byte("not a directory\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -342,6 +350,7 @@ func TestTailCovLaneEntryPointsReportLockFileFailures(t *testing.T) {
 // TestTailCovHeartbeatAndReleaseIgnoreUnheldOrUnreadableLanes covers the
 // quiet no-op path and the read-failure path shared by Heartbeat and Release.
 func TestTailCovHeartbeatAndReleaseIgnoreUnheldOrUnreadableLanes(t *testing.T) {
+	t.Parallel()
 	home := tailCovLaneHome(t)
 	now := fixedNow(time.Unix(1000, 0))
 
@@ -367,6 +376,7 @@ func TestTailCovHeartbeatAndReleaseIgnoreUnheldOrUnreadableLanes(t *testing.T) {
 // TestTailCovHeartbeatRejectsOtherOwnersLane proves a heartbeat from a
 // session that does not hold the lane leaves the record untouched.
 func TestTailCovHeartbeatRejectsOtherOwnersLane(t *testing.T) {
+	t.Parallel()
 	home := tailCovLaneHome(t)
 	if _, err := Acquire(home, AcquireRequest{
 		Repository: "acme/app", Target: "main",
@@ -390,6 +400,7 @@ func TestTailCovHeartbeatRejectsOtherOwnersLane(t *testing.T) {
 // TestTailCovReadRecordSurfacesReadFailures covers the non-NotExist read
 // failure path in readRecord.
 func TestTailCovReadRecordSurfacesReadFailures(t *testing.T) {
+	t.Parallel()
 	record, found, err := readRecord(t.TempDir())
 	if err == nil {
 		t.Fatal("readRecord of a directory must fail")
@@ -411,6 +422,7 @@ func TestTailCovReadRecordSurfacesReadFailures(t *testing.T) {
 // TestTailCovWriteRecordSurfacesEncodeWriteAndRenameFailures covers every
 // writeRecord failure branch.
 func TestTailCovWriteRecordSurfacesEncodeWriteAndRenameFailures(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	encodePath := filepath.Join(dir, "encode.json")
@@ -438,6 +450,7 @@ func TestTailCovWriteRecordSurfacesEncodeWriteAndRenameFailures(t *testing.T) {
 // TestTailCovLaneIDSanitizesTruncatesAndHashes covers the lane id's stable
 // readable-plus-hash shape, including the 48-character cap.
 func TestTailCovLaneIDSanitizesTruncatesAndHashes(t *testing.T) {
+	t.Parallel()
 	sum := sha256.Sum256([]byte("acme/app\x00main"))
 	want := "lane-acme-app-main-" + hex.EncodeToString(sum[:6])
 	if got := LaneID("acme/app", "main"); got != want {

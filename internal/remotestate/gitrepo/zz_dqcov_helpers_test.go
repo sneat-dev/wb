@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // dqCovBlockedLockClonePath returns a ClonePath whose parent directory is a
@@ -63,6 +65,7 @@ func dqCovEmptyBareOrigin(t *testing.T) string {
 	setGitIdentity(t)
 	origin := t.TempDir()
 	gitIn(t, origin, "init", "-q", "--bare", "-b", "main")
+	testenv.ConfigureGitAutoMaintenanceOff(t, origin)
 	return origin
 }
 
@@ -143,7 +146,7 @@ if [ ! -f "$marker" ]; then
 fi
 exit 0
 `, dqCovShellQuote(clientClone), dqCovShellQuote(clientClone), promoteSHA)
-	if err := os.WriteFile(filepath.Join(hooksDir, "pre-receive"), []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(hooksDir, "pre-receive"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -158,7 +161,7 @@ func dqCovInstallRemoveClientBranchHook(t *testing.T, origin, clientClone string
 		t.Fatal(err)
 	}
 	script := fmt.Sprintf("#!/bin/sh\nenv -u GIT_DIR -u GIT_WORK_TREE -u GIT_QUARANTINE_PATH git -C %s update-ref -d refs/heads/main || true\nexit 0\n", dqCovShellQuote(clientClone))
-	if err := os.WriteFile(filepath.Join(hooksDir, "pre-receive"), []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(hooksDir, "pre-receive"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -190,7 +193,7 @@ if [ "$n" = "2" ]; then
 fi
 exit 0
 `, promote1, promote2)
-	if err := os.WriteFile(filepath.Join(hooksDir, "pre-receive"), []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(hooksDir, "pre-receive"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -217,7 +220,7 @@ func dqCovInstallFailingCommitHook(t *testing.T, clonePath string) {
 	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(hooksDir, "pre-commit"), []byte("#!/bin/sh\necho 'dqCov: commit refused' >&2\nexit 1\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(hooksDir, "pre-commit"), []byte("#!/bin/sh\necho 'dqCov: commit refused' >&2\nexit 1\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 }

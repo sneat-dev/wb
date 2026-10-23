@@ -13,16 +13,20 @@ import (
 )
 
 func TestAdmissionFlagsArePresentOnRemainingMutatingVerbs(t *testing.T) {
+	t.Parallel()
 	// Keep this check at the command boundary: these flags are the explicit
 	// contract users select before a backend can inspect WB state or Git.
 	checks := []struct {
 		name        string
 		flagPresent func(string) bool
 	}{
-		{name: "adopt", flagPresent: func(name string) bool { return newWorktreeAdoptCmd().Flags().Lookup(name) != nil }},
-		{name: "rename", flagPresent: func(name string) bool { return newWorktreeRenameCmd().Flags().Lookup(name) != nil }},
+		{name: "adopt", flagPresent: func(name string) bool { return newWorktreeAdoptCmd(&invocation{}).Flags().Lookup(name) != nil }},
+		{name: "rename", flagPresent: func(name string) bool { return newWorktreeRenameCmd(&invocation{}).Flags().Lookup(name) != nil }},
+		{name: "retire", flagPresent: func(name string) bool { return newWorktreeRetireCmd(&invocation{}).Flags().Lookup(name) != nil }},
 		{name: "own", flagPresent: func(name string) bool { return newWorktreeOwnCmd().Flags().Lookup(name) != nil }},
-		{name: "correct-identity", flagPresent: func(name string) bool { return newWorktreeCorrectIdentityCmd().Flags().Lookup(name) != nil }},
+		{name: "correct-identity", flagPresent: func(name string) bool {
+			return newWorktreeCorrectIdentityCmd(&invocation{}).Flags().Lookup(name) != nil
+		}},
 	}
 	for _, check := range checks {
 		t.Run(check.name, func(t *testing.T) {
@@ -33,7 +37,7 @@ func TestAdmissionFlagsArePresentOnRemainingMutatingVerbs(t *testing.T) {
 			}
 		})
 	}
-	log := newWorktreeWorkLogCmd()
+	log := newWorktreeWorkLogCmd(&invocation{})
 	for _, name := range []string{"mode", "initiator"} {
 		if log.PersistentFlags().Lookup(name) == nil {
 			t.Fatalf("worktree log is missing persistent --%s", name)
@@ -63,6 +67,10 @@ func TestAgentAdmissionRejectsRemainingMutationsBeforeWBHome(t *testing.T) {
 	}{
 		{name: "adopt", args: []string{"worktree", "adopt", "/tmp/external", "--apply", "--mode", "agent"}},
 		{name: "rename", args: []string{"--projects-root", projects, "worktree", "rename", "old", "new", "--apply", "--mode", "agent", "--original-prompt-file", prompt}},
+		// This must reach admission before Retire accesses WB state or performs
+		// retirement planning. It regressed when retire called
+		// requireMutationAdmission without registering the shared flags.
+		{name: "retire", args: []string{"--projects-root", projects, "worktree", "retire", "retirement-pilot", "--apply", "--mode", "agent"}},
 		{name: "own", args: []string{"--projects-root", projects, "worktree", "own", ".", "--mode", "agent"}},
 		{name: "correct-identity", args: []string{"worktree", "correct-identity", "effort", "run", strings.Repeat("a", 64), "--mode", "agent"}},
 		{name: "log-init", args: []string{"--projects-root", projects, "worktree", "log", "init", ".", "--mode", "agent"}},
@@ -169,7 +177,7 @@ func TestAdmissionAllowsExplicitReadOnlyDryRunsWithoutSession(t *testing.T) {
 	t.Setenv(wbhome.EnvOverride, root)
 	worktrees.SetSessionResolver(func() (worktrees.AgentIdentity, bool) { return worktrees.AgentIdentity{}, false })
 	t.Cleanup(func() { worktrees.SetSessionResolver(nil) })
-	log := newWorktreeWorkLogCmd()
+	log := newWorktreeWorkLogCmd(&invocation{})
 	recoverCommand, _, err := log.Find([]string{"recover"})
 	if err != nil {
 		t.Fatal(err)
@@ -178,7 +186,7 @@ func TestAdmissionAllowsExplicitReadOnlyDryRunsWithoutSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	commands := []*cobra.Command{newWorktreeAdoptCmd(), newWorktreeRenameCmd(), recoverCommand, archiveCommand}
+	commands := []*cobra.Command{newWorktreeAdoptCmd(&invocation{}), newWorktreeRenameCmd(&invocation{}), recoverCommand, archiveCommand}
 	for _, command := range commands {
 		if command == recoverCommand || command == archiveCommand {
 			if err := log.PersistentFlags().Set("mode", "agent"); err != nil {

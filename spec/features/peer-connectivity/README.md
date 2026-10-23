@@ -185,7 +185,15 @@ proof, because tunnels and proxies deliver there.
   route `POST /v0/workbench/machines/enroll` is no longer mounted on a
   self-hosted hub; the hosted instance keeps it with its OAuth viewer.
 - **The dashboard** gets an admin session through
-  `wb dashboard --admin`. That command obtains a single-use code over the
+  `wb dashboard --admin`. (Amended 2026-10-01: this session is provided by
+  [cockpit](../cockpit/README.md)#req:owner-session. Wherever this Feature
+  says `wb dashboard --admin` or `/workbench/admin/login`, read `wb cockpit`
+  and `/cockpit/session/login`. The peers admin routes below accept that
+  session cookie. Cockpit issues the login on the loopback address only; a
+  login URL for the hub's public URL is not provided until the identity
+  provider decision 0002 requires exists. For the same reason the proxy path
+  in the Remote access item below does not apply to the Cockpit login, which
+  refuses a non-loopback `Host`; remote access to it is an SSH port forward.) That command obtains a single-use code over the
   owner RPC, valid for 60 seconds. It prints the login URL for the loopback
   address and, when configured, for the hub's public URL, and opens a browser
   only on a desktop session.
@@ -675,9 +683,11 @@ tokens, no chart library.
 `admin_available` is true. Otherwise the page shows the exact CLI command and
 the `wb dashboard --admin` hint.
 
-The laptop's own daemon page (`internal/dashboard`) shows its upstream peer
-with the same counters and a compact traffic chart. `wb daemon status` adds
-one line per peer.
+The laptop's own upstream peer and its counters are served at
+`GET /api/v1/peers` on its daemon. No page shows them yet: the former
+`internal/dashboard` page that was to is retired
+(cockpit#req:legacy-dashboard-retired), and a Cockpit view of them is not
+specified. `wb daemon status` adds one line per peer.
 
 ### Diagnostics
 

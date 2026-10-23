@@ -7,9 +7,12 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestIsTransientPullFailure(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		message string
 		want    bool
@@ -22,6 +25,7 @@ func TestIsTransientPullFailure(t *testing.T) {
 		{message: "git pull: Permission denied (publickey).", want: false},
 	} {
 		t.Run(test.message, func(t *testing.T) {
+			t.Parallel()
 			if got := isTransientPullFailure(errors.New(test.message)); got != test.want {
 				t.Fatalf("isTransientPullFailure(%q) = %t, want %t", test.message, got, test.want)
 			}
@@ -30,6 +34,7 @@ func TestIsTransientPullFailure(t *testing.T) {
 }
 
 func TestPullRetryDelayBacksOffAndStaggersCheckouts(t *testing.T) {
+	t.Parallel()
 	first := pullRetryDelay("/fleet/acme/widgets", 0)
 	if first < 500*time.Millisecond || first >= time.Second {
 		t.Fatalf("first retry delay = %s, want [500ms, 1s)", first)
@@ -46,15 +51,16 @@ func git(t testing.TB, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
+	cmd.Env = testenv.GitAutoMaintenanceOffEnv(append(os.Environ(),
 		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
-		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t"))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v: %s", args, err, out)
 	}
 }
 
 func TestLocalState(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	git(t, dir, "init", "-q", "-b", "main")
 
@@ -80,8 +86,10 @@ func TestLocalState(t *testing.T) {
 }
 
 func TestPull(t *testing.T) {
+	t.Parallel()
 	remoteDir := t.TempDir()
 	git(t, remoteDir, "init", "-q", "--bare", "-b", "main")
+	testenv.ConfigureGitAutoMaintenanceOff(t, remoteDir)
 
 	seed := t.TempDir()
 	git(t, seed, "init", "-q", "-b", "main")
@@ -95,6 +103,7 @@ func TestPull(t *testing.T) {
 
 	clone := filepath.Join(t.TempDir(), "clone")
 	cloneCmd := exec.Command("git", "clone", "-q", remoteDir, clone)
+	cloneCmd.Env = testenv.GitAutoMaintenanceOffEnv(os.Environ())
 	if out, err := cloneCmd.CombinedOutput(); err != nil {
 		t.Fatalf("clone: %v: %s", err, out)
 	}
@@ -118,6 +127,7 @@ func TestPull(t *testing.T) {
 }
 
 func TestStatusClean(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	git(t, dir, "init", "-q", "-b", "main")
 
@@ -131,6 +141,7 @@ func TestStatusClean(t *testing.T) {
 }
 
 func TestStatusUntrackedAndModified(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	git(t, dir, "init", "-q", "-b", "main")
 	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("v1\n"), 0o644); err != nil {
@@ -162,6 +173,7 @@ func TestStatusUntrackedAndModified(t *testing.T) {
 }
 
 func TestStatusStashAndUnpushed(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	git(t, dir, "init", "-q", "-b", "main")
 	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("v1\n"), 0o644); err != nil {
@@ -199,6 +211,7 @@ func TestStatusStashAndUnpushed(t *testing.T) {
 }
 
 func TestStatusConflict(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	git(t, dir, "init", "-q", "-b", "main")
 	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("base\n"), 0o644); err != nil {
@@ -221,9 +234,9 @@ func TestStatusConflict(t *testing.T) {
 
 	mergeCmd := exec.Command("git", "merge", "other")
 	mergeCmd.Dir = dir
-	mergeCmd.Env = append(os.Environ(),
+	mergeCmd.Env = testenv.GitAutoMaintenanceOffEnv(append(os.Environ(),
 		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
-		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t"))
 	_, _ = mergeCmd.CombinedOutput() // expected to fail with a conflict
 
 	s, err := Status(dir)
@@ -239,6 +252,7 @@ func TestStatusConflict(t *testing.T) {
 }
 
 func TestRepoStatusSummary(t *testing.T) {
+	t.Parallel()
 	s := RepoStatus{
 		Modified:  []string{"a.txt"},
 		Untracked: []string{"b.txt", "c.txt"},

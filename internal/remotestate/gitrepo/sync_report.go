@@ -23,7 +23,7 @@ type SyncReportPublishResult struct {
 // only owned paths, and pushes through the state repository's serialized
 // rebase-on-rejection path.
 func (p *Provider) PublishSyncReport(ctx context.Context, report syncreport.Report, validate func(context.Context, string) error) (SyncReportPublishResult, error) {
-	lock, err := acquireCloneLock(p.opts.ClonePath)
+	lock, err := acquireCloneLock(p.opts.ClonePath, p.opts.Now, p.opts.Sleep)
 	if err != nil {
 		return SyncReportPublishResult{}, err
 	}

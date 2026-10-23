@@ -2,6 +2,7 @@ package githubobserver
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -15,6 +16,7 @@ func pageResponse(body, link string) commandResult {
 }
 
 func TestGetPagesFollowsTheLinkHeaderWithoutSlurp(t *testing.T) {
+	t.Parallel()
 	var requested []string
 	observer := &Observer{
 		StateDir: t.TempDir(),
@@ -55,6 +57,7 @@ func TestGetPagesFollowsTheLinkHeaderWithoutSlurp(t *testing.T) {
 }
 
 func TestGetPagesReturnsOnePageWhenThereIsNoNextLink(t *testing.T) {
+	t.Parallel()
 	observer := &Observer{
 		StateDir: t.TempDir(),
 		Run: func(_ context.Context, _ string, _ ...string) commandResult {
@@ -74,6 +77,7 @@ func TestGetPagesReturnsOnePageWhenThereIsNoNextLink(t *testing.T) {
 // verb walk forever, and a wait that never ends is indistinguishable from a
 // hang.
 func TestGetPagesRefusesALoopingLinkHeader(t *testing.T) {
+	t.Parallel()
 	observer := &Observer{
 		StateDir: t.TempDir(),
 		Run: func(_ context.Context, _ string, _ ...string) commandResult {
@@ -87,6 +91,7 @@ func TestGetPagesRefusesALoopingLinkHeader(t *testing.T) {
 }
 
 func TestGetPagesRefusesToExceedItsBound(t *testing.T) {
+	t.Parallel()
 	page := 0
 	observer := &Observer{
 		StateDir: t.TempDir(),
@@ -114,6 +119,7 @@ func itoa(value int) string {
 }
 
 func TestNextPageEndpointReadsOnlyTheNextRelation(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name    string
 		headers map[string]string
@@ -129,5 +135,45 @@ func TestNextPageEndpointReadsOnlyTheNextRelation(t *testing.T) {
 		if got := NextPageEndpoint(testCase.headers); got != testCase.want {
 			t.Errorf("%s: NextPageEndpoint = %q, want %q", testCase.name, got, testCase.want)
 		}
+	}
+}
+
+// TestWithReaderAnswersEveryReadBelowItsContext proves the seam: Get, GetPages
+// (following a next link) and Execute go to the reader, and a context without
+// one is untouched.
+func TestWithReaderAnswersEveryReadBelowItsContext(t *testing.T) {
+	t.Parallel()
+	var asked []string
+	reader := Reader{
+		Get: func(_ context.Context, request GetRequest) (Response, error) {
+			asked = append(asked, request.Endpoint)
+			if request.Endpoint == "first" {
+				return Response{Body: []byte("1"), Headers: map[string]string{"link": `<second>; rel="next"`}}, nil
+			}
+			return Response{Body: []byte("2")}, nil
+		},
+		Execute: func(_ context.Context, dir string, args ...string) CommandResponse {
+			return CommandResponse{Stdout: []byte(dir + strings.Join(args, " "))}
+		},
+		Read: func(_ context.Context, dir string, args ...string) ([]byte, error) {
+			return []byte("read " + dir + strings.Join(args, " ")), nil
+		},
+	}
+	ctx := WithReader(context.Background(), reader)
+	if response, err := Get(ctx, GetRequest{Endpoint: "x"}); err != nil || string(response.Body) != "2" {
+		t.Fatalf("Get = %+v %v", response, err)
+	}
+	pages, err := GetPages(ctx, GetRequest{Endpoint: "first"}, 0)
+	if err != nil || len(pages) != 2 || !slices.Equal(asked, []string{"x", "first", "second"}) {
+		t.Fatalf("pages = %d %v asked %v", len(pages), err, asked)
+	}
+	if got := Execute(ctx, "d", "a", "b"); string(got.Stdout) != "da b" {
+		t.Fatalf("Execute = %q", got.Stdout)
+	}
+	if got, err := Read(ctx, "d", "a"); err != nil || string(got) != "read da" {
+		t.Fatalf("Read = %q %v", got, err)
+	}
+	if readerOf(context.Background()).Get != nil {
+		t.Fatal("a context without a reader has one")
 	}
 }

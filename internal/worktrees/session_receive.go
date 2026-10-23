@@ -83,23 +83,24 @@ func sessionMoveReceiveSpec(projectsRoot string, options SessionReceiveOptions) 
 	}, nil
 }
 
-func validateSessionReceiveSpec(ctx context.Context, spec SessionReceiveSpec) error {
+func admitSessionReceiveSpec(ctx context.Context, spec SessionReceiveSpec) (gitremote.Remote, error) {
 	for name, value := range map[string]string{"authority ID": spec.AuthorityID, "operation ID": spec.OperationID, "member key": spec.MemberKey} {
 		if !sessionauthority.ValidID(value) {
-			return fmt.Errorf("session receive %s is not one fixed safe ID", name)
+			return gitremote.Remote{}, fmt.Errorf("session receive %s is not one fixed safe ID", name)
 		}
 	}
-	if _, err := gitremote.Parse(spec.RepositoryRemote); err != nil {
-		return err
+	remote, err := gitremote.Parse(spec.RepositoryRemote)
+	if err != nil {
+		return gitremote.Remote{}, err
 	}
 	if !validBranch(ctx, spec.Branch) || !validBranch(ctx, spec.PinBranch) {
-		return fmt.Errorf("session receive branch or pin is invalid")
+		return gitremote.Remote{}, fmt.Errorf("session receive branch or pin is invalid")
 	}
 	if !isGitObjectID(spec.Commit) {
-		return fmt.Errorf("session receive commit is not one full Git object ID")
+		return gitremote.Remote{}, fmt.Errorf("session receive commit is not one full Git object ID")
 	}
 	if spec.SourceWorkCommit != "" && !isGitObjectID(spec.SourceWorkCommit) {
-		return fmt.Errorf("session receive source commit is not one full Git object ID")
+		return gitremote.Remote{}, fmt.Errorf("session receive source commit is not one full Git object ID")
 	}
 	// HandoverPath names a legacy tracked-in-worktree location and is only
 	// ever set together with HandoverDigest (a pre-cutover move request). A
@@ -107,14 +108,14 @@ func validateSessionReceiveSpec(ctx context.Context, spec SessionReceiveSpec) er
 	// but still a digest to verify the inline content against. A park member
 	// carries neither. A path without a digest is never valid.
 	if spec.HandoverPath != "" && spec.HandoverDigest == "" {
-		return fmt.Errorf("session receive tracked handover path requires a digest")
+		return gitremote.Remote{}, fmt.Errorf("session receive tracked handover path requires a digest")
 	}
 	if spec.AuthorityStore != "" {
 		if !filepath.IsAbs(spec.AuthorityStore) || filepath.Clean(spec.AuthorityStore) != spec.AuthorityStore || spec.Fence == nil {
-			return fmt.Errorf("session receive replay authority is incomplete")
+			return gitremote.Remote{}, fmt.Errorf("session receive replay authority is incomplete")
 		}
 	}
-	return nil
+	return remote, nil
 }
 
 // SessionReceiveResult identifies the exact target checkout. Task 3 creates
@@ -150,23 +151,21 @@ func SessionReceiveWorktreePath(projectsRoot string, request sessionmove.Request
 }
 
 func SessionReceiveMemberPath(projectsRoot string, spec SessionReceiveSpec) (string, error) {
-	if err := validateSessionReceiveSpec(context.Background(), spec); err != nil {
+	remote, err := admitSessionReceiveSpec(context.Background(), spec)
+	if err != nil {
 		// Path derivation does not need a live fence. Admit an intentionally
 		// absent store/fence only for this read-only helper.
 		if spec.AuthorityStore != "" && spec.Fence == nil {
 			spec.AuthorityStore = ""
-			if retry := validateSessionReceiveSpec(context.Background(), spec); retry != nil {
-				return "", retry
+			remote, err = admitSessionReceiveSpec(context.Background(), spec)
+			if err != nil {
+				return "", err
 			}
 		} else {
 			return "", err
 		}
 	}
 	root, err := absoluteProjectsRoot(projectsRoot)
-	if err != nil {
-		return "", err
-	}
-	remote, err := gitremote.Parse(spec.RepositoryRemote)
 	if err != nil {
 		return "", err
 	}
@@ -212,6 +211,17 @@ func sessionReceivePhysicalCoordinates(
 	if err != nil {
 		return worktreePlacement{}, "", "", "", "", err
 	}
+	return sessionReceiveCoordinatesForPlacement(placement, spec, repository)
+}
+
+// sessionReceiveCoordinatesForPlacement translates an already validated
+// placement into the deterministic receive paths. Keeping this pure makes the
+// path policy independently testable from Git and user configuration lookup.
+func sessionReceiveCoordinatesForPlacement(
+	placement worktreePlacement,
+	spec SessionReceiveSpec,
+	repository string,
+) (resolved worktreePlacement, operationPath, parent, name, worktreePath string, err error) {
 	_, declaredName, splitErr := splitRepository(repository)
 	if splitErr != nil {
 		return worktreePlacement{}, "", "", "", "", splitErr
@@ -334,15 +344,12 @@ func VerifyReceivedSessionMember(ctx context.Context, options SessionMemberRecei
 		return SessionReceiveResult{}, err
 	}
 	spec := options.Spec
-	if err := validateSessionReceiveSpec(ctx, spec); err != nil {
+	remote, err := admitSessionReceiveSpec(ctx, spec)
+	if err != nil {
 		return SessionReceiveResult{}, err
 	}
 	if spec.Fence == nil || !spec.Fence.HeldForSession(spec.AuthorityStore, spec.AuthorityID, string(spec.AuthorityDigest)) {
 		return SessionReceiveResult{}, fmt.Errorf("local session receive replay requires exact admitted handoff authority")
-	}
-	remote, err := gitremote.Parse(spec.RepositoryRemote)
-	if err != nil {
-		return SessionReceiveResult{}, err
 	}
 	_, _, canonicalPath, err := canonicalRepositoryPath(projectsRoot, remote.Identity.Repository)
 	if err != nil {
@@ -403,49 +410,107 @@ func ReceiveSessionMember(ctx context.Context, options SessionMemberReceiveOptio
 	return receiveSessionMember(ctx, options, nil)
 }
 
+// sessionReceiveState owns every descriptor acquired by one receive. The
+// operation lock is released before its directory, and the canonical handle
+// remains open until all target checks and publication handles have closed.
+type sessionReceiveState struct {
+	ctx                context.Context
+	spec               SessionReceiveSpec
+	repository         string
+	projectsRoot       string
+	canonicalPath      string
+	canonical          *canonicalRepository
+	handoverBytes      []byte
+	home               string
+	operationName      string
+	operation          preparedOperationRoot
+	lock               operationLock
+	localRootDirectory *os.File
+	sharedOperation    preparedOperationRoot
+	publication        *createdWorktreePublication
+	// These optional hooks are local to one receive and let tests fault the
+	// narrow boundaries after all descriptor and Git checks have succeeded.
+	closeInterruptedRoot   func(*os.File) error
+	afterTargetStagedAdd   func() error
+	afterTargetPublication func(string)
+}
+
+func (state *sessionReceiveState) close() {
+	if state.publication != nil {
+		state.publication.close()
+	}
+	state.sharedOperation.close()
+	if state.localRootDirectory != nil {
+		_ = state.localRootDirectory.Close()
+	}
+	_ = state.lock.release()
+	state.operation.close()
+	if state.canonical != nil {
+		state.canonical.close()
+	}
+}
+
 func receiveSessionMember(ctx context.Context, options SessionMemberReceiveOptions, afterFetchRemoteAuthentication func()) (SessionReceiveResult, error) {
-	var result SessionReceiveResult
-	spec := options.Spec
-	if err := validateSessionReceiveSpec(ctx, spec); err != nil {
-		return result, fmt.Errorf("validate target session receive authority: %w", err)
+	state := &sessionReceiveState{}
+	defer state.close()
+	if err := state.prepareSource(ctx, options, afterFetchRemoteAuthentication); err != nil {
+		return SessionReceiveResult{}, err
 	}
-	remote, err := gitremote.Parse(spec.RepositoryRemote)
-	if err != nil {
+	if err := state.prepareOperation(); err != nil {
+		return SessionReceiveResult{}, err
+	}
+	if result, done, err := state.reuseRegistered(); done || err != nil {
 		return result, err
 	}
-	repository := remote.Identity.Repository
-	projectsRoot, err := absoluteProjectsRoot(options.ProjectsRoot)
+	return state.placeTarget()
+}
+
+// prepareSource authenticates the declared clone and the exact fetched commit
+// before any target operation directory or lock is created.
+func (state *sessionReceiveState) prepareSource(ctx context.Context, options SessionMemberReceiveOptions, afterFetchRemoteAuthentication func()) error {
+	return state.prepareSourceWithAdmission(ctx, options, afterFetchRemoteAuthentication, CanonicalRepositoryPathForURL, requireGitFilesystemCapability)
+}
+
+func (state *sessionReceiveState) prepareSourceWithAdmission(ctx context.Context, options SessionMemberReceiveOptions, afterFetchRemoteAuthentication func(), canonicalPathForURL func(string, string, string) (string, error), requireCapability func() error) error {
+	state.ctx = ctx
+	state.spec = options.Spec
+	spec := state.spec
+	remote, err := admitSessionReceiveSpec(ctx, spec)
 	if err != nil {
-		return result, err
+		return fmt.Errorf("validate target session receive authority: %w", err)
+	}
+	state.repository = remote.Identity.Repository
+	state.projectsRoot, err = absoluteProjectsRoot(options.ProjectsRoot)
+	if err != nil {
+		return err
 	}
 	// The declared remote names the forge, so a clone that has to be created
 	// lands at the same host-level address `wb sync` and orchestrate would use,
 	// while an existing clone — host level or legacy — is used where it is.
-	canonicalPath, err := CanonicalRepositoryPathForURL(projectsRoot, repository, spec.RepositoryRemote)
+	state.canonicalPath, err = canonicalPathForURL(state.projectsRoot, state.repository, spec.RepositoryRemote)
 	if err != nil {
-		return result, err
+		return err
 	}
 	// The parent is the resolved clone's own root-relative parent, so it carries
 	// the literal host level when the clone has one. Passing the bare owner here
 	// opened — and, for a missing clone, created — a host-less directory beside
 	// a migrated clone, then failed to verify the clone against the host-level
 	// path it had just resolved.
-	parent, name, err := sessionReceiveCanonicalParent(projectsRoot, canonicalPath)
+	parent, name, err := sessionReceiveCanonicalParent(state.projectsRoot, state.canonicalPath)
 	if err != nil {
-		return result, err
+		return err
 	}
-	if err := requireGitFilesystemCapability(); err != nil {
-		return result, err
+	if err := requireCapability(); err != nil {
+		return err
 	}
-	canonical, err := openOrCloneSessionReceiveCanonical(
-		ctx, projectsRoot, parent, name, canonicalPath, spec.RepositoryRemote, remote.Identity,
+	state.canonical, err = openOrCloneSessionReceiveCanonical(
+		ctx, state.projectsRoot, parent, name, state.canonicalPath, spec.RepositoryRemote, remote.Identity,
 	)
 	if err != nil {
-		return result, err
+		return err
 	}
-	defer canonical.close()
-	if err := verifySessionReceiveCanonical(ctx, canonical, remote.Identity); err != nil {
-		return result, err
+	if err := verifySessionReceiveCanonical(ctx, state.canonical, remote.Identity); err != nil {
+		return err
 	}
 	if afterFetchRemoteAuthentication != nil {
 		afterFetchRemoteAuthentication()
@@ -457,146 +522,164 @@ func receiveSessionMember(ctx context.Context, options SessionMemberReceiveOptio
 	// authority, not origin's mutable configuration.
 	fetchedRef := sessionReceiveFetchRef(spec.OperationID)
 	refspec := "+refs/heads/" + spec.Branch + ":" + fetchedRef
-	if _, err := gitCanonical(ctx, canonical, "fetch", "--no-tags", "--force", "--no-write-fetch-head", "--", remote.Raw, refspec); err != nil {
-		return result, fmt.Errorf("fetch live session branch %s/%s: %w", repository, spec.Branch, err)
+	if _, err := gitCanonical(ctx, state.canonical, "fetch", "--no-tags", "--force", "--no-write-fetch-head", "--", remote.Raw, refspec); err != nil {
+		return fmt.Errorf("fetch live session branch %s/%s: %w", state.repository, spec.Branch, err)
 	}
-	if err := verifySessionReceiveCanonical(ctx, canonical, remote.Identity); err != nil {
-		return result, fmt.Errorf("reauthenticate canonical origin after exact fetch: %w", err)
+	if err := verifySessionReceiveCanonical(ctx, state.canonical, remote.Identity); err != nil {
+		return fmt.Errorf("reauthenticate canonical origin after exact fetch: %w", err)
 	}
-	fetchedTip, err := gitCanonical(ctx, canonical, "rev-parse", "--verify", fetchedRef+"^{commit}")
+	fetchedTip, err := gitCanonical(ctx, state.canonical, "rev-parse", "--verify", fetchedRef+"^{commit}")
 	if err != nil || !isGitObjectID(fetchedTip) {
-		return result, fmt.Errorf("resolve live fetched branch tip for %s/%s: %w", repository, spec.Branch, err)
+		return fmt.Errorf("resolve live fetched branch tip for %s/%s: %w", state.repository, spec.Branch, err)
 	}
 	if fetchedTip != spec.Commit {
-		return result, fmt.Errorf("remote branch tip moved for %s/%s: fetched %s, session requires exact commit %s", repository, spec.Branch, fetchedTip, spec.Commit)
+		return fmt.Errorf("remote branch tip moved for %s/%s: fetched %s, session requires exact commit %s", state.repository, spec.Branch, fetchedTip, spec.Commit)
 	}
 	if spec.SourceWorkCommit != "" {
-		if _, err := gitCanonical(ctx, canonical, "cat-file", "-e", spec.SourceWorkCommit+"^{commit}"); err != nil {
-			return result, fmt.Errorf("source work commit is missing from %s: %s: %w", repository, spec.SourceWorkCommit, err)
+		if _, err := gitCanonical(ctx, state.canonical, "cat-file", "-e", spec.SourceWorkCommit+"^{commit}"); err != nil {
+			return fmt.Errorf("source work commit is missing from %s: %s: %w", state.repository, spec.SourceWorkCommit, err)
 		}
-		if _, err := gitCanonical(ctx, canonical, "merge-base", "--is-ancestor", spec.SourceWorkCommit, spec.Commit); err != nil {
-			return result, fmt.Errorf("source work commit %s is not an ancestor of admitted commit %s", spec.SourceWorkCommit, spec.Commit)
+		if _, err := gitCanonical(ctx, state.canonical, "merge-base", "--is-ancestor", spec.SourceWorkCommit, spec.Commit); err != nil {
+			return fmt.Errorf("source work commit %s is not an ancestor of admitted commit %s", spec.SourceWorkCommit, spec.Commit)
 		}
 	}
-	var handoverBytes []byte
 	if spec.HandoverPath != "" {
-		handoverBytes, err = gitCanonicalBytes(ctx, canonical, "cat-file", "blob", spec.Commit+":"+spec.HandoverPath)
+		state.handoverBytes, err = gitCanonicalBytes(ctx, state.canonical, "cat-file", "blob", spec.Commit+":"+spec.HandoverPath)
 		if err != nil {
-			return result, fmt.Errorf("read tracked handover blob %s from admitted commit %s: %w", spec.HandoverPath, spec.Commit, err)
+			return fmt.Errorf("read tracked handover blob %s from admitted commit %s: %w", spec.HandoverPath, spec.Commit, err)
 		}
-		if !spec.HandoverDigest.Matches(handoverBytes) {
-			return result, fmt.Errorf("handover digest mismatch for %s: committed bytes compute %s, request declares %s", spec.HandoverPath, sessionmove.DigestBytes(handoverBytes), spec.HandoverDigest)
+		if !spec.HandoverDigest.Matches(state.handoverBytes) {
+			return fmt.Errorf("handover digest mismatch for %s: committed bytes compute %s, request declares %s", spec.HandoverPath, sessionmove.DigestBytes(state.handoverBytes), spec.HandoverDigest)
 		}
 	}
-	pinBranch := spec.PinBranch
+	return nil
+}
 
-	home, err := wbhome.Root(projectsRoot)
+// prepareOperation holds the target operation lock until the invocation ends.
+// An ambiguous interrupted lock stays named on failed recovery.
+func (state *sessionReceiveState) prepareOperation() error {
+	var err error
+	state.home, err = wbhome.Root(state.projectsRoot)
 	if err != nil {
-		return result, err
+		return err
 	}
 	// The staged checkout below runs the repository's post-checkout hook under
 	// a filesystem sandbox; the helper must authorize this exact root's hook
 	// runtime directory.
-	ctx = withProjectsRoot(ctx, projectsRoot)
-	operationName := "session-" + spec.OperationID
-	operation, err := prepareOperationRoot(home, operationName, nil)
+	state.ctx = withProjectsRoot(state.ctx, state.projectsRoot)
+	state.operationName = "session-" + state.spec.OperationID
+	state.operation, err = prepareOperationRoot(state.home, state.operationName, nil)
 	if err != nil {
-		return result, err
+		return err
 	}
-	defer operation.close()
-	reclaimInterrupted := spec.Fence != nil && spec.Fence.HeldForSession(spec.AuthorityStore, spec.AuthorityID, string(spec.AuthorityDigest))
-	lock, err := acquireLockAtReclaimingInterrupted(operation.Directory, reclaimInterrupted, operationName)
+	reclaimInterrupted := state.spec.Fence != nil && state.spec.Fence.HeldForSession(state.spec.AuthorityStore, state.spec.AuthorityID, string(state.spec.AuthorityDigest))
+	state.lock, err = acquireLockAtReclaimingInterrupted(state.operation.Directory, reclaimInterrupted, state.operationName)
 	if err != nil {
-		return result, err
+		return err
 	}
-	if lock.interrupted {
-		if spec.Fence == nil || !spec.Fence.HeldForSession(spec.AuthorityStore, spec.AuthorityID, string(spec.AuthorityDigest)) {
-			_ = lock.file.Close()
-			lock.file = nil
-			return result, fmt.Errorf("exact admitted handoff authority changed before interrupted target recovery")
+	if state.lock.interrupted {
+		if state.spec.Fence == nil || !state.spec.Fence.HeldForSession(state.spec.AuthorityStore, state.spec.AuthorityID, string(state.spec.AuthorityDigest)) {
+			_ = state.lock.file.Close()
+			state.lock.file = nil
+			return fmt.Errorf("exact admitted handoff authority changed before interrupted target recovery")
 		}
-		if _, err := interruptedTaskLockPID(lock.file, operationName); err != nil {
-			_ = lock.file.Close() // preserve the ambiguous named remnant.
-			lock.file = nil
-			return result, fmt.Errorf("validate interrupted target receive lock: %w", err)
+		if _, err := interruptedTaskLockPID(state.lock.file, state.operationName); err != nil {
+			_ = state.lock.file.Close() // preserve the ambiguous named remnant.
+			state.lock.file = nil
+			return fmt.Errorf("validate interrupted target receive lock: %w", err)
 		}
 	}
-	defer func() { _ = lock.release() }()
+	return nil
+}
 
-	if occupied, _, occupiedErr := branchWorktreeCanonical(ctx, canonical, pinBranch); occupiedErr != nil {
-		return result, occupiedErr
-	} else if occupied {
-		registeredOperation, registeredWorktree, registeredErr := receivedSessionWorktreePath(ctx, projectsRoot, canonical, spec, repository)
-		if registeredErr == nil {
-			if reuseErr := verifySessionReceiveReuse(ctx, canonical, registeredOperation, registeredWorktree, pinBranch, spec.Commit); reuseErr != nil {
-				return SessionReceiveResult{}, reuseErr
-			}
-			if lock.interrupted {
-				physicalRoot, openErr := openAbsoluteDirectoryNoFollow(registeredOperation, false)
-				if openErr != nil {
-					return SessionReceiveResult{}, fmt.Errorf("open completed interrupted receive root: %w", openErr)
-				}
-				retireErr := retireCompletedInterruptedSessionStage(ctx, registeredOperation, physicalRoot)
-				closeErr := physicalRoot.Close()
-				if retireErr != nil {
-					return SessionReceiveResult{}, retireErr
-				}
-				if closeErr != nil {
-					return SessionReceiveResult{}, fmt.Errorf("close completed interrupted receive root: %w", closeErr)
-				}
-			}
-			return SessionReceiveResult{
-				Repository: repository, CanonicalDir: canonicalPath, WorktreeDir: registeredWorktree,
-				Commit: spec.Commit, HandoverBytes: append([]byte(nil), handoverBytes...), Reused: true,
-			}, nil
-		}
-		if !lock.interrupted {
-			return result, registeredErr
-		}
+func (state *sessionReceiveState) result(path string, reused bool) SessionReceiveResult {
+	return SessionReceiveResult{
+		Repository: state.repository, CanonicalDir: state.canonicalPath, WorktreeDir: path,
+		Commit: state.spec.Commit, HandoverBytes: append([]byte(nil), state.handoverBytes...), Reused: reused,
 	}
+}
 
-	placement, physicalOperationPath, physicalParent, physicalRepository, _, err := sessionReceivePhysicalCoordinates(ctx, projectsRoot, canonical, spec, repository)
-	if err != nil {
-		return result, err
+func (state *sessionReceiveState) reuseRegistered() (SessionReceiveResult, bool, error) {
+	spec := state.spec
+	occupied, _, occupiedErr := branchWorktreeCanonical(state.ctx, state.canonical, spec.PinBranch)
+	if occupiedErr != nil {
+		return SessionReceiveResult{}, false, occupiedErr
 	}
-	physicalOperation := operation
+	if !occupied {
+		return SessionReceiveResult{}, false, nil
+	}
+	registeredOperation, registeredWorktree, registeredErr := receivedSessionWorktreePath(state.ctx, state.projectsRoot, state.canonical, spec, state.repository)
+	if registeredErr != nil {
+		if state.lock.interrupted {
+			return SessionReceiveResult{}, false, nil
+		}
+		return SessionReceiveResult{}, false, registeredErr
+	}
+	if reuseErr := verifySessionReceiveReuse(state.ctx, state.canonical, registeredOperation, registeredWorktree, spec.PinBranch, spec.Commit); reuseErr != nil {
+		return SessionReceiveResult{}, false, reuseErr
+	}
+	if state.lock.interrupted {
+		physicalRoot, openErr := openAbsoluteDirectoryNoFollow(registeredOperation, false)
+		if openErr != nil {
+			return SessionReceiveResult{}, false, fmt.Errorf("open completed interrupted receive root: %w", openErr)
+		}
+		retireErr := retireCompletedInterruptedSessionStage(state.ctx, registeredOperation, physicalRoot)
+		closeRoot := state.closeInterruptedRoot
+		if closeRoot == nil {
+			closeRoot = (*os.File).Close
+		}
+		closeErr := closeRoot(physicalRoot)
+		if retireErr != nil {
+			return SessionReceiveResult{}, false, retireErr
+		}
+		if closeErr != nil {
+			return SessionReceiveResult{}, false, fmt.Errorf("close completed interrupted receive root: %w", closeErr)
+		}
+	}
+	return state.result(registeredWorktree, true), true, nil
+}
+
+// placeTarget keeps the selected physical root open through target publication.
+// The owner closes publication first, then this root, then the operation lock.
+func (state *sessionReceiveState) placeTarget() (SessionReceiveResult, error) {
+	spec := state.spec
+	placement, _, physicalParent, physicalRepository, _, err := sessionReceivePhysicalCoordinates(state.ctx, state.projectsRoot, state.canonical, spec, state.repository)
+	if err != nil {
+		return SessionReceiveResult{}, err
+	}
+	physicalOperation := state.operation
 	if placement.Local {
-		localRoot, localRootDirectory, localRootErr := prepareCanonicalWorktreesRoot(ctx, canonical, spec.Commit)
+		localRoot, localRootDirectory, localRootErr := prepareCanonicalWorktreesRoot(state.ctx, state.canonical, spec.Commit)
 		if localRootErr != nil {
-			return result, localRootErr
+			return SessionReceiveResult{}, localRootErr
 		}
-		defer func() { _ = localRootDirectory.Close() }()
-		if filepath.Clean(localRoot) != filepath.Clean(physicalOperationPath) {
-			return result, fmt.Errorf("resolved local session worktree root changed before publish")
-		}
+		state.localRootDirectory = localRootDirectory
+		// The planned local root and this helper's return both spell
+		// canonical.path/.worktrees; the helper checks its held identity.
 		physicalOperation = preparedOperationRoot{Path: localRoot, Worktrees: localRootDirectory, Directory: localRootDirectory}
-	} else if filepath.Clean(placement.Root) != filepath.Join(home, "worktrees") {
-		sharedOperation, sharedOperationErr := prepareOperationRootAt(placement.Root, operationName)
-		if sharedOperationErr != nil {
-			return result, sharedOperationErr
+	} else if filepath.Clean(placement.Root) != filepath.Join(state.home, "worktrees") {
+		state.sharedOperation, err = prepareOperationRootAt(placement.Root, state.operationName)
+		if err != nil {
+			return SessionReceiveResult{}, err
 		}
-		defer sharedOperation.close()
-		physicalOperation = sharedOperation
+		physicalOperation = state.sharedOperation
 	}
 	worktreePath, exists, err := prepareWorktreeDestination(physicalOperation.Path, physicalOperation.Directory, physicalParent, physicalRepository)
 	if err != nil {
-		return result, err
+		return SessionReceiveResult{}, err
 	}
-	result = SessionReceiveResult{
-		Repository: repository, CanonicalDir: canonicalPath, WorktreeDir: worktreePath,
-		Commit: spec.Commit, HandoverBytes: append([]byte(nil), handoverBytes...), Reused: exists,
-	}
-	if lock.interrupted {
+	result := state.result(worktreePath, exists)
+	if state.lock.interrupted {
 		recovered, recoveryErr := recoverInterruptedSessionReceivePublication(
-			ctx, canonical, physicalOperation.Path, physicalOperation.Directory, physicalParent, physicalRepository, worktreePath,
-			pinBranch, spec.Commit, exists,
+			state.ctx, state.canonical, physicalOperation.Path, physicalOperation.Directory, physicalParent, physicalRepository, worktreePath,
+			spec.PinBranch, spec.Commit, exists,
 		)
 		if recoveryErr != nil {
 			// Keep the exact dead-owner lock record named when recovery cannot
 			// be completed. A later identical admitted receive may retry it;
 			// ordinary calls still cannot claim the remnant.
-			_ = lock.file.Close()
-			lock.file = nil
+			_ = state.lock.file.Close()
+			state.lock.file = nil
 			return SessionReceiveResult{}, recoveryErr
 		}
 		if recovered {
@@ -605,52 +688,42 @@ func receiveSessionMember(ctx context.Context, options SessionMemberReceiveOptio
 		}
 	}
 	if exists {
-		if err := verifySessionReceiveReuse(ctx, canonical, physicalOperation.Path, worktreePath, pinBranch, spec.Commit); err != nil {
+		if err := verifySessionReceiveReuse(state.ctx, state.canonical, physicalOperation.Path, worktreePath, spec.PinBranch, spec.Commit); err != nil {
 			return SessionReceiveResult{}, err
 		}
 		return result, nil
 	}
 
-	branch := pinBranch
-	branchExists, err := localBranchExistsCanonical(ctx, canonical, branch)
+	branch := spec.PinBranch
+	branchExists, err := localBranchExistsCanonical(state.ctx, state.canonical, branch)
 	if err != nil {
 		return SessionReceiveResult{}, err
 	}
 	if branchExists {
-		tip, tipErr := gitCanonical(ctx, canonical, "rev-parse", "--verify", "refs/heads/"+branch+"^{commit}")
+		tip, tipErr := gitCanonical(state.ctx, state.canonical, "rev-parse", "--verify", "refs/heads/"+branch+"^{commit}")
 		if tipErr != nil || tip != spec.Commit {
 			return SessionReceiveResult{}, fmt.Errorf("existing target pin branch %q does not identify exact admitted commit %s", branch, spec.Commit)
 		}
-		if occupied, path, occupiedErr := branchWorktreeCanonical(ctx, canonical, branch); occupiedErr != nil {
+		if occupied, path, occupiedErr := branchWorktreeCanonical(state.ctx, state.canonical, branch); occupiedErr != nil {
 			return SessionReceiveResult{}, occupiedErr
 		} else if occupied {
 			return SessionReceiveResult{}, fmt.Errorf("existing target pin branch %q is already checked out at conflicting path %s", branch, path)
 		}
 	}
 	var publication *createdWorktreePublication
-	if err := addWorktreeAtSecureDestination(
-		ctx, canonical, physicalOperation.Path, physicalOperation.Directory, physicalParent, physicalRepository,
-		branch, spec.Branch, spec.Commit, branchExists,
-		nil, // beforeAdd
-		nil, // afterStageDirectoryCreated
-		nil, // afterStageValidation
-		nil, // afterStageVerification
-		nil, // afterDestinationValidation
-		nil, // afterCheckoutAuthorization
-		nil, // afterCheckoutMove
-		nil, // afterPublishedAuthorization
-		nil, // afterRegistrationLockAcquired
-		nil, // afterRepair
-		nil, // afterStagedAdd
-		nil, // beforeRepair
-		&publication,
-	); err != nil {
+	if err := addWorktreeAtSecureDestination(state.ctx, securePublicationRequest{
+		canonical: state.canonical, operationRoot: physicalOperation.Path, operationDirectory: physicalOperation.Directory,
+		parent: physicalParent, repository: physicalRepository, branch: branch, base: spec.Branch,
+		baseRevision: spec.Commit, branchExists: branchExists, publication: &publication,
+		hooks: securePublicationHooks{afterStagedAdd: state.afterTargetStagedAdd},
+	}); err != nil {
 		return SessionReceiveResult{}, fmt.Errorf("create pinned target worktree: %w", err)
 	}
-	if publication != nil {
-		defer publication.close()
+	state.publication = publication
+	if state.afterTargetPublication != nil {
+		state.afterTargetPublication(worktreePath)
 	}
-	if err := verifySessionReceiveReuse(ctx, canonical, physicalOperation.Path, worktreePath, pinBranch, spec.Commit); err != nil {
+	if err := verifySessionReceiveReuse(state.ctx, state.canonical, physicalOperation.Path, worktreePath, branch, spec.Commit); err != nil {
 		return SessionReceiveResult{}, fmt.Errorf("verify new pinned target worktree: %w", err)
 	}
 	return result, nil
@@ -697,7 +770,14 @@ func verifySessionReceiveCanonical(ctx context.Context, canonical *canonicalRepo
 // opens — and, when it must clone, creates — the exact directory tree the clone
 // lives in instead of a host-less duplicate beside it.
 func sessionReceiveCanonicalParent(projectsRoot, canonicalPath string) (parent, name string, err error) {
-	relative, err := filepath.Rel(projectsRoot, canonicalPath)
+	return sessionReceiveCanonicalParentUsing(filepath.Rel, projectsRoot, canonicalPath)
+}
+
+func sessionReceiveCanonicalParentUsing(
+	relativePath func(string, string) (string, error),
+	projectsRoot, canonicalPath string,
+) (parent, name string, err error) {
+	relative, err := relativePath(projectsRoot, canonicalPath)
 	if err != nil {
 		return "", "", fmt.Errorf("resolve canonical clone %s below %s: %w", canonicalPath, projectsRoot, err)
 	}
@@ -708,9 +788,6 @@ func sessionReceiveCanonicalParent(projectsRoot, canonicalPath string) (parent, 
 	parent, name = path.Dir(slashed), path.Base(slashed)
 	if parent == "." {
 		parent = ""
-	}
-	if name == "" || name == "." || name == ".." {
-		return "", "", fmt.Errorf("canonical clone %s has no repository name", canonicalPath)
 	}
 	return parent, name, nil
 }
@@ -736,18 +813,11 @@ func openOrCloneSessionReceiveCanonical(
 	if err != nil {
 		return nil, err
 	}
-	if ownerDirectory == nil {
-		return nil, fmt.Errorf("resolve canonical parent for %s", declared.Repository)
-	}
 	defer func() { _ = ownerDirectory.Close() }()
 
 	existingFD, openErr := unix.Openat(int(ownerDirectory.Fd()), name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
 	if openErr == nil {
 		existing := os.NewFile(uintptr(existingFD), "wb-session-receive-existing-canonical")
-		if existing == nil {
-			_ = unix.Close(existingFD)
-			return nil, fmt.Errorf("wrap existing canonical clone for %s", declared.Repository)
-		}
 		defer func() { _ = existing.Close() }()
 		return openSessionReceiveCanonicalFromHeldRoot(canonicalPath, existing)
 	}
@@ -759,11 +829,50 @@ func openOrCloneSessionReceiveCanonical(
 	)
 }
 
+// sessionReceivePublicationPorts are invocation-local secure operations. The
+// defaults retain the same descriptor-held publication and recovery paths;
+// focused tests replace one fallible boundary at a time.
+type sessionReceivePublicationPorts struct {
+	makeStage       func(*os.File) (string, error)
+	openDirectory   func(int, string, string, string, string) (*os.File, error)
+	quarantine      func(*os.File, *os.File) error
+	verifyStage     func(context.Context, *os.File, string) error
+	stagePath       func(context.Context, *os.File) (string, error)
+	openHeld        func(string, *os.File) (*canonicalRepository, error)
+	verifyCanonical func(context.Context, *canonicalRepository, gitremote.Identity) error
+	move            func(*os.File, string, *os.File, string, *os.File, func(), ...func()) (*os.File, error)
+	openParent      func(*os.File, string, string) (*os.File, string, error)
+	verifyHeld      func(context.Context, string, string, string, *os.File, string, string) error
+	repair          func(context.Context, *canonicalRepository, *os.File, *os.File, string, string, ...string) error
+	empty           func(*os.File) (bool, error)
+}
+
+func productionSessionReceivePublicationPorts() sessionReceivePublicationPorts {
+	return sessionReceivePublicationPorts{
+		makeStage: makeSecureStageDirectory, openDirectory: openDirectoryAtNoFollow,
+		quarantine: quarantineMatchingStageDirectoryAt, verifyStage: verifySecureStageDirectory,
+		stagePath: secureDirectoryPath, openHeld: openSessionReceiveCanonicalFromHeldRoot,
+		verifyCanonical: verifySessionReceiveCanonical, move: moveExpectedDirectoryNoReplace,
+		openParent: openRelativeParentDirectory, verifyHeld: verifyHeldSessionReceiveCheckout,
+		repair: runSecureCleanupGitHelper, empty: directoryEmpty,
+	}
+}
+
 func cloneSessionReceiveCanonical(
 	ctx context.Context,
 	ownerDirectory *os.File,
 	ownerPath, name, canonicalPath, declaredRemote string,
 	declared gitremote.Identity,
+) (*canonicalRepository, error) {
+	return cloneSessionReceiveCanonicalWithPorts(ctx, ownerDirectory, ownerPath, name, canonicalPath, declaredRemote, declared, productionSessionReceivePublicationPorts())
+}
+
+func cloneSessionReceiveCanonicalWithPorts(
+	ctx context.Context,
+	ownerDirectory *os.File,
+	ownerPath, name, canonicalPath, declaredRemote string,
+	declared gitremote.Identity,
+	ports sessionReceivePublicationPorts,
 ) (canonical *canonicalRepository, returnErr error) {
 	if err := requireAbsentNoFollowChild(int(ownerDirectory.Fd()), name); err != nil {
 		return nil, err
@@ -771,21 +880,18 @@ func cloneSessionReceiveCanonical(
 	if !directoryStillMatches(ownerPath, ownerDirectory) {
 		return nil, fmt.Errorf("canonical owner path changed before cloning %s", declared.Repository)
 	}
-	stageName, err := makeSecureStageDirectory(ownerDirectory)
+	stageName, err := ports.makeStage(ownerDirectory)
 	if err != nil {
 		return nil, fmt.Errorf("create secure canonical clone stage for %s: %w", declared.Repository, err)
 	}
-	stageFD, err := unix.Openat(int(ownerDirectory.Fd()), stageName, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	stage, err := ports.openDirectory(int(ownerDirectory.Fd()), stageName, "wb-session-receive-clone-stage",
+		"open secure canonical clone stage for "+declared.Repository,
+		"wrap secure canonical clone stage for "+declared.Repository)
 	if err != nil {
-		return nil, fmt.Errorf("open secure canonical clone stage for %s: %w", declared.Repository, err)
-	}
-	stage := os.NewFile(uintptr(stageFD), "wb-session-receive-clone-stage")
-	if stage == nil {
-		_ = unix.Close(stageFD)
-		return nil, fmt.Errorf("wrap secure canonical clone stage for %s", declared.Repository)
+		return nil, err
 	}
 	defer func() {
-		quarantineErr := quarantineMatchingStageDirectoryAt(ownerDirectory, stage)
+		quarantineErr := ports.quarantine(ownerDirectory, stage)
 		_ = stage.Close()
 		if quarantineErr != nil && returnErr == nil {
 			if canonical != nil {
@@ -795,7 +901,7 @@ func cloneSessionReceiveCanonical(
 			returnErr = fmt.Errorf("retire secure canonical clone stage for %s: %w", declared.Repository, quarantineErr)
 		}
 	}()
-	if err := verifySecureStageDirectory(ctx, stage, ownerPath); err != nil {
+	if err := ports.verifyStage(ctx, stage, ownerPath); err != nil {
 		return nil, err
 	}
 	gitExecutable, err := trustedGitExecutable()
@@ -810,36 +916,33 @@ func cloneSessionReceiveCanonical(
 		// can contain credentials, and receive diagnostics must never echo it.
 		return nil, fmt.Errorf("secure clone of canonical repository %s failed", declared.Repository)
 	}
-	if err := verifySecureStageDirectory(ctx, stage, ownerPath); err != nil {
+	if err := ports.verifyStage(ctx, stage, ownerPath); err != nil {
 		return nil, err
 	}
-	stagePath, err := secureDirectoryPath(ctx, stage)
+	stagePath, err := ports.stagePath(ctx, stage)
 	if err != nil {
 		return nil, err
 	}
 	stagedPath := filepath.Join(stagePath, "checkout")
-	checkoutFD, err := unix.Openat(int(stage.Fd()), "checkout", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	checkout, err := ports.openDirectory(int(stage.Fd()), "checkout", "wb-session-receive-staged-canonical",
+		"open staged canonical clone for "+declared.Repository,
+		"wrap staged canonical clone for "+declared.Repository)
 	if err != nil {
-		return nil, fmt.Errorf("open staged canonical clone for %s: %w", declared.Repository, err)
-	}
-	checkout := os.NewFile(uintptr(checkoutFD), "wb-session-receive-staged-canonical")
-	if checkout == nil {
-		_ = unix.Close(checkoutFD)
-		return nil, fmt.Errorf("wrap staged canonical clone for %s", declared.Repository)
+		return nil, err
 	}
 	defer func() { _ = checkout.Close() }()
-	staged, err := openSessionReceiveCanonicalFromHeldRoot(stagedPath, checkout)
+	staged, err := ports.openHeld(stagedPath, checkout)
 	if err != nil {
 		return nil, fmt.Errorf("retain staged canonical clone for %s: %w", declared.Repository, err)
 	}
 	defer staged.close()
-	if err := verifySessionReceiveCanonical(ctx, staged, declared); err != nil {
+	if err := ports.verifyCanonical(ctx, staged, declared); err != nil {
 		return nil, fmt.Errorf("verify staged canonical clone for %s: %w", declared.Repository, err)
 	}
 	if !directoryStillMatches(ownerPath, ownerDirectory) {
 		return nil, fmt.Errorf("canonical owner path changed before publishing %s", declared.Repository)
 	}
-	published, err := moveExpectedDirectoryNoReplace(stage, "checkout", ownerDirectory, name, staged.root, nil)
+	published, err := ports.move(stage, "checkout", ownerDirectory, name, staged.root, nil)
 	if err != nil {
 		if published != nil {
 			_ = published.Close()
@@ -848,9 +951,9 @@ func cloneSessionReceiveCanonical(
 	}
 	defer func() { _ = published.Close() }()
 
-	canonical, err = openSessionReceiveCanonicalFromHeldRoot(canonicalPath, published)
+	canonical, err = ports.openHeld(canonicalPath, published)
 	if err == nil {
-		err = verifySessionReceiveCanonical(ctx, canonical, declared)
+		err = ports.verifyCanonical(ctx, canonical, declared)
 	}
 	if err == nil {
 		return canonical, nil
@@ -859,7 +962,7 @@ func cloneSessionReceiveCanonical(
 		canonical.close()
 		canonical = nil
 	}
-	rolledBack, rollbackErr := moveExpectedDirectoryNoReplace(ownerDirectory, name, stage, "checkout", published, nil)
+	rolledBack, rollbackErr := ports.move(ownerDirectory, name, stage, "checkout", published, nil)
 	if rolledBack != nil {
 		_ = rolledBack.Close()
 	}
@@ -884,27 +987,7 @@ func openSessionReceiveCanonicalFromHeldRoot(path string, held *os.File) (*canon
 	}
 	unix.CloseOnExec(rootFD)
 	root := os.NewFile(uintptr(rootFD), "wb-session-receive-canonical-root")
-	if root == nil {
-		_ = unix.Close(rootFD)
-		return nil, fmt.Errorf("wrap retained canonical repository root")
-	}
-	gitFD, err := unix.Openat(int(root.Fd()), ".git", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
-	if err != nil {
-		_ = root.Close()
-		return nil, fmt.Errorf("open canonical Git directory without following links: %w", err)
-	}
-	common := os.NewFile(uintptr(gitFD), "wb-session-receive-canonical-git-directory")
-	if common == nil {
-		_ = unix.Close(gitFD)
-		_ = root.Close()
-		return nil, fmt.Errorf("wrap canonical Git directory")
-	}
-	canonical := &canonicalRepository{path: path, root: root, common: common}
-	if err := canonical.validate(); err != nil {
-		canonical.close()
-		return nil, err
-	}
-	return canonical, nil
+	return openCanonicalRepositoryFromOwnedRoot(path, root, "wb-session-receive-canonical-git-directory")
 }
 
 func recoverInterruptedSessionReceivePublication(
@@ -914,6 +997,19 @@ func recoverInterruptedSessionReceivePublication(
 	operationDirectory *os.File,
 	parent, repository, finalPath, pinBranch, bundleCommit string,
 	finalExists bool,
+) (bool, error) {
+	return recoverInterruptedSessionReceivePublicationWithPorts(ctx, canonical, operationRoot, operationDirectory,
+		parent, repository, finalPath, pinBranch, bundleCommit, finalExists, productionSessionReceivePublicationPorts())
+}
+
+func recoverInterruptedSessionReceivePublicationWithPorts(
+	ctx context.Context,
+	canonical *canonicalRepository,
+	operationRoot string,
+	operationDirectory *os.File,
+	parent, repository, finalPath, pinBranch, bundleCommit string,
+	finalExists bool,
+	ports sessionReceivePublicationPorts,
 ) (bool, error) {
 	occupied, registeredPath, err := branchWorktreeCanonical(ctx, canonical, pinBranch)
 	if err != nil {
@@ -933,7 +1029,7 @@ func recoverInterruptedSessionReceivePublication(
 		if err := verifySessionReceiveReuse(ctx, canonical, operationRoot, finalPath, pinBranch, bundleCommit); err != nil {
 			return false, fmt.Errorf("verify interrupted published target: %w", err)
 		}
-		if err := retireCompletedInterruptedSessionStage(ctx, operationRoot, operationDirectory); err != nil {
+		if err := retireCompletedInterruptedSessionStageWithPorts(ctx, operationRoot, operationDirectory, ports); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -946,25 +1042,21 @@ func recoverInterruptedSessionReceivePublication(
 	if err := requireOnlyInterruptedSessionStage(operationDirectory, stageName); err != nil {
 		return false, err
 	}
-	stageFD, err := unix.Openat(int(operationDirectory.Fd()), stageName, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	stage, err := ports.openDirectory(int(operationDirectory.Fd()), stageName, "wb-session-receive-interrupted-stage",
+		"open exact interrupted receive stage", "wrap exact interrupted receive stage")
 	if err != nil {
-		return false, fmt.Errorf("open exact interrupted receive stage: %w", err)
-	}
-	stage := os.NewFile(uintptr(stageFD), "wb-session-receive-interrupted-stage")
-	if stage == nil {
-		_ = unix.Close(stageFD)
-		return false, fmt.Errorf("wrap exact interrupted receive stage")
+		return false, err
 	}
 	defer func() { _ = stage.Close() }()
 	stagePath := filepath.Join(operationRoot, stageName)
 	if !directoryStillMatches(stagePath, stage) {
 		return false, fmt.Errorf("exact interrupted receive stage path changed before recovery")
 	}
-	if err := verifySecureStageDirectory(ctx, stage, operationRoot); err != nil {
+	if err := ports.verifyStage(ctx, stage, operationRoot); err != nil {
 		return false, fmt.Errorf("verify exact interrupted receive stage: %w", err)
 	}
 
-	ownerDirectory, ownerPath, err := openRelativeParentDirectory(operationDirectory, operationRoot, parent)
+	ownerDirectory, ownerPath, err := ports.openParent(operationDirectory, operationRoot, parent)
 	if err != nil {
 		return false, err
 	}
@@ -976,41 +1068,33 @@ func recoverInterruptedSessionReceivePublication(
 
 	var finalDirectory *os.File
 	if finalExists {
-		if _, statErr := secureDirectoryIdentityAt(stageFD, "checkout"); statErr == nil {
+		if _, statErr := secureDirectoryIdentityAt(int(stage.Fd()), "checkout"); statErr == nil {
 			return false, fmt.Errorf("interrupted receive has both staged and published checkouts; refusing ambiguous recovery")
 		} else if !errors.Is(statErr, unix.ENOENT) {
 			return false, fmt.Errorf("inspect interrupted staged checkout: %w", statErr)
 		}
-		finalFD, openErr := unix.Openat(ownerFD, repository, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
-		if openErr != nil {
-			return false, fmt.Errorf("open interrupted published target: %w", openErr)
-		}
-		finalDirectory = os.NewFile(uintptr(finalFD), "wb-session-receive-interrupted-published")
-		if finalDirectory == nil {
-			_ = unix.Close(finalFD)
-			return false, fmt.Errorf("wrap interrupted published target")
+		finalDirectory, err = ports.openDirectory(ownerFD, repository, "wb-session-receive-interrupted-published",
+			"open interrupted published target", "wrap interrupted published target")
+		if err != nil {
+			return false, err
 		}
 	} else {
 		if err := requireAbsentNoFollowChild(ownerFD, repository); err != nil {
 			return false, err
 		}
-		checkoutFD, openErr := unix.Openat(stageFD, "checkout", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+		checkout, openErr := ports.openDirectory(int(stage.Fd()), "checkout", "wb-session-receive-interrupted-checkout",
+			"open exact interrupted staged checkout", "wrap exact interrupted staged checkout")
 		if openErr != nil {
-			return false, fmt.Errorf("open exact interrupted staged checkout: %w", openErr)
-		}
-		checkout := os.NewFile(uintptr(checkoutFD), "wb-session-receive-interrupted-checkout")
-		if checkout == nil {
-			_ = unix.Close(checkoutFD)
-			return false, fmt.Errorf("wrap exact interrupted staged checkout")
+			return false, openErr
 		}
 		defer func() { _ = checkout.Close() }()
 		if !directoryStillMatches(registeredPath, checkout) {
 			return false, fmt.Errorf("interrupted staged checkout no longer matches its exact Git registration")
 		}
-		if err := verifyHeldSessionReceiveCheckout(ctx, canonical.path, operationRoot, registeredPath, checkout, pinBranch, bundleCommit); err != nil {
+		if err := ports.verifyHeld(ctx, canonical.path, operationRoot, registeredPath, checkout, pinBranch, bundleCommit); err != nil {
 			return false, fmt.Errorf("verify exact interrupted staged checkout: %w", err)
 		}
-		finalDirectory, err = moveExpectedDirectoryNoReplace(stage, "checkout", ownerDirectory, repository, checkout, nil)
+		finalDirectory, err = ports.move(stage, "checkout", ownerDirectory, repository, checkout, nil)
 		if err != nil {
 			if finalDirectory != nil {
 				_ = finalDirectory.Close()
@@ -1022,30 +1106,37 @@ func recoverInterruptedSessionReceivePublication(
 	if !directoryStillMatches(finalPath, finalDirectory) {
 		return false, fmt.Errorf("interrupted published target path changed before repair")
 	}
-	if err := verifyHeldSessionReceiveCheckout(ctx, canonical.path, operationRoot, finalPath, finalDirectory, pinBranch, bundleCommit); err != nil {
+	if err := ports.verifyHeld(ctx, canonical.path, operationRoot, finalPath, finalDirectory, pinBranch, bundleCommit); err != nil {
 		return false, fmt.Errorf("verify interrupted published checkout before repair: %w", err)
 	}
-	if err := runSecureCleanupGitHelper(
+	if err := ports.repair(
 		ctx, canonical, ownerDirectory, finalDirectory, ownerPath, finalPath,
 		"worktree", "repair", finalPath,
 	); err != nil {
 		return false, fmt.Errorf("repair exact interrupted target registration: %w", err)
 	}
-	if err := verifyHeldSessionReceiveCheckout(ctx, canonical.path, operationRoot, finalPath, finalDirectory, pinBranch, bundleCommit); err != nil {
+	if err := ports.verifyHeld(ctx, canonical.path, operationRoot, finalPath, finalDirectory, pinBranch, bundleCommit); err != nil {
 		return false, fmt.Errorf("verify exact interrupted target after repair: %w", err)
 	}
 	occupied, repairedPath, err := branchWorktreeCanonical(ctx, canonical, pinBranch)
 	if err != nil || !occupied || filepath.Clean(repairedPath) != filepath.Clean(finalPath) {
 		return false, fmt.Errorf("exact interrupted target registration was not repaired to its deterministic path")
 	}
-	if err := quarantineMatchingStageDirectoryAt(operationDirectory, stage); err != nil {
+	if err := ports.quarantine(operationDirectory, stage); err != nil {
 		return false, fmt.Errorf("retire recovered interrupted receive stage: %w", err)
 	}
 	return true, nil
 }
 
 func exactInterruptedSessionStage(operationRoot, registeredPath string) (string, bool) {
-	relative, err := filepath.Rel(filepath.Clean(operationRoot), filepath.Clean(registeredPath))
+	return exactInterruptedSessionStageUsing(filepath.Rel, operationRoot, registeredPath)
+}
+
+func exactInterruptedSessionStageUsing(
+	relativePath func(string, string) (string, error),
+	operationRoot, registeredPath string,
+) (string, bool) {
+	relative, err := relativePath(filepath.Clean(operationRoot), filepath.Clean(registeredPath))
 	if err != nil {
 		return "", false
 	}
@@ -1100,6 +1191,10 @@ func interruptedSessionStageNames(operationDirectory *os.File) ([]string, error)
 }
 
 func retireCompletedInterruptedSessionStage(ctx context.Context, operationRoot string, operationDirectory *os.File) error {
+	return retireCompletedInterruptedSessionStageWithPorts(ctx, operationRoot, operationDirectory, productionSessionReceivePublicationPorts())
+}
+
+func retireCompletedInterruptedSessionStageWithPorts(ctx context.Context, operationRoot string, operationDirectory *os.File, ports sessionReceivePublicationPorts) error {
 	names, err := interruptedSessionStageNames(operationDirectory)
 	if err != nil {
 		return err
@@ -1110,31 +1205,27 @@ func retireCompletedInterruptedSessionStage(ctx context.Context, operationRoot s
 	if len(names) != 1 {
 		return fmt.Errorf("multiple active receive stages make completed interrupted recovery ambiguous")
 	}
-	stageFD, err := unix.Openat(int(operationDirectory.Fd()), names[0], unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	stage, err := ports.openDirectory(int(operationDirectory.Fd()), names[0], "wb-session-receive-completed-stage",
+		"open completed interrupted receive stage", "wrap completed interrupted receive stage")
 	if err != nil {
-		return fmt.Errorf("open completed interrupted receive stage: %w", err)
-	}
-	stage := os.NewFile(uintptr(stageFD), "wb-session-receive-completed-stage")
-	if stage == nil {
-		_ = unix.Close(stageFD)
-		return fmt.Errorf("wrap completed interrupted receive stage")
+		return err
 	}
 	defer func() { _ = stage.Close() }()
 	stagePath := filepath.Join(operationRoot, names[0])
 	if !directoryStillMatches(stagePath, stage) {
 		return fmt.Errorf("completed interrupted receive stage path changed before retirement")
 	}
-	if err := verifySecureStageDirectory(ctx, stage, operationRoot); err != nil {
+	if err := ports.verifyStage(ctx, stage, operationRoot); err != nil {
 		return fmt.Errorf("verify completed interrupted receive stage: %w", err)
 	}
-	empty, err := directoryEmpty(stage)
+	empty, err := ports.empty(stage)
 	if err != nil || !empty {
 		if err != nil {
 			return fmt.Errorf("inspect completed interrupted receive stage: %w", err)
 		}
 		return fmt.Errorf("completed interrupted receive stage is not empty; refusing retirement")
 	}
-	if err := quarantineMatchingStageDirectoryAt(operationDirectory, stage); err != nil {
+	if err := ports.quarantine(operationDirectory, stage); err != nil {
 		return fmt.Errorf("retire completed interrupted receive stage: %w", err)
 	}
 	return nil
@@ -1165,7 +1256,13 @@ func verifyHeldSessionReceiveCheckout(
 	worktree *os.File,
 	pinBranch, bundleCommit string,
 ) error {
-	rootRaw, err := runSecureRenameGitBytesWithHeldWorktree(ctx, canonicalDir, operationRoot, worktreePath, worktree, "rev-parse", "--show-toplevel")
+	return verifyHeldSessionReceiveCheckoutWithQuery(ctx, worktreePath, pinBranch, bundleCommit, func(ctx context.Context, args ...string) ([]byte, error) {
+		return runSecureRenameGitBytesWithHeldWorktree(ctx, canonicalDir, operationRoot, worktreePath, worktree, args...)
+	})
+}
+
+func verifyHeldSessionReceiveCheckoutWithQuery(ctx context.Context, worktreePath, pinBranch, bundleCommit string, query func(context.Context, ...string) ([]byte, error)) error {
+	rootRaw, err := query(ctx, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return fmt.Errorf("verify existing target linked worktree common directory: %w", err)
 	}
@@ -1173,15 +1270,15 @@ func verifyHeldSessionReceiveCheckout(
 		return fmt.Errorf("existing target linked worktree root does not match %s", worktreePath)
 	}
 	wantedRef := "refs/heads/" + pinBranch
-	attachedRaw, err := runSecureRenameGitBytesWithHeldWorktree(ctx, canonicalDir, operationRoot, worktreePath, worktree, "symbolic-ref", "--quiet", "HEAD")
+	attachedRaw, err := query(ctx, "symbolic-ref", "--quiet", "HEAD")
 	if err != nil || strings.TrimSpace(string(attachedRaw)) != wantedRef {
 		return fmt.Errorf("existing target worktree is not attached to exact pin branch %s", wantedRef)
 	}
-	pinRaw, err := runSecureRenameGitBytesWithHeldWorktree(ctx, canonicalDir, operationRoot, worktreePath, worktree, "rev-parse", "--verify", wantedRef+"^{commit}")
+	pinRaw, err := query(ctx, "rev-parse", "--verify", wantedRef+"^{commit}")
 	if err != nil || strings.TrimSpace(string(pinRaw)) != bundleCommit {
 		return fmt.Errorf("existing target pin branch %s does not identify exact bundle commit %s", wantedRef, bundleCommit)
 	}
-	headRaw, err := runSecureRenameGitBytesWithHeldWorktree(ctx, canonicalDir, operationRoot, worktreePath, worktree, "rev-parse", "--verify", "HEAD^{commit}")
+	headRaw, err := query(ctx, "rev-parse", "--verify", "HEAD^{commit}")
 	if err != nil {
 		return fmt.Errorf("verify existing target HEAD: %w", err)
 	}
@@ -1189,7 +1286,7 @@ func verifyHeldSessionReceiveCheckout(
 	if head != bundleCommit {
 		return fmt.Errorf("existing target HEAD is %s, want exact bundle commit %s", head, bundleCommit)
 	}
-	status, err := runSecureRenameGitBytesWithHeldWorktree(ctx, canonicalDir, operationRoot, worktreePath, worktree, "status", "--porcelain=v1", "--untracked-files=all")
+	status, err := query(ctx, "status", "--porcelain=v1", "--untracked-files=all")
 	if err != nil {
 		return fmt.Errorf("inspect existing target worktree status: %w", err)
 	}
@@ -1197,12 +1294,4 @@ func verifyHeldSessionReceiveCheckout(
 		return fmt.Errorf("existing target worktree is dirty; refusing reuse: %s", strings.TrimSpace(string(status)))
 	}
 	return nil
-}
-
-func sessionReceiveRepositoryFromRemote(remote string) (string, error) {
-	parsed, err := gitremote.Parse(remote)
-	if err != nil {
-		return "", err
-	}
-	return parsed.Identity.Repository, nil
 }

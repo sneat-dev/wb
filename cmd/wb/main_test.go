@@ -5,18 +5,32 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/hooks"
 	"github.com/sneat-dev/wb/internal/hostload"
+	"github.com/sneat-dev/wb/internal/runqueue"
 	"github.com/sneat-dev/wb/internal/sessionlaunch"
 	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
 )
 
+// testIsolatedQueueDir records the isolated CPU admission queue directory
+// TestMain installs below, so TestTestMainIsolatesTheDefaultProjectsRoot...
+// can assert the real installed value directly, rather than only that
+// *some* redirection happened.
+var testIsolatedQueueDir string
+
 func TestMain(m *testing.M) {
+	if len(os.Args) > 1 {
+		if helper, known := worktrees.SecureGitHelperForArgument(os.Args[1]); known {
+			os.Exit(helper(os.Args[2:]))
+		}
+	}
 	// Every CLI test in this package that invokes `wb run --` or `wb
 	// worktree merge`/`prepare`/`resume` (directly via run()/root.Execute(),
 	// in-process) must never depend on the real host load average: GitHub's
@@ -33,31 +47,120 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == sessionlaunch.PrivateLauncherArgument {
 		os.Exit(sessionlaunch.RunPrivateLauncher(os.Args[2:]))
 	}
-	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureCleanupGitHelperArgument {
-		os.Exit(worktrees.RunSecureCleanupGitHelper(os.Args[2:]))
-	}
 	if len(os.Args) > 1 && os.Args[1] == hooks.SecureHooksGitHelperArgument {
 		os.Exit(hooks.RunSecureHooksGitHelper(os.Args[2:]))
 	}
-	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureStageGitHelperArgument {
-		os.Exit(worktrees.RunSecureStageGitHelper(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureCanonicalGitHelperArgument {
-		os.Exit(worktrees.RunSecureCanonicalGitHelper(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureStageCanonicalGitHelperArgument {
-		os.Exit(worktrees.RunSecureStageCanonicalGitHelper(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureRenameGitHelperArgument {
-		os.Exit(worktrees.RunSecureRenameGitHelper(os.Args[2:]))
-	}
+	// Drop the agent harness's own exports (AI_AGENT, CLAUDE_CODE_*,
+	// CLAUDE_PID, ...) too. testenv.IsolateProcess below removes only
+	// WB_AGENT_*, and a harness's session variables alone make a work-log
+	// claim register the real harness process above this binary as its owner.
+	testenv.IsolateHarnessProcess()
 	// Isolate the whole test binary from ambient ownership/session-identity
 	// state before any test runs: this binary is a subprocess of whichever
 	// agent is operating the shell that launched `go test`, and its
 	// WB_AGENT_* exports would otherwise leak into every worktree/session
 	// assertion below. See internal/testenv and internal/envguard.
 	testenv.IsolateProcess()
-	os.Exit(m.Run())
+	// Give the whole test binary a private, empty user before anything can
+	// resolve a path: without it wb.yaml is the developer's own (and names
+	// the fleet's real claim store) and the default projects root is their
+	// ~/projects. Running un-isolated is not an option, so a failure exits.
+	removeUserState, userStateErr := testenv.IsolateUserState()
+	if userStateErr != nil {
+		fmt.Fprintf(os.Stderr, "fatal: could not isolate the test user's configuration and state: %v\n", userStateErr)
+		os.Exit(1)
+	}
+	// Disable git's detached gc/maintenance for every git this binary
+	// starts, including remote_test.go's own fixture clones/pushes and any
+	// production git call under test, so no background writer can race
+	// t.TempDir() cleanup (task-21). A bare remote pushed to over a local
+	// transport still needs its own testenv.ConfigureGitAutoMaintenanceOff
+	// call (see remote_test.go's setGitIdentity).
+	testenv.GitAutoMaintenanceOffProcess()
+	// Give this whole test binary its own CPU admission queue, isolated
+	// from the real, machine-wide one (internal/runqueue) rooted at
+	// whatever projectsRoot this process would otherwise resolve by
+	// default (no explicit --projects-root). Without this, a test that
+	// itself invokes `wb run --` in-process with no explicit root (e.g.
+	// TestRunCommandAdmitsCPUHeavyWorkBelowFloor) joins the very same
+	// queue an outer `wb run -- go test ./cmd/wb/...` already holds a
+	// slot in, and waits behind its own outer holder forever — the known
+	// deadlock this package's own tests hit on this VM (sneat-dev/wb#623).
+	// The override is keyed to defaultProjectsRoot()'s result, captured
+	// here before any test runs, so a test that passes its OWN explicit
+	// --projects-root (e.g. TestRunCommandReportsQueueVisibilityOnStderr)
+	// is unaffected and keeps contending for its own real, unoverridden
+	// queue directory (PR #736 review finding B1). See
+	// runqueue.SetQueueRootForTest.
+	//
+	// A failure to create the isolation directory must not let the suite
+	// run un-isolated — that silently brings back the deadlock this
+	// isolation exists to prevent (a hang, not a clean failure) — so exit
+	// non-zero instead of merely warning.
+	fromRoot := defaultProjectsRoot()
+	queueDir, queueDirErr := os.MkdirTemp("", "wb-test-cpu-queue-")
+	if queueDirErr != nil {
+		fmt.Fprintf(os.Stderr, "fatal: could not isolate test CPU admission queue: %v\n", queueDirErr)
+		os.Exit(1)
+	}
+	testIsolatedQueueDir = queueDir
+	restoreQueueRoot := runqueue.SetQueueRootForTest(fromRoot, queueDir)
+	code := m.Run()
+	restoreQueueRoot()
+	_ = os.RemoveAll(queueDir)
+	removeUserState()
+	// #751: cli_smoke_test.go's buildWB compiles the real `wb` binary once
+	// per test binary run into its own os.MkdirTemp("", "wb-smoke-")
+	// directory; smokeBuildDir records that path (empty if no smoke test in
+	// this run ever called buildWB) so it can be removed here, the same way
+	// queueDir is, rather than left behind holding a full built binary
+	// (tens of MB; 161 had built up on the shared dev VM, reaching 91%
+	// disk usage).
+	//
+	// The check below only ever inspects smokeBuildDir, the one directory
+	// THIS run created -- never a bare os.TempDir() scan for any
+	// "wb-smoke-*" name. A round-2 review caught exactly that mistake in an
+	// earlier version of this check: this VM allows up to 2 concurrent Go
+	// lanes, and a second cmd/wb test binary running at the same time keeps
+	// its own wb-smoke-* directory alive for its whole run (removed only at
+	// its own TestMain exit), so a whole-TempDir scan flagged that
+	// unrelated, still-live directory as a leak of this run's own.
+	if smokeBuildDir != "" {
+		_ = os.RemoveAll(smokeBuildDir)
+		if _, statErr := os.Stat(smokeBuildDir); !os.IsNotExist(statErr) {
+			fmt.Fprintf(os.Stderr, "fatal: this run's own wb-smoke-* directory %s is still present after cleanup: statErr=%v\n", smokeBuildDir, statErr)
+			if code == 0 {
+				code = 1
+			}
+		}
+	}
+	os.Exit(code)
+}
+
+// TestTestMainIsolatesTheDefaultProjectsRootFromTheRealMachineQueue pins
+// PR #736 review finding B1 (round 3) directly: nothing else in this
+// package asserts that TestMain's own binary-wide isolation is actually in
+// effect — TestRunCommandDoesNotDeadlockBehindAnOuterMachineWideCPUAdmissionHolder
+// installs its own, separately keyed override for the deadlock test's
+// own duration, which proves the runqueue mechanism works in general, but
+// says nothing about whether TestMain's installation, for this binary's
+// real default projects root, is still the one in effect. If TestMain's
+// call became a no-op, or were keyed to anything other than the exact
+// root an un-rooted `wb run --` resolves, the real sneat-dev/wb#623
+// deadlock would return with no test here going red.
+//
+// This is a plain assertion, not a goroutine/deadline reproduction: it
+// only needs to show that the isolation is wired, not race it.
+func TestTestMainIsolatesTheDefaultProjectsRootFromTheRealMachineQueue(t *testing.T) {
+	fromRoot := defaultProjectsRoot()
+	got := runqueue.QueueDirForTest(fromRoot)
+	realMachineQueueDir := filepath.Join(fromRoot, ".wb", "runtime", "cpu")
+	if got == realMachineQueueDir {
+		t.Fatalf("TestMain's isolation is not in effect: the default projects root %q resolves to the real, machine-wide queue directory %q", fromRoot, got)
+	}
+	if got != testIsolatedQueueDir {
+		t.Fatalf("the default projects root %q resolves to %q, want TestMain's own isolated queue directory %q", fromRoot, got, testIsolatedQueueDir)
+	}
 }
 
 func TestPropagateRuntimeWBExecutable(t *testing.T) {
@@ -128,6 +231,7 @@ func TestPersistentFlagsAreRejectedWhenTheSelectedCommandCannotUseThem(t *testin
 		{name: "filter-version", args: []string{"--filter", "acme", "version"}, want: "--filter is not supported by version"},
 		{name: "filter-ci-direct", args: []string{"--filter", "acme", "ci", "audit"}, want: "--filter requires --fleet for ci audit"},
 		{name: "filter-hooks-direct", args: []string{"--filter", "acme", "hooks", "check"}, want: "--filter requires --fleet for hooks check"},
+		{name: "filter-adopt-path", args: []string{"--filter", "acme/", "worktree", "adopt", "/not-a-worktree"}, want: "--filter requires --all-external for worktree adopt"},
 		{name: "filter-coverage-direct", args: []string{"--filter", "acme", "coverage"}, want: "--filter requires --fleet for coverage"},
 		{name: "root-verify-direct", args: []string{"--projects-root", t.TempDir(), "verify"}, want: "--projects-root requires --fleet for verify"},
 		{name: "root-ci-direct", args: []string{"--projects-root", t.TempDir(), "ci", "audit"}, want: "--projects-root requires --fleet for ci audit"},
@@ -150,6 +254,43 @@ func TestPersistentFlagsAreRejectedWhenTheSelectedCommandCannotUseThem(t *testin
 	}
 }
 
+// TestCIAuditFleetModeOnEmptyProjectsRootReportsNoRepositories drives "wb ci
+// audit --fleet" through the real CLI dispatch (not just a structural flag
+// check), so the RunE closure that reads inv.projectsRoot before calling
+// runCIAudit actually executes. An empty projects root has no repositories
+// to filter either way, so this does not prove inv.filterFlag's value
+// reaches runCIAudit; it only proves the dispatch path runs.
+func TestCIAuditFleetModeOnEmptyProjectsRootReportsNoRepositories(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	args := []string{"ci", "audit", "--fleet", "--projects-root", root}
+	if code := run(args, &stdout, &stderr); code != exitOK {
+		t.Fatalf("run(%q) exit = %d, stdout=%s, stderr=%s", args, code, stdout.String(), stderr.String())
+	}
+	if stdout.String() != "" {
+		t.Fatalf("stdout = %q, want no output for a fleet with no repositories", stdout.String())
+	}
+}
+
+func TestAdoptExternalFleetSelectorsReachEmptySweep(t *testing.T) {
+	projectsRoot := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	args := []string{"--projects-root", projectsRoot, "--filter", "acme/", "worktree", "adopt", "--all-external", "--format", "json"}
+	if code := run(args, &stdout, &stderr); code != exitOK {
+		t.Fatalf("run(%q) exit = %d, stdout=%s, stderr=%s", args, code, stdout.String(), stderr.String())
+	}
+	if got := strings.TrimSpace(stdout.String()); got != "[]" {
+		t.Fatalf("stdout = %q, want an empty JSON result for the isolated projects root", got)
+	}
+}
+
+func TestSkillCommandExampleRejectsAdoptFilterWithNamedPath(t *testing.T) {
+	err := parseSkillCommandExample("wb --filter acme/ worktree adopt /not-a-worktree")
+	if err == nil || !strings.Contains(err.Error(), "--filter requires --all-external for worktree adopt") {
+		t.Fatalf("parseSkillCommandExample() error = %v, want the adopt fleet-mode guard", err)
+	}
+}
+
 // TestPersistentFlagMatrix exercises every advertised root flag against every
 // leaf command without running the command. A supported cell must reach RunE;
 // every other cell must fail in PersistentPreRunE rather than be ignored.
@@ -159,6 +300,7 @@ func TestPersistentFlagMatrix(t *testing.T) {
 		"filter":          "acme",
 		"org":             "acme",
 		"non-interactive": "true",
+		"quiet":           "true",
 	}
 	for flag, value := range values {
 		for _, commandID := range leafCommandIDs(newRootCmd()) {
@@ -178,6 +320,11 @@ func TestPersistentFlagMatrix(t *testing.T) {
 						if err := command.Flags().Set("fleet", "true"); err != nil {
 							t.Fatal(err)
 						}
+					}
+				}
+				if supported && flag == "filter" && commandID == "worktree adopt" {
+					if err := command.Flags().Set("all-external", "true"); err != nil {
+						t.Fatal(err)
 					}
 				}
 				rejectErr := rejectIgnoredPersistentFlags(command, nil)
@@ -252,6 +399,12 @@ func TestRunMapsOutcomesOntoDocumentedExitCodes(t *testing.T) {
 		{"unknown subcommand flag is a usage error", []string{"status", "--no-such-flag"}, exitUsage},
 		{"too many arguments is a usage error", []string{"version", "unexpected"}, exitUsage},
 		{"a rejected flag value is a usage error", []string{"coverage", "--parallel", "not-a-number"}, exitUsage},
+		// A command that starts (PersistentPreRunE runs, so commandStarted
+		// becomes true) and then fails is a finding, not a usage error — this
+		// is the exit-1 row TestConcurrentInvocationsReportOwnExitCode's
+		// discriminating goroutine below relies on, and the plain
+		// commandStarted propagation this table did not otherwise exercise.
+		{"a started command that fails is a finding", []string{"deps", "graph", "--ecosystem", "bogus", "--non-interactive"}, exitFindings},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -260,6 +413,80 @@ func TestRunMapsOutcomesOntoDocumentedExitCodes(t *testing.T) {
 				t.Errorf("run(%q) = %d, want %d; stderr: %s", test.args, got, test.want, stderr.String())
 			}
 		})
+	}
+}
+
+// TestConcurrentInvocationsReportOwnExitCode is the regression test for #733:
+// runWithStdin used to record whether a command started in a package-level
+// `commandStarted` variable, shared by every concurrent call in this test
+// binary. A real `wb` process only ever calls run() once, so that never
+// raced in production, but many cmd/wb tests call run()/runWithStdin()
+// directly with t.Parallel(), racing the shared variable from multiple
+// goroutines in one process (race.yml run 36051478734, 24 DATA RACE blocks
+// against the whole package-level `var` block in main.go). Building one
+// *invocation per call and closing over it while constructing the command
+// tree, instead of writing a package-level var, means two concurrent
+// invocations now write to two different structs and so cannot
+// cross-contaminate each other's exit code — the outcome this test pins,
+// without needing -race (unavailable locally; go-ci's race job does not
+// cover cmd/wb, and race.yml's cmd/wb run stays red on the other four
+// package-level globals until the last PR in this sequence, so it would add
+// no separate signal here) to see it hold.
+//
+// The two invocations must be chosen so a cross-contaminated commandStarted
+// actually flips an exit code:
+//   - "--no-such-flag" fails flag parsing before PersistentPreRunE ever runs,
+//     so it reads commandStarted without either goroutine having a chance to
+//     race a write into it — pairing it with "--help" (also pre-PreRunE, and
+//     exitOK returns before commandStarted is read at all) cannot fail even
+//     with the shared package-level var restored, because neither goroutine
+//     ever sets "started" to observe. This was PR #737's mistake.
+//   - The fix pairs the usage-error invocation with one that starts and then
+//     fails with a plain (uncoded) error: "deps graph --ecosystem bogus
+//     --non-interactive". Its ecosystem check runs inside RunE, after
+//     PersistentPreRunE has set commandStarted = true, and returns a plain
+//     fmt.Errorf before touching the network or the filesystem — pure,
+//     fast, and safe under t.Parallel(). exitCodeFor(err, started) needs
+//     started == true to report exitFindings (1) instead of exitUsage (2).
+//     With the package-level var restored, a write from one goroutine
+//     (start writing true, or the other resetting it to false at the top of
+//     the next runWithStdin call) is visible to the other's read, flipping
+//     either result: 5–13 of 200 usage runs and 5–11 of 200 findings runs
+//     get the wrong code in local reproduction (no -race needed).
+func TestConcurrentInvocationsReportOwnExitCode(t *testing.T) {
+	t.Parallel()
+	const iterations = 200
+
+	usageResults := make([]int, iterations)
+	findingsResults := make([]int, iterations)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := range iterations {
+			var stdout, stderr bytes.Buffer
+			usageResults[i] = run([]string{"--no-such-flag"}, &stdout, &stderr)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := range iterations {
+			var stdout, stderr bytes.Buffer
+			findingsResults[i] = run([]string{"deps", "graph", "--ecosystem", "bogus", "--non-interactive"}, &stdout, &stderr)
+		}
+	}()
+	wg.Wait()
+
+	for i, got := range usageResults {
+		if got != exitUsage {
+			t.Errorf("usage invocation #%d = %d, want %d (cross-contaminated by the concurrent started-and-failed invocation)", i, got, exitUsage)
+		}
+	}
+	for i, got := range findingsResults {
+		if got != exitFindings {
+			t.Errorf("started-and-failed invocation #%d = %d, want %d (cross-contaminated by the concurrent usage-error invocation)", i, got, exitFindings)
+		}
 	}
 }
 

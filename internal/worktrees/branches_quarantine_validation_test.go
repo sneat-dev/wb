@@ -1,0 +1,282 @@
+package worktrees
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
+	"github.com/sneat-dev/wb/internal/worktreebranches"
+)
+
+func TestQuarantineValidationRejectsDuplicateAndNormalizesRequests(t *testing.T) {
+	t.Parallel()
+	sha := strings.Repeat("a", 40)
+	requests, err := validateQuarantineRequests([]BranchQuarantineRequest{
+		{Repository: " zeta/app ", Ref: " feature/b ", SHA: " " + sha + " ", Reason: " old "},
+		{Repository: " acme/app ", Ref: " feature/a ", SHA: sha, Reason: " done "},
+	})
+	if err != nil || len(requests) != 2 || requests[0].Repository != "acme/app" || requests[0].Ref != "feature/a" || requests[1].SHA != sha || requests[1].Reason != "old" {
+		t.Fatalf("normalized requests = (%#v, %v)", requests, err)
+	}
+	_, err = validateQuarantineRequests([]BranchQuarantineRequest{
+		{Repository: "acme/app", Ref: "feature/a", Reason: "one"},
+		{Repository: " acme/app ", Ref: " feature/a ", Reason: "two"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("duplicate request error = %v", err)
+	}
+	for _, tc := range []struct {
+		name    string
+		request BranchQuarantineRequest
+		want    string
+	}{
+		{"repository", BranchQuarantineRequest{Repository: "acme", Ref: "feature/a", Reason: "old"}, "repository"},
+		{"ref", BranchQuarantineRequest{Repository: "acme/app", Ref: "bad ref", Reason: "old"}, "ref"},
+		{"sha", BranchQuarantineRequest{Repository: "acme/app", Ref: "feature/a", SHA: "bad", Reason: "old"}, "SHA"},
+		{"reason", BranchQuarantineRequest{Repository: "acme/app", Ref: "feature/a"}, "reason"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := validateQuarantineRequests([]BranchQuarantineRequest{tc.request})
+			if err == nil || !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(tc.want)) {
+				t.Fatalf("validation error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+//nolint:paralleltest // newGitFixture sets HOME, XDG_CONFIG_HOME, and WB_PROJECTS_ROOT while discovering repositories.
+func TestQuarantineRepositoryDiscoveryAndDigestFailures(t *testing.T) {
+	fixture := newGitFixture(t)
+	paths, err := quarantineRepositoryPaths(fixture.projectsRoot, []BranchQuarantineRequest{{Repository: "acme/app"}})
+	if err != nil || paths["acme/app"] != fixture.canonical {
+		t.Fatalf("discovered path = (%#v, %v)", paths, err)
+	}
+	if _, err := quarantineRepositoryPaths(fixture.projectsRoot, []BranchQuarantineRequest{{Repository: "other/missing"}}); err == nil || !strings.Contains(err.Error(), "not discovered") {
+		t.Fatalf("missing repository error = %v", err)
+	}
+	if _, err := quarantineRepositoryPaths(filepath.Join(t.TempDir(), "missing-root"), nil); err == nil {
+		t.Fatal("missing repository root was accepted")
+	}
+	missing := filepath.Join(t.TempDir(), "missing.json")
+	if _, err := QuarantineManifestDigest(missing); !os.IsNotExist(err) {
+		t.Fatalf("missing digest input error = %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "manifest.json")
+	if err := os.WriteFile(path, []byte("a"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first, err := QuarantineManifestDigest(path)
+	if err != nil || len(first) != 64 {
+		t.Fatalf("digest a = (%q, %v)", first, err)
+	}
+	if err := os.WriteFile(path, []byte("b"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	second, err := QuarantineManifestDigest(path)
+	if err != nil || first == second {
+		t.Fatalf("changed content digest = (%q, %v), first %q", second, err, first)
+	}
+}
+
+//nolint:paralleltest // newGitFixture sets HOME, XDG_CONFIG_HOME, and WB_PROJECTS_ROOT for Git and WB state.
+func TestQuarantineApplyRejectsChangesBeforeCAS(t *testing.T) {
+	fixture := newGitFixture(t)
+	ctx := context.Background()
+	gitTest(t, fixture.canonical, "branch", "feature/old")
+	head := gitTestOutput(t, fixture.canonical, "rev-parse", "feature/old")
+	for _, tc := range []struct{ name, ref, sha, want string }{
+		{"missing", "feature/missing", head, "source disappeared"},
+		{"moved", "feature/old", strings.Repeat("a", 40), "source moved"},
+		{"protected", "main", head, "protected"},
+	} {
+		//nolint:paralleltest // Subtests share the fixture's process environment and canonical checkout.
+		t.Run(tc.name, func(t *testing.T) {
+			result := BranchQuarantineResult{BranchQuarantineRequest: BranchQuarantineRequest{Repository: "acme/app", Ref: tc.ref, SHA: tc.sha}, Destination: "retired/test", Outcome: "planned"}
+			applyBranchQuarantineWithOps(ctx, fixture.projectsRoot, fixture.canonical, &result, realBranchQuarantineOps(), nil)
+			if result.Outcome != "failed" || !strings.Contains(result.Error, tc.want) {
+				t.Fatalf("apply result = %#v, want %q", result, tc.want)
+			}
+		})
+	}
+}
+
+//nolint:paralleltest // t.Setenv replaces PATH so every query invokes this test's private gh executable.
+func TestOpenPullRequestUsingBranchAsBaseDistinguishesMatchingAndFailedQueries(t *testing.T) {
+	bin := t.TempDir()
+	script := filepath.Join(bin, "gh")
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	writeScript := func(body string) {
+		t.Helper()
+		if err := testenv.WriteExecutableFile(script, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx := context.Background()
+	writeScript("printf '%s\\n' '[{\"number\":17,\"url\":\"https://example.test/pr/17\",\"state\":\"open\",\"base\":{\"ref\":\"feature/old\"},\"head\":{\"sha\":\"abc\"}}]'\n")
+	pull, err := openPullRequestUsingBranchAsBase(ctx, t.TempDir(), "acme/app", "feature/old")
+	if err != nil || pull == nil || pull.Number != 17 || pull.Base != "feature/old" {
+		t.Fatalf("matching base pull = (%#v, %v)", pull, err)
+	}
+	pull, err = openPullRequestUsingBranchAsBase(ctx, t.TempDir(), "acme/app", "feature/other")
+	if err != nil || pull != nil {
+		t.Fatalf("unmatched base pull = (%#v, %v)", pull, err)
+	}
+	writeScript("printf 'not-json\\n'\n")
+	if _, err := openPullRequestUsingBranchAsBase(ctx, t.TempDir(), "acme/app", "feature/old"); err == nil || !strings.Contains(err.Error(), "decode open pull requests") {
+		t.Fatalf("invalid JSON error = %v", err)
+	}
+	writeScript("echo unavailable >&2\nexit 7\n")
+	if _, err := openPullRequestUsingBranchAsBase(ctx, t.TempDir(), "acme/app", "feature/old"); err == nil || !strings.Contains(err.Error(), "query open pull requests") {
+		t.Fatalf("failed query error = %v", err)
+	}
+}
+
+//nolint:paralleltest // t.Setenv switches PATH and gh responses while this test checks each safety verdict.
+func TestQuarantinePlanRejectsUnprovableAndOpenPullRequests(t *testing.T) {
+	fixture := newGitFixture(t)
+	gitTest(t, fixture.canonical, "branch", "feature/old")
+	sha := gitTestOutput(t, fixture.canonical, "rev-parse", "feature/old")
+	bin := t.TempDir()
+	if err := testenv.WriteExecutableFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\nprintf '%s\\n' \"$WB_TEST_GH_BODY\"\nexit \"${WB_TEST_GH_EXIT:-0}\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	now := time.Date(2026, 9, 27, 0, 0, 0, 0, time.UTC)
+	request := BranchQuarantineRequest{Repository: "acme/app", Ref: "feature/old", SHA: sha, Reason: "old"}
+	for _, tc := range []struct{ name, body, exit, want string }{
+		{"query failed", "unavailable", "7", "cannot prove pull-request safety"},
+		{"invalid response", "not-json", "0", "cannot prove pull-request safety"},
+		{"open head", `[{"number":19,"html_url":"https://example.test/pull/19","state":"open","base":{"ref":"main"},"head":{"ref":"feature/old","sha":"` + sha + `","repo":{"full_name":"acme/app"}}}]`, "0", "head of open pull request"},
+		{"open base", `[{"number":20,"html_url":"https://example.test/pull/20","state":"open","base":{"ref":"feature/old"},"head":{"ref":"other","sha":"` + sha + `","repo":{"full_name":"acme/app"}}}]`, "0", "base of open pull request"},
+	} {
+		//nolint:paralleltest // Each case changes the gh response through process environment variables.
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("WB_TEST_GH_BODY", tc.body)
+			t.Setenv("WB_TEST_GH_EXIT", tc.exit)
+			result := planBranchQuarantineWithOps(context.Background(), fixture.projectsRoot, fixture.canonical, request, now, realBranchQuarantineOps())
+			if result.Outcome != "refused" || !strings.Contains(result.Error, tc.want) {
+				t.Fatalf("pull request safety plan = %#v, want %q", result, tc.want)
+			}
+		})
+	}
+}
+
+//nolint:paralleltest // newGitFixture sets HOME, XDG_CONFIG_HOME, and WB_PROJECTS_ROOT for its checkout.
+func TestQuarantineApplyRefusesDestinationAppearingBeforeCAS(t *testing.T) {
+	fixture := newGitFixture(t)
+	gitTest(t, fixture.canonical, "branch", "feature/old")
+	sha := gitTestOutput(t, fixture.canonical, "rev-parse", "feature/old")
+	destination := worktreebranches.RetiredBranchDestination(time.Now(), "feature/old", sha)
+	gitTest(t, fixture.canonical, "branch", destination)
+	result := BranchQuarantineResult{BranchQuarantineRequest: BranchQuarantineRequest{Repository: "acme/app", Ref: "feature/old", SHA: sha}, Destination: destination, Outcome: "planned"}
+	applyBranchQuarantineWithOps(context.Background(), fixture.projectsRoot, fixture.canonical, &result, realBranchQuarantineOps(), nil)
+	if result.Outcome != "failed" || !strings.Contains(result.Error, "destination appeared") {
+		t.Fatalf("destination collision apply = %#v", result)
+	}
+	if !gitRefExists(fixture.canonical, "refs/heads/feature/old") {
+		t.Fatal("source changed despite destination collision")
+	}
+}
+
+//nolint:paralleltest // newGitFixture and t.Setenv change the process Git and gh environment.
+func TestBranchQuarantineManifestRefusesFlattenedDestinationCollision(t *testing.T) {
+	fixture := newGitFixture(t)
+	gitTest(t, fixture.canonical, "branch", "feature/a-b")
+	gitTest(t, fixture.canonical, "branch", "feature/a/b")
+	sha := gitTestOutput(t, fixture.canonical, "rev-parse", "main")
+	bin := t.TempDir()
+	if err := testenv.WriteExecutableFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\nprintf '[]\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	manifest := BranchQuarantineManifest{Entries: []BranchQuarantineRequest{
+		{Repository: "acme/app", Ref: "feature/a-b", SHA: sha, Reason: "old"},
+		{Repository: "acme/app", Ref: "feature/a/b", SHA: sha, Reason: "old"},
+	}}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "manifest.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := BranchQuarantine(context.Background(), BranchQuarantineOptions{
+		ProjectsRoot: fixture.projectsRoot, Manifest: path,
+		Now: func() time.Time { return time.Date(2026, 9, 27, 0, 0, 0, 0, time.UTC) },
+	})
+	if err != nil || len(outcome.Results) != 2 {
+		t.Fatalf("collision plan = (%#v, %v)", outcome, err)
+	}
+	for _, result := range outcome.Results {
+		if result.Outcome != "refused" || !strings.Contains(result.Error, "destinations collide") {
+			t.Fatalf("colliding result = %#v", result)
+		}
+		if !gitRefExists(fixture.canonical, "refs/heads/"+result.Ref) {
+			t.Fatalf("source %s changed during planning", result.Ref)
+		}
+	}
+}
+
+func TestBranchQuarantineAnnotationAndManifestMetadataValidation(t *testing.T) {
+	t.Parallel()
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	for _, options := range []BranchQuarantineOptions{
+		{Annotate: true, Repository: "invalid", Branch: "retired/good", SHA: sha, Reason: "obsolete"},
+		{Annotate: true, Repository: "acme/app", Branch: "feature/not-retired", SHA: sha, Reason: "obsolete"},
+		{Annotate: true, Repository: "acme/app", Branch: "retired/bad ref", SHA: sha, Reason: "obsolete"},
+		{Annotate: true, Repository: "acme/app", Branch: "retired/good", SHA: sha, Reason: "bad\nReason"},
+		{Annotate: true, Repository: "acme/app", Branch: "retired/good", SHA: sha, Reason: "   "},
+		{Manifest: "unused", Description: "silently ignored"},
+	} {
+		if _, err := quarantineRequests(options); err == nil {
+			t.Fatalf("invalid quarantine options accepted: %#v", options)
+		}
+	}
+	trimmed, err := validateQuarantineRequests([]BranchQuarantineRequest{{
+		Repository: "acme/app", Ref: "feature/old", Reason: "obsolete", Replacement: []string{"  PR #17  "},
+	}})
+	if err != nil || len(trimmed) != 1 || len(trimmed[0].Replacement) != 1 || trimmed[0].Replacement[0] != "PR #17" {
+		t.Fatalf("replacement normalization = (%#v, %v)", trimmed, err)
+	}
+	if _, err := validateQuarantineRequests([]BranchQuarantineRequest{{
+		Repository: "acme/app", Ref: "feature/old", Reason: "obsolete", Description: "two lines\nmisleading heading",
+	}}); err == nil || !strings.Contains(err.Error(), "line breaks") {
+		t.Fatalf("multiline manifest metadata error = %v", err)
+	}
+	if err := validateQuarantineMetadata("acme/app", "feature/old", "draft", "obsolete", "", []string{"PR #1\nmalicious heading"}); err == nil {
+		t.Fatal("replacement reference with a newline was accepted")
+	}
+}
+
+//nolint:paralleltest // newGitFixture and t.Setenv change the process Git and gh environment.
+func TestBranchQuarantineRejectsReusedReportDirectoryBeforeChangingRef(t *testing.T) {
+	fixture := newGitFixture(t)
+	gitTest(t, fixture.canonical, "branch", "feature/old")
+	sha := gitTestOutput(t, fixture.canonical, "rev-parse", "feature/old")
+	bin := t.TempDir()
+	if err := testenv.WriteExecutableFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\nprintf '[]\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	reportDir := filepath.Join(t.TempDir(), "existing")
+	if err := os.Mkdir(reportDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := BranchQuarantine(context.Background(), BranchQuarantineOptions{
+		ProjectsRoot: fixture.projectsRoot, Repository: "acme/app", Branch: "feature/old", SHA: sha,
+		Reason: "old", Apply: true, ReportDir: reportDir,
+	})
+	if err == nil || !strings.Contains(err.Error(), "reserve exclusive quarantine report directory") {
+		t.Fatalf("reused report directory outcome = (%#v, %v)", outcome, err)
+	}
+	if !gitRefExists(fixture.canonical, "refs/heads/feature/old") {
+		t.Fatal("source changed before report directory was reserved")
+	}
+}

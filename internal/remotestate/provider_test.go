@@ -57,6 +57,7 @@ func (p *dqCovStatusProvider) Status(context.Context) (StatusSnapshot, error) {
 }
 
 func TestReadStatusUsesOneBatchedStatusReadWhenSupported(t *testing.T) {
+	t.Parallel()
 	want := StatusSnapshot{
 		Machines: []Entry{{Snapshot: Snapshot{Login: "alice", Machine: "laptop"}}},
 		Claims:   []ClaimEntry{{Claim: Claim{Task: "t-1", Login: "bob", Machine: "vm"}}},
@@ -77,6 +78,7 @@ func TestReadStatusUsesOneBatchedStatusReadWhenSupported(t *testing.T) {
 }
 
 func TestReadStatusFallsBackToSeparateListAndClaimsReads(t *testing.T) {
+	t.Parallel()
 	provider := &dqCovProvider{
 		machines: []Entry{{Snapshot: Snapshot{Login: "alice", Machine: "laptop"}}},
 		claims:   []ClaimEntry{{Claim: Claim{Task: "t-1", Login: "bob", Machine: "vm"}}},
@@ -96,6 +98,7 @@ func TestReadStatusFallsBackToSeparateListAndClaimsReads(t *testing.T) {
 }
 
 func TestReadStatusStopsBeforeClaimsWhenListFails(t *testing.T) {
+	t.Parallel()
 	listErr := errors.New("machines store unavailable")
 	provider := &dqCovProvider{
 		machinesErr: listErr,
@@ -115,6 +118,7 @@ func TestReadStatusStopsBeforeClaimsWhenListFails(t *testing.T) {
 }
 
 func TestReadStatusReportsClaimsFailure(t *testing.T) {
+	t.Parallel()
 	claimsErr := errors.New("claims store unavailable")
 	provider := &dqCovProvider{
 		machines:  []Entry{{Snapshot: Snapshot{Login: "alice", Machine: "laptop"}}},
@@ -138,6 +142,7 @@ func TestReadStatusReportsClaimsFailure(t *testing.T) {
 // advertises Status must have its error surfaced rather than silently re-read
 // through List+Claims.
 func TestReadStatusSurfacesBatchedStatusFailureWithoutFallbackReads(t *testing.T) {
+	t.Parallel()
 	batchedErr := errors.New("batched status unavailable")
 	provider := &dqCovStatusProvider{
 		dqCovProvider: dqCovProvider{machines: []Entry{{Snapshot: Snapshot{Login: "alice", Machine: "laptop"}}}},

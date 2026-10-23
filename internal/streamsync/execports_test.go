@@ -8,18 +8,22 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // A stream member is persisted before its first push is proven. This exercises
 // the real Git port against a bare origin: the local stream branch must remain
 // usable when origin has no matching remote-tracking ref yet.
 func TestFastForwardToRemoteAllowsAMissingRemoteStreamBranch(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is not installed")
 	}
 	base := t.TempDir()
 	remote := filepath.Join(base, "origin.git")
 	runGit(t, "", "init", "--bare", "--initial-branch=main", remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	work := filepath.Join(base, "work")
 	runGit(t, "", "clone", remote, work)
 	if err := os.WriteFile(filepath.Join(work, "one.txt"), []byte("one\n"), 0o644); err != nil {
@@ -44,6 +48,7 @@ func TestFastForwardToRemoteAllowsAMissingRemoteStreamBranch(t *testing.T) {
 }
 
 func TestFastForwardToRemoteAdvancesWhenTheFetchedStreamIsAhead(t *testing.T) {
+	t.Parallel()
 	fixture := newRemoteStreamFixture(t)
 	runGit(t, fixture.other, "checkout", "stream/fixture")
 	commitFile(t, fixture.other, "remote.txt", "remote\n", "feat: remote stream advance")
@@ -66,6 +71,7 @@ func TestFastForwardToRemoteAdvancesWhenTheFetchedStreamIsAhead(t *testing.T) {
 }
 
 func TestFastForwardToRemoteLeavesAnUnpushedLocalStreamAhead(t *testing.T) {
+	t.Parallel()
 	fixture := newRemoteStreamFixture(t)
 	commitFile(t, fixture.local, "local.txt", "local\n", "feat: local stream work")
 	localBefore := strings.TrimSpace(runGit(t, fixture.local, "rev-parse", "stream/fixture"))
@@ -87,6 +93,7 @@ func TestFastForwardToRemoteLeavesAnUnpushedLocalStreamAhead(t *testing.T) {
 }
 
 func TestFastForwardToRemoteRefusesDivergedStreamBranchesWithoutChangingLocalHead(t *testing.T) {
+	t.Parallel()
 	fixture := newRemoteStreamFixture(t)
 	commitFile(t, fixture.local, "local.txt", "local\n", "feat: local stream work")
 	localBefore := strings.TrimSpace(runGit(t, fixture.local, "rev-parse", "stream/fixture"))
@@ -117,6 +124,7 @@ func newRemoteStreamFixture(t *testing.T) remoteStreamFixture {
 	base := t.TempDir()
 	remote := filepath.Join(base, "origin.git")
 	runGit(t, "", "init", "--bare", "--initial-branch=main", remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	local := filepath.Join(base, "local")
 	runGit(t, "", "clone", remote, local)
 	commitFile(t, local, "one.txt", "one\n", "feat: initial")
@@ -141,11 +149,11 @@ func runGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	command := exec.Command("git", args...)
 	command.Dir = dir
-	command.Env = append(os.Environ(),
+	command.Env = testenv.GitAutoMaintenanceOffEnv(append(os.Environ(),
 		"GIT_AUTHOR_NAME=wb", "GIT_AUTHOR_EMAIL=wb@example.test",
 		"GIT_COMMITTER_NAME=wb", "GIT_COMMITTER_EMAIL=wb@example.test",
 		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
-	)
+	))
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s in %s: %v: %s", strings.Join(args, " "), dir, err, output)

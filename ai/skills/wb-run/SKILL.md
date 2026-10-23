@@ -15,6 +15,8 @@ wb run --async --worker codex-local -- go test ./internal/worktrees -run TestCre
 wb run --async --worker codex-local --idempotency-key create-2 -- go test ./internal/worktrees -run TestCreate
 wb run -- git status --short
 wb run --history --days 7
+wb run --changed -- go test
+wb run --changed --target origin/main -- go vet
 ```
 
 Synchronous command mode preserves standard streams and the child exit code.
@@ -99,6 +101,29 @@ fleet-wide apply.
 
 Read [recipes.md](references/recipes.md) only when creating or diagnosing
 `wb.yaml`.
+
+## Scope a command to what a local diff changed
+
+`--changed` appends the Go packages a local diff touches (staged, unstaged,
+and already-committed changes since the merge base, combined) to the command
+instead of running it as given:
+
+```sh
+wb run --changed -- go test
+wb run --changed --target origin/main -- go vet
+```
+
+`--target` names the branch or ref to diff against; without it, WB detects
+the repository's default branch from local Git state only (an explicit
+`WB_DEFAULT_BRANCH` override, the recorded `origin/HEAD` symref, or a
+conventional `main`/`master` remote-tracking ref) and fails closed with a
+usage error if none resolves. When nothing changed, WB prints that and exits
+0 without running the command at all — this never runs the underlying test
+binary, `go vet`, or anything else on an empty package list. This is a cheap
+smoke check scoped to what changed, never a prediction of a full or merged
+coverage/vet run over the whole module (issue #570,
+spec/plans/coverage-to-100/README.md task-19); `wb coverage --changed` shares
+the same underlying changed-package computation.
 
 ## Await completion without heartbeat context
 

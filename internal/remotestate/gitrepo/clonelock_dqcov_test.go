@@ -12,13 +12,14 @@ import (
 // whose parent cannot be created as a directory fails acquisition with the
 // lock-directory error rather than panicking or silently proceeding unlocked.
 func TestDQCovAcquireCloneLockReportsUncreatableLockDirectory(t *testing.T) {
+	t.Parallel()
 	blocker := filepath.Join(t.TempDir(), "blocker")
 	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	clonePath := filepath.Join(blocker, "wb-state")
 
-	lock, err := acquireCloneLock(clonePath)
+	lock, err := acquireCloneLock(clonePath, time.Now, time.Sleep)
 	if err == nil {
 		_ = lock.release()
 		t.Fatal("acquireCloneLock succeeded with an uncreatable lock directory")
@@ -32,12 +33,13 @@ func TestDQCovAcquireCloneLockReportsUncreatableLockDirectory(t *testing.T) {
 // exists as a directory cannot be opened as the lock file, and the failure is
 // reported with the open error.
 func TestDQCovAcquireCloneLockReportsUnopenableLockFile(t *testing.T) {
+	t.Parallel()
 	clonePath := filepath.Join(t.TempDir(), "team", "wb-state")
 	if err := os.MkdirAll(clonePath+cloneLockSuffix, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	lock, err := acquireCloneLock(clonePath)
+	lock, err := acquireCloneLock(clonePath, time.Now, time.Sleep)
 	if err == nil {
 		_ = lock.release()
 		t.Fatal("acquireCloneLock succeeded with a directory as the lock file")
@@ -48,15 +50,20 @@ func TestDQCovAcquireCloneLockReportsUnopenableLockFile(t *testing.T) {
 }
 
 // TestDQCovAcquireCloneLockTimesOutAfterDeadline proves a held lock makes a
-// second acquirer wait for the configured deadline and then fail with the
-// held-lock message instead of blocking forever.
+// second acquirer retry until the configured deadline and then fail with
+// the held-lock message instead of blocking forever. The second acquirer
+// gets a fake clock (now/sleep both driven off a virtual clock that sleep
+// advances instantly) so the deadline elapses at full test speed while
+// still exercising the real flock retry loop against the first, real lock;
+// only cloneLockTimeout is shrunk (30ms, in 20ms poll steps) to keep the
+// expected sleep count small and exact.
 func TestDQCovAcquireCloneLockTimesOutAfterDeadline(t *testing.T) {
 	restore := cloneLockTimeout
-	cloneLockTimeout = 30 * time.Millisecond
+	cloneLockTimeout = 60 * time.Millisecond
 	t.Cleanup(func() { cloneLockTimeout = restore })
 
 	clonePath := filepath.Join(t.TempDir(), "team", "wb-state")
-	first, err := acquireCloneLock(clonePath)
+	first, err := acquireCloneLock(clonePath, time.Now, time.Sleep)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,8 +73,15 @@ func TestDQCovAcquireCloneLockTimesOutAfterDeadline(t *testing.T) {
 		}
 	}()
 
-	start := time.Now()
-	second, err := acquireCloneLock(clonePath)
+	virtual := time.Now()
+	var slept []time.Duration
+	fakeNow := func() time.Time { return virtual }
+	fakeSleep := func(d time.Duration) {
+		slept = append(slept, d)
+		virtual = virtual.Add(d)
+	}
+
+	second, err := acquireCloneLock(clonePath, fakeNow, fakeSleep)
 	if err == nil {
 		_ = second.release()
 		t.Fatal("second acquireCloneLock succeeded while the first was held")
@@ -75,14 +89,21 @@ func TestDQCovAcquireCloneLockTimesOutAfterDeadline(t *testing.T) {
 	if !strings.Contains(err.Error(), "held the wb-state clone lock") {
 		t.Fatalf("error = %v, want the held-lock message", err)
 	}
-	if time.Since(start) < 30*time.Millisecond {
-		t.Fatalf("second acquire returned after %s, want it to wait out the deadline", time.Since(start))
+	wantSleeps := int(cloneLockTimeout/(20*time.Millisecond)) + 1
+	if len(slept) != wantSleeps {
+		t.Fatalf("acquireCloneLock slept %d times, want exactly %d (cloneLockTimeout %s in 20ms steps)", len(slept), wantSleeps, cloneLockTimeout)
+	}
+	for _, d := range slept {
+		if d != 20*time.Millisecond {
+			t.Fatalf("acquireCloneLock slept %v, want every wait to be 20ms", slept)
+		}
 	}
 }
 
 // TestDQCovCloneLockReleaseNilAndEmptyIsNoop proves release is safe on a nil
 // lock and on a lock whose file was never set, returning nil both times.
 func TestDQCovCloneLockReleaseNilAndEmptyIsNoop(t *testing.T) {
+	t.Parallel()
 	var nilLock *cloneLock
 	if err := nilLock.release(); err != nil {
 		t.Fatalf("nil lock release = %v, want nil", err)
@@ -97,8 +118,9 @@ func TestDQCovCloneLockReleaseNilAndEmptyIsNoop(t *testing.T) {
 // failing unlock: after the underlying descriptor is closed out from under it,
 // Flock can no longer succeed and release returns that error.
 func TestDQCovCloneLockReleaseReportsUnlockFailure(t *testing.T) {
+	t.Parallel()
 	clonePath := filepath.Join(t.TempDir(), "team", "wb-state")
-	lock, err := acquireCloneLock(clonePath)
+	lock, err := acquireCloneLock(clonePath, time.Now, time.Sleep)
 	if err != nil {
 		t.Fatal(err)
 	}

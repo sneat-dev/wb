@@ -26,7 +26,9 @@ jobs:
 // unreadable workflows directory and an unreadable or malformed workflow are
 // errors, never an empty report a caller could read as "nothing to cancel".
 func TestGpCovStreamConcurrencyReportsUnreadableWorkflowInputs(t *testing.T) {
+	t.Parallel()
 	t.Run("the workflows path is not a directory", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		write(t, root, filepath.Join(".github", "workflows"), "not a directory\n")
 
@@ -40,6 +42,7 @@ func TestGpCovStreamConcurrencyReportsUnreadableWorkflowInputs(t *testing.T) {
 	})
 
 	t.Run("a workflow file cannot be read", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		writeWorkflow(t, root, "ci.yml", gpCovCancellingWorkflow)
 		gpCovMakeUnreadable(t, filepath.Join(root, ".github", "workflows", "ci.yml"))
@@ -54,6 +57,7 @@ func TestGpCovStreamConcurrencyReportsUnreadableWorkflowInputs(t *testing.T) {
 	})
 
 	t.Run("a workflow file is not YAML", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		writeWorkflow(t, root, "ci.yml", "name: [unterminated\n")
 
@@ -71,6 +75,7 @@ func TestGpCovStreamConcurrencyReportsUnreadableWorkflowInputs(t *testing.T) {
 // subdirectories and non-YAML entries are not workflows, and that the reports
 // come back sorted by workflow path.
 func TestGpCovStreamConcurrencyReportsEveryWorkflowInPathOrder(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	writeWorkflow(t, root, "b.yml", "name: B\non: [push]\n")
 	writeWorkflow(t, root, "a.yaml", "name: A\non: [push]\n")
@@ -95,7 +100,9 @@ func TestGpCovStreamConcurrencyReportsEveryWorkflowInPathOrder(t *testing.T) {
 // TestGpCovStreamConcurrencyReadsScalarAndAbsentTriggers covers the two shapes
 // a workflow's `on` can take beyond a sequence and a mapping.
 func TestGpCovStreamConcurrencyReadsScalarAndAbsentTriggers(t *testing.T) {
+	t.Parallel()
 	t.Run("a scalar on", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		writeWorkflow(t, root, "ci.yml", "name: CI\non: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n")
 
@@ -109,6 +116,7 @@ func TestGpCovStreamConcurrencyReadsScalarAndAbsentTriggers(t *testing.T) {
 	})
 
 	t.Run("no on key at all", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		writeWorkflow(t, root, "ci.yml", "name: CI\njobs:\n  b:\n    runs-on: ubuntu-latest\n")
 
@@ -126,6 +134,7 @@ func TestGpCovStreamConcurrencyReadsScalarAndAbsentTriggers(t *testing.T) {
 // that `concurrency:` with no value declares nothing, rather than a group
 // named by the empty string.
 func TestGpCovStreamConcurrencyTreatsAnEmptyConcurrencyValueAsUndeclared(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	writeWorkflow(t, root, "ci.yml", "name: CI\non: [pull_request]\nconcurrency:\njobs:\n  b:\n    runs-on: ubuntu-latest\n")
 
@@ -142,6 +151,7 @@ func TestGpCovStreamConcurrencyTreatsAnEmptyConcurrencyValueAsUndeclared(t *test
 // failure that is not "absent": a path that exists but cannot be read is an
 // error, because reporting no mechanisms would claim CI runs nothing.
 func TestGpCovWorkflowMechanismsReportsAnUnreadableWorkflow(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, ".github", "workflows", "ci.yml"), 0o755); err != nil {
 		t.Fatal(err)
@@ -160,6 +170,7 @@ func TestGpCovWorkflowMechanismsReportsAnUnreadableWorkflow(t *testing.T) {
 // inside a quoted shell fragment is not a YAML comment: truncating there would
 // drop the invocation that is the whole point of the read.
 func TestGpCovWorkflowMechanismsKeepsInvocationsAfterAQuotedHash(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name      string
 		step      string
@@ -178,6 +189,7 @@ func TestGpCovWorkflowMechanismsKeepsInvocationsAfterAQuotedHash(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			root := t.TempDir()
 			writeWorkflow(t, root, "ci.yml",
 				"name: CI\non: [pull_request]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n"+
@@ -198,6 +210,7 @@ func TestGpCovWorkflowMechanismsKeepsInvocationsAfterAQuotedHash(t *testing.T) {
 // job-level `uses:` into another repository is reported as opaque, so a caller
 // never treats an unreadable callee as proof a mechanism is absent.
 func TestGpCovWorkflowMechanismsWithReuseReportsTheReusableCallFlag(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	writeWorkflow(t, root, "ci.yml", `name: CI
 on: [pull_request]

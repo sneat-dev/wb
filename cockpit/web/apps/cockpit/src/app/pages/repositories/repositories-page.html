@@ -1,0 +1,95 @@
+<div class="head">
+  <fieldset class="presets">
+    <legend>Show</legend>
+    @for (preset of presets; track preset.id) {
+      <label [class.on]="active() === preset.id" [attr.title]="preset.hint">
+        <input type="radio" name="repository-order" [value]="preset.id" [checked]="active() === preset.id" (change)="choose(preset.id)" />
+        <span>{{ preset.label }}</span>
+      </label>
+    }
+  </fieldset>
+</div>
+
+<app-list page="repositories" [columns]="columns" [panelLabel]="panelLabel" [resolve]="resolve">
+  <ng-template appCell="repository" let-r>
+    <span class="identity">
+      <app-repo-name [name]="r.slug" [host]="r.host" />
+      <app-copy-icon [value]="r.slug" label="Copy repository name" [tabbable]="false" />
+      @if (r.errors.length > 0) {
+        <span class="scan-error" [attr.title]="r.errors.join('; ')">scan error</span>
+      }
+    </span>
+  </ng-template>
+  <ng-template appCell="machines" let-r>
+    @if (chipsOf(r); as chips) {
+      <span class="chips" [appFitChips]="chips.shown.length + ':' + chips.more">
+        @for (chip of chips.shown; track chip.id) {
+          <a class="machine" [class.stale]="chip.stale" [routerLink]="[]" [queryParams]="{ sel: r.id }" queryParamsHandling="merge" [fragment]="'machine-' + chip.id" [attr.title]="chip.title">
+            <span class="machine-name">{{ chip.name }}</span>
+            @if (chip.detail) {
+              &ngsp;<span class="machine-detail">{{ chip.detail }}</span>
+            }
+          </a>
+        }
+        @if (chips.more > 0) {
+          <span class="more" [attr.title]="chips.moreTitle">+{{ chips.more }}</span>
+        }
+      </span>
+    }
+  </ng-template>
+  <ng-template appCell="worktrees" let-r>
+    @let worktrees = cellsOf(r).worktrees;
+    @if (worktrees.zero) {
+      <span class="quiet tnum" title="No worktrees">0</span>
+    } @else {
+      <app-count-link [value]="worktrees.value" [link]="worktrees.link" />
+    }
+  </ng-template>
+  <ng-template appCell="branches" let-r>
+    @let branches = cellsOf(r);
+    @if (branches.branches) {
+      <span class="tnum" [attr.title]="branches.branchesTitle">{{ branches.branches }}</span>
+    } @else {
+      <span class="quiet" title="Not reported by any machine">—</span>
+    }
+  </ng-template>
+  <ng-template appCell="agents" let-r>
+    @let agents = cellsOf(r).agents;
+    @if (agents.value === undefined) {
+      <span class="quiet" title="Not reported: no machine says whether agents run here">—</span>
+    } @else if (agents.zero) {
+      <span class="quiet tnum" title="No running agents">0</span>
+    } @else {
+      <app-count-link [value]="agents.value" [link]="agents.link" />
+    }
+  </ng-template>
+  <ng-template appCell="prs" let-r>
+    @let prs = cellsOf(r).prs;
+    @if (prs.value === undefined) {
+      <span class="quiet" title="Not reported: no machine says whether pull requests are open here">—</span>
+    } @else if (prs.zero) {
+      <span class="quiet tnum" title="No open pull requests">0</span>
+    } @else {
+      <app-count-link [value]="prs.value" [link]="prs.link" />
+    }
+  </ng-template>
+  <ng-template appCell="index" let-r>
+    @if (r.codeIndex; as state) {
+      <app-state-badge kind="code-index" size="small" [value]="state" [hint]="cellsOf(r).indexTitle" />
+    } @else {
+      <span class="quiet" title="Not known for this repository">—</span>
+    }
+  </ng-template>
+  <ng-template appCell="activity" let-r><app-age [at]="r.lastActivityAt" /></ng-template>
+  <ng-template appCell="links" let-r>
+    <span class="actions">
+      @if (codeLink(r); as href) {
+        <a class="icon" [href]="href" target="_blank" rel="noopener noreferrer" [attr.aria-label]="'Browse the code of ' + r.slug" [attr.title]="'Browse the code'"><app-glyph [paths]="codeGlyph" /></a>
+      }
+      @if (r.webUrl; as href) {
+        <a class="icon" [href]="href" target="_blank" rel="noopener noreferrer" [attr.aria-label]="'Open ' + r.slug + ' on ' + (r.host ?? 'its host')" [attr.title]="'Open on ' + (r.host ?? 'the host')"><app-glyph [paths]="externalGlyph" /></a>
+      }
+    </span>
+  </ng-template>
+  <ng-template appListPanel let-r><app-repository-panel [repositoryKey]="r.key" /></ng-template>
+</app-list>

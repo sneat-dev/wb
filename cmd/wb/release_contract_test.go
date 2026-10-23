@@ -6,10 +6,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/wbupdate"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 	"gopkg.in/yaml.v3"
 )
 
@@ -70,7 +72,7 @@ func TestPublicInstallDocumentationMatchesReleaseContract(t *testing.T) {
 	}
 	contents := string(readme)
 	for _, command := range []string{
-		selfUpdateHomebrewInstallCommand,
+		wbupdate.HomebrewInstallCommand,
 		"curl -fsSL https://sneat.work/bench/install/get-cli | sh",
 		"go install github.com/sneat-dev/wb/cmd/wb@latest",
 	} {
@@ -155,14 +157,14 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 	if !ok {
 		t.Fatal("go-ci release job missing")
 	}
-	if got := release["uses"]; got != "strongo/cicd/.github/workflows/release.yml@19adc5f9e479df1861aea3ee9e1037c746628e4c" {
+	if got := release["uses"]; got != "strongo/cicd/.github/workflows/release.yml@5d96b1f3fbb3f12bb1e2762ff5ba54ccb9506504" {
 		t.Fatalf("release uses=%v", got)
 	}
-	assert("release prerequisites", release["needs"], []any{"test", "release-eligibility"})
+	assert("release prerequisites", release["needs"], []any{"test", "release-eligibility", "go-scope"})
 	assert("release gate", strings.Join(strings.Fields(fmt.Sprint(release["if"])), " "),
-		"${{ !cancelled() && needs.test.result == 'success' && needs.release-eligibility.result == 'success' && needs.release-eligibility.outputs.eligible == 'true' }}")
+		"${{ !cancelled() && needs.test.result == 'success' && needs.go-scope.outputs.required == 'true' && needs.release-eligibility.result == 'success' && needs.release-eligibility.outputs.eligible == 'true' }}")
 	assert("release inputs", release["with"], map[string]any{
-		"go_version": "1.27", "default_bump": "patch",
+		"go_version": "1.27", "node_version": "24.15.0", "default_bump": "patch",
 		"require_notarized_macos": true, "allow_major_version_bump": false,
 	})
 	expectedSecrets := map[string]any{"GORELEASER_GITHUB_TOKEN": "${{ secrets.WB_GORELEASER_GITHUB_TOKEN }}"}
@@ -179,17 +181,25 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 		t.Fatalf("aggregate=%v", aggregate)
 	}
 	assert("required check name", aggregate["name"], "Required checks passed")
-	assert("aggregate prerequisites", aggregate["needs"], []any{"release-eligibility", "validation-reuse", "go-scope", "go-contract-inputs", "source", "static", "lint", "coverage", "race", "windows"})
+	assert("aggregate prerequisites", aggregate["needs"], []any{"release-eligibility", "validation-reuse", "go-scope", "go-contract-inputs", "source", "static", "lint", "coverage", "race", "e2e", "windows"})
 	assert("aggregate failure reporting", aggregate["if"], "${{ always() }}")
-	for _, name := range []string{"source", "static", "lint", "coverage", "race"} {
+	for _, name := range []string{"source", "static", "lint", "race", "e2e"} {
 		job, ok := jobs[name].(map[string]any)
 		if !ok {
 			t.Fatalf("validation job %s missing", name)
 		}
 		assert(name+" starts after eligibility, reuse and Go scope", job["needs"], []any{"release-eligibility", "validation-reuse", "go-scope"})
 		assert(name+" scope and reuse condition", strings.Join(strings.Fields(fmt.Sprint(job["if"])), " "),
-			"(github.event_name != 'pull_request' || needs.go-scope.outputs.required == 'true') && (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')")
+			"needs.go-scope.outputs.required == 'true' && (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')")
 	}
+	// Coverage shares exact trusted PR reuse; nightly publishes full artifacts.
+	coverageJob, ok := jobs["coverage"].(map[string]any)
+	if !ok {
+		t.Fatal("validation job coverage missing")
+	}
+	assert("coverage starts after eligibility, reuse and Go scope", coverageJob["needs"], []any{"release-eligibility", "validation-reuse", "go-scope"})
+	assert("coverage scope and reuse condition", strings.Join(strings.Fields(fmt.Sprint(coverageJob["if"])), " "),
+		"needs.go-scope.outputs.required == 'true' && (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')")
 	goScope, ok := jobs["go-scope"].(map[string]any)
 	if !ok {
 		t.Fatal("Go validation scope job missing")
@@ -198,33 +208,22 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 	if !ok || len(goScopeSteps) != 2 {
 		t.Fatalf("Go validation scope steps=%v", goScope["steps"])
 	}
-	goScopeFilter, _ := goScopeSteps[0].(map[string]any)
-	assert("Go scope filter action", goScopeFilter["uses"], "dorny/paths-filter@v4")
-	// Push, tag and manual runs always validate, so they must not depend on a
-	// git-history diff that can fail after a force-push.
-	assert("Go scope filter only on pull requests", goScopeFilter["if"], "github.event_name == 'pull_request'")
+	goScopeCheckout, _ := goScopeSteps[0].(map[string]any)
+	assert("Go scope checkout action", goScopeCheckout["uses"], "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803")
+	assert("Go scope fetches comparison history", goScopeCheckout["with"], map[string]any{"fetch-depth": 0})
 	decide, _ := goScopeSteps[1].(map[string]any)
-	assert("Go scope decision only on pull requests", decide["if"], "github.event_name == 'pull_request'")
-	assert("Go scope output", goScope["outputs"], map[string]any{"required": "${{ steps.decide.outputs.required }}"})
+	if !strings.Contains(fmt.Sprint(decide["run"]), "bash .github/scripts/go-scope.sh") {
+		t.Fatal("Go scope decision must execute the tested classifier")
+	}
+	assert("Go scope output", goScope["outputs"], map[string]any{"required": "${{ steps.decide.outputs.required }}", "contract_required": "${{ steps.decide.outputs.contract_required }}"})
 	contract, ok := jobs["go-contract-inputs"].(map[string]any)
 	if !ok {
 		t.Fatal("non-Go contract inputs job missing")
 	}
-	assert("contract inputs gate", contract["if"], "github.event_name == 'pull_request' && needs.go-scope.outputs.required == 'false'")
+	assert("contract inputs gate", contract["if"], "needs.go-scope.outputs.contract_required == 'true'")
 	assert("contract inputs commands", workflowContractTestCommands(t, contract), []string{
-		"go test ./cmd/wb -count=1 -run '^(TestModuleArchiveIncludesCmdWBEmbedInputs|TestCapabilityManifestKeepsImplementationHelpAndSkillsInOne|TestWBMergeSkillIsOnePortableContract)$'",
+		"go test ./cmd/wb -count=1 -run '^(TestModuleArchiveIncludesCmdWBEmbedInputs|TestCapabilityManifestKeepsImplementationHelpAndSkillsInOne|TestWBMergeSkillIsOnePortableContract|TestWBChangeCompletionContractIsSharedAcrossHarnesses|TestPublicInstallDocumentationMatchesReleaseContract|TestAgentSkillsCoverPublicCommands)$'",
 	})
-	filters, _ := goScopeFilter["with"].(map[string]any)
-	var scope map[string][]string
-	if err := yaml.Unmarshal([]byte(fmt.Sprint(filters["filters"])), &scope); err != nil {
-		t.Fatalf("parse Go scope filters: %v", err)
-	}
-	// Every non-Go path Go embeds or reads in tests must stay in scope.
-	for _, pattern := range []string{"**/*.go", "**/go.mod", "**/go.sum", "go.work", "go.work.sum", "vendor/**", "agents/**", ".golangci.*", ".gitattributes", "cmd/**", "internal/**", "api/**", "ai/**", "skills", "hub/web/dist/**", "proto/**", "examples/**", ".wb/**", ".github/**", ".claude-plugin/**", ".codex-plugin/**", "docs/cli-flag-matrix.md", "README.md", ".goreleaser.yml"} {
-		if !slices.Contains(scope["required"], pattern) {
-			t.Errorf("Go scope filter drops %q", pattern)
-		}
-	}
 	receipt, _ := jobs["validation-receipt"].(map[string]any)
 	assert("scoped-out pull requests publish no receipt", receipt["if"],
 		"${{ !cancelled() && github.event_name == 'pull_request' && needs.test.result == 'success' && needs.go-scope.outputs.required == 'true' }}")
@@ -237,19 +236,28 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 		t.Fatalf("native Windows scope steps=%v", windowsScope["steps"])
 	}
 	windowsScopeCheckout, _ := windowsScopeSteps[0].(map[string]any)
-	assert("Windows scope checkout action", windowsScopeCheckout["uses"], "actions/checkout@v6")
+	assert("Windows scope checkout action", windowsScopeCheckout["uses"], "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803")
+	filtersStep, _ := windowsScopeSteps[1].(map[string]any)
+	filtersWith, _ := filtersStep["with"].(map[string]any)
+	for _, path := range []string{"internal/filewrite/**", "internal/unixcompat/**", "internal/orchestrate/pr_update.go", "internal/orchestrate/pr_update*_test.go"} {
+		if !strings.Contains(fmt.Sprint(filtersWith["filters"]), "- '"+path+"'") {
+			t.Errorf("native Windows scope omits receipt publication owner %q", path)
+		}
+	}
 	windows, ok := jobs["windows"].(map[string]any)
 	if !ok {
 		t.Fatal("native Windows validation job missing")
 	}
 	assert("Windows validation prerequisites", windows["needs"], []any{"windows-scope", "validation-reuse", "go-scope"})
 	assert("Windows validation reuse condition", strings.Join(strings.Fields(fmt.Sprint(windows["if"])), " "),
-		"needs.windows-scope.outputs.required == 'true' && (github.event_name != 'pull_request' || needs.go-scope.outputs.required == 'true') && (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')")
+		"needs.windows-scope.outputs.required == 'true' && needs.go-scope.outputs.required == 'true' && (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')")
 	assert("Windows validation commands", workflowContractTestCommands(t, windows), []string{
 		"go build ./...",
+		"go vet ./...",
 		"go test ./internal/session -run '^TestLookupExactRefusesLinkedRecordsAndRequiresLivePID$'",
 		"go test ./internal/lifecyclehooks -run '^TestWindowsTrust'",
 		"go test ./internal/unixcompat ./internal/archiveprune ./cmd/wb -run '^(TestOpenNoFollowTransfersSingleHandleOwnership|TestFstatIdentityMatchesFstatat|TestWindowsPlanUntrackedSimpleFile|TestWindowsDaemon)'",
+		"go test ./internal/filewrite ./internal/orchestrate ./internal/unixcompat -count=1 -json -run '^(TestWindowsAtomicPublicationAndDirectoryFaults|TestWindowsImmutablePublicationRefusesWithoutReplacingWinner|TestWindowsPortableSentinelsMatchNativeErrors|TestWindowsPRUpdateReceiptPublication|TestWindowsSyncDirectoryValidatesHandles|TestSyncDirFsyncsTheDirectory|TestSyncDirHonoursAnInjectedFailure|TestSyncDirReportsARealFailureOnAClosedDirectory|TestSyncReportsARealFailureOnAClosedFile)$'",
 		"go test ./api/githubapp -count=1",
 	})
 	eligibility, ok := jobs["release-eligibility"].(map[string]any)
@@ -264,7 +272,7 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 	if _, conditional := checkout["if"]; conditional {
 		t.Fatalf("eligibility checkout=%v", checkout)
 	}
-	assert("eligibility checkout action", checkout["uses"], "actions/checkout@v6")
+	assert("eligibility checkout action", checkout["uses"], "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803")
 	assert("eligibility history", checkout["with"], map[string]any{"fetch-depth": 0})
 	assert("eligibility output", eligibility["outputs"], map[string]any{"eligible": "${{ steps.eligibility.outputs.eligible }}"})
 	if _, err := os.Stat(filepath.Join(repoRoot, ".github", "workflows", "release.yml")); !os.IsNotExist(err) {
@@ -289,15 +297,51 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 	})
 	assert("full race permissions", raceWorkflow["permissions"], map[string]any{"contents": "read"})
 	raceJobs, ok := raceWorkflow["jobs"].(map[string]any)
-	if !ok || len(raceJobs) != 1 {
-		t.Fatal("race jobs missing")
+	// The full race sweep is sharded across internal/orchestrate,
+	// internal/worktrees and everything else (issue #728: orchestrate hit
+	// the shared 40m go-test timeout in run 35974691603; measured alone on
+	// its own runner in run 36051478734, orchestrate took 2887s and
+	// worktrees took 2399.873s — both packages simply take that long under
+	// -race), plus a fast job that asserts the three shards, as
+	// .github/scripts/race-shards.sh defines them, are disjoint and still
+	// union back to exactly `go list ./...` (PR #731 review B1: the guard
+	// must read the same shard-membership script the three jobs use, not
+	// recompute its own copy that can never disagree with itself).
+	if !ok || len(raceJobs) != 4 {
+		t.Fatalf("race jobs = %v, want race-orchestrate, race-worktrees, race-rest and race-shards-cover-all-packages", raceJobs)
 	}
-	raceJob, ok := raceJobs["race"].(map[string]any)
+	orchestrateJob, ok := raceJobs["race-orchestrate"].(map[string]any)
 	if !ok {
-		t.Fatalf("race job=%v", raceJob)
+		t.Fatalf("race-orchestrate job=%v", orchestrateJob)
 	}
-	assert("full race command", workflowContractTestCommands(t, raceJob), []string{"go test -count=1 -race -timeout 40m ./..."})
-	assert("full race timeout", raceJob["timeout-minutes"], 45)
+	assert("orchestrate race command", workflowContractTestCommands(t, orchestrateJob), []string{
+		"set -euo pipefail packages=$(.github/scripts/race-shards.sh orchestrate) go test -count=1 -race -timeout 80m $packages",
+	})
+	assert("orchestrate race timeout", orchestrateJob["timeout-minutes"], 90)
+	worktreesJob, ok := raceJobs["race-worktrees"].(map[string]any)
+	if !ok {
+		t.Fatalf("race-worktrees job=%v", worktreesJob)
+	}
+	assert("worktrees race command", workflowContractTestCommands(t, worktreesJob), []string{
+		"set -euo pipefail packages=$(.github/scripts/race-shards.sh worktrees) go test -count=1 -race -timeout 70m $packages",
+	})
+	assert("worktrees race timeout", worktreesJob["timeout-minutes"], 75)
+	restJob, ok := raceJobs["race-rest"].(map[string]any)
+	if !ok {
+		t.Fatalf("race-rest job=%v", restJob)
+	}
+	assert("rest race command", workflowContractTestCommands(t, restJob), []string{
+		"set -euo pipefail packages=$(.github/scripts/race-shards.sh rest) go test -count=1 -race -timeout 40m $packages",
+	})
+	assert("rest race timeout", restJob["timeout-minutes"], 45)
+	shardCoverageJob, ok := raceJobs["race-shards-cover-all-packages"].(map[string]any)
+	if !ok {
+		t.Fatalf("race-shards-cover-all-packages job=%v", shardCoverageJob)
+	}
+	assert("shard coverage command", workflowContractTestCommands(t, shardCoverageJob), []string{
+		"set -euo pipefail go list ./... | sort > all.txt { .github/scripts/race-shards.sh orchestrate .github/scripts/race-shards.sh worktrees .github/scripts/race-shards.sh rest } > shards.txt duplicates=$(sort shards.txt | uniq -d || true) if [ -n \"$duplicates\" ]; then echo \"::error::race.yml shards overlap; a package must belong to exactly one shard:\" >&2 printf '%s\\n' \"$duplicates\" >&2 exit 1 fi sort -u shards.txt > union.txt if ! diff -u all.txt union.txt; then echo \"::error::race.yml shards do not cover every package; see the diff above\" >&2 exit 1 fi",
+	})
+	assert("shard coverage timeout", shardCoverageJob["timeout-minutes"], 10)
 	var publishers []string
 	files, err := os.ReadDir(filepath.Dir(goCIPath))
 	if err != nil {
@@ -326,16 +370,143 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 	assert("only CLI publisher", publishers, []string{"go-ci.yml:release"})
 }
 
+// raceShardCoverageGuard is exactly the disjointness/coverage check
+// race.yml's race-shards-cover-all-packages job runs, reimplemented in Go so
+// it can be pointed at a real (or deliberately broken) race-shards.sh copy
+// and asserted against. It intentionally mirrors the workflow's shell
+// step, not `go list`'s own behaviour, so a change to the script's shard
+// membership can be size-checked here first.
+func raceShardCoverageGuard(t *testing.T, repoRoot, script string) error {
+	t.Helper()
+	all := workflowContractTestGoList(t, repoRoot, "./...")
+	var shards []string
+	for _, name := range []string{"orchestrate", "worktrees", "rest"} {
+		command := exec.Command("sh", script, name)
+		command.Dir = repoRoot
+		out, err := command.Output()
+		if err != nil {
+			return fmt.Errorf("race-shards.sh %s: %w", name, err)
+		}
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			if line != "" {
+				shards = append(shards, line)
+			}
+		}
+	}
+	seen := map[string]bool{}
+	for _, pkg := range shards {
+		if seen[pkg] {
+			return fmt.Errorf("package %s appears in more than one shard", pkg)
+		}
+		seen[pkg] = true
+	}
+	allSet := map[string]bool{}
+	for _, pkg := range all {
+		allSet[pkg] = true
+		if !seen[pkg] {
+			return fmt.Errorf("package %s is in `go list ./...` but in no shard", pkg)
+		}
+	}
+	for _, pkg := range shards {
+		if !allSet[pkg] {
+			return fmt.Errorf("package %s is in a shard but not in `go list ./...`", pkg)
+		}
+	}
+	return nil
+}
+
+func workflowContractTestGoList(t *testing.T, dir, pattern string) []string {
+	t.Helper()
+	command := exec.Command("go", "list", pattern)
+	command.Dir = dir
+	out, err := command.Output()
+	if err != nil {
+		t.Fatalf("go list %s: %v", pattern, err)
+	}
+	var packages []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line != "" {
+			packages = append(packages, line)
+		}
+	}
+	return packages
+}
+
+// TestRaceShardsScriptIsDisjointAndCompleteAndTheGuardCatchesDrift proves,
+// against the real repository, both that today's .github/scripts/race-shards.sh
+// passes race.yml's guard and that the guard genuinely fails when the
+// script drifts (PR #731 review B1: a guard that only recomputes its own
+// copy of the shard lists can never actually fail).
+func TestRaceShardsScriptIsDisjointAndCompleteAndTheGuardCatchesDrift(t *testing.T) {
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(repoRoot, ".github", "scripts", "race-shards.sh")
+	if err := raceShardCoverageGuard(t, repoRoot, script); err != nil {
+		t.Fatalf("today's race-shards.sh must satisfy the guard: %v", err)
+	}
+
+	writeBrokenScript := func(t *testing.T, contents string) string {
+		t.Helper()
+		broken := filepath.Join(t.TempDir(), "race-shards.sh")
+		if err := testenv.WriteExecutableFile(broken, []byte(contents), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return broken
+	}
+
+	t.Run("rest excluding an extra package leaves it in no shard", func(t *testing.T) {
+		broken := writeBrokenScript(t, `#!/bin/sh
+set -eu
+shard=${1:?}
+case "$shard" in
+  orchestrate) go list ./internal/orchestrate/... ;;
+  worktrees) go list ./internal/worktrees/... ;;
+  rest) go list ./... | grep -v -E '^github\.com/sneat-dev/wb/internal/(orchestrate|worktrees|deps)(/|$)' ;;
+esac
+`)
+		err := raceShardCoverageGuard(t, repoRoot, broken)
+		if err == nil {
+			t.Fatal("guard passed against a script that drops internal/deps from every shard")
+		}
+		if !strings.Contains(err.Error(), "internal/deps") {
+			t.Fatalf("guard error = %v, want it to name internal/deps", err)
+		}
+	})
+
+	t.Run("rest forgetting to exclude orchestrate duplicates it", func(t *testing.T) {
+		broken := writeBrokenScript(t, `#!/bin/sh
+set -eu
+shard=${1:?}
+case "$shard" in
+  orchestrate) go list ./internal/orchestrate/... ;;
+  worktrees) go list ./internal/worktrees/... ;;
+  rest) go list ./... | grep -v -E '^github\.com/sneat-dev/wb/internal/worktrees(/|$)' ;;
+esac
+`)
+		err := raceShardCoverageGuard(t, repoRoot, broken)
+		if err == nil {
+			t.Fatal("guard passed against a script that runs internal/orchestrate in two shards")
+		}
+		if !strings.Contains(err.Error(), "internal/orchestrate") || !strings.Contains(err.Error(), "more than one shard") {
+			t.Fatalf("guard error = %v, want it to name the internal/orchestrate duplication", err)
+		}
+	})
+}
+
 func TestGoCIRequiredChecksRejectIncompleteValidation(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "go-ci.yml"))
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	raw, err := os.ReadFile(filepath.Join(repoRoot, ".github", "workflows", "go-ci.yml"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var workflow struct {
 		Jobs map[string]struct {
 			Steps []struct {
-				Run string
-				Env map[string]string
+				Uses string
+				Run  string
+				Env  map[string]string
 			}
 		}
 	}
@@ -343,138 +514,19 @@ func TestGoCIRequiredChecksRejectIncompleteValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	steps := workflow.Jobs["test"].Steps
-	if len(steps) != 1 || steps[0].Run == "" {
-		t.Fatal("required check must only summarize the validation results")
+	if len(steps) != 2 || steps[0].Uses != "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803" || steps[1].Run != "bash .github/scripts/go-ci-required.sh" {
+		t.Fatalf("required check must checkout and execute the tested aggregate: %#v", steps)
 	}
-	step := steps[0]
-	if len(step.Env) != 13 {
-		t.Fatalf("summary receives %d environment values, want the thirteen event/eligibility/reuse/scope/contract/validation/Windows values", len(step.Env))
+	if len(steps[1].Env) != 15 {
+		t.Fatalf("aggregate receives %d environment values, want fifteen", len(steps[1].Env))
 	}
-	runValues := func(values map[string]string) error {
-		cmd := exec.Command("sh", "-c", step.Run)
-		cmd.Env = os.Environ()
-		for key := range step.Env {
-			value := "success"
-			if key == "CONTRACT_RESULT" {
-				value = "skipped"
-			}
-			if override, ok := values[key]; ok {
-				value = override
-			}
-			cmd.Env = append(cmd.Env, key+"="+value)
-		}
-		return cmd.Run()
-	}
-	run := func(failedKey, result string) error {
-		return runValues(map[string]string{failedKey: result})
-	}
-	if err := run("", ""); err != nil {
-		t.Fatalf("all successful prerequisites rejected: %v", err)
-	}
-	if err := run("WINDOWS_RESULT", "skipped"); err != nil {
-		t.Fatalf("path-scoped Windows check rejected a skipped result: %v", err)
-	}
-	for key := range step.Env {
-		if key == "REUSE_RESULT" || key == "EVENT_NAME" || key == "GO_REQUIRED" || key == "CONTRACT_RESULT" {
-			continue
-		}
-		for _, result := range []string{"failure", "cancelled", "skipped", ""} {
-			if key == "WINDOWS_RESULT" && result == "skipped" {
-				continue
-			}
-			t.Run(key+"/"+result, func(t *testing.T) {
-				if err := run(key, result); err == nil {
-					t.Fatalf("summary accepted %s=%q", key, result)
-				}
-			})
+	for _, name := range []string{"test-go-scope.sh", "test-go-ci-required.sh"} {
+		command := exec.Command("bash", filepath.Join(".github", "scripts", name))
+		command.Dir = repoRoot
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("%s: %v\n%s", name, err, output)
 		}
 	}
-	t.Run("trusted validation reuse", func(t *testing.T) {
-		values := map[string]string{
-			"ELIGIBILITY_RESULT": "success",
-			"REUSE_RESULT":       "true",
-			"REUSE_JOB_RESULT":   "success",
-			"SOURCE_RESULT":      "skipped",
-			"STATIC_RESULT":      "skipped",
-			"LINT_RESULT":        "skipped",
-			"COVERAGE_RESULT":    "skipped",
-			"RACE_RESULT":        "skipped",
-			"WINDOWS_RESULT":     "skipped",
-		}
-		if err := runValues(values); err != nil {
-			t.Fatalf("trusted reuse was rejected: %v", err)
-		}
-	})
-	allSkipped := func(event, goRequired string) map[string]string {
-		contractResult := "skipped"
-		if event == "pull_request" && goRequired == "false" {
-			contractResult = "success"
-		}
-		return map[string]string{
-			"EVENT_NAME":      event,
-			"GO_REQUIRED":     goRequired,
-			"REUSE_RESULT":    "false",
-			"SOURCE_RESULT":   "skipped",
-			"STATIC_RESULT":   "skipped",
-			"LINT_RESULT":     "skipped",
-			"COVERAGE_RESULT": "skipped",
-			"RACE_RESULT":     "skipped",
-			"WINDOWS_RESULT":  "skipped",
-			"CONTRACT_RESULT": contractResult,
-		}
-	}
-	t.Run("spec-only pull request skips Go validation", func(t *testing.T) {
-		if err := runValues(allSkipped("pull_request", "false")); err != nil {
-			t.Fatalf("spec-only pull request was rejected: %v", err)
-		}
-	})
-	for _, result := range []string{"failure", "cancelled", "skipped", ""} {
-		t.Run("spec-only pull request rejects contract inputs "+result, func(t *testing.T) {
-			values := allSkipped("pull_request", "false")
-			values["CONTRACT_RESULT"] = result
-			if err := runValues(values); err == nil {
-				t.Fatalf("summary accepted contract inputs %q", result)
-			}
-		})
-	}
-	for _, scope := range []string{"", "TRUE", "unknown"} {
-		t.Run("pull request rejects scope "+scope, func(t *testing.T) {
-			if err := runValues(allSkipped("pull_request", scope)); err == nil {
-				t.Fatalf("summary accepted Go scope %q", scope)
-			}
-		})
-	}
-	t.Run("Go-relevant pull request rejects a contract run", func(t *testing.T) {
-		values := map[string]string{"EVENT_NAME": "pull_request", "GO_REQUIRED": "true", "REUSE_RESULT": "false", "CONTRACT_RESULT": "success"}
-		if err := runValues(values); err == nil {
-			t.Fatal("summary accepted a contract-only run for a Go-relevant pull request")
-		}
-	})
-	t.Run("Go-relevant pull request validates", func(t *testing.T) {
-		values := map[string]string{"EVENT_NAME": "pull_request", "GO_REQUIRED": "true", "REUSE_RESULT": "false"}
-		if err := runValues(values); err != nil {
-			t.Fatalf("validated Go-relevant pull request was rejected: %v", err)
-		}
-	})
-	t.Run("Go-relevant pull request must validate", func(t *testing.T) {
-		if err := runValues(allSkipped("pull_request", "true")); err == nil {
-			t.Fatal("summary accepted skipped validation for a Go-relevant pull request")
-		}
-	})
-	for _, event := range []string{"push", "workflow_dispatch"} {
-		t.Run(event+" ignores the pull-request scope", func(t *testing.T) {
-			if err := runValues(allSkipped(event, "false")); err == nil {
-				t.Fatalf("summary accepted skipped validation on %s", event)
-			}
-		})
-	}
-	t.Run("spec-only pull request rejects a failed scope decision", func(t *testing.T) {
-		values := allSkipped("pull_request", "false")
-		values["GO_SCOPE_RESULT"] = "failure"
-		if err := runValues(values); err == nil {
-			t.Fatal("summary accepted a failed Go scope decision")
-		}
-	})
 }
 
 func workflowContractTestCommands(t *testing.T, job map[string]any) []string {

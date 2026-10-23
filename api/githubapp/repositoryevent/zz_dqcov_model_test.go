@@ -29,6 +29,7 @@ func dqCovEvents(n int) []Event {
 }
 
 func TestDqCovEventValidateRejectsMalformedFields(t *testing.T) {
+	t.Parallel()
 	zero := time.Time{}
 	for name, mutate := range map[string]func(*Event){
 		"version":                       func(event *Event) { event.Version = ContractVersion + 1 },
@@ -47,6 +48,7 @@ func TestDqCovEventValidateRejectsMalformedFields(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			event := validEvent()
 			mutate(&event)
 			if err := event.Validate(); !errors.Is(err, ErrInvalidEvent) {
@@ -57,6 +59,7 @@ func TestDqCovEventValidateRejectsMalformedFields(t *testing.T) {
 }
 
 func TestDqCovEventValidateAcceptsARename(t *testing.T) {
+	t.Parallel()
 	event := validEvent()
 	event.Reason = ReasonRepositoryRenamed
 	event.PreviousRepository = "github.com/acme/legacy"
@@ -66,6 +69,7 @@ func TestDqCovEventValidateAcceptsARename(t *testing.T) {
 }
 
 func TestDqCovValidateEventIDBoundsOpaqueIDs(t *testing.T) {
+	t.Parallel()
 	if err := ValidateEventID("delivery-1:default"); err != nil {
 		t.Fatalf("ValidateEventID rejected a safe id: %v", err)
 	}
@@ -77,6 +81,7 @@ func TestDqCovValidateEventIDBoundsOpaqueIDs(t *testing.T) {
 		"with slash":   "delivery/1",
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			if err := ValidateEventID(id); err == nil {
 				t.Fatalf("ValidateEventID(%q) accepted an invalid id", id)
 			}
@@ -85,6 +90,7 @@ func TestDqCovValidateEventIDBoundsOpaqueIDs(t *testing.T) {
 }
 
 func TestDqCovValidateRepositoryRequiresACanonicalIdentity(t *testing.T) {
+	t.Parallel()
 	if err := ValidateRepository("github.com/acme/app"); err != nil {
 		t.Fatalf("ValidateRepository rejected a canonical identity: %v", err)
 	}
@@ -97,6 +103,7 @@ func TestDqCovValidateRepositoryRequiresACanonicalIdentity(t *testing.T) {
 		"dotted owner":  "github.com/.acme/app",
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			err := ValidateRepository(repository)
 			if err == nil || !strings.Contains(err.Error(), "bounded github.com/owner/repository identity") {
 				t.Fatalf("ValidateRepository(%q) = %v, want a bootstrap-identity error", repository, err)
@@ -106,6 +113,7 @@ func TestDqCovValidateRepositoryRequiresACanonicalIdentity(t *testing.T) {
 }
 
 func TestDqCovValidateRefRejectsMalformedBranchRefs(t *testing.T) {
+	t.Parallel()
 	if err := validateRef("refs/heads/feature/dashboard"); err != nil {
 		t.Fatalf("validateRef rejected a valid branch ref: %v", err)
 	}
@@ -128,6 +136,7 @@ func TestDqCovValidateRefRejectsMalformedBranchRefs(t *testing.T) {
 		"tilde":            "refs/heads/feat~ure",
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			if err := validateRef(ref); err == nil {
 				t.Fatalf("validateRef(%q) accepted an invalid branch ref", ref)
 			}
@@ -136,6 +145,7 @@ func TestDqCovValidateRefRejectsMalformedBranchRefs(t *testing.T) {
 }
 
 func TestDqCovValidateCursorRequiresAndBoundsTheCursor(t *testing.T) {
+	t.Parallel()
 	if err := ValidateCursor("opaque-cursor", true); err != nil {
 		t.Fatalf("ValidateCursor rejected a safe cursor: %v", err)
 	}
@@ -152,6 +162,7 @@ func TestDqCovValidateCursorRequiresAndBoundsTheCursor(t *testing.T) {
 		"nul byte":       {"cur\x00sor", false},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			if err := ValidateCursor(test.cursor, test.required); !errors.Is(err, ErrInvalidCursor) {
 				t.Fatalf("ValidateCursor = %v, want ErrInvalidCursor", err)
 			}
@@ -160,6 +171,7 @@ func TestDqCovValidateCursorRequiresAndBoundsTheCursor(t *testing.T) {
 }
 
 func TestDqCovPollResponseValidateBoundsThePollContract(t *testing.T) {
+	t.Parallel()
 	valid := func() PollResponse {
 		return PollResponse{
 			Version:    ContractVersion,
@@ -180,6 +192,7 @@ func TestDqCovPollResponseValidateBoundsThePollContract(t *testing.T) {
 		"invalid event":         func(response *PollResponse) { response.Events = []Event{{Version: ContractVersion}} },
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			response := valid()
 			mutate(&response)
 			if err := response.Validate("opaque-before"); err == nil {
@@ -190,6 +203,7 @@ func TestDqCovPollResponseValidateBoundsThePollContract(t *testing.T) {
 }
 
 func TestDqCovAckRequestValidateRequiresUniqueEventIDs(t *testing.T) {
+	t.Parallel()
 	if err := (AckRequest{Version: ContractVersion, Cursor: "opaque-after", EventIDs: []string{"delivery-1"}}).Validate(); err != nil {
 		t.Fatalf("Validate rejected a complete acknowledgement: %v", err)
 	}
@@ -203,6 +217,7 @@ func TestDqCovAckRequestValidateRequiresUniqueEventIDs(t *testing.T) {
 		"duplicate event id": func(request *AckRequest) { request.EventIDs = []string{"delivery-1", "delivery-1"} },
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			request := AckRequest{Version: ContractVersion, Cursor: "opaque-after", EventIDs: []string{"delivery-1"}}
 			mutate(&request)
 			if err := request.Validate(); err == nil {

@@ -79,10 +79,14 @@ func pathValue() string {
 
 // homeDir is the HOME a Git helper child should inherit.
 func homeDir() string {
-	if value := strings.TrimSpace(os.Getenv("HOME")); value != "" {
+	return homeDirWith(os.Getenv, os.UserHomeDir)
+}
+
+func homeDirWith(environment func(string) string, userHome func() (string, error)) string {
+	if value := strings.TrimSpace(environment("HOME")); value != "" {
 		return value
 	}
-	home, err := os.UserHomeDir()
+	home, err := userHome()
 	if err != nil {
 		return ""
 	}

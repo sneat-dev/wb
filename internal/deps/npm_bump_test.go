@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // newNpmBumpRepository mirrors newBumpRepository (see bump_test.go) for the
@@ -15,6 +17,9 @@ import (
 // given files, on "main".
 func newNpmBumpRepository(t *testing.T, root, githubDir, name string, files map[string]string) Repository {
 	t.Helper()
+	// spec/plans/coverage-to-100 task-17: this fixture's real git repo now
+	// reaches orchestrate's runCommand through task-24's guarded runner.Real,
+	// so every caller needs the escape hatch once, here.
 	seed := filepath.Join(root, name+"-npm-seed")
 	remote := filepath.Join(root, name+"-npm.git")
 	canonical := filepath.Join(githubDir, "acme", name)
@@ -27,6 +32,7 @@ func newNpmBumpRepository(t *testing.T, root, githubDir, name string, files map[
 	runTestGit(t, seed, "add", "-A")
 	runTestGit(t, seed, "commit", "-m", "initial")
 	runTestGit(t, root, "clone", "--bare", seed, remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -145,6 +151,7 @@ exit 1
 }
 
 func TestParsePublishedNpmRequirementsUsesCanonicalDiscoveryFields(t *testing.T) {
+	t.Parallel()
 	requirements, err := parsePublishedNpmRequirements(`{
   "dependencies": {"@acme/core": "1.0.0"},
   "devDependencies": {"@acme/data": "1.0.0"},
@@ -168,6 +175,7 @@ func TestParsePublishedNpmRequirementsUsesCanonicalDiscoveryFields(t *testing.T)
 }
 
 func TestParsePublishedNpmRequirementsRejectsConflictingFields(t *testing.T) {
+	t.Parallel()
 	_, err := parsePublishedNpmRequirements(`{
   "dependencies": {"@acme/core": "1.0.0"},
   "peerDependencies": {"@acme/core": "2.0.0"}

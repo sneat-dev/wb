@@ -10,6 +10,7 @@ import (
 // TestDqCovRepositoryRunOptionsAbsentPolicyKeepsBase pins that a repository
 // without a quality policy inherits the caller's options unchanged.
 func TestDqCovRepositoryRunOptionsAbsentPolicyKeepsBase(t *testing.T) {
+	t.Parallel()
 	base := RunOptions{GoTestShards: 4, GoShardPackages: []string{"./cmd/wb"}, Retry: 2}
 	options, err := RepositoryRunOptions(t.TempDir(), base)
 	if err != nil {
@@ -23,6 +24,7 @@ func TestDqCovRepositoryRunOptionsAbsentPolicyKeepsBase(t *testing.T) {
 // TestDqCovRepositoryRunOptionsSurfacesOpenFailure covers a policy path that
 // exists but cannot be opened, which must not silently fall back to defaults.
 func TestDqCovRepositoryRunOptionsSurfacesOpenFailure(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	writeQualityFile(t, filepath.Join(root, ".wb"), "not a directory")
 	if _, err := RepositoryRunOptions(root, RunOptions{}); err == nil || !strings.Contains(err.Error(), "open repository quality policy") {
@@ -33,6 +35,7 @@ func TestDqCovRepositoryRunOptionsSurfacesOpenFailure(t *testing.T) {
 // TestDqCovRepositoryRunOptionsRejectsMalformedTrailingDocument covers a second
 // YAML document that cannot be decoded at all.
 func TestDqCovRepositoryRunOptionsRejectsMalformedTrailingDocument(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	path := filepath.Join(root, repositoryQualityConfigPath)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -49,6 +52,7 @@ func TestDqCovRepositoryRunOptionsRejectsMalformedTrailingDocument(t *testing.T)
 // TestDqCovRepositoryRunOptionsRejectsBlankPackageEntry covers a go_test
 // package list whose single entry is only whitespace.
 func TestDqCovRepositoryRunOptionsRejectsBlankPackageEntry(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	path := filepath.Join(root, repositoryQualityConfigPath)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

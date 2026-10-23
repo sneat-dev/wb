@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/console"
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 )
@@ -49,6 +50,13 @@ const (
 // example `wb pr land` or `wb ci wait`) should check for it with errors.Is
 // and append that guidance; the observer package has no such context.
 var ErrTransientRetriesExhausted = errors.New("github transient read retries exhausted")
+
+// ErrTransientMutationOutcomeUnknown marks a GitHub write whose command
+// failed for a transient transport/provider reason. WB must not blindly retry
+// the mutation: GitHub may have accepted it before the response was lost.
+// Callers first re-read authoritative state, then leave the operation
+// resumable when that read cannot prove the write landed.
+var ErrTransientMutationOutcomeUnknown = errors.New("github transient mutation outcome unknown")
 
 // RetryTelemetry accumulates the in-process GitHub read retries performed
 // while it is attached to a context via WithRetryTelemetry. Count is the
@@ -182,19 +190,78 @@ func Default() *Observer {
 	return defaultObserver
 }
 
+// Reader replaces the GitHub reads made below one context: Get answers Get and
+// GetPages, Read answers Read, Execute answers Execute; a nil function leaves that call to the
+// real observer. It is the seam a unit test uses to count and answer every read
+// of a caller without a `gh` binary, a process or the network.
+type Reader struct {
+	Get     func(ctx context.Context, request GetRequest) (Response, error)
+	Read    func(ctx context.Context, dir string, args ...string) ([]byte, error)
+	Execute func(ctx context.Context, dir string, args ...string) CommandResponse
+}
+
+type readerContextKey struct{}
+
+// WithReader makes every Get, GetPages and Execute below ctx go to reader.
+func WithReader(ctx context.Context, reader Reader) context.Context {
+	return context.WithValue(ctx, readerContextKey{}, reader)
+}
+
+func readerOf(ctx context.Context) Reader {
+	reader, _ := ctx.Value(readerContextKey{}).(Reader)
+	return reader
+}
+
 func Get(ctx context.Context, request GetRequest) (Response, error) {
+	if reader := readerOf(ctx); reader.Get != nil {
+		return reader.Get(ctx, request)
+	}
 	return Default().Get(ctx, request)
 }
 
 func Read(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	if reader := readerOf(ctx); reader.Read != nil {
+		return reader.Read(ctx, dir, args...)
+	}
 	return Default().Read(ctx, dir, args...)
 }
 
 func Execute(ctx context.Context, dir string, args ...string) CommandResponse {
+	if reader := readerOf(ctx); reader.Execute != nil {
+		return reader.Execute(ctx, dir, args...)
+	}
 	return Default().Execute(ctx, dir, args...)
 }
 
+// IsTransientCommandFailure applies the observer's existing transient
+// transport/provider classification to a single non-read command result. It
+// classifies only; it never retries a mutation whose outcome may be unknown.
+func IsTransientCommandFailure(ctx context.Context, response CommandResponse) bool {
+	if response.Err == nil {
+		return false
+	}
+	// Execute has already dispatched the mutation. If the caller deadline or
+	// cancellation fired while it was in flight, the provider may have
+	// accepted the write before the local process stopped observing it.
+	if ctx.Err() != nil {
+		return true
+	}
+	message := commandFailureMessage(response)
+	lower := strings.ToLower(message)
+	for _, marker := range []string{"http 500", "status code 500"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	_, retryable := retryableReadFailure(ctx, false, response, message)
+	return retryable
+}
+
 func (o *Observer) Get(ctx context.Context, request GetRequest) (response Response, err error) {
+	return o.getWithLock(ctx, request, acquireLock)
+}
+
+func (o *Observer) getWithLock(ctx context.Context, request GetRequest, lock func(string) (func() error, error)) (response Response, err error) {
 	if request.Progress == nil {
 		request.Progress, _ = ctx.Value(progressContextKey{}).(progress.Reporter)
 	}
@@ -208,7 +275,7 @@ func (o *Observer) Get(ctx context.Context, request GetRequest) (response Respon
 	if err != nil {
 		return Response{}, err
 	}
-	unlock, err := acquireLock(lockPath)
+	unlock, err := lock(lockPath)
 	if err != nil {
 		return Response{}, err
 	}
@@ -466,9 +533,6 @@ func (o *Observer) apiGet(ctx context.Context, request GetRequest, conditional m
 			continue
 		}
 		if parseErr == nil {
-			if commandOK {
-				return response, nil
-			}
 			message := strings.TrimSpace(string(result.Stderr))
 			if message == "" {
 				message = strings.TrimSpace(string(response.Body))
@@ -888,28 +952,39 @@ func readCacheEntry(path string) (*cacheEntry, error) {
 }
 
 func writeCacheEntry(path string, entry *cacheEntry) error {
+	return writeCacheEntryInjected(path, entry, nil)
+}
+
+// writeCacheEntryInjected is writeCacheEntry's test seam (task-9 PR-8): every
+// production call site reaches it only through writeCacheEntry, which always
+// passes a nil *filewrite.Injector, so production behaviour is unchanged. A
+// test passes its own Injector to reach the create/chmod/write/close/rename
+// failure branches deterministically. The write-failure and close-failure
+// branches deliberately share the same "write GitHub observer cache %s: %w"
+// error text, matching the pre-migration original.
+func writeCacheEntryInjected(path string, entry *cacheEntry, inj *filewrite.Injector) error {
 	raw, err := json.Marshal(entry)
 	if err != nil {
 		return fmt.Errorf("encode GitHub observer cache %s: %w", path, err)
 	}
-	tmpFile, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	tmpFile, err := filewrite.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*", inj)
 	if err != nil {
 		return fmt.Errorf("create GitHub observer cache temp file for %s: %w", path, err)
 	}
 	tmp := tmpFile.Name()
 	defer func() { _ = os.Remove(tmp) }()
-	if err := tmpFile.Chmod(0o600); err != nil {
-		_ = tmpFile.Close()
+	if err := filewrite.ChmodFile(tmpFile, 0o600, tmp, inj); err != nil {
+		_ = filewrite.Close(tmpFile, tmp, inj)
 		return fmt.Errorf("set GitHub observer cache temp permissions for %s: %w", path, err)
 	}
-	if _, err := tmpFile.Write(raw); err != nil {
-		_ = tmpFile.Close()
+	if err := filewrite.Write(tmpFile, raw, tmp, inj); err != nil {
+		_ = filewrite.Close(tmpFile, tmp, inj)
 		return fmt.Errorf("write GitHub observer cache %s: %w", path, err)
 	}
-	if err := tmpFile.Close(); err != nil {
+	if err := filewrite.Close(tmpFile, tmp, inj); err != nil {
 		return fmt.Errorf("write GitHub observer cache %s: %w", path, err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := filewrite.Rename(tmp, path, inj); err != nil {
 		return fmt.Errorf("activate GitHub observer cache %s: %w", path, err)
 	}
 	return nil
@@ -982,9 +1057,6 @@ func parseIncludedResponse(raw []byte) (httpResponse, error) {
 	headerBlock := string(normalized[:index])
 	body := append([]byte(nil), normalized[index+len(separator):]...)
 	lines := strings.Split(headerBlock, "\n")
-	if len(lines) == 0 {
-		return httpResponse{}, errors.New("GitHub response omitted status line")
-	}
 	statusFields := strings.Fields(lines[0])
 	if len(statusFields) < 2 {
 		return httpResponse{}, fmt.Errorf("GitHub response status line malformed: %q", lines[0])
@@ -1051,19 +1123,23 @@ func httpTime(value string) (time.Time, error) {
 }
 
 func acquireLock(path string) (func() error, error) {
+	return acquireLockWithOps(path, unix.Flock, unix.Close)
+}
+
+func acquireLockWithOps(path string, flock func(int, int) error, closeFD func(int) error) (func() error, error) {
 	fd, err := unix.Open(path, unix.O_CREAT|unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open GitHub observer lock %s: %w", path, err)
 	}
-	if err := unix.Flock(fd, unix.LOCK_EX); err != nil {
-		_ = unix.Close(fd)
+	if err := flock(fd, unix.LOCK_EX); err != nil {
+		_ = closeFD(fd)
 		return nil, fmt.Errorf("lock GitHub observer lock %s: %w", path, err)
 	}
 	return func() error {
-		if unlockErr := unix.Flock(fd, unix.LOCK_UN); unlockErr != nil {
-			_ = unix.Close(fd)
+		if unlockErr := flock(fd, unix.LOCK_UN); unlockErr != nil {
+			_ = closeFD(fd)
 			return unlockErr
 		}
-		return unix.Close(fd)
+		return closeFD(fd)
 	}, nil
 }

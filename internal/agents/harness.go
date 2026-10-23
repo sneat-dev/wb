@@ -45,7 +45,7 @@ func CodexArgv(options HarnessOptions) ([]string, error) {
 	prefix := "model_providers." + options.ProviderName
 	overrides := []struct {
 		key   string
-		value any
+		value string
 	}{
 		{"model_provider", options.ProviderName},
 		{prefix + ".name", options.ProviderName},
@@ -67,25 +67,17 @@ func CodexArgv(options HarnessOptions) ([]string, error) {
 		"-m", options.Model,
 	}
 	for _, override := range overrides {
-		encoded, err := encodeConfigValue(override.value)
-		if err != nil {
-			return nil, err
-		}
+		encoded := encodeConfigValue(override.value)
 		argv = append(argv, "-c", override.key+"="+encoded)
 	}
-	exclude, err := encodeConfigValue([]string{"*KEY*", "*TOKEN*", "*SECRET*"})
-	if err != nil {
-		return nil, err
-	}
-	argv = append(argv, "-c", "shell_environment_policy.exclude="+exclude)
+	// A fixed string slice has no unsupported values or custom marshalers.
+	exclude, _ := json.Marshal([]string{"*KEY*", "*TOKEN*", "*SECRET*"})
+	argv = append(argv, "-c", "shell_environment_policy.exclude="+string(exclude))
 	// Reasoning is the model's own vocabulary and drifts per model, so WB
 	// passes the configured value through and lets the model be the authority
 	// on which levels exist. An absent value passes no override at all.
 	if strings.TrimSpace(options.Reasoning) != "" {
-		encoded, err := encodeConfigValue(strings.TrimSpace(options.Reasoning))
-		if err != nil {
-			return nil, err
-		}
+		encoded := encodeConfigValue(strings.TrimSpace(options.Reasoning))
 		argv = append(argv, "-c", "model_reasoning_effort="+encoded)
 	}
 	if strings.TrimSpace(options.LastMessagePath) != "" {
@@ -196,10 +188,8 @@ func SummarizeEvents(reader io.Reader) HarnessSummary {
 	return summary
 }
 
-func encodeConfigValue(value any) (string, error) {
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		return "", fmt.Errorf("encode harness configuration value: %w", err)
-	}
-	return string(encoded), nil
+// JSON string encoding is total, including control bytes and invalid UTF-8.
+func encodeConfigValue(value string) string {
+	encoded, _ := json.Marshal(value)
+	return string(encoded)
 }

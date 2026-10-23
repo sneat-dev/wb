@@ -75,11 +75,12 @@ func dqCovLimitFileSize(t *testing.T, limit uint64) func() {
 // final flush is reported and no merged profile is published, rather than a
 // silently truncated union.
 func TestDqCovWriteCoverageProfileAtomicallySurfacesFlushFailure(t *testing.T) {
+	t.Parallel()
 	if dqCovSpawnFileSizeLimitedChild(t) {
 		return
 	}
 	restore := dqCovLimitFileSize(t, 8)
-	defer restore()
+	t.Cleanup(func() { restore() })
 
 	directory := t.TempDir()
 	output := filepath.Join(directory, "merged.cov")
@@ -102,11 +103,12 @@ func TestDqCovWriteCoverageProfileAtomicallySurfacesFlushFailure(t *testing.T) {
 // writer past its internal buffer so a failing write surfaces from the block
 // formatting call itself.
 func TestDqCovWriteCoverageProfileAtomicallySurfacesBlockWriteFailure(t *testing.T) {
+	t.Parallel()
 	if dqCovSpawnFileSizeLimitedChild(t) {
 		return
 	}
 	restore := dqCovLimitFileSize(t, 8)
-	defer restore()
+	t.Cleanup(func() { restore() })
 
 	directory := t.TempDir()
 	blocks := map[string]coverageBlock{}
@@ -126,11 +128,12 @@ func TestDqCovWriteCoverageProfileAtomicallySurfacesBlockWriteFailure(t *testing
 // TestDqCovSaveValidationCacheSurfacesEvidenceWriteFailure proves a failed
 // evidence write returns an error and publishes no cache entry.
 func TestDqCovSaveValidationCacheSurfacesEvidenceWriteFailure(t *testing.T) {
+	t.Parallel()
 	if dqCovSpawnFileSizeLimitedChild(t) {
 		return
 	}
 	restore := dqCovLimitFileSize(t, 0)
-	defer restore()
+	t.Cleanup(func() { restore() })
 
 	cacheRoot := filepath.Join(t.TempDir(), "cache")
 	key := ValidationCacheKey{Repository: "example/cache", TargetRevision: "revision-1"}

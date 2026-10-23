@@ -9,6 +9,7 @@ import (
 )
 
 func TestSetRemoteHubPreservesUnrelatedConfiguration(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config", "wb.yaml")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
@@ -43,6 +44,7 @@ func TestSetRemoteHubPreservesUnrelatedConfiguration(t *testing.T) {
 }
 
 func TestSetRemoteHubCreatesConfig(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config", "wb.yaml")
 	if err := SetRemoteHub(path, "https://hub.example", "vm", filepath.Join(t.TempDir(), "token")); err != nil {
 		t.Fatal(err)

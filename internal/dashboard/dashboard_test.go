@@ -8,42 +8,149 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
-func TestDashboardServesUIAndHealth(t *testing.T) {
-	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "1.2.3", DaemonPID: 123, SchedulerGeneration: 45})
-
+func TestRootRedirectsToHomeAndNothingElseIsServedAtTheRoot(t *testing.T) {
+	t.Parallel()
+	handler := NewHandler(Options{Version: "1.2.3", Home: "/cockpit/"})
 	for _, test := range []struct {
-		path        string
-		contentType string
-		contains    string
+		path     string
+		status   int
+		location string
 	}{
-		{path: "/", contentType: "text/html", contains: "WB operations"},
-		{path: "/api/v1/health", contentType: "application/json", contains: `"status":"ready"`},
+		{"/", http.StatusFound, "/cockpit/"},
+		// The retired pages and their data are gone, not redirected: nothing
+		// owns these paths any more.
+		{"/metrics", http.StatusNotFound, ""},
+		{"/coverage", http.StatusNotFound, ""},
+		{"/api/v1/overview", http.StatusNotFound, ""},
+		{"/dashboard-assets/index.js", http.StatusNotFound, ""},
+		{"/dashboard-assets/metrics.js", http.StatusNotFound, ""},
+		{"/anything-else", http.StatusNotFound, ""},
 	} {
-		request := httptest.NewRequest(http.MethodGet, test.path, nil)
 		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, request)
-		if response.Code != http.StatusOK {
-			t.Fatalf("%s status = %d", test.path, response.Code)
+		handler.ServeHTTP(response, loopbackRequest(test.path))
+		if response.Code != test.status || response.Header().Get("Location") != test.location {
+			t.Errorf("%s = %d Location %q, want %d Location %q", test.path, response.Code, response.Header().Get("Location"), test.status, test.location)
 		}
-		if contentType := response.Header().Get("Content-Type"); !strings.HasPrefix(contentType, test.contentType) {
-			t.Errorf("%s content type = %q", test.path, contentType)
-		}
-		if !strings.Contains(response.Body.String(), test.contains) {
-			t.Errorf("%s body does not contain %q", test.path, test.contains)
-		}
-		if response.Header().Get("Content-Security-Policy") == "" {
-			t.Errorf("%s omitted security headers", test.path)
+		if response.Header().Get("Content-Security-Policy") != Policy {
+			t.Errorf("%s omitted the security headers", test.path)
 		}
 	}
 }
 
-func TestDashboardHealthReportsDaemonIdentity(t *testing.T) {
-	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "1.2.3", DaemonPID: 123, SchedulerGeneration: 45})
+// A path nothing owns answers 404 on a loopback Host and, like every route of
+// the listener, 421 on any other, so the listener does not tell a rebinding
+// page which paths exist. A non-GET request there gets the mux's 405.
+func TestUnownedPathsAnswerOnlyOnALoopbackHost(t *testing.T) {
+	t.Parallel()
+	handler := NewHandler(Options{Version: "9.9.9-marker", Home: "/cockpit/"})
+	for _, target := range []string{"/metrics", "/nowhere", "/api/v1/overview"} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, loopbackRequest(target))
+		if recorder.Code != http.StatusNotFound {
+			t.Errorf("%s on a loopback host = %d, want 404", target, recorder.Code)
+		}
+		foreign := httptest.NewRequest(http.MethodGet, target, nil)
+		foreign.Host = "attacker.example:8766"
+		recorder = httptest.NewRecorder()
+		handler.ServeHTTP(recorder, foreign)
+		if recorder.Code != http.StatusMisdirectedRequest || !strings.Contains(recorder.Body.String(), `"error":"misdirected_request"`) {
+			t.Errorf("%s on a foreign host = %d %s, want 421 misdirected_request", target, recorder.Code, recorder.Body.String())
+		}
+	}
+	post := httptest.NewRequest(http.MethodPost, "/nowhere", nil)
+	post.Host = "127.0.0.1:8766"
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, post)
+	if recorder.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST to an unowned path = %d, want 405", recorder.Code)
+	}
+}
+
+func TestRootIsNotRoutedWithoutAHome(t *testing.T) {
+	t.Parallel()
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))
+	NewHandler(Options{Version: "1.2.3"}).ServeHTTP(response, loopbackRequest("/"))
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("/ = %d, want 404", response.Code)
+	}
+}
+
+func TestHealthIsServedAsJSONWithSecurityHeaders(t *testing.T) {
+	t.Parallel()
+	response := httptest.NewRecorder()
+	NewHandler(Options{Version: "1.2.3"}).ServeHTTP(response, loopbackRequest("/api/v1/health"))
+	if response.Code != http.StatusOK || !strings.HasPrefix(response.Header().Get("Content-Type"), "application/json") ||
+		!strings.Contains(response.Body.String(), `"status":"ready"`) || response.Header().Get("Content-Security-Policy") == "" {
+		t.Fatalf("health = %d %v %s", response.Code, response.Header(), response.Body.String())
+	}
+}
+
+// TestPeersOptionIsMountedBesideTheRootRoute is a regression
+// test for a real startup panic this task introduced and fixed: NewHandler
+// once registered Peers at the unqualified pattern "/api/v1/peers", which
+// conflicted with the root route registered above it ("matches more methods...
+// but has a more specific path") — Go 1.22's ServeMux panics on that
+// ambiguity at registration time, which means every `wb daemon serve` would
+// have panicked on startup, hub or no hub, since serveDashboard always sets
+// Peers. The route must be GET-qualified, must answer for both the list path
+// and a nested detail path, and must leave every other route (the root,
+// health) unaffected.
+func TestPeersOptionIsMountedBesideTheRootRoute(t *testing.T) {
+	t.Parallel()
+	var peersCalls []string
+	peers := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		peersCalls = append(peersCalls, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"schema_version":1,"peers":[]}`))
+	})
+	handler := NewHandler(Options{Version: "1.2.3", Home: "/cockpit/", Peers: peers})
+
+	for _, path := range []string{"/api/v1/peers", "/api/v1/peers/machine_1"} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, loopbackRequest(path))
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s status = %d, want 200", path, response.Code)
+		}
+	}
+	if len(peersCalls) != 2 {
+		t.Fatalf("peers handler calls = %v, want both paths reached", peersCalls)
+	}
+
+	// The root and health routes must still answer as before.
+	root := httptest.NewRecorder()
+	handler.ServeHTTP(root, loopbackRequest("/"))
+	if root.Code != http.StatusFound {
+		t.Fatalf("root status = %d, want 302", root.Code)
+	}
+	health := httptest.NewRecorder()
+	handler.ServeHTTP(health, loopbackRequest("/api/v1/health"))
+	if health.Code != http.StatusOK {
+		t.Fatalf("health status = %d, want 200", health.Code)
+	}
+}
+
+// TestPeersOptionOmittedLeavesTheRouteUnmounted proves the nil default (a
+// caller that has not set Peers, matching every caller before this task)
+// keeps its previous behaviour: no /api/v1/peers route exists, so it falls
+// through to a 404 like any other unknown path.
+func TestPeersOptionOmittedLeavesTheRouteUnmounted(t *testing.T) {
+	t.Parallel()
+	handler := NewHandler(Options{Version: "1.2.3"})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, loopbackRequest("/api/v1/peers"))
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, body = %q, want 404", response.Code, response.Body.String())
+	}
+}
+
+func TestDashboardHealthReportsDaemonIdentity(t *testing.T) {
+	t.Parallel()
+	handler := NewHandler(Options{Version: "1.2.3", DaemonPID: 123, SchedulerGeneration: 45})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, loopbackRequest("/api/v1/health"))
 	if response.Code != http.StatusOK {
 		t.Fatalf("health status = %d", response.Code)
 	}
@@ -59,56 +166,16 @@ func TestDashboardHealthReportsDaemonIdentity(t *testing.T) {
 	}
 }
 
-func TestOverviewPersistsReadOnlyFleetIndex(t *testing.T) {
-	projectsRoot := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(projectsRoot, "acme", "widgets", ".git"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	indexPath := filepath.Join(t.TempDir(), "fleet-inventory.json")
-	now := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
-	handler := NewHandler(Options{
-		ProjectsRoot: projectsRoot, Version: "test",
-		CacheTTL: time.Second, InventoryIndexPath: indexPath, InventoryIndexTTL: time.Minute,
-		Now: func() time.Time { return now },
-	})
-	load := func() Overview {
-		t.Helper()
-		request := httptest.NewRequest(http.MethodGet, "/api/v1/overview", nil)
-		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, request)
-		if response.Code != http.StatusOK {
-			t.Fatalf("overview status = %d, body = %s", response.Code, response.Body.String())
-		}
-		var overview Overview
-		if err := json.Unmarshal(response.Body.Bytes(), &overview); err != nil {
-			t.Fatal(err)
-		}
-		return overview
-	}
-	first := load()
-	if _, err := os.Stat(indexPath); err != nil {
-		t.Fatalf("persisted fleet index: %v", err)
-	}
-	if first.Inventory.CacheHit || first.Inventory.SourceFingerprint == "" {
-		t.Fatalf("first inventory = %#v", first.Inventory)
-	}
-	now = now.Add(2 * time.Second)
-	second := load()
-	if !second.Inventory.CacheHit || !second.Inventory.ObservedAt.Equal(first.GeneratedAt) {
-		t.Fatalf("second inventory = %#v, first generated at %s", second.Inventory, first.GeneratedAt)
-	}
-}
-
 // TestMountsAreServedNextToTheExistingRoutes is what lets `wb daemon serve`
 // host the bench hub and its dashboard on the same loopback listener without
 // moving anything that was already there.
 func TestMountsAreServedNextToTheExistingRoutes(t *testing.T) {
+	t.Parallel()
 	mounted := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		_, _ = writer.Write([]byte("mounted " + request.URL.Path))
 	})
 	handler := NewHandler(Options{
-		ProjectsRoot: t.TempDir(),
-		Version:      "test",
+		Version: "test",
 		Mounts: map[string]http.Handler{
 			"/v0/workbench/": mounted,
 			"/workbench/":    mounted,
@@ -122,7 +189,7 @@ func TestMountsAreServedNextToTheExistingRoutes(t *testing.T) {
 
 	for _, target := range []string{"/v0/workbench/github/status", "/workbench/dashboard/", "/workbench"} {
 		recorder := httptest.NewRecorder()
-		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+		handler.ServeHTTP(recorder, loopbackRequest(target))
 		if recorder.Code != http.StatusOK || !strings.HasPrefix(recorder.Body.String(), "mounted ") {
 			t.Fatalf("%s = %d %q", target, recorder.Code, recorder.Body.String())
 		}
@@ -130,13 +197,13 @@ func TestMountsAreServedNextToTheExistingRoutes(t *testing.T) {
 
 	// The pre-existing routes keep answering exactly as before.
 	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))
+	handler.ServeHTTP(recorder, loopbackRequest("/api/v1/health"))
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"status"`) {
 		t.Fatalf("health = %d %q", recorder.Code, recorder.Body.String())
 	}
 	recorder = httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/nil/", nil))
-	if recorder.Code != http.StatusOK || strings.HasPrefix(recorder.Body.String(), "mounted ") {
+	handler.ServeHTTP(recorder, loopbackRequest("/nil/"))
+	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("a nil mount was registered: %d %q", recorder.Code, recorder.Body.String())
 	}
 }
@@ -144,16 +211,18 @@ func TestMountsAreServedNextToTheExistingRoutes(t *testing.T) {
 // TestNoMountsLeavesTheHandlerUnchanged is the promise made to every operator
 // who does not self-host.
 func TestNoMountsLeavesTheHandlerUnchanged(t *testing.T) {
-	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "test"})
+	t.Parallel()
+	handler := NewHandler(Options{Version: "test"})
 	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/workbench/dashboard/", nil))
-	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "<") {
-		t.Fatalf("/workbench/dashboard/ = %d; want the catch-all index page", recorder.Code)
+	handler.ServeHTTP(recorder, loopbackRequest("/workbench/dashboard/"))
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("/workbench/dashboard/ = %d; want 404", recorder.Code)
 	}
 }
 
 func TestLogIsUnavailableWithoutALogPath(t *testing.T) {
-	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "test"})
+	t.Parallel()
+	handler := NewHandler(Options{Version: "test", Owner: everyRequestIsTheOwner})
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/log", nil))
 	if recorder.Code != http.StatusServiceUnavailable {
@@ -162,12 +231,13 @@ func TestLogIsUnavailableWithoutALogPath(t *testing.T) {
 }
 
 func TestLogServesATailOfTheRuntimeLogFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "daemon.log")
 	if err := os.WriteFile(logPath, []byte("line one\nline two\nline three\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "test", LogPath: logPath})
+	handler := NewHandler(Options{Version: "test", LogPath: logPath, Owner: everyRequestIsTheOwner})
 
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/log", nil))
@@ -204,10 +274,65 @@ func TestLogServesATailOfTheRuntimeLogFile(t *testing.T) {
 }
 
 func TestLogReportsUnavailableWhenTheFileIsMissing(t *testing.T) {
-	handler := NewHandler(Options{ProjectsRoot: t.TempDir(), Version: "test", LogPath: filepath.Join(t.TempDir(), "missing.log")})
+	t.Parallel()
+	handler := NewHandler(Options{Version: "test", LogPath: filepath.Join(t.TempDir(), "missing.log"), Owner: everyRequestIsTheOwner})
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/log", nil))
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d; want 503", recorder.Code)
+	}
+	// The open error names the file's path; the body carries a closed code and
+	// a fixed message instead (cockpit#ac:daemon-log-error-names-no-path).
+	if body := recorder.Body.String(); !strings.Contains(body, `"error":"log_unavailable"`) || strings.Contains(body, "missing.log") || strings.Contains(body, string(filepath.Separator)) {
+		t.Fatalf("body = %q; want the closed code and no path", body)
+	}
+}
+
+// loopbackRequest is a GET of target as a browser on this machine makes it: on
+// a loopback Host.
+func loopbackRequest(target string) *http.Request {
+	request := httptest.NewRequest(http.MethodGet, target, nil)
+	request.Host = "127.0.0.1:8766"
+	return request
+}
+
+// TestRoutesAnswerOnlyOnALoopbackHost: the health route sits on Cockpit's
+// listener and holds the machine's name and the daemon's process id, and the
+// root redirect shares the rule. A request whose Host names anything but a
+// loopback host (a page that rebound DNS to 127.0.0.1) is refused with 421 and
+// is told none of it; the loopback names are served.
+func TestRoutesAnswerOnlyOnALoopbackHost(t *testing.T) {
+	t.Parallel()
+	handler := NewHandler(Options{Version: "9.9.9-marker", DaemonPID: 4242, Home: "/cockpit/"})
+	for _, target := range []string{"/api/v1/health", "/"} {
+		for _, host := range []string{"127.0.0.1:8766", "localhost:8766", "[::1]:8766", "LOCALHOST", "127.0.0.2:8766"} {
+			request := httptest.NewRequest(http.MethodGet, target, nil)
+			request.Host = host
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, request)
+			want := map[string]struct {
+				status int
+				marker string
+			}{
+				"/api/v1/health": {http.StatusOK, "9.9.9-marker"},
+				"/":              {http.StatusFound, "/cockpit/"},
+			}[target]
+			if recorder.Code != want.status || !strings.Contains(recorder.Body.String()+recorder.Header().Get("Location"), want.marker) {
+				t.Errorf("%s on %s = %d %s, want %d with %q", target, host, recorder.Code, recorder.Body.String(), want.status, want.marker)
+			}
+		}
+		for _, host := range []string{"attacker.example", "attacker.example:8766", "128.0.0.1:8766", "127.0.0.1:http", "[bad", ""} {
+			request := httptest.NewRequest(http.MethodGet, target, nil)
+			request.Host = host
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, request)
+			body := recorder.Body.String()
+			if recorder.Code != http.StatusMisdirectedRequest || !strings.Contains(body, `"error":"misdirected_request"`) || recorder.Header().Get("Cache-Control") != "no-store" {
+				t.Errorf("%s on Host %q = %d %s, want 421 misdirected_request, never stored", target, host, recorder.Code, body)
+			}
+			if strings.Contains(body, "9.9.9-marker") || strings.Contains(body, "4242") || strings.Contains(body, "machine") {
+				t.Errorf("%s on Host %q was told about the machine: %s", target, host, body)
+			}
+		}
 	}
 }

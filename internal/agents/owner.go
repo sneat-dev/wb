@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/process"
@@ -26,9 +27,13 @@ const OwnerArgument = "--wb-internal-agent-run"
 // records that it was, rather than the writes failing under the harness.
 const maxLogBytes = 128 << 20
 
-// stopGrace is how long a stopped worker has to honour a graceful signal before
-// the stop escalates to a kill.
-const stopGrace = 3 * time.Second
+// defaultStopGrace is how long a stopped worker has to honour a graceful
+// signal before the stop escalates to a kill.
+const defaultStopGrace = 3 * time.Second
+
+// defaultStopPollInterval is how often StopRun re-checks whether the worker
+// has exited during the grace period.
+const defaultStopPollInterval = 50 * time.Millisecond
 
 // OwnerDeps are the seams the run owner needs. They are injected so the whole
 // owner can be exercised deterministically against a fake harness.
@@ -39,17 +44,38 @@ type OwnerDeps struct {
 	LookPath func(string) (string, error)
 	// Now is the clock, injected for deterministic tests.
 	Now func() time.Time
+	// Sleep is StopRun's grace-period poll seam, injected for deterministic
+	// tests. A test exercising a worker that ignores termination shrinks
+	// StopGrace/StopPollInterval instead of leaving Sleep real, because that
+	// path genuinely waits on a real OS process; every other test replaces
+	// Sleep with a recorder.
+	Sleep func(time.Duration)
+	// StopGrace and StopPollInterval configure StopRun's escalation wait.
+	// Both are struct fields, not package-level mutable vars, so a test
+	// cannot leave shared package state mutated for another test running in
+	// parallel. StopRun does not default a zero OwnerDeps -- every caller
+	// (production and test) builds on DefaultOwnerDeps, which already
+	// populates every field, so StopRun trusts deps as given.
+	StopGrace        time.Duration
+	StopPollInterval time.Duration
 }
 
 // DefaultOwnerDeps returns the production seams.
 func DefaultOwnerDeps() OwnerDeps {
-	return OwnerDeps{LookPath: exec.LookPath, Now: time.Now}
+	return OwnerDeps{
+		LookPath: exec.LookPath, Now: time.Now, Sleep: time.Sleep,
+		StopGrace: defaultStopGrace, StopPollInterval: defaultStopPollInterval,
+	}
 }
 
 // RunOwner executes one dispatched run to completion and records its terminal
 // state. It is the process that outlives the dispatching CLI, so everything a
 // later `status` or `await` can learn about the run is written here.
 func RunOwner(ctx context.Context, store Store, agentID string, deps OwnerDeps) error {
+	return runOwnerWithSave(ctx, store, agentID, deps, store.Save, maxLogBytes)
+}
+
+func runOwnerWithSave(ctx context.Context, store Store, agentID string, deps OwnerDeps, save func(Record) error, logLimit int64) error {
 	if deps.LookPath == nil {
 		deps.LookPath = exec.LookPath
 	}
@@ -69,7 +95,7 @@ func RunOwner(ctx context.Context, store Store, agentID string, deps OwnerDeps) 
 		defer cancel()
 	}
 	record.OwnerPID = os.Getpid()
-	if err := store.Save(record); err != nil {
+	if err := save(record); err != nil {
 		return err
 	}
 
@@ -80,7 +106,7 @@ func RunOwner(ctx context.Context, store Store, agentID string, deps OwnerDeps) 
 		if !record.StartedAt.IsZero() {
 			record.DurationMS = record.FinishedAt.Sub(record.StartedAt).Milliseconds()
 		}
-		return store.Save(record)
+		return save(record)
 	}
 
 	credential, err := ResolveCredential(record.Resolved.Routing)
@@ -118,7 +144,7 @@ func RunOwner(ctx context.Context, store Store, agentID string, deps OwnerDeps) 
 		return finish(StateFailed, fmt.Sprintf("open run log: %v", err))
 	}
 	defer func() { _ = logFile.Close() }()
-	log := &boundedLog{writer: logFile, remaining: maxLogBytes}
+	log := &boundedLog{writer: logFile, remaining: logLimit}
 
 	// The harness reads the task from stdin, so task text never appears in the
 	// process table, and the command line stays free of it in every log.
@@ -132,7 +158,11 @@ func RunOwner(ctx context.Context, store Store, agentID string, deps OwnerDeps) 
 		return finish(StateFailed, fmt.Sprintf("start %s: %v", record.Resolved.Harness, err))
 	}
 	record.WorkerPID = command.Process.Pid
-	if err := store.Save(record); err != nil {
+	if err := save(record); err != nil {
+		// No durable record owns this child yet. Cancel through the same tree-owned
+		// process boundary and reap it even when the caller supplied no timeout.
+		_ = command.Cancel()
+		_ = command.Wait()
 		return err
 	}
 
@@ -273,6 +303,10 @@ func OwnerCLI(arguments []string, deps OwnerDeps) int {
 // the private owner argument, so a dispatched run needs no daemon and survives
 // the dispatching CLI exiting.
 func SpawnOwner(runDir string, executable func() (string, error)) (int, error) {
+	return spawnOwnerWithNull(runDir, executable, func() (*os.File, error) { return os.OpenFile(os.DevNull, os.O_RDWR, 0) })
+}
+
+func spawnOwnerWithNull(runDir string, executable func() (string, error), openNull func() (*os.File, error)) (int, error) {
 	path, err := executable()
 	if err != nil {
 		return 0, fmt.Errorf("locate the wb executable for the run owner: %w", err)
@@ -280,7 +314,7 @@ func SpawnOwner(runDir string, executable func() (string, error)) (int, error) {
 	command := exec.Command(path, OwnerArgument, "--run-dir", runDir) //nolint:gosec // current wb executable and fixed arguments
 	command.Env = os.Environ()
 	process.ConfigureDetached(command)
-	null, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+	null, err := openNull()
 	if err != nil {
 		return 0, err
 	}
@@ -290,9 +324,9 @@ func SpawnOwner(runDir string, executable func() (string, error)) (int, error) {
 		return 0, err
 	}
 	pid := command.Process.Pid
-	if err := command.Process.Release(); err != nil {
-		return 0, err
-	}
+	// Go 1.27 Release only errors on Windows when called a second time.
+	// This fresh, locally owned Process has not escaped or been released.
+	_ = command.Process.Release()
 	return pid, nil
 }
 
@@ -300,7 +334,11 @@ func SpawnOwner(runDir string, executable func() (string, error)) (int, error) {
 // deliberately: it observes the non-zero exit and records the terminal state,
 // so a stopped run reports a real outcome instead of vanishing into
 // "abandoned".
-func StopRun(store Store, agentID string) (Record, error) {
+func StopRun(store Store, agentID string, deps OwnerDeps) (Record, error) {
+	return stopRunWithSignal(store, agentID, deps, terminateOwner)
+}
+
+func stopRunWithSignal(store Store, agentID string, deps OwnerDeps, terminate func(int, syscall.Signal) error) (Record, error) {
 	record, err := store.Load(agentID)
 	if err != nil {
 		return Record{}, err
@@ -317,15 +355,27 @@ func StopRun(store Store, agentID string) (Record, error) {
 	// Graceful first, then hard: a worker that ignores SIGTERM must still be
 	// stopped, because stop's contract is "terminate the worker and everything
 	// it started", not "ask it politely".
-	if err := terminateOwner(record.WorkerPID, terminationSignal()); err != nil {
+	if err := terminate(record.WorkerPID, terminationSignal()); err != nil {
 		return record, err
 	}
-	deadline := time.Now().Add(stopGrace)
-	for processAlive(record.WorkerPID) && time.Now().Before(deadline) {
-		time.Sleep(50 * time.Millisecond)
-	}
-	if processAlive(record.WorkerPID) {
-		return record, terminateOwner(record.WorkerPID, killSignal())
+	deadline := deps.Now().Add(deps.StopGrace)
+	exited := waitForProcessExit(deps.Now, deps.Sleep, deps.StopPollInterval, deadline, func() bool {
+		return processAlive(record.WorkerPID)
+	})
+	if !exited {
+		return record, terminate(record.WorkerPID, killSignal())
 	}
 	return record, nil
+}
+
+// waitForProcessExit polls alive() every pollInterval (via the injected
+// clock/sleep seam, never a direct time.Now/time.Sleep call) until it
+// reports false or now() reaches deadline. It returns false when the
+// deadline passed while alive() was still true — StopRun's signal to
+// escalate to SIGKILL — and true once alive() reports false.
+func waitForProcessExit(now func() time.Time, sleep func(time.Duration), pollInterval time.Duration, deadline time.Time, alive func() bool) bool {
+	for alive() && now().Before(deadline) {
+		sleep(pollInterval)
+	}
+	return !alive()
 }

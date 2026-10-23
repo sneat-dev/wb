@@ -6,6 +6,7 @@ import "testing"
 // zero is meaningful, so callers must be able to hold a pointer to it rather
 // than rely on a sentinel zero value.
 func TestTailCovIndexHandsOutAStablePointer(t *testing.T) {
+	t.Parallel()
 	zero := Index(0)
 	if zero == nil {
 		t.Fatal("Index(0) = nil, want a pointer so layer zero survives as a value")
@@ -31,6 +32,7 @@ func TestTailCovIndexHandsOutAStablePointer(t *testing.T) {
 // unchanged, and a nil reporter (reporting disabled) is a silent no-op instead
 // of a panic.
 func TestTailCovReportDeliversToAConfiguredReporterAndToleratesNil(t *testing.T) {
+	t.Parallel()
 	Report(nil, Event{Operation: "must-not-panic"})
 
 	layer := Index(0)
@@ -64,6 +66,7 @@ func TestTailCovReportDeliversToAConfiguredReporterAndToleratesNil(t *testing.T)
 // the JSON/daemon contract write out. Renaming one silently would break every
 // consumer that switches on the string.
 func TestTailCovStatesAreTheWireValues(t *testing.T) {
+	t.Parallel()
 	for state, want := range map[State]string{
 		Started:   "started",
 		Running:   "running",

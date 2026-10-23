@@ -214,6 +214,7 @@ func TestDirectiveAssessmentEffectiveGoVersionIsTheHigherOfCurrentAndCeiling(t *
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			assessment := DirectiveAssessment{CurrentGoVersion: testCase.current, Ceiling: testCase.ceiling}
 			if got := assessment.EffectiveGoVersion(); got != testCase.want {
 				t.Fatalf("EffectiveGoVersion() = %q, want %q", got, testCase.want)

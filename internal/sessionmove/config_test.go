@@ -17,6 +17,7 @@ func writeConfig(t *testing.T, body string) string {
 }
 
 func TestLoadConfigReadsCanonicalMachineTargets(t *testing.T) {
+	t.Parallel()
 	path := writeConfig(t, `remote:
   repo: sneat-dev/wb-state
 session_move:
@@ -46,6 +47,7 @@ session_move:
 }
 
 func TestLoadConfigRejectsUnsafeCourierArguments(t *testing.T) {
+	t.Parallel()
 	tests := map[string]string{
 		"option-like ssh host": `session_move:
   targets:
@@ -171,6 +173,7 @@ func TestLoadConfigRejectsUnsafeCourierArguments(t *testing.T) {
 	}
 	for name, body := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			if _, err := LoadConfig(writeConfig(t, body)); err == nil {
 				t.Fatal("LoadConfig accepted unsafe target configuration")
 			}
@@ -179,6 +182,7 @@ func TestLoadConfigRejectsUnsafeCourierArguments(t *testing.T) {
 }
 
 func TestSSHConfigAllowsFixedCommandOrShellInertAbsolutePath(t *testing.T) {
+	t.Parallel()
 	for _, config := range []SSHConfig{
 		{Host: "hetzner-vm1"},
 		{Host: "178.104.41.143", User: "ai"},
@@ -191,6 +195,7 @@ func TestSSHConfigAllowsFixedCommandOrShellInertAbsolutePath(t *testing.T) {
 }
 
 func TestLoadConfigRequiresConfiguredDefaultCourier(t *testing.T) {
+	t.Parallel()
 	path := writeConfig(t, `session_move:
   targets:
     vm:

@@ -50,6 +50,10 @@ instead. Proceed manually only if the user confirms after that offer, and
 record the confirmation. Never challenge the same instruction twice. See rule
 `land-with-wb-verb` (`sneat-co/backstage`).
 
+**Trigger.**
+
+- about to pipe a `wb` verb through `tail`/`grep`/`head` (or `2>&1 | …`) → the pipe hides its exit status, so a refusal exits 0 and the `&&` chain runs on (the agent hook refuses it); use `--quiet` (`wb pr create --quiet`), not a pipe
+
 Keep canonical clones clean and available for synchronization when possible;
 prefer `main`, but never mutate a dirty or off-base canonical checkout to make
 it eligible. WB creation leaves its current branch, index, and working tree
@@ -94,6 +98,24 @@ a writable root, or select repository-local mode) instead of a bare
 `operation not permitted`.
 
 ## Validation
+
+For an intentionally shared linked checkout, one registered session takes
+explicit ownership after inspecting the current owner; other registered
+sessions join without taking custody. The owner can transfer to a live joined
+session. This opt-in coordination does not reserve files or stop concurrent Git
+operations; participants still agree on edit boundaries and let the owner
+coordinate checkout-wide operations.
+
+```sh
+wb worktree info .
+wb worktree take-ownership . --expected-owner none
+wb worktree join .
+wb worktree transfer-ownership . --to-session <wb-session-id>
+wb worktree leave .
+wb worktree message send . --to-session <wb-session-id> --idempotency-key <key> --message-file <file>
+wb worktree message inbox .
+wb worktree message ack . <message-id>
+```
 
 During implementation, format changed files and run focused named tests plus
 focused vet or lint for the affected packages. Before a push, run at most one
@@ -174,19 +196,20 @@ Four traps decide whether a sweep finds anything at all:
    A squash-merged or cherry-picked branch whose patches are all upstream by
    patch-id is **not** a candidate, and `git cherry` emptiness is not evidence
    WB accepts — it cannot tell landed from landed-then-reverted.
-3. **`--base` defaults to `main`.** A task branched from a feature branch stays
-   `awaiting_push` until you pass `--base <feature-branch>`.
-4. **Dry run is the default.** `--apply` is required to act. For a named task
-   `--apply` refuses without `--remote` *while the origin branch still exists*
-   — a task whose origin branch is already gone has nothing left to retire and
-   cleans without it.
+3. **The recorded base is the target.** Cleanup uses each worktree’s recorded
+   base. If that branch is gone, or has itself landed in the repository default,
+   cleanup falls back to the freshly fetched default branch. An explicit
+   `--base <branch>` selects exactly that origin branch; it does not fall back.
+4. **Dry run is the default.** `--apply` is required to act. For a named task,
+   `--apply` requires `--remote` only while its origin branch still exists; an
+   already deleted remote branch needs no further retirement.
 
-Flags on `wb worktree cleanup`: `--base`, `--all-merged`, `--parallel`,
-`--verbose`, `--apply`,
-`--remote`, `--older-than`, `--report-dir`, `--absorbed-by`,
-`--resume-interrupted`, `--format`, plus root `--filter` and
-`--projects-root`. Apply writes durable audit evidence below
-`<projects-root>/.wb/reports/worktree-cleanup/`.
+Cleanup flags: `--base`, `--all-merged`, `--apply`, `--remote`,
+`--older-than`, `--parallel`, `--report-dir`, `--absorbed-by`,
+`--superseded-by`, `--resume-interrupted`, `--recover-stages`,
+`--retire-shells`, `--format`, and `--verbose` (`-v`). Root flags also include
+`--filter`, `--projects-root`, `--quiet`, and `--non-interactive`. Apply writes
+durable audit evidence below `<projects-root>/.wb/reports/worktree-cleanup/`.
 
 Never delete a branch or worktree WB refused. A skip is preserved evidence —
 `awaiting push`, an open PR, local changes, or a blocked coordinated sibling —

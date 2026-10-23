@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/execfile"
 )
 
 // tailCovWriteFile writes a fixture file inside dir, creating dir first.
@@ -28,7 +30,7 @@ func tailCovWriteFile(t *testing.T, dir, name, content string) string {
 func tailCovWriteExecutable(t *testing.T, content string) string {
 	t.Helper()
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(content), 0o755); err != nil {
+	if err := execfile.WriteExecutableFile(filepath.Join(dir, "git"), []byte(content), 0o755); err != nil {
 		t.Fatalf("stage fake git: %v", err)
 	}
 	return dir
@@ -87,6 +89,7 @@ func TestTailCovInspectSkipsBlankDirectoryArguments(t *testing.T) {
 // would-be WB_AGENT_* name with no '=' must not be reported as ambient agent
 // identity.
 func TestTailCovInspectIgnoresEntriesWithoutEqualsSign(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir() // no go.work in this ancestry
 
 	inputs := Inspect([]string{"PATH=/bin", "WB_AGENT_ID", "GOWORK=/ambient/go.work"}, root)
@@ -105,6 +108,7 @@ func TestTailCovInspectIgnoresEntriesWithoutEqualsSign(t *testing.T) {
 // the subprocess environment: an entry that is not NAME=VALUE cannot be an
 // override and is dropped rather than passed through as a name-only entry.
 func TestTailCovSanitizeEnvDropsEntriesWithoutEqualsSign(t *testing.T) {
+	t.Parallel()
 	result := SanitizeEnv([]string{"PATH=/bin", "BARE_WORD", "LONELY="})
 	want := []string{"PATH=/bin", "LONELY="}
 	if len(result) != len(want) {
@@ -150,6 +154,7 @@ func TestTailCovUnresolvableWorkingDirectoryFailsClosed(t *testing.T) {
 // root that does not exist at all: nothing can be tracked, and that is
 // reported as "not its own" with no error.
 func TestTailCovTracksOwnGoWorkFalseForMissingRepository(t *testing.T) {
+	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "never-created")
 
 	tracked, err := TracksOwnGoWork(missing)
@@ -166,6 +171,7 @@ func TestTailCovTracksOwnGoWorkFalseForMissingRepository(t *testing.T) {
 // path below a regular file). That is a real failure, not "no go.work", and
 // must be surfaced.
 func TestTailCovTracksOwnGoWorkReportsUnresolvableRoot(t *testing.T) {
+	t.Parallel()
 	file := tailCovWriteFile(t, t.TempDir(), "regular-file", "not a directory\n")
 	root := filepath.Join(file, "child")
 
@@ -183,6 +189,7 @@ func TestTailCovTracksOwnGoWorkReportsUnresolvableRoot(t *testing.T) {
 // own. A symlinked go.work (what WB's own link mechanism creates) and a
 // directory named go.work are both treated as not-its-own.
 func TestTailCovTracksOwnGoWorkFalseForNonRegularGoWork(t *testing.T) {
+	t.Parallel()
 	real := tailCovWriteFile(t, t.TempDir(), "real-go.work", "go 1.27\n")
 
 	symlinked := t.TempDir()
@@ -331,6 +338,7 @@ exec %q "$@"
 // the check is NOT isolated: a repository that commits its own go.work and
 // leaves it unchanged keeps workspace mode, so there is no override at all.
 func TestTailCovGoEnvOverridesKeepsIntrinsicWorkspace(t *testing.T) {
+	t.Parallel()
 	repository := tailCovScratchRepo(t)
 
 	if overrides := GoEnvOverrides(repository); len(overrides) != 0 {

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func writeConfig(t *testing.T, body string) string {
@@ -19,6 +20,7 @@ func writeConfig(t *testing.T, body string) string {
 }
 
 func TestLoadConfigReadsRemoteSectionAndDefaults(t *testing.T) {
+	t.Parallel()
 	path := writeConfig(t, "recipes: {}\nremote:\n  repo: sneat-dev/wb-state\n  machine: vm-1\n")
 	cfg, err := LoadConfig(path)
 	if err != nil {
@@ -33,6 +35,7 @@ func TestLoadConfigReadsRemoteSectionAndDefaults(t *testing.T) {
 }
 
 func TestLoadConfigReadsHTTPSHubAndUsesPrivacySafeDefault(t *testing.T) {
+	t.Parallel()
 	tokenFile := filepath.Join(t.TempDir(), "token")
 	path := writeConfig(t, fmt.Sprintf("remote:\n  provider: hub\n  url: https://wb-github-app.sneat.dev\n  token_file: '%s'\n  machine: vm-1\n", tokenFile))
 	cfg, err := LoadConfig(path)
@@ -45,6 +48,7 @@ func TestLoadConfigReadsHTTPSHubAndUsesPrivacySafeDefault(t *testing.T) {
 }
 
 func TestLoadConfigIncompleteHubShowsHubSnippet(t *testing.T) {
+	t.Parallel()
 	_, err := LoadConfig(writeConfig(t, "remote:\n  provider: hub\n  machine: vm-1\n"))
 	var unconfigured *UnconfiguredError
 	if !errors.As(err, &unconfigured) || !strings.Contains(err.Error(), "https://wb-github-app.sneat.dev") ||
@@ -54,6 +58,7 @@ func TestLoadConfigIncompleteHubShowsHubSnippet(t *testing.T) {
 }
 
 func TestLoadConfigMissingFileIsUnconfigured(t *testing.T) {
+	t.Parallel()
 	_, err := LoadConfig(filepath.Join(t.TempDir(), "absent.yaml"))
 	var unconfigured *UnconfiguredError
 	if !errors.As(err, &unconfigured) {
@@ -65,6 +70,7 @@ func TestLoadConfigMissingFileIsUnconfigured(t *testing.T) {
 }
 
 func TestLoadConfigRequiresRepoAndMachine(t *testing.T) {
+	t.Parallel()
 	_, err := LoadConfig(writeConfig(t, "remote:\n  repo: a/b\n"))
 	var unconfigured *UnconfiguredError
 	if !errors.As(err, &unconfigured) || strings.Join(unconfigured.Missing, ",") != "machine" {
@@ -73,6 +79,7 @@ func TestLoadConfigRequiresRepoAndMachine(t *testing.T) {
 }
 
 func TestLoadConfigRejectsBadValues(t *testing.T) {
+	t.Parallel()
 	for name, body := range map[string]string{
 		"provider":                 "remote:\n  provider: ftp\n  repo: a/b\n  machine: m\n",
 		"repo":                     "remote:\n  repo: just-a-name\n  machine: m\n",
@@ -96,6 +103,7 @@ func TestLoadConfigRejectsBadValues(t *testing.T) {
 // pattern, so a user hitting it does not need to read Go regexp syntax to
 // understand what to fix.
 func TestLoadConfigMachineErrorIsHumanReadable(t *testing.T) {
+	t.Parallel()
 	_, err := LoadConfig(writeConfig(t, "remote:\n  repo: a/b\n  machine: 'has space'\n"))
 	if err == nil {
 		t.Fatal("expected validation error")
@@ -109,6 +117,7 @@ func TestLoadConfigMachineErrorIsHumanReadable(t *testing.T) {
 }
 
 func TestLoadConfigFileWithoutRemoteSectionIsUnconfigured(t *testing.T) {
+	t.Parallel()
 	path := writeConfig(t, "recipes: {}\n")
 	_, err := LoadConfig(path)
 	var unconfigured *UnconfiguredError
@@ -124,6 +133,7 @@ func TestLoadConfigFileWithoutRemoteSectionIsUnconfigured(t *testing.T) {
 }
 
 func TestLoadConfigMalformedYAMLIsPlainError(t *testing.T) {
+	t.Parallel()
 	path := writeConfig(t, "remote: [unclosed\n")
 	_, err := LoadConfig(path)
 	if err == nil {
@@ -143,6 +153,7 @@ func TestLoadConfigMalformedYAMLIsPlainError(t *testing.T) {
 // loopback still has to be HTTPS, because the machine credential travels in
 // an Authorization header.
 func TestValidateHubURLAcceptsLoopbackHTTP(t *testing.T) {
+	t.Parallel()
 	for _, accepted := range []string{
 		"https://wb-github-app.sneat.dev",
 		"https://wb-github-app.sneat.dev/",
@@ -161,6 +172,7 @@ func TestValidateHubURLAcceptsLoopbackHTTP(t *testing.T) {
 		"http://example.com",
 		"http://10.0.0.1:8766",
 		"http://bench.internal:8766",
+		"https://wb-github-app.sneat.dev?",
 		"ftp://127.0.0.1",
 		"https://user:pass@wb-github-app.sneat.dev",
 		"https://wb-github-app.sneat.dev?x=1",
@@ -177,6 +189,7 @@ func TestValidateHubURLAcceptsLoopbackHTTP(t *testing.T) {
 // TestLoadConfigAcceptsALoopbackHubURL proves the relaxation reaches the
 // configuration loader, which is where a self-hosted remote: section lands.
 func TestLoadConfigAcceptsALoopbackHubURL(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "wb.yaml")
 	body := "remote:\n  provider: hub\n  url: http://127.0.0.1:8766\n  machine: laptop\n  token_file: " + filepath.Join(t.TempDir(), "hub.token") + "\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
@@ -190,6 +203,7 @@ func TestLoadConfigAcceptsALoopbackHubURL(t *testing.T) {
 
 // TestLoadConfigRejectsANonLoopbackHTTPHubURL keeps the relaxation narrow.
 func TestLoadConfigRejectsANonLoopbackHTTPHubURL(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "wb.yaml")
 	body := "remote:\n  provider: hub\n  url: http://bench.example\n  machine: laptop\n  token_file: /tmp/hub.token\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
@@ -204,6 +218,7 @@ func TestLoadConfigRejectsANonLoopbackHTTPHubURL(t *testing.T) {
 // required-field check: an omitted repo is reported by name so the printed
 // snippet and the missing list agree.
 func TestLoadConfigMissingGitRepoReportsRepo(t *testing.T) {
+	t.Parallel()
 	_, err := LoadConfig(writeConfig(t, "remote:\n  machine: m\n"))
 	var unconfigured *UnconfiguredError
 	if !errors.As(err, &unconfigured) {
@@ -223,6 +238,7 @@ func TestLoadConfigMissingGitRepoReportsRepo(t *testing.T) {
 // A directory is used as the unreadable path because it fails identically on
 // every platform: ReadFile cannot return its contents.
 func TestLoadConfigUnreadablePathIsNotUnconfigured(t *testing.T) {
+	t.Parallel()
 	_, err := LoadConfig(t.TempDir())
 	if err == nil {
 		t.Fatal("expected an error reading a directory as a config file")
@@ -240,6 +256,7 @@ func TestLoadConfigUnreadablePathIsNotUnconfigured(t *testing.T) {
 // written into snapshots, including the trailing-slash trim that keeps one hub
 // from looking like two stores to remote status.
 func TestStoreIDNamesTheProviderThatOwnsTheStore(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		config Config
 		want   string
@@ -252,5 +269,40 @@ func TestStoreIDNamesTheProviderThatOwnsTheStore(t *testing.T) {
 		if got := tc.config.StoreID(); got != tc.want {
 			t.Errorf("%s: StoreID() = %q, want %q", name, got, tc.want)
 		}
+	}
+}
+
+func TestLoadConfigPublishIsOptInAndOffByDefault(t *testing.T) {
+	t.Parallel()
+	cfg, err := LoadConfig(writeConfig(t, "remote:\n  repo: a/b\n  machine: vm-1\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Publish.Interval != 0 || cfg.Publish.PublishEvery() != 0 || cfg.Publish.Agents || cfg.Publish.Metrics {
+		t.Fatalf("a machine that sets nothing must publish nothing by itself: %+v", cfg.Publish)
+	}
+	// A machine that set only the redaction (the way it published by hand) is the same.
+	cfg, err = LoadConfig(writeConfig(t, "remote:\n  repo: a/b\n  machine: vm-1\n  publish:\n    unpushed: counts\n"))
+	if err != nil || cfg.Publish.PublishEvery() != 0 || cfg.Publish.Agents || cfg.Publish.Metrics || cfg.Publish.Unpushed != RedactUnpushed {
+		t.Fatalf("cfg = %+v, %v", cfg.Publish, err)
+	}
+}
+
+func TestLoadConfigPublishIntervalHasAFiveMinuteMinimum(t *testing.T) {
+	t.Parallel()
+	for interval, want := range map[string]time.Duration{"1m": 5 * time.Minute, "5m": 5 * time.Minute, "10m": 10 * time.Minute, "2h": 2 * time.Hour} {
+		cfg, err := LoadConfig(writeConfig(t, "remote:\n  repo: a/b\n  machine: vm-1\n  publish:\n    interval: "+interval+"\n    agents: true\n    metrics: true\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := cfg.Publish.PublishEvery(); got != want || !cfg.Publish.Agents || !cfg.Publish.Metrics {
+			t.Errorf("interval %s: PublishEvery = %s, agents %v metrics %v", interval, got, cfg.Publish.Agents, cfg.Publish.Metrics)
+		}
+	}
+	if _, err := LoadConfig(writeConfig(t, "remote:\n  repo: a/b\n  machine: vm-1\n  publish:\n    interval: -1m\n")); err == nil || !strings.Contains(err.Error(), "remote.publish.interval") {
+		t.Errorf("a negative interval = %v, want an error naming the key", err)
+	}
+	if _, err := LoadConfig(writeConfig(t, "remote:\n  repo: a/b\n  machine: vm-1\n  publish:\n    interval: soon\n")); err == nil {
+		t.Error("an unparsable interval was accepted")
 	}
 }

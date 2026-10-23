@@ -60,6 +60,7 @@ func fakeAmbiguousHeuristicSecret() string {
 // A match on a high-precision, brand-specific shape refuses the operation.
 // Not a warning: warnings in automated pipelines are read by nobody.
 func TestNamedPatternsFailClosed(t *testing.T) {
+	t.Parallel()
 	scanner := testScanner(t)
 	cases := []struct {
 		name    string
@@ -75,6 +76,7 @@ func TestNamedPatternsFailClosed(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			result := scanner.Scan(Segment{Name: "body", Content: []byte(testCase.content)})
 			blocking := result.Blocking(nil)
 			if len(blocking) == 0 {
@@ -100,6 +102,7 @@ func TestNamedPatternsFailClosed(t *testing.T) {
 }
 
 func TestCleanContinuationProducesNoFindings(t *testing.T) {
+	t.Parallel()
 	scanner := testScanner(t)
 	content := `Goal: land the secret scanner. Branch feature/secret-scan is pushed;
 PR #42 is open against main. Next step: watch CI run 12345678 and merge on
@@ -116,6 +119,7 @@ green. No credentials were needed for this step.`
 // finding, the refusal error, the fingerprint, or any string derived from
 // them -- the closest thing this package has to "stdout/stderr/logs".
 func TestNeverEchoesMatchedSecret(t *testing.T) {
+	t.Parallel()
 	scanner := testScanner(t)
 	fakeSecret := fakeAWSAccessKeyIDB()
 	content := "leftover debug line: AWS_ACCESS_KEY_ID=" + fakeSecret + " (do not commit)"
@@ -159,6 +163,7 @@ func TestNeverEchoesMatchedSecret(t *testing.T) {
 
 // --- Invariant 3: named patterns fail closed; entropy heuristics only warn.
 func TestGenericHeuristicNeverBlocks(t *testing.T) {
+	t.Parallel()
 	scanner := testScanner(t)
 	// Trips generic-api-key's loose `key = <high-entropy blob>` shape but no
 	// brand-specific rule: a plausible false positive (looks like a hash or
@@ -191,6 +196,7 @@ func TestGenericHeuristicNeverBlocks(t *testing.T) {
 }
 
 func TestHeuristicRuleIDsAreExplicitAndSmall(t *testing.T) {
+	t.Parallel()
 	// Guards against the classification silently growing or shrinking by
 	// accident: every downgrade to warn is a reviewable, named decision
 	// (see policy.go), not something derived from a regex shape check.
@@ -201,6 +207,7 @@ func TestHeuristicRuleIDsAreExplicitAndSmall(t *testing.T) {
 
 // --- Invariant 4: extensible via config, not code. ----------------------
 func TestExtraRulesFileAddsPatternWithoutTouchingCode(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	extraPath := filepath.Join(dir, "rules.toml")
 	extraTOML := `
@@ -244,6 +251,7 @@ keywords = ["acme_tok_"]
 }
 
 func TestExtraRuleCanOptIntoWarnOnly(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	extraPath := filepath.Join(dir, "rules.toml")
 	extraTOML := `
@@ -270,6 +278,7 @@ severity = "warn"
 }
 
 func TestUnusableExtraRuleIsSkippedNotFatal(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	extraPath := filepath.Join(dir, "rules.toml")
 	// An invalid regex (unbalanced group) must not take down the whole gate.
@@ -296,6 +305,7 @@ regex = '''(unbalanced'''
 
 // --- Invariant 6: a clear, actionable refusal. ---------------------------
 func TestRefusalNamesRuleLocationAndHowToProceed(t *testing.T) {
+	t.Parallel()
 	scanner := testScanner(t)
 	content := "line one\nline two AWS_ACCESS_KEY_ID=" + fakeAWSAccessKeyIDA() + " trailing"
 	result := scanner.Scan(Segment{Name: "handover-body", Content: []byte(content)})
@@ -323,6 +333,7 @@ func TestRefusalNamesRuleLocationAndHowToProceed(t *testing.T) {
 
 // --- Overrides: explicit, logged, never the path of least resistance. ---
 func TestOverrideRequiresExactRuleAndFingerprint(t *testing.T) {
+	t.Parallel()
 	scanner := testScanner(t)
 	content := "AWS_ACCESS_KEY_ID=" + fakeAWSAccessKeyIDA()
 	result := scanner.Scan(Segment{Name: "body", Content: []byte(content)})
@@ -363,6 +374,7 @@ func TestOverrideRequiresExactRuleAndFingerprint(t *testing.T) {
 }
 
 func TestParseOverridesRejectsMalformedInput(t *testing.T) {
+	t.Parallel()
 	for _, bad := range []string{"", "no-colon-here", ":missing-rule-id", "rule-id-only:"} {
 		if bad == "" {
 			continue // empty entries are allowed (ignored) so a flag default of "" is harmless
@@ -374,6 +386,7 @@ func TestParseOverridesRejectsMalformedInput(t *testing.T) {
 }
 
 func TestFingerprintNeverContainsRawSecretCharacters(t *testing.T) {
+	t.Parallel()
 	secret := []byte(fakeStripeLiveKey())
 	fingerprint := Fingerprint(secret)
 	if strings.Contains(fingerprint, string(secret)) {

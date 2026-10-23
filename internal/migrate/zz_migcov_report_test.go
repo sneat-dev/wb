@@ -18,6 +18,7 @@ func migCovWriteFile(t *testing.T, name, contents string) string {
 }
 
 func TestMigCovNewReportResolvesFilesAgainstEveryRoot(t *testing.T) {
+	t.Parallel()
 	shortRoot := filepath.Join(t.TempDir(), "a")
 	longRoot := filepath.Join(t.TempDir(), "b", "deeper")
 	outsideRoot := filepath.Join(t.TempDir(), "other")
@@ -51,6 +52,7 @@ func TestMigCovNewReportResolvesFilesAgainstEveryRoot(t *testing.T) {
 }
 
 func TestMigCovReportMarkdownHandlesEmptyAndCompleteReports(t *testing.T) {
+	t.Parallel()
 	empty := Report{SchemaVersion: 1, Migration: ReportMigration{ID: "empty", Format: MigrationFormatV1}, Status: "planned"}
 	markdown := empty.Markdown()
 	if !strings.Contains(markdown, "No files require a change.") {
@@ -81,6 +83,7 @@ func TestMigCovReportMarkdownHandlesEmptyAndCompleteReports(t *testing.T) {
 }
 
 func TestMigCovReportJSONMatchesYAMLFieldNames(t *testing.T) {
+	t.Parallel()
 	report := Report{
 		SchemaVersion: 1,
 		Migration:     ReportMigration{ID: "json", Title: "JSON", Format: MigrationFormatV1},
@@ -106,6 +109,7 @@ func TestMigCovReportJSONMatchesYAMLFieldNames(t *testing.T) {
 }
 
 func TestMigCovWriteReportsPropagatesFilesystemErrors(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	report := Report{SchemaVersion: 1, Migration: ReportMigration{ID: "write", Format: MigrationFormatV1}, Status: "applied"}
 	if err := WriteReports(filepath.Join(dir, "nested"), report); err != nil {

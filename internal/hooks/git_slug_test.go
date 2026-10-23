@@ -5,9 +5,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestOriginSlugUsesHostedRemotePath(t *testing.T) {
+	t.Parallel()
 	repo := initRepo(t)
 	git(t, repo, "remote", "add", "origin", "git@github.com:acme/app.git")
 	if got := originSlug(repo); got != "acme/app" {
@@ -16,6 +19,7 @@ func TestOriginSlugUsesHostedRemotePath(t *testing.T) {
 }
 
 func TestOriginSlugDoesNotReadALocalPathRemoteAsASlug(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if resolved, err := filepath.EvalSymlinks(root); err == nil {
 		root = resolved
@@ -29,6 +33,7 @@ func TestOriginSlugDoesNotReadALocalPathRemoteAsASlug(t *testing.T) {
 		t.Fatal(err)
 	}
 	git(t, root, "init", "--bare", "--initial-branch=main", bare)
+	testenv.ConfigureGitAutoMaintenanceOff(t, bare)
 	git(t, root, "clone", bare, canonical)
 	git(t, canonical, "config", "user.name", "WB Tests")
 	git(t, canonical, "config", "user.email", "wb-tests@example.invalid")
@@ -51,6 +56,7 @@ func TestOriginSlugOfAStagingWorktreeMatchesTheCanonicalClone(t *testing.T) {
 		t.Fatal(err)
 	}
 	git(t, root, "init", "--bare", "--initial-branch=main", bare)
+	testenv.ConfigureGitAutoMaintenanceOff(t, bare)
 	git(t, root, "clone", bare, canonical)
 	git(t, canonical, "config", "user.name", "WB Tests")
 	git(t, canonical, "config", "user.email", "wb-tests@example.invalid")
@@ -97,6 +103,7 @@ func TestExecutionLayoutOfStagingWorktreeUsesCanonicalCheckoutIdentity(t *testin
 		t.Fatal(err)
 	}
 	git(t, root, "init", "--bare", "--initial-branch=main", bare)
+	testenv.ConfigureGitAutoMaintenanceOff(t, bare)
 	git(t, root, "clone", bare, canonical)
 	git(t, canonical, "config", "user.name", "WB Tests")
 	git(t, canonical, "config", "user.email", "wb-tests@example.invalid")
@@ -131,6 +138,7 @@ func TestExecutionLayoutOfStagingWorktreeUsesCanonicalCheckoutIdentity(t *testin
 }
 
 func TestFileURLRemoteIsNotAHostedSlug(t *testing.T) {
+	t.Parallel()
 	if hostedRemote("file:///tmp/hr2/origin.git") {
 		t.Fatal("file:// is a local path remote, not a hosted owner/repository")
 	}

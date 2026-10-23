@@ -34,6 +34,7 @@ require github.com/acme/transitive/backend v0.1.0 // indirect
 `
 
 func TestScanReadsModulePathImportsAndPositions(t *testing.T) {
+	t.Parallel()
 	root := writeModule(t, map[string]string{
 		"go.mod": fixtureGoMod,
 		"facade4cal/facade.go": `package facade4cal
@@ -99,6 +100,7 @@ import "github.com/acme/forbidden/backend"
 }
 
 func TestScanRecordsManifestRequirements(t *testing.T) {
+	t.Parallel()
 	root := writeModule(t, map[string]string{"go.mod": fixtureGoMod})
 	module, err := ScanModule(root)
 	if err != nil {
@@ -126,12 +128,14 @@ func TestScanRecordsManifestRequirements(t *testing.T) {
 }
 
 func TestScanReportsMissingModule(t *testing.T) {
+	t.Parallel()
 	if _, err := ScanModule(t.TempDir()); err == nil {
 		t.Fatal("scanning a directory with no go.mod should fail")
 	}
 }
 
 func TestScanSurvivesUnparseableFile(t *testing.T) {
+	t.Parallel()
 	root := writeModule(t, map[string]string{
 		"go.mod":      fixtureGoMod,
 		"broken/x.go": "package broken\n\nimport (\n\t\"unterminated\n",
@@ -159,6 +163,7 @@ func TestScanSurvivesUnparseableFile(t *testing.T) {
 // read for its imports. That is deliberate: an architecture boundary should be
 // checkable while the code inside it is mid-edit or outright broken.
 func TestScanReadsImportsFromAFileThatDoesNotCompile(t *testing.T) {
+	t.Parallel()
 	root := writeModule(t, map[string]string{
 		"go.mod": fixtureGoMod,
 		"wip/x.go": `package wip
@@ -187,6 +192,7 @@ func broken( { this is not go
 // repository cannot remove one without changing its dependencies' own
 // dependencies, so reporting it would be a finding nobody can act on.
 func TestScanIgnoresIndirectRequirements(t *testing.T) {
+	t.Parallel()
 	root := writeModule(t, map[string]string{"go.mod": fixtureGoMod})
 	module, err := ScanModule(root)
 	if err != nil {
@@ -203,6 +209,7 @@ func TestScanIgnoresIndirectRequirements(t *testing.T) {
 // dependency. Judging it by production rules would report a violation nobody
 // can act on without deleting a legitimate test.
 func TestScanAttributesManifestRequirementToItsUsedScope(t *testing.T) {
+	t.Parallel()
 	root := writeModule(t, map[string]string{
 		"go.mod":               "module github.com/acme/cal/backend\n\ngo 1.26\n\nrequire (\n\tgithub.com/dal-go/dalgo2firestore v0.1.0\n\tgithub.com/acme/other/backend v1.0.0\n)\n",
 		"dal4cal/repo_test.go": "package dal4cal\n\nimport \"github.com/dal-go/dalgo2firestore\"\n",
@@ -227,6 +234,7 @@ func TestScanAttributesManifestRequirementToItsUsedScope(t *testing.T) {
 }
 
 func TestScanRequirementUsedInBothScopesIsJudgedAsSource(t *testing.T) {
+	t.Parallel()
 	root := writeModule(t, map[string]string{
 		"go.mod":      "module github.com/acme/cal/backend\n\ngo 1.26\n\nrequire github.com/acme/other/backend v1.0.0\n",
 		"a/a_test.go": "package a\n\nimport \"github.com/acme/other/backend/dbo\"\n",
@@ -244,6 +252,7 @@ func TestScanRequirementUsedInBothScopesIsJudgedAsSource(t *testing.T) {
 }
 
 func TestScanPutsPackageMainInTheMainScope(t *testing.T) {
+	t.Parallel()
 	root := writeModule(t, map[string]string{
 		"go.mod":                "module github.com/acme/cal/backend\n\ngo 1.26\n",
 		"cmd/cald/main.go":      "package main\n\nimport \"github.com/dal-go/dalgo2firestore\"\n",

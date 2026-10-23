@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/repopath"
 )
 
@@ -89,10 +90,8 @@ func ScanLocalIndexed(projectsRoot string, options LocalIndexOptions) (LocalInde
 	} else if !errors.Is(readErr, os.ErrNotExist) {
 		result.Diagnostics = append(result.Diagnostics, "read local fleet index: "+readErr.Error())
 	}
-	repositories, err := scanLocalOrganizations(snapshot.owners)
-	if err != nil {
-		return LocalIndexResult{}, err
-	}
+	// Organization reads skip unreadable entries and never return an error.
+	repositories, _ := scanLocalOrganizations(snapshot.owners)
 	result.Repositories = repositories
 	result.ObservedAt = now
 	cache := persistedLocalIndex{
@@ -107,7 +106,11 @@ func ScanLocalIndexed(projectsRoot string, options LocalIndexOptions) (LocalInde
 }
 
 func snapshotLocalSource(projectsRoot string) (localSourceSnapshot, error) {
-	root, err := filepath.Abs(projectsRoot)
+	return snapshotLocalSourceResolved(projectsRoot, filepath.Abs, os.Stat)
+}
+
+func snapshotLocalSourceResolved(projectsRoot string, absolutePath func(string) (string, error), stat func(string) (os.FileInfo, error)) (localSourceSnapshot, error) {
+	root, err := absolutePath(projectsRoot)
 	if err != nil {
 		return localSourceSnapshot{}, err
 	}
@@ -115,7 +118,7 @@ func snapshotLocalSource(projectsRoot string) (localSourceSnapshot, error) {
 	if err != nil {
 		return localSourceSnapshot{}, err
 	}
-	rootInfo, err := os.Stat(root)
+	rootInfo, err := stat(root)
 	if err != nil {
 		return localSourceSnapshot{}, err
 	}
@@ -126,7 +129,7 @@ func snapshotLocalSource(projectsRoot string) (localSourceSnapshot, error) {
 	parts := []string{root, fileInfoFingerprint(rootInfo)}
 	seenHosts := make(map[string]bool, len(owners))
 	for _, owner := range owners {
-		info, infoErr := os.Stat(owner.Path)
+		info, infoErr := stat(owner.Path)
 		if infoErr != nil {
 			continue
 		}
@@ -139,7 +142,7 @@ func snapshotLocalSource(projectsRoot string) (localSourceSnapshot, error) {
 			continue
 		}
 		seenHosts[owner.Host] = true
-		if hostInfo, hostErr := os.Stat(filepath.Join(root, owner.Host)); hostErr == nil {
+		if hostInfo, hostErr := stat(filepath.Join(root, owner.Host)); hostErr == nil {
 			parts = append(parts, owner.Host+"\x00"+fileInfoFingerprint(hostInfo))
 		}
 	}
@@ -195,6 +198,15 @@ func readLocalIndex(path string) (persistedLocalIndex, error) {
 }
 
 func writeLocalIndex(path string, index persistedLocalIndex) error {
+	return writeLocalIndexInjected(path, index, nil)
+}
+
+// writeLocalIndexInjected is writeLocalIndex's test seam (task-9 PR-8):
+// every production call site reaches it only through writeLocalIndex,
+// which always passes a nil *filewrite.Injector, so production behaviour
+// is unchanged. A test passes its own Injector to reach the create/chmod/
+// write/close/rename failure branches deterministically.
+func writeLocalIndexInjected(path string, index persistedLocalIndex, inj *filewrite.Injector) error {
 	contents, err := json.MarshalIndent(index, "", "  ")
 	if err != nil {
 		return err
@@ -203,24 +215,24 @@ func writeLocalIndex(path string, index persistedLocalIndex) error {
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(directory, ".fleet-inventory-*.tmp")
+	temporary, err := filewrite.CreateTemp(directory, ".fleet-inventory-*.tmp", inj)
 	if err != nil {
 		return err
 	}
 	temporaryPath := temporary.Name()
 	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := temporary.Chmod(0o600); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.ChmodFile(temporary, 0o600, temporaryPath, inj); err != nil {
+		_ = filewrite.Close(temporary, temporaryPath, inj)
 		return err
 	}
-	if _, err := temporary.Write(append(contents, '\n')); err != nil {
-		_ = temporary.Close()
+	if err := filewrite.Write(temporary, append(contents, '\n'), temporaryPath, inj); err != nil {
+		_ = filewrite.Close(temporary, temporaryPath, inj)
 		return err
 	}
-	if err := temporary.Close(); err != nil {
+	if err := filewrite.Close(temporary, temporaryPath, inj); err != nil {
 		return err
 	}
-	return os.Rename(temporaryPath, path)
+	return filewrite.Rename(temporaryPath, path, inj)
 }
 
 func cloneRepos(repositories []Repo) []Repo {

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // initGCFixture builds a real canonical clone with one WB worktree whose branch
@@ -18,7 +20,7 @@ func initGCFixture(t *testing.T) (projectsRoot, home, worktree string) {
 	remote := filepath.Join(root, "remote.git")
 	projectsRoot = filepath.Join(root, "projects")
 	canonical := filepath.Join(projectsRoot, "acme", "app")
-	gcGit(t, root, "init", "--bare", "--initial-branch=main", remote)
+	testenv.InitBareRemoteForTest(t, remote)
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +73,7 @@ func installGCFakeGh(t *testing.T) {
 	t.Helper()
 	binDir := t.TempDir()
 	script := "#!/bin/sh\nprintf '[]'\n"
-	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(binDir, "gh"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -165,7 +167,7 @@ func TestWorktreeGCCLIEmitsAStableJSONPlan(t *testing.T) {
 
 // gc's help is the contract an agent reads before it reaches for raw Git.
 func TestWorktreeGCHelpStatesItsEvidenceAndItsRefusals(t *testing.T) {
-	command := newWorktreeGCCmd()
+	command := newWorktreeGCCmd(&invocation{})
 	for _, wanted := range []string{
 		"--allow-residue",
 		"--apply",

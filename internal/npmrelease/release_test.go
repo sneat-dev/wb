@@ -75,6 +75,7 @@ func TestNormalizeRejectsDuplicatePublicationTuples(t *testing.T) {
 }
 
 func TestOperationIDIgnoresWorkflowInputsButResumeRequiresFingerprint(t *testing.T) {
+	t.Parallel()
 	runtime := testRelease()
 	runtime.Inputs = map[string]string{"package": "runtime"}
 	ui := runtime
@@ -123,6 +124,7 @@ func TestRunDryRunNeverInvokesGitHubOrNPM(t *testing.T) {
 }
 
 func TestRunBoundsEachExternalCommandWithTimeout(t *testing.T) {
+	t.Parallel()
 	runner := &deadlineRunner{}
 	started := time.Now()
 	report, err := Run(t.Context(), []Release{testRelease()}, Options{
@@ -192,6 +194,7 @@ func TestRunDispatchWaitAndRegistryEvidence(t *testing.T) {
 }
 
 func TestRunPollsForDelayedWorkflowVisibility(t *testing.T) {
+	t.Parallel()
 	created := time.Now().UTC().Truncate(time.Second)
 	run := workflowRunFixture("123", "completed", "success", created.Add(time.Second))
 	runner := &fakeRunner{steps: []CommandResult{
@@ -242,6 +245,7 @@ func TestRunDispatchesTupleScopedInputsForSameWorkflow(t *testing.T) {
 }
 
 func TestRunFailsClosedWhenObservedWorkflowHeadDiffers(t *testing.T) {
+	t.Parallel()
 	created := time.Now().UTC().Truncate(time.Second)
 	run := workflowRunFixture("123", "completed", "success", created.Add(time.Second))
 	otherHead := "fedcba9876543210fedcba9876543210fedcba98"
@@ -263,6 +267,7 @@ func TestRunFailsClosedWhenObservedWorkflowHeadDiffers(t *testing.T) {
 }
 
 func TestRunRefusesAmbiguousExactWorkflowRuns(t *testing.T) {
+	t.Parallel()
 	created := time.Now().UTC().Truncate(time.Second)
 	runner := &fakeRunner{steps: []CommandResult{
 		{Output: releaseHead}, {Output: `[]`}, {},
@@ -278,6 +283,7 @@ func TestRunRefusesAmbiguousExactWorkflowRuns(t *testing.T) {
 }
 
 func TestRunRefusesPotentiallyTruncatedWorkflowBaseline(t *testing.T) {
+	t.Parallel()
 	created := time.Now().UTC().Truncate(time.Second)
 	runs := make([]string, exactWorkflowRunListLimit)
 	for index := range runs {
@@ -294,6 +300,7 @@ func TestRunRefusesPotentiallyTruncatedWorkflowBaseline(t *testing.T) {
 }
 
 func TestRunRegistryFailureResumesWithoutDispatchingAgain(t *testing.T) {
+	t.Parallel()
 	created := time.Now().UTC().Truncate(time.Second)
 	run := workflowRunFixture("123", "completed", "success", created.Add(time.Second))
 	first := &fakeRunner{steps: []CommandResult{
@@ -324,6 +331,7 @@ func TestRunRegistryFailureResumesWithoutDispatchingAgain(t *testing.T) {
 }
 
 func TestRunRejectsFailedWorkflowAndPreservesExactReceipt(t *testing.T) {
+	t.Parallel()
 	created := time.Now().UTC().Truncate(time.Second)
 	run := workflowRunFixture("123", "completed", "failure", created.Add(time.Second))
 	runner := &fakeRunner{steps: []CommandResult{
@@ -338,6 +346,7 @@ func TestRunRejectsFailedWorkflowAndPreservesExactReceipt(t *testing.T) {
 }
 
 func TestRunPersistsPreDispatchBaselineBeforeWorkflowDispatch(t *testing.T) {
+	t.Parallel()
 	created := time.Now().UTC().Truncate(time.Second)
 	runner := &fakeRunner{steps: []CommandResult{
 		{Output: releaseHead},
@@ -369,6 +378,7 @@ func TestRunPersistsPreDispatchBaselineBeforeWorkflowDispatch(t *testing.T) {
 }
 
 func TestRunResumesAfterCrashWithoutRedispatch(t *testing.T) {
+	t.Parallel()
 	created := time.Now().UTC().Truncate(time.Second)
 	crash := errors.New("simulated crash after dispatch")
 	persistCalls := 0
@@ -401,6 +411,7 @@ func TestRunResumesAfterCrashWithoutRedispatch(t *testing.T) {
 }
 
 func TestRunResumeDispatchesOnlyTheUnreceiptedLaterTuple(t *testing.T) {
+	t.Parallel()
 	created := time.Now().UTC().Truncate(time.Second)
 	directory := t.TempDir()
 	runtime := Release{Repository: "sneat-co/eventius", Workflow: "release-frontend.yml", Package: "@sneat/extension-eventius", Version: "0.0.1", Ref: "main", Inputs: map[string]string{"package": "runtime"}}
@@ -452,6 +463,7 @@ func TestRunResumeDispatchesOnlyTheUnreceiptedLaterTuple(t *testing.T) {
 }
 
 func TestRunResumeReordersReceiptedTuplesWithoutRedispatch(t *testing.T) {
+	t.Parallel()
 	created := time.Now().UTC().Truncate(time.Second)
 	runtime := Release{Repository: "sneat-co/eventius", Workflow: "release-frontend.yml", Package: "@sneat/extension-eventius", Version: "0.0.1", Ref: "main", Inputs: map[string]string{"package": "runtime"}}
 	ui := Release{Repository: "sneat-co/eventius", Workflow: "release-frontend.yml", Package: "@sneat/extension-eventius-ui", Version: "0.0.1", Ref: "main", Inputs: map[string]string{"package": "ui"}}
@@ -485,6 +497,7 @@ func TestRunResumeReordersReceiptedTuplesWithoutRedispatch(t *testing.T) {
 }
 
 func TestRunDispatchFailureRemainsActionableWithoutRedispatch(t *testing.T) {
+	t.Parallel()
 	created := time.Now().UTC().Truncate(time.Second)
 	first := &fakeRunner{steps: []CommandResult{
 		{Output: releaseHead}, {Output: `[]`}, {Code: 1, Err: errors.New("failed"), Output: "npm_token=not-a-real-secret"},
@@ -504,6 +517,7 @@ func TestRunDispatchFailureRemainsActionableWithoutRedispatch(t *testing.T) {
 }
 
 func TestRunRejectsSecretLikeInputsAndMalformedNpmNamesBeforeExternalCalls(t *testing.T) {
+	t.Parallel()
 	tests := []Release{
 		func() Release {
 			value := testRelease()
@@ -532,6 +546,7 @@ func TestRunRejectsSecretLikeInputsAndMalformedNpmNamesBeforeExternalCalls(t *te
 }
 
 func TestValidateOptionsRejectsCredentialBearingRegistryURLsWithoutLeakingValues(t *testing.T) {
+	t.Parallel()
 	for _, registry := range []string{
 		"https://user:must-not-leak@registry.example",
 		"https://registry.example/?token=must-not-leak",
@@ -545,6 +560,7 @@ func TestValidateOptionsRejectsCredentialBearingRegistryURLsWithoutLeakingValues
 }
 
 func TestCommandErrorRedactsCredentialLookingDetails(t *testing.T) {
+	t.Parallel()
 	err := commandError("dispatch", CommandResult{Output: "npm_token=not-a-real-secret Authorization: Bearer not-a-real-bearer"})
 	if strings.Contains(err.Error(), "not-a-real-secret") || strings.Contains(err.Error(), "not-a-real-bearer") || !strings.Contains(err.Error(), "[redacted]") {
 		t.Fatalf("sanitized error = %v", err)
@@ -552,6 +568,7 @@ func TestCommandErrorRedactsCredentialLookingDetails(t *testing.T) {
 }
 
 func TestWriteReportRoundTripsBothFormats(t *testing.T) {
+	t.Parallel()
 	directory := t.TempDir()
 	release := testRelease()
 	// Values are deliberately not heuristically classified: an innocently named
@@ -594,6 +611,7 @@ func TestWriteReportRoundTripsBothFormats(t *testing.T) {
 }
 
 func TestResumeHydratesWorkflowInputsWithoutPersistingValues(t *testing.T) {
+	t.Parallel()
 	directory := t.TempDir()
 	created := time.Now().UTC().Truncate(time.Second)
 	release := testRelease()
@@ -626,6 +644,7 @@ func TestResumeHydratesWorkflowInputsWithoutPersistingValues(t *testing.T) {
 }
 
 func TestPersistCallbackNeverReceivesWorkflowInputValues(t *testing.T) {
+	t.Parallel()
 	release := testRelease()
 	release.Inputs = map[string]string{"package": "must-not-reach-persist-callback"}
 	_, err := Run(t.Context(), []Release{release}, Options{
@@ -643,6 +662,7 @@ func TestPersistCallbackNeverReceivesWorkflowInputValues(t *testing.T) {
 }
 
 func TestLoadReportRefusesMismatchedAtomicGenerations(t *testing.T) {
+	t.Parallel()
 	directory := t.TempDir()
 	report := plannedReport([]Release{testRelease()})
 	if err := WriteReport(directory, report); err != nil {

@@ -25,6 +25,7 @@ func hkCovRequirePermissionSemantics(t *testing.T) {
 }
 
 func TestHkCovLoadRejectsUnreadableConfig(t *testing.T) {
+	t.Parallel()
 	hkCovRequirePermissionSemantics(t)
 	root := t.TempDir()
 	executable := hkCovWriteFile(t, filepath.Join(root, "indexer"), "#!/bin/sh\n", 0o755)
@@ -39,6 +40,7 @@ func TestHkCovLoadRejectsUnreadableConfig(t *testing.T) {
 }
 
 func TestHkCovWriteJSONAtomicCreateTempFailure(t *testing.T) {
+	t.Parallel()
 	hkCovRequirePermissionSemantics(t)
 	directory := t.TempDir()
 	if err := os.Chmod(directory, 0o500); err != nil {
@@ -51,6 +53,7 @@ func TestHkCovWriteJSONAtomicCreateTempFailure(t *testing.T) {
 }
 
 func TestHkCovAppendReceiptRejectsReadOnlyStream(t *testing.T) {
+	t.Parallel()
 	hkCovRequirePermissionSemantics(t)
 	dispatcher, _ := hkCovEnv(t)
 	hkCovWriteFile(t, dispatcher.ReceiptPath, "", 0o400)
@@ -60,6 +63,7 @@ func TestHkCovAppendReceiptRejectsReadOnlyStream(t *testing.T) {
 }
 
 func TestHkCovScanReceiptsRejectsUnreadableStream(t *testing.T) {
+	t.Parallel()
 	hkCovRequirePermissionSemantics(t)
 	path := hkCovWriteFile(t, filepath.Join(t.TempDir(), "receipts.jsonl"), "", 0o000)
 	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
@@ -69,6 +73,7 @@ func TestHkCovScanReceiptsRejectsUnreadableStream(t *testing.T) {
 }
 
 func TestHkCovDrainWarnsWhenUnseenFailureCannotBeRecorded(t *testing.T) {
+	t.Parallel()
 	hkCovRequirePermissionSemantics(t)
 	dispatcher, checkout := hkCovEnv(t)
 	dispatcher.Run = func(context.Context, Invocation) error {
@@ -86,6 +91,7 @@ func TestHkCovDrainWarnsWhenUnseenFailureCannotBeRecorded(t *testing.T) {
 }
 
 func TestHkCovDrainWarnsWhenQueueItemCannotBeCompleted(t *testing.T) {
+	t.Parallel()
 	hkCovRequirePermissionSemantics(t)
 	dispatcher, checkout := hkCovEnv(t)
 	dispatcher.Run = func(context.Context, Invocation) error {
@@ -103,6 +109,7 @@ func TestHkCovDrainWarnsWhenQueueItemCannotBeCompleted(t *testing.T) {
 }
 
 func TestHkCovGCReportsUnreadableReceiptStream(t *testing.T) {
+	t.Parallel()
 	hkCovRequirePermissionSemantics(t)
 	dispatcher, _ := hkCovEnv(t)
 	hkCovWriteFile(t, dispatcher.ReceiptPath, "", 0o000)
@@ -113,6 +120,7 @@ func TestHkCovGCReportsUnreadableReceiptStream(t *testing.T) {
 }
 
 func TestHkCovRewriteReceiptRecordsCreateTempFailure(t *testing.T) {
+	t.Parallel()
 	hkCovRequirePermissionSemantics(t)
 	directory := t.TempDir()
 	if err := os.Chmod(directory, 0o500); err != nil {
@@ -125,6 +133,7 @@ func TestHkCovRewriteReceiptRecordsCreateTempFailure(t *testing.T) {
 }
 
 func TestHkCovClaimUnseenWarningsReportsUnreadableEntry(t *testing.T) {
+	t.Parallel()
 	hkCovRequirePermissionSemantics(t)
 	dispatcher, _ := hkCovEnv(t)
 	if err := dispatcher.ensureState(); err != nil {
@@ -139,6 +148,7 @@ func TestHkCovClaimUnseenWarningsReportsUnreadableEntry(t *testing.T) {
 }
 
 func TestHkCovSyncDirectoryRejectsMissingPath(t *testing.T) {
+	t.Parallel()
 	if err := syncDirectory(filepath.Join(t.TempDir(), "absent")); err == nil {
 		t.Fatal("expected missing directory failure")
 	}
@@ -156,6 +166,7 @@ func (info hkCovFakeFileInfo) IsDir() bool        { return false }
 func (info hkCovFakeFileInfo) Sys() any           { return info.sys }
 
 func TestHkCovTrustedExecutableAndOwnerChecks(t *testing.T) {
+	t.Parallel()
 	notExecutable := hkCovWriteFile(t, filepath.Join(t.TempDir(), "indexer"), "#!/bin/sh\n", 0o644)
 	info, err := os.Stat(notExecutable)
 	if err != nil {
@@ -185,6 +196,7 @@ func TestHkCovTrustedExecutableAndOwnerChecks(t *testing.T) {
 }
 
 func TestHkCovRecoverRunningReportsPendingWriteFailure(t *testing.T) {
+	t.Parallel()
 	hkCovRequirePermissionSemantics(t)
 	dispatcher, checkout := hkCovEnv(t)
 	hkCovWriteJob(t, dispatcher.runningDir(), hkCovJob("index", checkout, "new"))
@@ -199,6 +211,7 @@ func TestHkCovRecoverRunningReportsPendingWriteFailure(t *testing.T) {
 }
 
 func TestHkCovRecoverRunningReportsRestoreRenameFailure(t *testing.T) {
+	t.Parallel()
 	hkCovRequirePermissionSemantics(t)
 	dispatcher, checkout := hkCovEnv(t)
 	hkCovWriteJob(t, dispatcher.runningDir(), hkCovJob("index", checkout, "new"))
@@ -215,6 +228,7 @@ func TestHkCovRecoverRunningReportsRestoreRenameFailure(t *testing.T) {
 }
 
 func TestHkCovRecoverRunningReportsRenameAfterQuarantineFailure(t *testing.T) {
+	t.Parallel()
 	hkCovRequirePermissionSemantics(t)
 	dispatcher, checkout := hkCovEnv(t)
 	job := hkCovJob("index", checkout, "new")
@@ -233,6 +247,7 @@ func TestHkCovRecoverRunningReportsRenameAfterQuarantineFailure(t *testing.T) {
 }
 
 func TestHkCovRecoverRunningReportsRunningRemovalFailure(t *testing.T) {
+	t.Parallel()
 	hkCovRequirePermissionSemantics(t)
 	dispatcher, checkout := hkCovEnv(t)
 	hkCovWriteJob(t, dispatcher.runningDir(), hkCovJob("index", checkout, "new"))
@@ -247,6 +262,7 @@ func TestHkCovRecoverRunningReportsRunningRemovalFailure(t *testing.T) {
 }
 
 func TestHkCovClaimBatchReportsSyncFailure(t *testing.T) {
+	t.Parallel()
 	hkCovRequirePermissionSemantics(t)
 	dispatcher, checkout := hkCovEnv(t)
 	hkCovWriteJob(t, dispatcher.pendingDir(), hkCovJob("index", checkout, "b"))
@@ -264,6 +280,7 @@ func TestHkCovClaimBatchReportsSyncFailure(t *testing.T) {
 }
 
 func TestHkCovGCApplyReportsDiagnosticRemovalFailure(t *testing.T) {
+	t.Parallel()
 	hkCovRequirePermissionSemantics(t)
 	dispatcher, _ := hkCovEnv(t)
 	if err := dispatcher.ensureState(); err != nil {
@@ -288,6 +305,7 @@ func TestHkCovGCApplyReportsDiagnosticRemovalFailure(t *testing.T) {
 }
 
 func TestHkCovQuarantineFileReportsReasonWriteFailure(t *testing.T) {
+	t.Parallel()
 	hkCovRequirePermissionSemantics(t)
 	root := t.TempDir()
 	dispatcher := hkCovDispatcherFor(t, root, filepath.Join(root, "wb.yaml"))

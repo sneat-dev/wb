@@ -18,6 +18,7 @@ type sourceFake struct {
 }
 
 func TestQueueCoalescesQueuedDefaultBranchEventsDurably(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	queue, err := NewQueue(root)
 	if err != nil {
@@ -84,6 +85,7 @@ func (processor *concurrencyProcessor) Process(_ context.Context, event reposito
 }
 
 func TestQueueRunsDifferentRepositoriesInParallelButExcludesSameRepository(t *testing.T) {
+	t.Parallel()
 	queue, err := NewQueue(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -112,50 +114,53 @@ func TestQueueRunsDifferentRepositoriesInParallelButExcludesSameRepository(t *te
 		defer close(runDone)
 		queue.Run(ctx, processor, nil)
 	}()
+	// This test's synchronization is the channels themselves (started,
+	// runDone), not a wall-clock deadline: queue.acquire is a no-op mock and
+	// every goroutine here is otherwise unblocked, so each channel receive
+	// below is an explicit barrier that only ever unblocks once the queue
+	// has actually reached that state. A short time.After race alongside
+	// each receive used to fail this test under CI/VM CPU contention with
+	// no correctness bug involved (issue #539): a slow scheduler made a
+	// receive lose a race it was always going to win given enough time. The
+	// process-level `go test -timeout` remains the only backstop for an
+	// actual hang, exactly as it is for any other blocking channel receive.
 	t.Cleanup(func() {
 		releaseAll()
 		cancel()
-		select {
-		case <-runDone:
-		case <-time.After(2 * time.Second):
-			t.Error("queue did not stop")
-		}
+		<-runDone
 	})
 	started := map[string]bool{}
 	for len(started) < 2 {
-		select {
-		case id := <-processor.started:
-			started[id] = true
-		case <-time.After(2 * time.Second):
-			t.Fatalf("parallel starts = %+v", started)
-		}
+		started[<-processor.started] = true
 	}
-	if !started["event-a1"] || !started["event-b1"] || started["event-a2"] {
+	if !started["event-b1"] || (started["event-a1"] == started["event-a2"]) {
 		t.Fatalf("initial starts = %+v", started)
 	}
+	firstSameRepository := "event-a1"
+	if started["event-a2"] {
+		firstSameRepository = "event-a2"
+	}
+	wantFollowUp := "event-a2"
+	if firstSameRepository == "event-a2" {
+		wantFollowUp = "event-a1"
+	}
 	releaseAll()
-	select {
-	case id := <-processor.started:
-		if id != "event-a2" {
-			t.Fatalf("third start = %q", id)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("same-repository follow-up did not start")
+	if id := <-processor.started; id != wantFollowUp {
+		t.Fatalf("third start = %q", id)
 	}
 	processor.mu.Lock()
-	defer processor.mu.Unlock()
-	if processor.maxByRepo[first.Repository] != 1 || processor.maxActiveTotal < 2 {
-		t.Fatalf("max same repo=%d total=%d", processor.maxByRepo[first.Repository], processor.maxActiveTotal)
+	maxSameRepository := processor.maxByRepo[first.Repository]
+	maxActiveTotal := processor.maxActiveTotal
+	processor.mu.Unlock()
+	if maxSameRepository != 1 || maxActiveTotal < 2 {
+		t.Fatalf("max same repo=%d total=%d", maxSameRepository, maxActiveTotal)
 	}
 	cancel()
-	select {
-	case <-runDone:
-	case <-time.After(2 * time.Second):
-		t.Fatal("queue did not stop")
-	}
+	<-runDone
 }
 
 func TestQueueOrdersOldPushRenameAndNewPushAcrossCaseInsensitiveAliases(t *testing.T) {
+	t.Parallel()
 	queue, err := NewQueue(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -204,6 +209,7 @@ func (source *sourceFake) AckRepositoryEvents(_ context.Context, request reposit
 }
 
 func TestReceiveOnceResumesDurablePendingAcknowledgementBeforePolling(t *testing.T) {
+	t.Parallel()
 	source := &sourceFake{
 		response: repositoryevent.PollResponse{Version: repositoryevent.ContractVersion, Cursor: "", NextCursor: "cursor-2", Events: []repositoryevent.Event{receiverEvent("event-1")}},
 		ackErr:   errors.New("provider unavailable"),
@@ -246,6 +252,7 @@ func receiverEvent(id string) repositoryevent.Event {
 }
 
 func TestReceiveOnceAcknowledgesOnlyAfterEveryDurableEnqueue(t *testing.T) {
+	t.Parallel()
 	source := &sourceFake{response: repositoryevent.PollResponse{Version: repositoryevent.ContractVersion, Cursor: "", NextCursor: "cursor-2", Events: []repositoryevent.Event{receiverEvent("event-1"), receiverEvent("event-2")}}}
 	cursor := CursorStore{Path: filepath.Join(t.TempDir(), "cursor.json")}
 	failing := &enqueueFake{failOn: "event-2"}
@@ -274,6 +281,7 @@ func TestReceiveOnceAcknowledgesOnlyAfterEveryDurableEnqueue(t *testing.T) {
 }
 
 func TestReceiveOncePersistsInitialCursorWithoutAcknowledgingEmptyPoll(t *testing.T) {
+	t.Parallel()
 	source := &sourceFake{response: repositoryevent.PollResponse{Version: repositoryevent.ContractVersion, Cursor: "", NextCursor: "initial-cursor", Events: nil}}
 	cursor := CursorStore{Path: filepath.Join(t.TempDir(), "cursor.json")}
 	receiver := Receiver{Source: source, Queue: &enqueueFake{}, Cursor: cursor}
@@ -286,6 +294,7 @@ func TestReceiveOncePersistsInitialCursorWithoutAcknowledgingEmptyPoll(t *testin
 }
 
 func TestQueueDeduplicatesDurablyAndRecoversRunningJob(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	queue, err := NewQueue(root)
 	if err != nil {
@@ -321,6 +330,7 @@ func TestQueueDeduplicatesDurablyAndRecoversRunningJob(t *testing.T) {
 }
 
 func TestQueuePersistsExactTransferCleanupStateBeforeRetry(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	queue, err := NewQueue(root)
 	if err != nil {
@@ -347,6 +357,7 @@ func TestQueuePersistsExactTransferCleanupStateBeforeRetry(t *testing.T) {
 }
 
 func TestCompletionPersistenceFailureReleasesWorkerAndRetainsCleanupAcrossRestart(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	queue, err := NewQueue(root)
 	if err != nil {

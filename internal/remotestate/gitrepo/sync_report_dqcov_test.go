@@ -25,6 +25,7 @@ func dqCovSecondSyncReport(t *testing.T) syncreport.Report {
 func dqCovNoopValidate(context.Context, string) error { return nil }
 
 func TestDQCovPublishSyncReportReportsLockFailure(t *testing.T) {
+	t.Parallel()
 	p := New(Options{ClonePath: dqCovBlockedLockClonePath(t), CloneURL: "file:///nowhere"})
 
 	_, err := p.PublishSyncReport(context.Background(), syncReportFixture(t), dqCovNoopValidate)
@@ -34,6 +35,7 @@ func TestDQCovPublishSyncReportReportsLockFailure(t *testing.T) {
 }
 
 func TestDQCovPublishSyncReportReportsFetchFailure(t *testing.T) {
+	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "no-such-origin")
 	p := New(Options{ClonePath: filepath.Join(t.TempDir(), "p", "wb-state"), CloneURL: missing})
 

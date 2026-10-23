@@ -41,6 +41,7 @@ func hkCovEvent(t *testing.T) Event {
 // projects root is reported rather than producing a relative runtime root. The
 // root now comes from the resolver's argument, so it is passed there.
 func TestHkCovResolveExecutionLayoutReportsHomeFailure(t *testing.T) {
+	t.Parallel()
 	blocker := filepath.Join(t.TempDir(), "regular-file")
 	mustWrite(t, blocker, "not a directory\n")
 	if _, err := ResolveExecutionLayout(t.TempDir(), filepath.Join(blocker, "projects")); err == nil {
@@ -86,98 +87,8 @@ func TestHkCovResolveExecutionLayoutSanitizesCheckoutSegments(t *testing.T) {
 	}
 }
 
-func TestHkCovSecureExecutionWriteRoots(t *testing.T) {
-	isolateEnvironment(t)
-	root := os.Getenv(wbhome.EnvOverride)
-	repo := initRepo(t)
-	layout, err := ResolveExecutionLayout(repo, root)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	roots, err := SecureExecutionWriteRoots(repo, "", root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	metricsDir := filepath.Dir(filepath.Join(os.Getenv("XDG_STATE_HOME"), "wb", "hook-events.jsonl"))
-	if len(roots) != 2 || roots[0] != filepath.Clean(metricsDir) || roots[1] != layout.Root {
-		t.Fatalf("SecureExecutionWriteRoots = %v, want [%s %s]", roots, metricsDir, layout.Root)
-	}
-
-	// Disabling metrics removes the metrics directory from the write roots.
-	isolateEnvironment(t)
-	root = os.Getenv(wbhome.EnvOverride)
-	hkCovWriteGlobalYAML(t, "git_hooks:\n  version: 1\n  metrics:\n    enabled: false\n")
-	layout, err = ResolveExecutionLayout(repo, root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	roots, err = SecureExecutionWriteRoots(repo, "", root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(roots) != 1 || roots[0] != layout.Root {
-		t.Fatalf("SecureExecutionWriteRoots(metrics off) = %v, want only %s", roots, layout.Root)
-	}
-
-	if _, err := SecureExecutionWriteRoots(t.TempDir(), "", root); err == nil {
-		t.Fatal("SecureExecutionWriteRoots(non-repo) should fail")
-	}
-
-	blocker := filepath.Join(t.TempDir(), "regular-file")
-	mustWrite(t, blocker, "not a directory\n")
-	if _, err := SecureExecutionWriteRoots(repo, "", filepath.Join(blocker, "projects")); err == nil {
-		t.Fatal("SecureExecutionWriteRoots with an unusable projects root should fail")
-	}
-}
-
-func TestHkCovReplayPendingMetricsPreparesLayout(t *testing.T) {
-	isolateEnvironment(t)
-	root := os.Getenv(wbhome.EnvOverride)
-	repo := initRepo(t)
-	replayed, err := ReplayPendingMetrics(repo, "", root)
-	if err != nil || replayed != 0 {
-		t.Fatalf("ReplayPendingMetrics = %d, %v; want 0, nil", replayed, err)
-	}
-	layout, err := ResolveExecutionLayout(repo, root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, path := range []string{layout.Root, layout.ReportRoot, layout.PendingMetricsRoot} {
-		info, statErr := os.Stat(path)
-		if statErr != nil || !info.IsDir() {
-			t.Fatalf("runtime path %s was not created: %v", path, statErr)
-		}
-		if info.Mode().Perm() != 0o700 {
-			t.Fatalf("runtime path %s mode = %v, want 0700", path, info.Mode().Perm())
-		}
-	}
-
-	if _, err := ReplayPendingMetrics(t.TempDir(), "", root); err == nil {
-		t.Fatal("ReplayPendingMetrics(non-repo) should fail")
-	}
-
-	blocker := filepath.Join(t.TempDir(), "regular-file")
-	mustWrite(t, blocker, "not a directory\n")
-	if _, err := ReplayPendingMetrics(repo, "", filepath.Join(blocker, "projects")); err == nil {
-		t.Fatal("ReplayPendingMetrics with an unusable projects root should fail")
-	}
-
-	// A runtime root occupied by a regular file cannot be prepared.
-	isolateEnvironment(t)
-	root = os.Getenv(wbhome.EnvOverride)
-	layout, err = ResolveExecutionLayout(repo, root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mustMkdirAll(t, filepath.Dir(layout.Root))
-	mustWrite(t, layout.Root, "occupied\n")
-	if _, err := ReplayPendingMetrics(repo, "", root); err == nil || !strings.Contains(err.Error(), "create hook runtime path") {
-		t.Fatalf("ReplayPendingMetrics(occupied root) error = %v", err)
-	}
-}
-
 func TestHkCovReplayPendingMetricsDirect(t *testing.T) {
+	t.Parallel()
 	layout := hkCovPendingLayout(t)
 	target := filepath.Join(t.TempDir(), "events.jsonl")
 
@@ -259,6 +170,7 @@ func TestHkCovReplayPendingMetricsDirect(t *testing.T) {
 }
 
 func TestHkCovReplayPendingMetricsReportsUnremovableReceipt(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() == 0 {
 		return
 	}
@@ -288,6 +200,7 @@ func TestHkCovReplayPendingMetricsReportsUnremovableReceipt(t *testing.T) {
 }
 
 func TestHkCovReadPendingMetricsReceiptErrors(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if _, err := readPendingMetricsReceipt(filepath.Join(dir, "missing.json")); err == nil || !strings.Contains(err.Error(), "read pending hook metrics receipt") {
 		t.Fatalf("readPendingMetricsReceipt(missing) error = %v", err)
@@ -321,6 +234,7 @@ func TestHkCovReadPendingMetricsReceiptErrors(t *testing.T) {
 }
 
 func TestHkCovPersistPendingMetricsReceipt(t *testing.T) {
+	t.Parallel()
 	root := filepath.Join(t.TempDir(), "pending")
 	now := time.Date(2024, 5, 6, 7, 8, 9, 123456789, time.UTC)
 	events := []Event{hkCovEvent(t)}
@@ -362,10 +276,12 @@ func TestHkCovPersistPendingMetricsReceipt(t *testing.T) {
 // metrics recorder, including the pending-receipt fallback when the metrics
 // file itself is unwritable.
 func TestHkCovRecordMetricsBranches(t *testing.T) {
+	t.Parallel()
 	events := []Event{hkCovEvent(t)}
 	now := time.Now()
 
 	t.Run("no events records nothing", func(t *testing.T) {
+		t.Parallel()
 		layout := hkCovPendingLayout(t)
 		if err := recordMetrics(hkCovMetricsPolicy(filepath.Join(t.TempDir(), "e.jsonl")), layout, nil, now); err != nil {
 			t.Fatalf("recordMetrics(no events) = %v, want nil", err)
@@ -373,6 +289,7 @@ func TestHkCovRecordMetricsBranches(t *testing.T) {
 	})
 
 	t.Run("appends and replays", func(t *testing.T) {
+		t.Parallel()
 		layout := hkCovPendingLayout(t)
 		target := filepath.Join(t.TempDir(), "e.jsonl")
 		if err := recordMetrics(hkCovMetricsPolicy(target), layout, events, now); err != nil {
@@ -385,6 +302,7 @@ func TestHkCovRecordMetricsBranches(t *testing.T) {
 	})
 
 	t.Run("replay failure is reported after a successful append", func(t *testing.T) {
+		t.Parallel()
 		layout := hkCovPendingLayout(t)
 		mustMkdirAll(t, layout.PendingMetricsRoot)
 		mustWrite(t, filepath.Join(layout.PendingMetricsRoot, "bad.json"), "{not json\n")
@@ -403,6 +321,7 @@ func TestHkCovRecordMetricsBranches(t *testing.T) {
 	unwritableTarget := filepath.Join(blocker, "e.jsonl")
 
 	t.Run("append and pending receipt both fail", func(t *testing.T) {
+		t.Parallel()
 		layout := hkCovPendingLayout(t)
 		mustWrite(t, layout.PendingMetricsRoot, "not a directory\n")
 		err := recordMetrics(hkCovMetricsPolicy(unwritableTarget), layout, events, now)
@@ -414,6 +333,7 @@ func TestHkCovRecordMetricsBranches(t *testing.T) {
 	})
 
 	t.Run("append and replay fail but the receipt is written", func(t *testing.T) {
+		t.Parallel()
 		layout := hkCovPendingLayout(t)
 		mustMkdirAll(t, layout.PendingMetricsRoot)
 		mustWrite(t, filepath.Join(layout.PendingMetricsRoot, "bad.json"), "{not json\n")
@@ -429,6 +349,7 @@ func TestHkCovRecordMetricsBranches(t *testing.T) {
 	})
 
 	t.Run("append fails but the receipt is written", func(t *testing.T) {
+		t.Parallel()
 		layout := hkCovPendingLayout(t)
 		mustMkdirAll(t, layout.PendingMetricsRoot)
 		err := recordMetrics(hkCovMetricsPolicy(unwritableTarget), layout, events, now)
@@ -439,6 +360,7 @@ func TestHkCovRecordMetricsBranches(t *testing.T) {
 	})
 
 	t.Run("append fails and the receipt cannot be created", func(t *testing.T) {
+		t.Parallel()
 		if os.Geteuid() == 0 {
 			return
 		}
@@ -457,25 +379,8 @@ func TestHkCovRecordMetricsBranches(t *testing.T) {
 	})
 }
 
-func TestHkCovUniqueSortedPaths(t *testing.T) {
-	// A blank entry cleans to ".", which this helper keeps: it is a real
-	// directory reference, not an absent path.
-	got := uniqueSortedPaths([]string{"  /b  ", "/a", "/a", "", "/c"})
-	want := []string{".", "/a", "/b", "/c"}
-	if len(got) != len(want) {
-		t.Fatalf("uniqueSortedPaths = %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("uniqueSortedPaths = %v, want %v", got, want)
-		}
-	}
-	if got := uniqueSortedPaths(nil); len(got) != 0 {
-		t.Fatalf("uniqueSortedPaths(nil) = %v, want empty", got)
-	}
-}
-
 func TestHkCovSanitizeRuntimeSegment(t *testing.T) {
+	t.Parallel()
 	cases := map[string]string{
 		"":             "unknown",
 		"   ":          "unknown",
@@ -491,17 +396,12 @@ func TestHkCovSanitizeRuntimeSegment(t *testing.T) {
 }
 
 func TestHkCovRandomTokenIsRandomHex(t *testing.T) {
-	first, err := randomToken(8)
-	if err != nil {
-		t.Fatal(err)
-	}
+	t.Parallel()
+	first := randomToken(8)
 	if len(first) != 16 {
 		t.Fatalf("randomToken(8) = %q, want 16 hex characters", first)
 	}
-	second, err := randomToken(8)
-	if err != nil {
-		t.Fatal(err)
-	}
+	second := randomToken(8)
 	if first == second {
 		t.Fatalf("randomToken returned the same value twice: %q", first)
 	}
@@ -517,6 +417,7 @@ func hkCovWriteReceipt(t *testing.T, path string, receipt PendingMetricsReceipt)
 }
 
 func TestHkCovNewEventActionsAndOutcomes(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
 	context := eventContext{repository: "acme/widget", commit: "abc123", branch: "main", labels: map[string]string{"dev": "alex"}}
 	cases := map[string]string{
@@ -561,32 +462,8 @@ func TestHkCovNewEventActionsAndOutcomes(t *testing.T) {
 	}
 }
 
-func TestHkCovAppendEventsRejectsEmptyAndBadPaths(t *testing.T) {
-	if err := AppendEvents(filepath.Join(t.TempDir(), "events.jsonl"), nil); err != nil {
-		t.Fatalf("AppendEvents(nil) = %v, want nil", err)
-	}
-	directory := t.TempDir()
-	if err := AppendEvent(directory, hkCovEvent(t)); err == nil || !strings.Contains(err.Error(), "open hook metrics") {
-		t.Fatalf("AppendEvent(directory) error = %v", err)
-	}
-	path := filepath.Join(t.TempDir(), "events.jsonl")
-	if err := AppendEvents(path, []Event{hkCovEvent(t), hkCovEvent(t)}); err != nil {
-		t.Fatal(err)
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("metrics file mode = %v, want 0600", info.Mode().Perm())
-	}
-	events, err := ReadEvents(path)
-	if err != nil || len(events) != 2 {
-		t.Fatalf("ReadEvents = %#v, %v; want two events", events, err)
-	}
-}
-
 func TestHkCovReadEventsErrorBranches(t *testing.T) {
+	t.Parallel()
 	if events, err := ReadEvents(filepath.Join(t.TempDir(), "missing.jsonl")); err != nil || events != nil {
 		t.Fatalf("ReadEvents(missing) = %#v, %v; want nil, nil", events, err)
 	}
@@ -623,6 +500,7 @@ func TestHkCovReadEventsErrorBranches(t *testing.T) {
 }
 
 func TestHkCovSummarizeEdgeCases(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2024, 3, 10, 12, 0, 0, 0, time.UTC)
 	events := []Event{
 		{
@@ -688,6 +566,7 @@ func TestHkCovSummarizeEdgeCases(t *testing.T) {
 }
 
 func TestHkCovMeasureEdgeCases(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2024, 3, 10, 12, 0, 0, 0, time.UTC)
 	stream := Event{
 		SchemaVersion: EventSchemaVersion,
@@ -711,5 +590,31 @@ func TestHkCovMeasureEdgeCases(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("Unmeasured = %v, want an over-budget stream push warning", delta.Unmeasured)
+	}
+}
+
+func TestHkCovAppendEventsRejectsEmptyAndBadPaths(t *testing.T) {
+	t.Parallel()
+	if err := AppendEvents(filepath.Join(t.TempDir(), "events.jsonl"), nil); err != nil {
+		t.Fatalf("AppendEvents(nil) = %v, want nil", err)
+	}
+	directory := t.TempDir()
+	if err := AppendEvent(directory, hkCovEvent(t)); err == nil || !strings.Contains(err.Error(), "open hook metrics") {
+		t.Fatalf("AppendEvent(directory) error = %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	if err := AppendEvents(path, []Event{hkCovEvent(t), hkCovEvent(t)}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("metrics file mode = %v, want 0600", info.Mode().Perm())
+	}
+	events, err := ReadEvents(path)
+	if err != nil || len(events) != 2 {
+		t.Fatalf("ReadEvents = %#v, %v; want two events", events, err)
 	}
 }

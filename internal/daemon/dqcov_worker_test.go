@@ -32,6 +32,7 @@ func dqCovRegisterWorker(t *testing.T, service *Service, request *daemonv1.Regis
 }
 
 func TestDqCovRegisterWorkerValidationFailsClosed(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	otherRoot := t.TempDir()
 	file := filepath.Join(root, "regular-file")
@@ -75,6 +76,7 @@ func TestDqCovRegisterWorkerValidationFailsClosed(t *testing.T) {
 	}
 	for _, check := range checks {
 		t.Run(check.name, func(t *testing.T) {
+			t.Parallel()
 			request := dqCovRegisterRequest("validation-worker", check.edit)
 			_, err := dqCovRegisterWorker(t, service, request)
 			if connect.CodeOf(err) != check.want || !strings.Contains(err.Error(), check.text) {
@@ -115,6 +117,7 @@ func TestDqCovRegisterWorkerValidationFailsClosed(t *testing.T) {
 }
 
 func TestDqCovRegisterWorkerReconnectRecoveryFailureKeepsOldGeneration(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
@@ -146,6 +149,7 @@ func TestDqCovRegisterWorkerReconnectRecoveryFailureKeepsOldGeneration(t *testin
 }
 
 func TestDqCovLeaseOperationRejectsUnknownCancelledAndIdleWorkers(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
@@ -184,6 +188,7 @@ func TestDqCovLeaseOperationRejectsUnknownCancelledAndIdleWorkers(t *testing.T) 
 }
 
 func TestDqCovLeaseOperationWakesWhenMatchingWorkArrives(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
@@ -227,6 +232,7 @@ func TestDqCovLeaseOperationWakesWhenMatchingWorkArrives(t *testing.T) {
 }
 
 func TestDqCovLeaseOperationReportsAssignmentPersistenceFailure(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
@@ -259,6 +265,7 @@ func TestDqCovLeaseOperationReportsAssignmentPersistenceFailure(t *testing.T) {
 }
 
 func TestDqCovLeaseOperationOrdersEqualTimestampsByOperationID(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
@@ -283,6 +290,7 @@ func TestDqCovLeaseOperationOrdersEqualTimestampsByOperationID(t *testing.T) {
 // queue is first-in-first-out when timestamps differ, and by operation id only
 // when they collide.
 func TestDqCovLeaseOperationOrdersDistinctTimestampsChronologically(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
@@ -317,6 +325,7 @@ func TestDqCovLeaseOperationOrdersDistinctTimestampsChronologically(t *testing.T
 }
 
 func TestDqCovHeartbeatOperationValidation(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
@@ -380,6 +389,7 @@ func TestDqCovHeartbeatOperationValidation(t *testing.T) {
 }
 
 func TestDqCovCompleteOperationValidationAndFailure(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
@@ -424,6 +434,7 @@ func TestDqCovCompleteOperationValidationAndFailure(t *testing.T) {
 }
 
 func TestDqCovCompleteOperationMarksNonZeroExitAsFailure(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
@@ -449,6 +460,7 @@ func TestDqCovCompleteOperationMarksNonZeroExitAsFailure(t *testing.T) {
 }
 
 func TestDqCovDisconnectWorkerValidationAndPersistence(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
@@ -485,6 +497,7 @@ func TestDqCovDisconnectWorkerValidationAndPersistence(t *testing.T) {
 }
 
 func TestDqCovReapExpiredLeaseReportsPersistenceFailure(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {
@@ -514,6 +527,7 @@ func TestDqCovReapExpiredLeaseReportsPersistenceFailure(t *testing.T) {
 }
 
 func TestDqCovPathWithinAnyResolvesPermittedRoots(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	nested := filepath.Join(root, "a", "b")
 	if err := os.MkdirAll(nested, 0o700); err != nil {
@@ -541,6 +555,7 @@ func TestDqCovPathWithinAnyResolvesPermittedRoots(t *testing.T) {
 // daemon-owned recovery clock: an expired worker lease must be fenced even
 // though no client ever polls the operation.
 func TestDqCovStartLeaseRecoveryReapsExpiredLeasesWithoutAClient(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	service, err := NewService(root, dqCovOperationsDir(root), "build", "1", allowRawForTest)
 	if err != nil {

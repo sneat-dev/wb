@@ -74,10 +74,7 @@ func (service *Service) RegisterWorker(_ context.Context, request *connect.Reque
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	generation, err := randomID("wbwg-")
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
+	generation := randomID("wbwg-")
 	now := service.now()
 	service.mu.Lock()
 	defer service.mu.Unlock()
@@ -294,10 +291,7 @@ func (service *Service) compatibleQueuedOperationLocked(worker *workerState) *re
 }
 
 func (service *Service) assignLocked(worker *workerState, item *record, now time.Time) (*daemonv1.WorkerAssignment, error) {
-	leaseID, err := randomID("wbwl-")
-	if err != nil {
-		return nil, err
-	}
+	leaseID := randomID("wbwl-")
 	previous := cloneOperation(item.Operation)
 	item.LeaseID = leaseID
 	item.Generation = service.generation

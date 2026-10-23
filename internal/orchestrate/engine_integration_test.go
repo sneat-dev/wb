@@ -10,7 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubobserver/testfixture"
+
 	"github.com/sneat-dev/wb/internal/progress"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -18,7 +21,7 @@ import (
 type textHandler struct{}
 
 func (textHandler) Inspect(ctx context.Context, canonical, base string, _ Repository) (Assessment[string], error) {
-	contents, _, err := runCommand(ctx, time.Minute, 0, canonical, "git", "show", base+":dependency.txt")
+	contents, _, err := runCommand(ctx, defaultRunner, time.Minute, 0, canonical, "git", "show", base+":dependency.txt")
 	if err != nil {
 		return Assessment[string]{}, err
 	}
@@ -63,7 +66,8 @@ func (staticHandler) CommitMessage(Repository) string         { return "test" }
 func (staticHandler) PullRequest(Repository) (string, string) { return "test", "test" }
 
 func TestRunIsolatesDirtyCanonicalClone(t *testing.T) {
-	fixture := newEngineFixture(t)
+	t.Parallel()
+	fixture := newExplicitRootEngineFixture(t)
 	dirty := filepath.Join(fixture.canonical, "notes.txt")
 	writeEngineFile(t, dirty, "unfinished\n")
 	results, err := Run(context.Background(), []Repository{fixture.repository}, textHandler{}, fixture.options())
@@ -84,7 +88,8 @@ func TestRunIsolatesDirtyCanonicalClone(t *testing.T) {
 }
 
 func TestRunDryRunCreatesNoOperationState(t *testing.T) {
-	fixture := newEngineFixture(t)
+	t.Parallel()
+	fixture := newExplicitRootEngineFixture(t)
 	options := fixture.options()
 	options.DryRun = true
 	results, err := Run(context.Background(), []Repository{fixture.repository}, textHandler{}, options)
@@ -104,7 +109,8 @@ func TestRunDryRunCreatesNoOperationState(t *testing.T) {
 // checkout is the target: unrelated staged and dirty implementation changes
 // must survive while only the dependency file is updated.
 func TestRunUpdatesManagedWorktreeInPlaceAndPreservesChanges(t *testing.T) {
-	fixture := newEngineFixture(t)
+	t.Parallel()
+	fixture := newExplicitRootEngineFixture(t)
 	input, err := worktrees.Create(context.Background(), []string{fixture.repository.Slug}, worktrees.CreateOptions{
 		ProjectsRoot: fixture.githubDir,
 		Operation:    "dependency-input",
@@ -215,7 +221,8 @@ func TestRunRejectsPublicationFromManagedInputBeforeInspection(t *testing.T) {
 }
 
 func TestRunClonesMissingRepositoryBeforeInspectingGitLayout(t *testing.T) {
-	fixture := newEngineFixture(t)
+	t.Parallel()
+	fixture := newExplicitRootEngineFixture(t)
 	if err := os.RemoveAll(fixture.canonical); err != nil {
 		t.Fatal(err)
 	}
@@ -233,6 +240,7 @@ func TestRunClonesMissingRepositoryBeforeInspectingGitLayout(t *testing.T) {
 }
 
 func TestRunRejectsUnsafeSuppliedGitdirBeforeFetch(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name string
 		path func(*testing.T, engineFixture) string
@@ -260,7 +268,7 @@ func TestRunRejectsUnsafeSuppliedGitdirBeforeFetch(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			fixture := newEngineFixture(t)
+			fixture := newExplicitRootEngineFixture(t)
 			repository := fixture.repository
 			repository.Path = test.path(t, fixture)
 			results, err := Run(context.Background(), []Repository{repository}, textHandler{}, fixture.options())
@@ -275,7 +283,8 @@ func TestRunRejectsUnsafeSuppliedGitdirBeforeFetch(t *testing.T) {
 }
 
 func TestRunCommitsWithoutPushing(t *testing.T) {
-	fixture := newEngineFixture(t)
+	t.Parallel()
+	fixture := newExplicitRootEngineFixture(t)
 	options := fixture.options()
 	options.Commit = true
 	results, err := Run(context.Background(), []Repository{fixture.repository}, textHandler{}, options)
@@ -293,7 +302,8 @@ func TestRunCommitsWithoutPushing(t *testing.T) {
 }
 
 func TestRunResumeRefusesOperationBranchCheckedOutInCanonical(t *testing.T) {
-	fixture := newEngineFixture(t)
+	t.Parallel()
+	fixture := newExplicitRootEngineFixture(t)
 	options := fixture.options()
 	runEngineGit(t, fixture.canonical, "checkout", "-b", options.Branch)
 	before := mustReadEngineFile(t, filepath.Join(fixture.canonical, "dependency.txt"))
@@ -319,7 +329,8 @@ func TestRunResumeRefusesOperationBranchCheckedOutInCanonical(t *testing.T) {
 // worktree Run actually created, so a regression here fails exactly the way
 // production did.
 func TestRunWaveWorktreeSatisfiesOwnCommitAdmissionGuard(t *testing.T) {
-	fixture := newEngineFixture(t)
+	t.Parallel()
+	fixture := newExplicitRootEngineFixture(t)
 	options := fixture.options()
 	options.Commit = true
 	results, err := Run(context.Background(), []Repository{fixture.repository}, textHandler{}, options)
@@ -366,7 +377,8 @@ func TestRunWaveWorktreeSatisfiesOwnCommitAdmissionGuard(t *testing.T) {
 // state made `wb deps bump go --fleet` fail outright for every fleet
 // repository whose default branch is "master".
 func TestRunFallsBackToRepositoryDefaultBranchForDownstreamWaveOperation(t *testing.T) {
-	fixture := newEngineFixtureOnBranch(t, "master")
+	t.Parallel()
+	fixture := newExplicitRootEngineFixtureOnBranch(t, "master")
 	options := fixture.options()
 	options.Commit = true
 	results, err := Run(context.Background(), []Repository{fixture.repository}, textHandler{}, options)
@@ -390,7 +402,8 @@ func TestRunFallsBackToRepositoryDefaultBranchForDownstreamWaveOperation(t *test
 // depend on for base-ref resolution, isolated from the rest of the Run
 // pipeline exercised above.
 func TestEnsureCanonicalFallsBackToDefaultBranchWhenConfiguredRefIsAbsent(t *testing.T) {
-	fixture := newEngineFixtureOnBranch(t, "master")
+	t.Parallel()
+	fixture := newExplicitRootEngineFixtureOnBranch(t, "master")
 	resolved, err := EnsureCanonical(context.Background(), fixture.repository, fixture.canonical, Options{
 		GitHubDir: fixture.githubDir, Ref: "main", Timeout: time.Minute,
 	})
@@ -405,10 +418,13 @@ func TestEnsureCanonicalFallsBackToDefaultBranchWhenConfiguredRefIsAbsent(t *tes
 // TestEnsureCanonicalFailsWhenNeitherConfiguredRefNorDefaultBranchResolve
 // pins the floor: a repository whose origin has no resolvable ref at all
 // must still fail loudly rather than silently resolving to nothing.
+//
+//nolint:paralleltest // legacy external-process fixture remains serial during runner migration
 func TestEnsureCanonicalFailsWhenNeitherConfiguredRefNorDefaultBranchResolve(t *testing.T) {
 	root := t.TempDir()
 	remote := filepath.Join(root, "remote.git")
 	runEngineGit(t, root, "init", "--bare", remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	canonical := filepath.Join(root, "projects", "acme", "broken")
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
 		t.Fatal(err)
@@ -432,7 +448,8 @@ func (rejectingPublishHandler) ValidatePublishable(context.Context, string, Repo
 }
 
 func TestRunValidatesPublishabilityBeforeCommit(t *testing.T) {
-	fixture := newEngineFixture(t)
+	t.Parallel()
+	fixture := newExplicitRootEngineFixture(t)
 	options := fixture.options()
 	options.Commit = true
 	results, err := Run(context.Background(), []Repository{fixture.repository}, rejectingPublishHandler{}, options)
@@ -698,24 +715,77 @@ func newEngineFixtureOnBranch(t *testing.T, branch string) engineFixture {
 	// keeps this test's worktree root unique from the other tests in this file
 	// that reuse the same "dependency-test" operation name.
 	t.Setenv(wbhome.EnvOverride, filepath.Join(root, "projects"))
-	seed := filepath.Join(root, "seed")
+	return newEngineFixtureAt(t, root, branch)
+}
+
+// newExplicitRootEngineFixture is for tests whose production calls provide
+// GitHubDir or ProjectsRoot explicitly. It leaves process environment alone,
+// so each independently rooted real-Git journey can run in parallel.
+func newExplicitRootEngineFixture(t *testing.T) engineFixture {
+	t.Helper()
+	return newExplicitRootEngineFixtureOnBranch(t, "main")
+}
+
+func newExplicitRootEngineFixtureOnBranch(t *testing.T, branch string) engineFixture {
+	t.Helper()
+	return newEngineFixtureAt(t, t.TempDir(), branch)
+}
+
+func newEngineFixtureAt(t *testing.T, root, branch string) engineFixture {
+	t.Helper()
+	// Real Git and gh calls use the package's guarded production runner. Only
+	// the immutable seed is shared; every mutable clone and WB root is private.
+	seed := engineGitSeed(t, branch)
 	remote := filepath.Join(root, "remote.git")
 	githubDir := filepath.Join(root, "projects")
 	canonical := filepath.Join(githubDir, "acme", "app")
-	writeEngineFile(t, filepath.Join(seed, "dependency.txt"), "old\n")
-	runEngineGit(t, seed, "init", "-b", branch)
-	runEngineGit(t, seed, "config", "user.name", "WB Test")
-	runEngineGit(t, seed, "config", "user.email", "wb@example.test")
-	runEngineGit(t, seed, "add", "-A")
-	runEngineGit(t, seed, "commit", "-m", "initial")
-	runEngineGit(t, root, "clone", "--bare", seed, remote)
+	runEngineGit(t, root, "clone", "--bare", "--no-hardlinks", seed, remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	runEngineGit(t, root, "clone", remote, canonical)
+	runEngineGit(t, root, "clone", "--no-hardlinks", remote, canonical)
 	runEngineGit(t, canonical, "config", "user.name", "WB Test")
 	runEngineGit(t, canonical, "config", "user.email", "wb@example.test")
 	return engineFixture{githubDir: githubDir, canonical: canonical, repository: Repository{Slug: "acme/app", Path: canonical, CloneURL: remote}}
+}
+
+//nolint:paralleltest // Both cases intentionally change the process-wide projects-root selection.
+func TestEngineExplicitProjectsRootIgnoresAmbientSelection(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		unset bool
+	}{
+		{name: "untrusted override"},
+		{name: "missing override", unset: true},
+	} {
+		//nolint:paralleltest // Each case changes process-wide root selection; the missing case also changes HOME.
+		t.Run(tc.name, func(t *testing.T) {
+			ambient := filepath.Join(t.TempDir(), "untrusted-projects")
+			if tc.unset {
+				privateHome := t.TempDir()
+				t.Setenv("HOME", privateHome)
+				ambient = filepath.Join(privateHome, "projects")
+				t.Setenv(wbhome.EnvOverride, ambient)
+				if err := os.Unsetenv(wbhome.EnvOverride); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				t.Setenv(wbhome.EnvOverride, ambient)
+			}
+			fixture := newExplicitRootEngineFixture(t)
+			results, err := Run(context.Background(), []Repository{fixture.repository}, textHandler{}, fixture.options())
+			if err != nil || len(results) != 1 || results[0].Status != "changed" {
+				t.Fatalf("explicit-root run: results=%+v err=%v", results, err)
+			}
+			if _, err := os.Stat(filepath.Join(fixture.githubDir, ".wb")); err != nil {
+				t.Fatalf("explicit project root lacks WB state: %v", err)
+			}
+			if _, err := os.Stat(ambient); !os.IsNotExist(err) {
+				t.Fatalf("ambient projects root was used: %v", err)
+			}
+		})
+	}
 }
 
 func (fixture engineFixture) options() Options {
@@ -725,7 +795,7 @@ func (fixture engineFixture) options() Options {
 func writeEngineFile(t *testing.T, path, contents string) {
 	t.Helper()
 	if filepath.Base(path) == "gh" {
-		contents = withEmptyActionsRuns(contents)
+		contents = testfixture.WithEmptyActionsRuns(contents)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
@@ -733,18 +803,6 @@ func writeEngineFile(t *testing.T, path, contents string) {
 	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func withEmptyActionsRuns(contents string) string {
-	if strings.Contains(contents, "/actions/runs?head_sha=") {
-		return contents
-	}
-	const response = `if [ "$1" = api ] && echo "$2" | grep -q '/actions/runs?head_sha='; then
-  echo '{"total_count":0,"workflow_runs":[]}'
-  exit 0
-fi
-`
-	return strings.Replace(contents, "#!/bin/sh\n", "#!/bin/sh\n"+response, 1)
 }
 
 func mustReadEngineFile(t *testing.T, path string) string {

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestGraphFromNpmFleetFiltersExactDependencyWithProviderContext(t *testing.T) {
@@ -204,6 +206,9 @@ func TestBuildGraphIgnoresDistPackageJSONButKeepsDistinguishedSource(t *testing.
 
 func seedNpmGraphRepository(t *testing.T, root, githubDir, name string, files map[string]string) string {
 	t.Helper()
+	// spec/plans/coverage-to-100 task-17: this fixture's real git repo now
+	// reaches orchestrate's runCommand through task-24's guarded runner.Real,
+	// so every caller needs the escape hatch once, here.
 	seed := filepath.Join(root, name+"-seed")
 	remote := filepath.Join(root, name+".git")
 	canonical := filepath.Join(githubDir, "sneat-co", name)
@@ -216,6 +221,7 @@ func seedNpmGraphRepository(t *testing.T, root, githubDir, name string, files ma
 	runTestGit(t, seed, "add", "-A")
 	runTestGit(t, seed, "commit", "-m", "initial")
 	runTestGit(t, root, "clone", "--bare", seed, remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
 		t.Fatal(err)
 	}

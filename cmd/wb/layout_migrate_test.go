@@ -1,16 +1,14 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -42,42 +40,7 @@ func runWBHomeIsolated(t *testing.T, args ...string) smokeResult {
 // fresh substitute.
 func runWBWithHome(t *testing.T, home string, args ...string) smokeResult {
 	t.Helper()
-	binary := buildWB(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), smokeDeadline)
-	defer cancel()
-
-	devNull, err := os.Open(os.DevNull)
-	if err != nil {
-		t.Fatalf("open %s: %v", os.DevNull, err)
-	}
-	defer func() { _ = devNull.Close() }()
-
-	var stdout, stderr bytes.Buffer
-	command := exec.CommandContext(ctx, binary, args...)
-	command.Stdin = devNull
-	command.Stdout = &stdout
-	command.Stderr = &stderr
-	command.Env = append(os.Environ(), "TERM=dumb", "HOME="+home,
-		"GIT_AUTHOR_NAME=wb-test", "GIT_AUTHOR_EMAIL=wb-test@example.com",
-		"GIT_COMMITTER_NAME=wb-test", "GIT_COMMITTER_EMAIL=wb-test@example.com")
-
-	runErr := command.Run()
-	if ctx.Err() != nil {
-		t.Fatalf("wb %s did not exit within %s", strings.Join(args, " "), smokeDeadline)
-	}
-
-	result := smokeResult{stdout: stdout.String(), stderr: stderr.String()}
-	var exitErr *exec.ExitError
-	switch {
-	case runErr == nil:
-		result.exitCode = 0
-	case errors.As(runErr, &exitErr):
-		result.exitCode = exitErr.ExitCode()
-	default:
-		t.Fatalf("wb %s: %v", strings.Join(args, " "), runErr)
-	}
-	return result
+	return runWBInEnvironment(t, "", append(wbTestEnvironment(), "HOME="+home), args...)
 }
 
 // migrateWorktreeJSON is one repointed linked worktree in a decoded report.
@@ -276,7 +239,7 @@ func TestLayoutMigrateSkipsUnsafeClones(t *testing.T) {
 	// cloned from GitHub and later adopted by WB.
 	claimedPath := filepath.Join(root, "acme", "claimed")
 	claimedRemote := filepath.Join(root, "claimed-origin.git")
-	runGit(t, root, "init", "--bare", "-b", "main", claimedRemote)
+	testenv.InitBareRemoteForTest(t, claimedRemote)
 	runGit(t, root, "clone", claimedRemote, claimedPath)
 	runGit(t, claimedPath, "config", "user.email", "wb@example.test")
 	runGit(t, claimedPath, "config", "user.name", "WB Test")
@@ -460,7 +423,7 @@ func dalgoFetchableFixtureAt(t *testing.T, root, clonePath string) string {
 	t.Helper()
 	origin := filepath.Join(root, "dalgo-origin.git")
 	if _, statErr := os.Stat(origin); statErr != nil {
-		runGit(t, root, "init", "--bare", "-b", "main", origin)
+		testenv.InitBareRemoteForTest(t, origin)
 	}
 	if err := os.MkdirAll(filepath.Dir(clonePath), 0o755); err != nil {
 		t.Fatal(err)
@@ -485,7 +448,7 @@ func dalgo2sqlFetchableFixtureAt(t *testing.T, root, clonePath string) string {
 	t.Helper()
 	origin := filepath.Join(root, "dalgo2sql-origin.git")
 	if _, statErr := os.Stat(origin); statErr != nil {
-		runGit(t, root, "init", "--bare", "-b", "main", origin)
+		testenv.InitBareRemoteForTest(t, origin)
 	}
 	if err := os.MkdirAll(filepath.Dir(clonePath), 0o755); err != nil {
 		t.Fatal(err)

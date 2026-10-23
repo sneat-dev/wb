@@ -32,6 +32,7 @@ func evidenceContains(evidence []string, want string) bool {
 // A running declared session is proof. It must outrank the age heuristic and
 // say so, rather than reporting the same "likely" guess.
 func TestLiveOwnerIsReportedAsProof(t *testing.T) {
+	t.Parallel()
 	entry := recentEntry()
 	entry.OwnerState, entry.OwnerAgent, entry.OwnerPID = OwnerLive, "claude-code/sess-1", os.Getpid()
 
@@ -51,6 +52,7 @@ func TestLiveOwnerIsReportedAsProof(t *testing.T) {
 // A live owner that has not committed yet is working, not abandoned. Without
 // this the no-commit branch would claim it "may never have started".
 func TestLiveOwnerBeatsTheNoCommitCase(t *testing.T) {
+	t.Parallel()
 	entry := OrphanWorktree{OwnerState: OwnerLive, OwnerAgent: "codex", OwnerPID: os.Getpid()}
 
 	if got, _ := disposition(t, entry); got != DispositionActive {
@@ -61,6 +63,7 @@ func TestLiveOwnerBeatsTheNoCommitCase(t *testing.T) {
 // This is the case the whole change exists for: recent work whose session has
 // exited used to be reported as "likely still in use".
 func TestExitedOwnerWithRecentWorkNeedsADecision(t *testing.T) {
+	t.Parallel()
 	entry := recentEntry()
 	entry.OwnerState, entry.OwnerAgent, entry.OwnerPID = OwnerGone, "claude-code/sess-1", 424242
 
@@ -77,6 +80,7 @@ func TestExitedOwnerWithRecentWorkNeedsADecision(t *testing.T) {
 // Uncommitted work outranks everything, including a dead owner: the session
 // exiting is exactly when its unsaved work is most at risk.
 func TestDirtyOutranksOwnerState(t *testing.T) {
+	t.Parallel()
 	entry := recentEntry()
 	entry.Dirty = true
 	entry.OwnerState, entry.OwnerPID = OwnerGone, 424242
@@ -89,6 +93,7 @@ func TestDirtyOutranksOwnerState(t *testing.T) {
 // Merged work is removable regardless of who owns it; keeping it because a
 // session is live would never let a family be swept.
 func TestMergedOutranksALiveOwner(t *testing.T) {
+	t.Parallel()
 	entry := recentEntry()
 	entry.Merged = true
 	entry.OwnerState, entry.OwnerPID = OwnerLive, os.Getpid()
@@ -101,6 +106,7 @@ func TestMergedOutranksALiveOwner(t *testing.T) {
 // With nothing declared the age heuristic still applies, but the evidence must
 // admit it is an inference rather than repeating "likely still in use".
 func TestUnstatedOwnerFallsBackToAgeAndSaysSo(t *testing.T) {
+	t.Parallel()
 	got, evidence := disposition(t, recentEntry())
 
 	if got != DispositionActive {
@@ -115,6 +121,7 @@ func TestUnstatedOwnerFallsBackToAgeAndSaysSo(t *testing.T) {
 }
 
 func TestStaleUnstatedWorktreeStillNeedsADecision(t *testing.T) {
+	t.Parallel()
 	entry := OrphanWorktree{
 		LastCommit: time.Now().Add(-40 * 24 * time.Hour),
 		AgeDays:    40,

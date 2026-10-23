@@ -11,18 +11,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
-
-// beforePublishedForwardRepairCreate is a narrow test seam for the final
-// pre-create replay. It proves that evidence changed while this lane lock is
-// held is refused before a new candidate Work Log can be created.
-var beforePublishedForwardRepairCreate = func() {}
-
-// beforePublishedForwardRepairFinalRevalidation lets the race test invalidate
-// evidence after construction. The constructor must retire its own unconsumed
-// candidate through WB rather than leaving an active partial claim behind.
-var beforePublishedForwardRepairFinalRevalidation = func() {}
 
 // WorktreeMergePublishedForwardRepair is a deliberately unprepared candidate
 // for correcting one historical self-supersession. It has no merge receipt:
@@ -75,7 +67,13 @@ func (options WorktreeMergePublishedForwardRepairOptions) RepairTask() string {
 // fail-closed. This path writes no historical artifact and creates no merge
 // receipt; on apply it creates only one new WB-managed clean candidate whose
 // DAG contains every immutable historical root and every pinned current source.
-func PreparePublishedValidationFailureForwardRepair(ctx context.Context, options WorktreeMergePublishedForwardRepairOptions) (result WorktreeMergePublishedForwardRepair, retErr error) {
+func PreparePublishedValidationFailureForwardRepair(ctx context.Context, options WorktreeMergePublishedForwardRepairOptions) (WorktreeMergePublishedForwardRepair, error) {
+	return preparePublishedValidationFailureForwardRepair(ctx, options, defaultRunner, worktreeMergeReceiptSHA256, os.ReadFile, nil, nil)
+}
+
+// The per-invocation callbacks observe the two original temporal boundaries.
+// Production supplies nil and every custody check remains native.
+func preparePublishedValidationFailureForwardRepair(ctx context.Context, options WorktreeMergePublishedForwardRepairOptions, run runner.Runner, hash func(string) (string, error), readFile func(string) ([]byte, error), beforeCreate, beforeFinalRevalidation func()) (result WorktreeMergePublishedForwardRepair, retErr error) {
 	if err := requirePublishedForwardRepairExpectations(options); err != nil {
 		return WorktreeMergePublishedForwardRepair{}, err
 	}
@@ -99,97 +97,16 @@ func PreparePublishedValidationFailureForwardRepair(ctx context.Context, options
 	}
 	defer func() { _ = lock.Release() }()
 
-	// All mutable evidence is re-read after the lane lock. In particular, this
-	// replays the corrupt acknowledgement rather than trusting an earlier read.
-	receipt, err = readWorktreeMergeReceipt(receiptPath)
+	evidence, err := inspectPublishedForwardRepairEvidence(ctx, options, receiptPath, run, hash, readFile)
 	if err != nil {
 		return WorktreeMergePublishedForwardRepair{}, err
 	}
-	if err := validateValidationFailedSupersessionReceipt(receipt, receiptPath); err != nil {
-		return WorktreeMergePublishedForwardRepair{}, err
-	}
-	receiptHash, err := worktreeMergeReceiptSHA256(receiptPath)
-	if err != nil || receiptHash != options.ExpectedReceiptSHA256 {
-		if err == nil {
-			err = fmt.Errorf("receipt SHA256 %s does not match expected %s", receiptHash, options.ExpectedReceiptSHA256)
-		}
-		return WorktreeMergePublishedForwardRepair{}, err
-	}
-	originalClaim, err := validateMergeAcknowledgementCandidate(ctx, options.ProjectsRoot, receipt, receipt.Candidate)
-	if err != nil {
-		return WorktreeMergePublishedForwardRepair{}, fmt.Errorf("validate failed candidate: %w", err)
-	}
-	claimBytes, err := os.ReadFile(originalClaim.ClaimPath)
-	if err != nil {
-		return WorktreeMergePublishedForwardRepair{}, fmt.Errorf("read immutable failed candidate claim: %w", err)
-	}
-	claimDigest := sha256.Sum256(claimBytes)
-	claimHash := hex.EncodeToString(claimDigest[:])
-	if claimHash != options.ExpectedImmutableClaimSHA256 {
-		return WorktreeMergePublishedForwardRepair{}, fmt.Errorf("immutable claim SHA256 %s does not match expected %s", claimHash, options.ExpectedImmutableClaimSHA256)
-	}
-	supersessionPath := validationFailureSupersessionPath(receiptPath)
-	supersession, err := readValidationFailureSupersession(supersessionPath, receipt)
-	if err != nil {
-		return WorktreeMergePublishedForwardRepair{}, fmt.Errorf("read existing self-supersession: %w", err)
-	}
-	if supersession.Replacement != supersession.OriginalCandidate || supersession.OriginalCandidate != receipt.Candidate || supersession.ReplacementClaimBaseSHA != supersession.OriginalClaimBaseSHA || supersession.OriginalClaimBaseSHA != originalClaim.BaseSHA {
-		return WorktreeMergePublishedForwardRepair{}, errors.New("existing supersession is not the exact self-supersession repair shape")
-	}
-	supersessionHash, err := worktreeMergeReceiptSHA256(supersessionPath)
-	if err != nil || supersessionHash != options.ExpectedSupersessionSHA256 {
-		if err == nil {
-			err = fmt.Errorf("supersession SHA256 %s does not match expected %s", supersessionHash, options.ExpectedSupersessionSHA256)
-		}
-		return WorktreeMergePublishedForwardRepair{}, err
-	}
-	correctionPath := selfSupersessionCorrectionPath(receiptPath)
-	correction, correctionErr := readSelfSupersessionCorrection(correctionPath, receipt, supersession)
-	correctionHash := ""
-	if correctionErr == nil {
-		if err := validatePublishedForwardRepairCorrectionBinding(correction, receipt, supersession, receiptHash, claimHash, supersessionHash); err != nil {
-			return WorktreeMergePublishedForwardRepair{}, fmt.Errorf("existing self-supersession correction is invalid: %w", err)
-		}
-		correctionHash, err = worktreeMergeReceiptSHA256(correctionPath)
-		if err != nil {
-			return WorktreeMergePublishedForwardRepair{}, err
-		}
-	} else if !errors.Is(correctionErr, os.ErrNotExist) {
-		return WorktreeMergePublishedForwardRepair{}, fmt.Errorf("existing self-supersession correction is invalid: %w", correctionErr)
-	}
-
-	sources, repository, canonical, err := inspectPublishedForwardRepairSources(ctx, options.ProjectsRoot, options.Sources, receipt.Target)
-	if err != nil {
-		return WorktreeMergePublishedForwardRepair{}, err
-	}
-	if repository != receipt.Repository {
-		return WorktreeMergePublishedForwardRepair{}, fmt.Errorf("repair sources belong to %s, want failed receipt repository %s", repository, receipt.Repository)
-	}
-	if err := requireExpectedPublishedForwardRepairSources(sources, options.ExpectedSourceSHAs); err != nil {
-		return WorktreeMergePublishedForwardRepair{}, err
-	}
-	if err := requireImmutableHistoricalWorktreeMergeSources(ctx, canonical, receipt); err != nil {
-		return WorktreeMergePublishedForwardRepair{}, err
-	}
-	currentTarget, err := fetchExactMergeTarget(ctx, receipt.Candidate.Worktree, receipt.Target)
-	if err != nil {
-		return WorktreeMergePublishedForwardRepair{}, err
-	}
-	if currentTarget != options.ExpectedCurrentTargetSHA {
-		return WorktreeMergePublishedForwardRepair{}, fmt.Errorf("current target %s does not match pinned repair and self-supersession target evidence", currentTarget)
-	}
-	if currentTarget != supersession.CurrentTargetSHA {
-		contains, ancestorErr := isMergeAncestor(ctx, receipt.Candidate.Worktree, supersession.CurrentTargetSHA, currentTarget)
-		if ancestorErr != nil || !contains {
-			return WorktreeMergePublishedForwardRepair{}, fmt.Errorf("current target %s does not descend from self-supersession target %s", currentTarget, supersession.CurrentTargetSHA)
-		}
-	}
-	roots := publishedForwardRepairRoots(originalClaim.BaseSHA, receipt, supersession, currentTarget, sources)
-	if correctionHash != "" {
-		roots = append(roots, WorktreeMergeValidationFailureSealRoot{Kind: "corrected_replacement", SHA: correction.CorrectedReplacement.SHA})
-		for _, source := range correction.Sources {
-			roots = append(roots, WorktreeMergeValidationFailureSealRoot{Kind: "corrected_source:" + source.Task, SHA: source.SHA})
-		}
+	receipt, receiptHash, claimHash := evidence.receipt, evidence.receiptHash, evidence.claimHash
+	supersession, supersessionPath, supersessionHash := evidence.supersession, evidence.supersessionPath, evidence.supersessionHash
+	correctionHash, sources := evidence.correctionHash, evidence.sources
+	repository, canonical, currentTarget, roots := evidence.repository, evidence.canonical, evidence.currentTarget, evidence.roots
+	revalidate := func() error {
+		return revalidatePublishedForwardRepairEvidence(ctx, options, run, hash, readFile, receiptPath, receiptHash, claimHash, supersessionHash, correctionHash, sources, repository, canonical, currentTarget)
 	}
 	task := options.RepairTask()
 	branch := "wb/recovery/" + receipt.Target + "/" + mergeOperationSuffix(task) + "-published-forward-repair"
@@ -202,8 +119,10 @@ func PreparePublishedValidationFailureForwardRepair(ctx context.Context, options
 	if !options.Apply {
 		return result, nil
 	}
-	beforePublishedForwardRepairCreate()
-	if err := revalidatePublishedForwardRepairEvidence(ctx, options, receiptPath, receiptHash, claimHash, supersessionHash, correctionHash, sources, repository, canonical, currentTarget); err != nil {
+	if beforeCreate != nil {
+		beforeCreate()
+	}
+	if err := revalidate(); err != nil {
 		return WorktreeMergePublishedForwardRepair{}, err
 	}
 	listed, err := worktrees.List(ctx, worktrees.ListOptions{ProjectsRoot: options.ProjectsRoot, Task: task, Base: receipt.Target, Workers: 1})
@@ -230,9 +149,6 @@ func PreparePublishedValidationFailureForwardRepair(ctx context.Context, options
 	if err != nil {
 		return WorktreeMergePublishedForwardRepair{}, fmt.Errorf("create published forward-repair worktree: %w", err)
 	}
-	if len(created) != 1 {
-		return WorktreeMergePublishedForwardRepair{}, fmt.Errorf("published forward-repair creation returned %d repositories", len(created))
-	}
 	createdNew := len(listed) == 0
 	completed := false
 	defer func() {
@@ -244,41 +160,39 @@ func PreparePublishedValidationFailureForwardRepair(ctx context.Context, options
 			Disposition: worktrees.AbortDiscarded, DeleteRemote: true, Apply: true,
 		})
 		if abortErr != nil {
-			if retErr != nil {
-				retErr = fmt.Errorf("%w; retire invalid published forward-repair candidate: %v", retErr, abortErr)
-			} else {
-				retErr = fmt.Errorf("retire invalid published forward-repair candidate: %w", abortErr)
-			}
+			retErr = fmt.Errorf("%w; retire invalid published forward-repair candidate: %v", retErr, abortErr)
 		}
 	}()
 	if created[0].BaseSHA != currentTarget || filepath.Clean(created[0].CanonicalDir) != filepath.Clean(canonical) {
 		return WorktreeMergePublishedForwardRepair{}, errors.New("target or canonical identity drifted while creating published forward-repair candidate")
 	}
-	candidate, replacementClaim, err := validateValidationFailureReplacement(ctx, options.ProjectsRoot, receipt, created[0].WorktreeDir)
+	candidate, replacementClaim, err := validateValidationFailureReplacementWithRunner(ctx, run, options.ProjectsRoot, receipt, created[0].WorktreeDir)
 	if err != nil {
 		return WorktreeMergePublishedForwardRepair{}, err
 	}
 	if candidate.Task != task || candidate.Branch != branch || replacementClaim.BaseSHA != currentTarget || candidate.SHA == receipt.Candidate.SHA {
 		return WorktreeMergePublishedForwardRepair{}, errors.New("published forward-repair candidate has an unexpected identity or self replacement")
 	}
-	if err := mergePublishedForwardRepairRoots(ctx, candidate.Worktree, roots, options.Timeout, options.Retry); err != nil {
+	if err := mergePublishedForwardRepairRootsWithRunner(ctx, run, candidate.Worktree, roots, options.Timeout, options.Retry); err != nil {
 		return WorktreeMergePublishedForwardRepair{}, err
 	}
-	candidate.SHA, err = mergeRevision(ctx, candidate.Worktree, "HEAD")
+	candidate.SHA, err = mergeRevision(ctx, run, candidate.Worktree, "HEAD")
 	if err != nil {
 		return WorktreeMergePublishedForwardRepair{}, err
 	}
-	if err := requireCleanMergeWorktree(ctx, candidate.Worktree); err != nil {
+	if err := requireCleanMergeWorktreeWithRunner(ctx, run, candidate.Worktree); err != nil {
 		return WorktreeMergePublishedForwardRepair{}, fmt.Errorf("published forward-repair candidate is not clean: %w", err)
 	}
 	// Re-read every pre-existing boundary after construction. No new merge
 	// receipt is ever persisted, so a race cannot rewrite historic evidence.
-	beforePublishedForwardRepairFinalRevalidation()
-	if err := revalidatePublishedForwardRepairEvidence(ctx, options, receiptPath, receiptHash, claimHash, supersessionHash, correctionHash, sources, repository, canonical, currentTarget); err != nil {
+	if beforeFinalRevalidation != nil {
+		beforeFinalRevalidation()
+	}
+	if err := revalidate(); err != nil {
 		return WorktreeMergePublishedForwardRepair{}, err
 	}
 	for _, root := range roots {
-		contains, ancestorErr := isMergeAncestor(ctx, candidate.Worktree, root.SHA, candidate.SHA)
+		contains, ancestorErr := isMergeAncestorWithRunner(ctx, run, candidate.Worktree, root.SHA, candidate.SHA)
 		if ancestorErr != nil || !contains {
 			if ancestorErr == nil {
 				ancestorErr = fmt.Errorf("published forward-repair candidate %s does not contain required %s root %s", candidate.SHA, root.Kind, root.SHA)
@@ -289,6 +203,119 @@ func PreparePublishedValidationFailureForwardRepair(ctx context.Context, options
 	result.Status, result.Candidate = "published_forward_repair_prepared", candidate
 	completed = true
 	return result, nil
+}
+
+// publishedForwardRepairEvidence contains only observations captured while the
+// real lane lock is held. Revalidation consumes the same pinned snapshot before
+// and after native construction; it never substitutes a custody decision.
+type publishedForwardRepairEvidence struct {
+	receipt                                            WorktreeMergeReceipt
+	receiptHash, claimHash                             string
+	supersession                                       WorktreeMergeValidationFailureSupersession
+	supersessionPath, supersessionHash, correctionHash string
+	sources                                            []WorktreeMergeSource
+	repository, canonical, currentTarget               string
+	roots                                              []WorktreeMergeValidationFailureSealRoot
+}
+
+func inspectPublishedForwardRepairEvidence(ctx context.Context, options WorktreeMergePublishedForwardRepairOptions, receiptPath string, run runner.Runner, hash func(string) (string, error), readFile func(string) ([]byte, error)) (publishedForwardRepairEvidence, error) {
+	// All mutable evidence is re-read after the lane lock. In particular, this
+	// replays the corrupt acknowledgement rather than trusting an earlier read.
+	receipt, err := readWorktreeMergeReceipt(receiptPath)
+	if err != nil {
+		return publishedForwardRepairEvidence{}, err
+	}
+	if err := validateValidationFailedSupersessionReceipt(receipt, receiptPath); err != nil {
+		return publishedForwardRepairEvidence{}, err
+	}
+	receiptHash, err := hash(receiptPath)
+	if err != nil || receiptHash != options.ExpectedReceiptSHA256 {
+		if err == nil {
+			err = fmt.Errorf("receipt SHA256 %s does not match expected %s", receiptHash, options.ExpectedReceiptSHA256)
+		}
+		return publishedForwardRepairEvidence{}, err
+	}
+	originalClaim, err := validateMergeAcknowledgementCandidateWithRunner(ctx, run, options.ProjectsRoot, receipt, receipt.Candidate)
+	if err != nil {
+		return publishedForwardRepairEvidence{}, fmt.Errorf("validate failed candidate: %w", err)
+	}
+	claimBytes, err := readFile(originalClaim.ClaimPath)
+	if err != nil {
+		return publishedForwardRepairEvidence{}, fmt.Errorf("read immutable failed candidate claim: %w", err)
+	}
+	claimDigest := sha256.Sum256(claimBytes)
+	claimHash := hex.EncodeToString(claimDigest[:])
+	if claimHash != options.ExpectedImmutableClaimSHA256 {
+		return publishedForwardRepairEvidence{}, fmt.Errorf("immutable claim SHA256 %s does not match expected %s", claimHash, options.ExpectedImmutableClaimSHA256)
+	}
+	supersessionPath := validationFailureSupersessionPath(receiptPath)
+	supersession, err := readValidationFailureSupersession(supersessionPath, receipt)
+	if err != nil {
+		return publishedForwardRepairEvidence{}, fmt.Errorf("read existing self-supersession: %w", err)
+	}
+	if supersession.Replacement != supersession.OriginalCandidate || supersession.OriginalCandidate != receipt.Candidate || supersession.ReplacementClaimBaseSHA != supersession.OriginalClaimBaseSHA || supersession.OriginalClaimBaseSHA != originalClaim.BaseSHA {
+		return publishedForwardRepairEvidence{}, errors.New("existing supersession is not the exact self-supersession repair shape")
+	}
+	supersessionHash, err := hash(supersessionPath)
+	if err != nil || supersessionHash != options.ExpectedSupersessionSHA256 {
+		if err == nil {
+			err = fmt.Errorf("supersession SHA256 %s does not match expected %s", supersessionHash, options.ExpectedSupersessionSHA256)
+		}
+		return publishedForwardRepairEvidence{}, err
+	}
+	correctionPath := selfSupersessionCorrectionPath(receiptPath)
+	correction, correctionErr := readSelfSupersessionCorrection(correctionPath, receipt, supersession)
+	correctionHash := ""
+	if correctionErr == nil {
+		if err := validatePublishedForwardRepairCorrectionBinding(correction, receipt, supersession, receiptHash, claimHash, supersessionHash); err != nil {
+			return publishedForwardRepairEvidence{}, fmt.Errorf("existing self-supersession correction is invalid: %w", err)
+		}
+		correctionHash, err = hash(correctionPath)
+		if err != nil {
+			return publishedForwardRepairEvidence{}, err
+		}
+	} else if !errors.Is(correctionErr, os.ErrNotExist) {
+		return publishedForwardRepairEvidence{}, fmt.Errorf("existing self-supersession correction is invalid: %w", correctionErr)
+	}
+
+	sources, repository, canonical, err := inspectPublishedForwardRepairSourcesWithRunner(ctx, run, options.ProjectsRoot, options.Sources, receipt.Target)
+	if err != nil {
+		return publishedForwardRepairEvidence{}, err
+	}
+	if repository != receipt.Repository {
+		return publishedForwardRepairEvidence{}, fmt.Errorf("repair sources belong to %s, want failed receipt repository %s", repository, receipt.Repository)
+	}
+	if err := requireExpectedPublishedForwardRepairSources(sources, options.ExpectedSourceSHAs); err != nil {
+		return publishedForwardRepairEvidence{}, err
+	}
+	if err := requireImmutableHistoricalWorktreeMergeSourcesWithRunner(ctx, run, canonical, receipt); err != nil {
+		return publishedForwardRepairEvidence{}, err
+	}
+	currentTarget, err := fetchExactMergeTargetWithRunner(ctx, run, receipt.Candidate.Worktree, receipt.Target)
+	if err != nil {
+		return publishedForwardRepairEvidence{}, err
+	}
+	if currentTarget != options.ExpectedCurrentTargetSHA {
+		return publishedForwardRepairEvidence{}, fmt.Errorf("current target %s does not match pinned repair and self-supersession target evidence", currentTarget)
+	}
+	if currentTarget != supersession.CurrentTargetSHA {
+		contains, ancestorErr := isMergeAncestorWithRunner(ctx, run, receipt.Candidate.Worktree, supersession.CurrentTargetSHA, currentTarget)
+		if ancestorErr != nil || !contains {
+			return publishedForwardRepairEvidence{}, fmt.Errorf("current target %s does not descend from self-supersession target %s", currentTarget, supersession.CurrentTargetSHA)
+		}
+	}
+	roots := publishedForwardRepairRoots(originalClaim.BaseSHA, receipt, supersession, currentTarget, sources)
+	if correctionHash != "" {
+		roots = append(roots, WorktreeMergeValidationFailureSealRoot{Kind: "corrected_replacement", SHA: correction.CorrectedReplacement.SHA})
+		for _, source := range correction.Sources {
+			roots = append(roots, WorktreeMergeValidationFailureSealRoot{Kind: "corrected_source:" + source.Task, SHA: source.SHA})
+		}
+	}
+	return publishedForwardRepairEvidence{
+		receipt: receipt, receiptHash: receiptHash, claimHash: claimHash,
+		supersession: supersession, supersessionPath: supersessionPath, supersessionHash: supersessionHash, correctionHash: correctionHash,
+		sources: sources, repository: repository, canonical: canonical, currentTarget: currentTarget, roots: roots,
+	}, nil
 }
 
 func requirePublishedForwardRepairExpectations(options WorktreeMergePublishedForwardRepairOptions) error {
@@ -303,8 +330,8 @@ func requirePublishedForwardRepairExpectations(options WorktreeMergePublishedFor
 	return nil
 }
 
-func inspectPublishedForwardRepairSources(ctx context.Context, projectsRoot string, paths []string, target string) ([]WorktreeMergeSource, string, string, error) {
-	sources, repository, canonical, err := inspectWorktreeMergeSources(ctx, projectsRoot, paths, target)
+func inspectPublishedForwardRepairSourcesWithRunner(ctx context.Context, run runner.Runner, projectsRoot string, paths []string, target string) ([]WorktreeMergeSource, string, string, error) {
+	sources, repository, canonical, err := inspectWorktreeMergeSourcesWithRunner(ctx, run, projectsRoot, paths, target)
 	if err != nil {
 		return nil, "", "", err
 	}
@@ -335,10 +362,14 @@ func requireExpectedPublishedForwardRepairSources(sources []WorktreeMergeSource,
 // separately and receive the full managed-worktree and active-claim checks
 // above.
 func requireImmutableHistoricalWorktreeMergeSources(ctx context.Context, repositoryDir string, receipt WorktreeMergeReceipt) error {
+	return requireImmutableHistoricalWorktreeMergeSourcesWithRunner(ctx, defaultRunner, repositoryDir, receipt)
+}
+
+func requireImmutableHistoricalWorktreeMergeSourcesWithRunner(ctx context.Context, run runner.Runner, repositoryDir string, receipt WorktreeMergeReceipt) error {
 	if receipt.Candidate.SHA == "" {
 		return errors.New("failed receipt has no immutable candidate SHA for historical source provenance")
 	}
-	candidateSHA, err := mergeRevision(ctx, repositoryDir, receipt.Candidate.SHA)
+	candidateSHA, err := mergeRevision(ctx, run, repositoryDir, receipt.Candidate.SHA)
 	if err != nil || candidateSHA != receipt.Candidate.SHA {
 		if err == nil {
 			err = fmt.Errorf("resolved %s", candidateSHA)
@@ -349,14 +380,14 @@ func requireImmutableHistoricalWorktreeMergeSources(ctx context.Context, reposit
 		if source.Task == "" || source.Worktree == "" || source.Branch == "" || source.SHA == "" {
 			return errors.New("failed receipt contains an incomplete immutable historical source identity")
 		}
-		revision, err := mergeRevision(ctx, repositoryDir, source.SHA)
+		revision, err := mergeRevision(ctx, run, repositoryDir, source.SHA)
 		if err != nil || revision != source.SHA {
 			if err == nil {
 				err = fmt.Errorf("resolved %s", revision)
 			}
 			return fmt.Errorf("immutable historical source %s@%s is not an available exact commit: %w", source.Branch, source.SHA, err)
 		}
-		contains, ancestorErr := isMergeAncestor(ctx, repositoryDir, source.SHA, receipt.Candidate.SHA)
+		contains, ancestorErr := isMergeAncestorWithRunner(ctx, run, repositoryDir, source.SHA, receipt.Candidate.SHA)
 		if ancestorErr != nil || !contains {
 			if ancestorErr == nil {
 				ancestorErr = fmt.Errorf("immutable historical source %s@%s is not an ancestor of failed candidate %s", source.Branch, source.SHA, receipt.Candidate.SHA)
@@ -394,45 +425,45 @@ func publishedForwardRepairRoots(claimBase string, receipt WorktreeMergeReceipt,
 	return roots
 }
 
-func mergePublishedForwardRepairRoots(ctx context.Context, worktree string, roots []WorktreeMergeValidationFailureSealRoot, timeout time.Duration, retry int) error {
+func mergePublishedForwardRepairRootsWithRunner(ctx context.Context, run runner.Runner, worktree string, roots []WorktreeMergeValidationFailureSealRoot, timeout time.Duration, retry int) error {
 	seen := map[string]bool{}
 	for _, root := range roots {
 		if root.SHA == "" || seen[root.SHA] {
 			continue
 		}
 		seen[root.SHA] = true
-		head, err := mergeRevision(ctx, worktree, "HEAD")
+		head, err := mergeRevision(ctx, run, worktree, "HEAD")
 		if err != nil {
 			return err
 		}
-		contains, err := isMergeAncestor(ctx, worktree, root.SHA, head)
+		contains, err := isMergeAncestorWithRunner(ctx, run, worktree, root.SHA, head)
 		if err != nil {
 			return err
 		}
 		if contains {
 			continue
 		}
-		if _, _, err := runCommand(ctx, timeout, retry, worktree, "git", "merge", "--no-edit", root.SHA); err != nil {
-			_, _, _ = runCommand(ctx, timeout, 0, worktree, "git", "merge", "--abort")
+		if _, _, err := runCommand(ctx, run, timeout, retry, worktree, "git", "merge", "--no-edit", root.SHA); err != nil {
+			_, _, _ = runCommand(ctx, run, timeout, 0, worktree, "git", "merge", "--abort")
 			return fmt.Errorf("merge required %s root %s: %w", root.Kind, root.SHA, err)
 		}
 	}
 	return nil
 }
 
-func revalidatePublishedForwardRepairEvidence(ctx context.Context, options WorktreeMergePublishedForwardRepairOptions, receiptPath, receiptHash, claimHash, supersessionHash, correctionHash string, sources []WorktreeMergeSource, repository, canonical, currentTarget string) error {
+func revalidatePublishedForwardRepairEvidence(ctx context.Context, options WorktreeMergePublishedForwardRepairOptions, run runner.Runner, hash func(string) (string, error), readFile func(string) ([]byte, error), receiptPath, receiptHash, claimHash, supersessionHash, correctionHash string, sources []WorktreeMergeSource, repository, canonical, currentTarget string) error {
 	receipt, err := readWorktreeMergeReceipt(receiptPath)
 	if err != nil || validateValidationFailedSupersessionReceipt(receipt, receiptPath) != nil {
 		return errors.New("failed receipt changed during published forward-repair construction")
 	}
-	if current, hashErr := worktreeMergeReceiptSHA256(receiptPath); hashErr != nil || current != receiptHash || current != options.ExpectedReceiptSHA256 {
+	if current, hashErr := hash(receiptPath); hashErr != nil || current != receiptHash || current != options.ExpectedReceiptSHA256 {
 		return errors.New("failed receipt SHA256 changed during published forward-repair construction")
 	}
-	claim, err := validateMergeAcknowledgementCandidate(ctx, options.ProjectsRoot, receipt, receipt.Candidate)
+	claim, err := validateMergeAcknowledgementCandidateWithRunner(ctx, run, options.ProjectsRoot, receipt, receipt.Candidate)
 	if err != nil {
 		return fmt.Errorf("failed candidate changed during published forward-repair construction: %w", err)
 	}
-	contents, err := os.ReadFile(claim.ClaimPath)
+	contents, err := readFile(claim.ClaimPath)
 	claimDigest := sha256.Sum256(contents)
 	if err != nil || hex.EncodeToString(claimDigest[:]) != claimHash || claimHash != options.ExpectedImmutableClaimSHA256 {
 		return errors.New("immutable failed candidate claim changed during published forward-repair construction")
@@ -441,11 +472,11 @@ func revalidatePublishedForwardRepairEvidence(ctx context.Context, options Workt
 	if err != nil {
 		return err
 	}
-	if current, hashErr := worktreeMergeReceiptSHA256(supersession.AcknowledgementPath); hashErr != nil || current != supersessionHash || current != options.ExpectedSupersessionSHA256 {
+	if current, hashErr := hash(supersession.AcknowledgementPath); hashErr != nil || current != supersessionHash || current != options.ExpectedSupersessionSHA256 {
 		return errors.New("self-supersession acknowledgement changed during published forward-repair construction")
 	}
 	if supersession.CurrentTargetSHA != currentTarget {
-		contains, ancestorErr := isMergeAncestor(ctx, receipt.Candidate.Worktree, supersession.CurrentTargetSHA, currentTarget)
+		contains, ancestorErr := isMergeAncestorWithRunner(ctx, run, receipt.Candidate.Worktree, supersession.CurrentTargetSHA, currentTarget)
 		if ancestorErr != nil || !contains {
 			return errors.New("current target no longer descends from the self-supersession target during published forward-repair construction")
 		}
@@ -454,7 +485,7 @@ func revalidatePublishedForwardRepairEvidence(ctx context.Context, options Workt
 		if correctionHash == "" {
 			return errors.New("self-supersession was corrected during published forward-repair construction")
 		}
-		if current, hashErr := worktreeMergeReceiptSHA256(selfSupersessionCorrectionPath(receiptPath)); hashErr != nil || current != correctionHash {
+		if current, hashErr := hash(selfSupersessionCorrectionPath(receiptPath)); hashErr != nil || current != correctionHash {
 			return errors.New("self-supersession correction changed during published forward-repair construction")
 		}
 		if err := validatePublishedForwardRepairCorrectionBinding(currentCorrection, receipt, supersession, receiptHash, claimHash, supersessionHash); err != nil {
@@ -466,7 +497,7 @@ func revalidatePublishedForwardRepairEvidence(ctx context.Context, options Workt
 	} else if correctionHash != "" {
 		return errors.New("self-supersession correction disappeared during published forward-repair construction")
 	}
-	refreshedSources, refreshedRepository, refreshedCanonical, err := inspectPublishedForwardRepairSources(ctx, options.ProjectsRoot, options.Sources, receipt.Target)
+	refreshedSources, refreshedRepository, refreshedCanonical, err := inspectPublishedForwardRepairSourcesWithRunner(ctx, run, options.ProjectsRoot, options.Sources, receipt.Target)
 	if err != nil {
 		return fmt.Errorf("revalidate current repair source identity: %w", err)
 	}
@@ -476,10 +507,10 @@ func revalidatePublishedForwardRepairEvidence(ctx context.Context, options Workt
 	if err := requireExpectedPublishedForwardRepairSources(refreshedSources, options.ExpectedSourceSHAs); err != nil {
 		return fmt.Errorf("revalidate current repair source evidence: %w", err)
 	}
-	if err := requireImmutableHistoricalWorktreeMergeSources(ctx, refreshedCanonical, receipt); err != nil {
+	if err := requireImmutableHistoricalWorktreeMergeSourcesWithRunner(ctx, run, refreshedCanonical, receipt); err != nil {
 		return fmt.Errorf("revalidate immutable historical source evidence: %w", err)
 	}
-	fetched, err := fetchExactMergeTarget(ctx, receipt.Candidate.Worktree, receipt.Target)
+	fetched, err := fetchExactMergeTargetWithRunner(ctx, run, receipt.Candidate.Worktree, receipt.Target)
 	if err != nil || fetched != currentTarget || fetched != options.ExpectedCurrentTargetSHA {
 		return errors.New("remote target drifted during published forward-repair construction")
 	}
@@ -487,10 +518,12 @@ func revalidatePublishedForwardRepairEvidence(ctx context.Context, options Workt
 }
 
 func validatePublishedForwardRepairCorrectionBinding(correction WorktreeMergeSelfSupersessionCorrection, receipt WorktreeMergeReceipt, supersession WorktreeMergeValidationFailureSupersession, receiptHash, claimHash, supersessionHash string) error {
+	// The corrected replacement has its own recorded claim base. It may be
+	// based on the current target, after the failed candidate's original base.
 	if correction.ReceiptPath != receipt.ReceiptPath || correction.ReceiptSHA256 != receiptHash || correction.ImmutableClaimSHA256 != claimHash ||
 		correction.SupersessionPath != supersession.AcknowledgementPath || correction.SupersessionSHA256 != supersessionHash ||
 		correction.OriginalCandidate != receipt.Candidate || correction.OriginalClaimBaseSHA != supersession.OriginalClaimBaseSHA ||
-		correction.ReplacementClaimBaseSHA != supersession.OriginalClaimBaseSHA || correction.CurrentTargetSHA != supersession.CurrentTargetSHA {
+		correction.CurrentTargetSHA != supersession.CurrentTargetSHA {
 		return errors.New("correction does not retain immutable receipt, claim, supersession, candidate, base, or target evidence")
 	}
 	if correction.CorrectedReplacement.SHA == "" || correction.CorrectedReplacement.Task == "" || correction.CorrectedReplacement.Worktree == "" || correction.CorrectedReplacement.Branch == "" {
@@ -500,16 +533,17 @@ func validatePublishedForwardRepairCorrectionBinding(correction WorktreeMergeSel
 }
 
 func writePublishedForwardRepairPrompt(receipt WorktreeMergeReceipt, supersession WorktreeMergeValidationFailureSupersession, currentTarget string, sources []WorktreeMergeSource, roots []WorktreeMergeValidationFailureSealRoot, actor, reason string) (string, error) {
-	file, err := os.CreateTemp("", "wb-published-forward-repair-prompt-*.txt")
-	if err != nil {
-		return "", err
-	}
-	path := file.Name()
-	if err := file.Chmod(0o600); err != nil {
-		_ = file.Close()
-		_ = os.Remove(path)
-		return "", err
-	}
+	return writePublishedForwardRepairPromptInjected(receipt, supersession, currentTarget, sources, roots, actor, reason, nil)
+}
+
+// writePublishedForwardRepairPromptInjected is
+// writePublishedForwardRepairPrompt's test seam (task-9 PR-9): every
+// production call site reaches it only through
+// writePublishedForwardRepairPrompt, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged. A test passes
+// its own Injector to reach the scratch prompt file's create/chmod/write/
+// close failure branches deterministically.
+func writePublishedForwardRepairPromptInjected(receipt WorktreeMergeReceipt, supersession WorktreeMergeValidationFailureSupersession, currentTarget string, sources []WorktreeMergeSource, roots []WorktreeMergeValidationFailureSealRoot, actor, reason string, inj *filewrite.Injector) (string, error) {
 	var body strings.Builder
 	fmt.Fprintf(&body, "WB prepares one explicit published forward-repair candidate for failed receipt %s.\n", receipt.ReceiptPath)
 	fmt.Fprintf(&body, "Target: %s@%s; historical self-supersession: %s.\n", receipt.Target, currentTarget, supersession.AcknowledgementPath)
@@ -520,13 +554,8 @@ func writePublishedForwardRepairPrompt(receipt WorktreeMergeReceipt, supersessio
 		fmt.Fprintf(&body, "- immutable root %s %s\n", root.Kind, root.SHA)
 	}
 	fmt.Fprintf(&body, "Actor: %s\nReason: %s\n", actor, reason)
-	if _, err := file.WriteString(body.String()); err != nil {
-		_ = file.Close()
-		_ = os.Remove(path)
-		return "", err
-	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(path)
+	path, err := writeWorktreeMergeScratchPromptInjected("wb-published-forward-repair-prompt-*.txt", body.String(), inj)
+	if err != nil {
 		return "", err
 	}
 	return filepath.Clean(path), nil

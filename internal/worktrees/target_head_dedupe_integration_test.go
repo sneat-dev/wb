@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // countingGitShim puts a `git` on PATH that records every exact-target fetch
@@ -27,7 +29,7 @@ func countingGitShim(t *testing.T) func() int {
 		"  if [ \"$a\" = \"--no-tags\" ]; then printf '%s\\n' \"$*\" >> " + log + "; break; fi\n" +
 		"done\n" +
 		"exec " + realGit + " \"$@\"\n"
-	if err := os.WriteFile(shim, []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(shim, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))

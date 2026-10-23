@@ -27,7 +27,11 @@ const DefaultBranchEnv = "WB_DEFAULT_BRANCH"
 // unresolved PR-status case. CI remains the real gate for a publication push
 // either way.
 func ClassifyPendingPush(stdin io.Reader, repoRoot string) (Classification, error) {
-	if console.IsTerminal(stdin) {
+	return classifyPendingPushWithTerminal(stdin, repoRoot, console.IsTerminal)
+}
+
+func classifyPendingPushWithTerminal(stdin io.Reader, repoRoot string, isTerminal func(any) bool) (Classification, error) {
+	if isTerminal(stdin) {
 		return Classification{
 			Tier:   TierLint,
 			Reason: "no pushed-ref list available (interactive invocation, not a real git push); running the fast lane — CI is the real gate",
@@ -37,12 +41,12 @@ func ClassifyPendingPush(stdin io.Reader, repoRoot string) (Classification, erro
 	if err != nil {
 		return Classification{}, err
 	}
-	defaultBranch := detectDefaultBranch(repoRoot)
+	defaultBranch := DetectDefaultBranch(repoRoot)
 	lookup := NewCachedGHPRLookup(repoRoot)
 	return ClassifyPushTier(updates, defaultBranch, lookup), nil
 }
 
-// detectDefaultBranch resolves the repository's default branch using only
+// DetectDefaultBranch resolves the repository's default branch using only
 // local Git state: an explicit override, the recorded origin/HEAD symref (set
 // by a full clone or `git remote set-head origin -a`), or, failing both, the
 // first of the conventional names that already exists as a local
@@ -50,7 +54,7 @@ func ClassifyPendingPush(stdin io.Reader, repoRoot string) (Classification, erro
 // can never be the reason a hook hangs; an unresolved default branch simply
 // means the default-branch publication test never matches, not that
 // classification fails.
-func detectDefaultBranch(repoRoot string) string {
+func DetectDefaultBranch(repoRoot string) string {
 	if override := strings.TrimSpace(os.Getenv(DefaultBranchEnv)); override != "" {
 		return override
 	}

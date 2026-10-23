@@ -10,10 +10,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
+
+	"github.com/sneat-dev/wb/internal/githubobserver/testfixture"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 func TestStrandedLandingAcknowledgementIDPreservesExactHeadCompatibility(t *testing.T) {
+	t.Parallel()
 	ack := WorktreeMergeStrandedLandingAcknowledgement{
 		ReceiptID: "receipt", ReceiptPath: "/receipts/receipt.json", ReceiptSHA256: "receipt-hash",
 		ReceiptStatus: WorktreeMergeConflict, ReceiptTargetSHA: "target", CandidateSHA: "candidate",
@@ -93,7 +99,7 @@ func installStrandedLandingGH(t *testing.T, pullRequest, remoteGitDir string) {
   *) echo "unexpected gh command: $*" >&2; exit 2 ;;
 esac
 `
-	if err := os.WriteFile(script, []byte(withEmptyActionsRuns(body)), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(testfixture.WithEmptyActionsRuns(body)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("WB_TEST_REMOTE", remoteGitDir)
@@ -228,7 +234,7 @@ func TestResumeWorktreeMergeRecoversMergedPublishedPRWithoutCandidateWorktree(t 
 	receipt.Status = WorktreeMergeChecksPending
 	receipt.PullRequest = "https://example.test/acme/app/pull/98"
 	receipt.PublishedCandidateSHA = receipt.Candidate.SHA
-	receipt.Checks.Status = PullRequestWaitPassed
+	receipt.Checks.Status = githubchecks.PullRequestWaitPassed
 	receipt.Failure = "target policy has no nonempty server-enforced strict up-to-date fence"
 	if err := persistWorktreeMergeReceipt(receipt); err != nil {
 		t.Fatal(err)
@@ -252,7 +258,7 @@ func TestResumeWorktreeMergeRecoversMergedPublishedPRWithoutCandidateWorktree(t 
 	if _, err := os.Stat(source.WorktreeDir); !os.IsNotExist(err) {
 		t.Fatalf("remaining source worktree was not cleaned after candidate recovery: %v", err)
 	}
-	if resumed.Checks.Status != PullRequestWaitPassed || resumed.Checks.PullRequest != "" || resumed.Checks.ObservedTargetHead != receipt.Candidate.SHA {
+	if resumed.Checks.Status != githubchecks.PullRequestWaitPassed || resumed.Checks.PullRequest != "" || resumed.Checks.ObservedTargetHead != receipt.Candidate.SHA {
 		t.Fatalf("recovery did not replace candidate-check evidence with a post-target receipt: %+v", resumed.Checks)
 	}
 	ghLog := mustReadEngineFile(t, os.Getenv("WB_TEST_GH_LOG"))
@@ -432,6 +438,7 @@ func TestAcknowledgeStrandedPullRequestLandingRefusesDivergedRemoteTarget(t *tes
 }
 
 func TestValidateStrandedLandingReceiptRefusesWrongShape(t *testing.T) {
+	t.Parallel()
 	base := func() WorktreeMergeReceipt {
 		return WorktreeMergeReceipt{
 			ID: "receipt-id", ReceiptPath: "/receipts/lane.json", Lane: worktreeMergeLaneID("acme/app", "main"),
@@ -461,6 +468,7 @@ func TestValidateStrandedLandingReceiptRefusesWrongShape(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			receipt := base()
 			receipt.PublishedCandidateSHA = receipt.Candidate.SHA
 			tt.mutate(&receipt)

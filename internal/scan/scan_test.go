@@ -7,6 +7,7 @@ import (
 )
 
 func TestHasExtFinds(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -21,6 +22,7 @@ func TestHasExtFinds(t *testing.T) {
 }
 
 func TestHasExtNoMatch(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# x\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -35,6 +37,7 @@ func TestHasExtNoMatch(t *testing.T) {
 }
 
 func TestHasExtSkipsVendorDirs(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	vendor := filepath.Join(dir, "vendor")
 	if err := os.MkdirAll(vendor, 0o755); err != nil {

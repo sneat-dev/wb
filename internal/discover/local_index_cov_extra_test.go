@@ -13,6 +13,7 @@ import (
 )
 
 func TestScanLocalIndexedFallsBackToAFreshScanWithoutCacheSettings(t *testing.T) {
+	t.Parallel()
 	projectsRoot := t.TempDir()
 	mustIndexedRepository(t, projectsRoot, "acme", "widgets")
 	for name, options := range map[string]LocalIndexOptions{
@@ -20,6 +21,7 @@ func TestScanLocalIndexedFallsBackToAFreshScanWithoutCacheSettings(t *testing.T)
 		"non-positive max age": {CachePath: filepath.Join(t.TempDir(), "fleet-inventory.json")},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			result, err := ScanLocalIndexed(projectsRoot, options)
 			if err != nil {
 				t.Fatal(err)
@@ -32,6 +34,7 @@ func TestScanLocalIndexedFallsBackToAFreshScanWithoutCacheSettings(t *testing.T)
 }
 
 func TestScanLocalIndexedReportsASnapshotFailure(t *testing.T) {
+	t.Parallel()
 	result, err := ScanLocalIndexed(filepath.Join(t.TempDir(), "missing"), LocalIndexOptions{
 		CachePath: filepath.Join(t.TempDir(), "fleet-inventory.json"),
 		MaxAge:    time.Minute,
@@ -45,6 +48,7 @@ func TestScanLocalIndexedReportsASnapshotFailure(t *testing.T) {
 }
 
 func TestScanLocalIndexedReportsAProjectsRootThatIsNotADirectory(t *testing.T) {
+	t.Parallel()
 	projectsRoot := filepath.Join(t.TempDir(), "projects")
 	if err := os.WriteFile(projectsRoot, []byte("not a directory\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -62,6 +66,7 @@ func TestScanLocalIndexedReportsAProjectsRootThatIsNotADirectory(t *testing.T) {
 }
 
 func TestScanLocalIndexedSurvivesAnUnwritableCachePath(t *testing.T) {
+	t.Parallel()
 	projectsRoot := t.TempDir()
 	mustIndexedRepository(t, projectsRoot, "acme", "widgets")
 	blocker := filepath.Join(t.TempDir(), "blocker")
@@ -84,6 +89,7 @@ func TestScanLocalIndexedSurvivesAnUnwritableCachePath(t *testing.T) {
 }
 
 func TestScanLocalIndexedRescansATamperedCache(t *testing.T) {
+	t.Parallel()
 	for name, tamper := range map[string]func([]Repo) []Repo{
 		"clone url": func(repositories []Repo) []Repo {
 			repositories[0].CloneURL = "git@github.com:acme/widgets.git"
@@ -106,6 +112,7 @@ func TestScanLocalIndexedRescansATamperedCache(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			projectsRoot := t.TempDir()
 			mustIndexedRepository(t, projectsRoot, "acme", "widgets")
 			cachePath := filepath.Join(t.TempDir(), "fleet-inventory.json")
@@ -144,6 +151,7 @@ func TestScanLocalIndexedRescansATamperedCache(t *testing.T) {
 }
 
 func TestScanLocalOrganizationsReturnsOnlyCanonicalClones(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	mustIndexedRepository(t, root, "acme", "widgets")
 	if err := os.MkdirAll(filepath.Join(root, "acme", "bare"), 0o755); err != nil {
@@ -171,6 +179,7 @@ func TestScanLocalOrganizationsReturnsOnlyCanonicalClones(t *testing.T) {
 }
 
 func TestScanLocalOrganizationsToleratesAVanishedOrganization(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	mustIndexedRepository(t, root, "acme", "widgets")
 	owners, _ := repopath.Owners(root)
@@ -188,6 +197,7 @@ func TestScanLocalOrganizationsToleratesAVanishedOrganization(t *testing.T) {
 }
 
 func TestSnapshotLocalSourceIgnoresNonOrganizationEntries(t *testing.T) {
+	t.Parallel()
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -238,6 +248,7 @@ func TestSnapshotLocalSourceIgnoresNonOrganizationEntries(t *testing.T) {
 }
 
 func TestWriteLocalIndexReportsAnUncreatableTemporaryFile(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX directory permissions are unavailable")
 	}
@@ -270,6 +281,7 @@ func TestWriteLocalIndexReportsAnUncreatableTemporaryFile(t *testing.T) {
 }
 
 func TestWriteLocalIndexRefusesAnUnrepresentableObservationTime(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "cache", "fleet-inventory.json")
 	err := writeLocalIndex(path, persistedLocalIndex{
 		SchemaVersion: LocalIndexSchemaVersion,

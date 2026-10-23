@@ -3,13 +3,16 @@ package orchestrate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/progress"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -34,7 +37,7 @@ case "$*" in
   *) echo "unexpected gh command: $*" >&2; exit 2 ;;
 esac
 `
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -53,7 +56,7 @@ case "$*" in
   *) echo "unexpected gh command: $*" >&2; exit 2 ;;
 esac
 `
-	if err := os.WriteFile(script, []byte(body), 0755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(body), 0755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -217,7 +220,7 @@ func TestPublishedCandidateAdoptionRefusesDriftedPullRequestIdentity(t *testing.
 			t.Setenv("WB_TEST_PR_HEAD_REPO", tc.headRepo)
 			t.Setenv("WB_TEST_PR_BASE", tc.base)
 			t.Setenv("WB_TEST_PR_BASE_REPO", tc.baseRepo)
-			if err := provePublishedCandidatePullRequest(context.Background(), receipt, "7"); err == nil {
+			if err := provePublishedCandidatePullRequest(context.Background(), defaultRunner, receipt, "7"); err == nil {
 				t.Fatal("expected refusal")
 			}
 		})
@@ -247,7 +250,7 @@ func TestPublishedCandidateAdoptionSourceProofRefusesDirtyMovedAndNonDescendant(
 				t.Fatal(err)
 			}
 			tc.mutate(t, f, s)
-			if err := validatePublishedCandidateAdoptionSources(context.Background(), r); err == nil {
+			if err := validatePublishedCandidateAdoptionSources(context.Background(), defaultRunner, r); err == nil {
 				t.Fatal("expected refusal")
 			}
 		})
@@ -255,20 +258,27 @@ func TestPublishedCandidateAdoptionSourceProofRefusesDirtyMovedAndNonDescendant(
 }
 
 func TestPersistPublishedCandidateAdoptionFailsClosedOnExclusivePublish(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "ack.json")
-	previous := linkPublishedCandidateAdoption
-	linkPublishedCandidateAdoption = func(_, _ string) error { return os.ErrPermission }
-	defer func() { linkPublishedCandidateAdoption = previous }()
-	err := persistPublishedCandidateAdoption(path, WorktreeMergePublishedCandidateAdoption{SchemaVersion: 1, Status: "published_candidate_adopted"})
-	if err == nil {
-		t.Fatal("expected exclusive publish failure")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ack.json")
+	inj := &filewrite.Injector{Step: filewrite.StepLink, Err: os.ErrPermission}
+	err := persistPublishedCandidateAdoptionInjected(path, WorktreeMergePublishedCandidateAdoption{SchemaVersion: 1, Status: "published_candidate_adopted"}, inj)
+	if !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("expected exclusive publish failure wrapping os.ErrPermission, got %v", err)
 	}
 	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
 		t.Fatalf("failed publication left visible acknowledgement: %v", statErr)
 	}
+	matches, globErr := filepath.Glob(filepath.Join(dir, ".published-candidate-adoption-*.tmp"))
+	if globErr != nil {
+		t.Fatal(globErr)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("failed publication left leftover temp files: %v", matches)
+	}
 }
 
 func TestPublishedCandidateAdoptionRejectsMalformedSidecar(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "ack.json")
 	if err := os.WriteFile(path, []byte("{"), 0600); err != nil {
 		t.Fatal(err)
@@ -279,6 +289,7 @@ func TestPublishedCandidateAdoptionRejectsMalformedSidecar(t *testing.T) {
 }
 
 func TestAdoptPublishedCandidateApplyRequiresActorAndReason(t *testing.T) {
+	t.Parallel()
 	_, err := AdoptPublishedWorktreeMergeCandidate(context.Background(), WorktreeMergePublishedCandidateAdoptionOptions{ProjectsRoot: t.TempDir(), Receipt: "missing.json", PullRequest: "7", Apply: true})
 	if err == nil || !strings.Contains(err.Error(), "--actor and --reason") {
 		t.Fatalf("missing audit admission error = %v", err)

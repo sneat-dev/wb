@@ -73,6 +73,7 @@ func mustExpectedTargetWorkLogReference(request Request, digest Digest) string {
 }
 
 func TestWorkLogReferenceStrictRoundTrip(t *testing.T) {
+	t.Parallel()
 	const raw = "worklog:effort-123/run_456/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	reference, err := ParseWorkLogReference(raw)
 	if err != nil {
@@ -101,6 +102,7 @@ func TestWorkLogReferenceStrictRoundTrip(t *testing.T) {
 }
 
 func TestRequestCarriesExactBoundedSourceOfferContent(t *testing.T) {
+	t.Parallel()
 	message, nextAction := NormalizeSourceOfferContent("  Ready to move\n", "\nContinue on target  ")
 	if message != "Ready to move" || nextAction != "Continue on target" {
 		t.Fatalf("normalized source offer = (%q, %q)", message, nextAction)
@@ -136,6 +138,7 @@ func TestRequestCarriesExactBoundedSourceOfferContent(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			request := base
 			test.mutate(&request)
 			if _, err := EncodeRequest(request); err == nil || !strings.Contains(err.Error(), test.want) {
@@ -146,6 +149,7 @@ func TestRequestCarriesExactBoundedSourceOfferContent(t *testing.T) {
 }
 
 func TestRequestRefusesCompletedSuccessorIndexNamespaceAsHandoffID(t *testing.T) {
+	t.Parallel()
 	request := validRequest()
 	request.HandoffID = successorAddressesDirName
 	if _, err := EncodeRequest(request); err == nil || !strings.Contains(err.Error(), "reserved") {
@@ -154,6 +158,7 @@ func TestRequestRefusesCompletedSuccessorIndexNamespaceAsHandoffID(t *testing.T)
 }
 
 func TestExpectedTargetWorkLogReferenceIsDeterministicAndPreservesRun(t *testing.T) {
+	t.Parallel()
 	claimID, err := ExternalHandoffClaimID(Digest("sha256:"+strings.Repeat("a", 64)), "wbs-successor")
 	if err != nil {
 		t.Fatal(err)
@@ -266,6 +271,7 @@ func TestRequestAndReceiptRequireStrictWorkLogReferences(t *testing.T) {
 		"missing pid":       func(candidate *Receipt) { candidate.PID = 0 },
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			candidate := receipt
 			mutate(&candidate)
 			if _, err := EncodeReceipt(candidate); err == nil {
@@ -312,6 +318,7 @@ func TestSaveAndLoadReceiptBindLaunchPolicy(t *testing.T) {
 	}
 	for name, mutate := range mutations {
 		t.Run("save-"+name, func(t *testing.T) {
+			t.Parallel()
 			store := NewStore(filepath.Join(t.TempDir(), DirName))
 			if _, err := store.Admit(raw, digest); err != nil {
 				t.Fatal(err)
@@ -323,6 +330,7 @@ func TestSaveAndLoadReceiptBindLaunchPolicy(t *testing.T) {
 			}
 		})
 		t.Run("load-"+name, func(t *testing.T) {
+			t.Parallel()
 			store := NewStore(filepath.Join(t.TempDir(), DirName))
 			if _, err := store.Admit(raw, digest); err != nil {
 				t.Fatal(err)
@@ -414,6 +422,7 @@ func TestReceiptStorageRejectsSymlinkHardlinkAndUnsafeMode(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			store := NewStore(filepath.Join(t.TempDir(), DirName))
 			if _, err := store.Admit(raw, digest); err != nil {
 				t.Fatal(err)
@@ -503,12 +512,14 @@ func TestReadmitUnderLockReturnsExactReceiptWithoutPathMutation(t *testing.T) {
 }
 
 func TestReadmitUnderLockRefusesPathSwapsWithoutMutatingDecoy(t *testing.T) {
+	t.Parallel()
 	for _, swapRoot := range []bool{false, true} {
 		name := "handoff"
 		if swapRoot {
 			name = "root"
 		}
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			request := validRequest()
 			raw, err := EncodeRequest(request)
 			if err != nil {
@@ -607,6 +618,7 @@ func TestSaveReceiptUnderLockRefusesHandoffPathSwap(t *testing.T) {
 }
 
 func TestAppendAndLoadUnderLockUseExactAggregate(t *testing.T) {
+	t.Parallel()
 	request := validRequest()
 	raw, err := EncodeRequest(request)
 	if err != nil {
@@ -621,7 +633,7 @@ func TestAppendAndLoadUnderLockUseExactAggregate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = lock.Close() }()
+	t.Cleanup(func() { _ = lock.Close() })
 	want, err := store.AppendEventUnderLock(lock, request.HandoffID, digest, HandoffEvent{
 		Phase: PhaseReceived,
 		At:    time.Date(2026, 8, 25, 10, 2, 0, 0, time.UTC),
@@ -706,6 +718,7 @@ func TestCompletedPhaseRequiresExactDurableReceiptOnAppendAndLoad(t *testing.T) 
 }
 
 func TestEventStorageRejectsSymlinkHardlinkAndUnsafeMode(t *testing.T) {
+	t.Parallel()
 	request := validRequest()
 	raw, err := EncodeRequest(request)
 	if err != nil {
@@ -764,6 +777,7 @@ func TestEventStorageRejectsSymlinkHardlinkAndUnsafeMode(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			store := NewStore(filepath.Join(t.TempDir(), DirName))
 			if _, err := store.Admit(raw, digest); err != nil {
 				t.Fatal(err)
@@ -781,6 +795,7 @@ func TestEventStorageRejectsSymlinkHardlinkAndUnsafeMode(t *testing.T) {
 }
 
 func TestAppendAndLoadUnderLockRefuseHandoffPathSwap(t *testing.T) {
+	t.Parallel()
 	request := validRequest()
 	raw, err := EncodeRequest(request)
 	if err != nil {
@@ -796,7 +811,7 @@ func TestAppendAndLoadUnderLockRefuseHandoffPathSwap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = lock.Close() }()
+	t.Cleanup(func() { _ = lock.Close() })
 	handoffPath := filepath.Join(root, request.HandoffID)
 	retainedPath := handoffPath + ".retained"
 	if err := os.Rename(handoffPath, retainedPath); err != nil {
@@ -832,6 +847,7 @@ func TestInterruptedHardLinkPublicationsRepairExactPendingSibling(t *testing.T) 
 	digest := DigestBytes(raw)
 
 	t.Run("request", func(t *testing.T) {
+		t.Parallel()
 		store := NewStore(filepath.Join(t.TempDir(), DirName))
 		if _, err := store.Admit(raw, digest); err != nil {
 			t.Fatal(err)
@@ -870,6 +886,7 @@ func TestInterruptedHardLinkPublicationsRepairExactPendingSibling(t *testing.T) 
 	})
 
 	t.Run("event", func(t *testing.T) {
+		t.Parallel()
 		store := NewStore(filepath.Join(t.TempDir(), DirName))
 		if _, err := store.Admit(raw, digest); err != nil {
 			t.Fatal(err)
@@ -895,6 +912,7 @@ func TestInterruptedHardLinkPublicationsRepairExactPendingSibling(t *testing.T) 
 }
 
 func TestAppendEventEnforcesEncodedSizeBoundaryBeforePublication(t *testing.T) {
+	t.Parallel()
 	request := validRequest()
 	raw, err := EncodeRequest(request)
 	if err != nil {
@@ -1007,6 +1025,7 @@ func TestAdmitReplayReturnsExistingReceiptAndRejectsConflictingBytes(t *testing.
 }
 
 func TestConcurrentIdenticalAdmissionsCreateOneRequest(t *testing.T) {
+	t.Parallel()
 	root := filepath.Join(t.TempDir(), DirName)
 	store := NewStore(root)
 	request := validRequest()
@@ -1062,6 +1081,7 @@ func TestConcurrentIdenticalAdmissionsCreateOneRequest(t *testing.T) {
 }
 
 func TestAdmitRejectsDigestMismatchWithoutCreatingHandoff(t *testing.T) {
+	t.Parallel()
 	root := filepath.Join(t.TempDir(), DirName)
 	store := NewStore(root)
 	raw, err := EncodeRequest(validRequest())
@@ -1078,6 +1098,7 @@ func TestAdmitRejectsDigestMismatchWithoutCreatingHandoff(t *testing.T) {
 }
 
 func TestHandoffEventsAreAppendOnlyAndOrdered(t *testing.T) {
+	t.Parallel()
 	root := filepath.Join(t.TempDir(), DirName)
 	store := NewStore(root)
 	request := validRequest()
@@ -1175,6 +1196,7 @@ func validRequestWithInlineHandover(content string) Request {
 }
 
 func TestEnsureHandoverUnderLockMaterializesPrivateFileReadableByReadHandover(t *testing.T) {
+	t.Parallel()
 	request := validRequestWithInlineHandover("# handover\n\ncontinue here\n")
 	raw, err := EncodeRequest(request)
 	if err != nil {
@@ -1190,7 +1212,7 @@ func TestEnsureHandoverUnderLockMaterializesPrivateFileReadableByReadHandover(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = lock.Close() }()
+	t.Cleanup(func() { _ = lock.Close() })
 
 	path, err := store.EnsureHandoverUnderLock(lock, request.HandoffID, digest)
 	if err != nil {
@@ -1228,6 +1250,7 @@ func TestEnsureHandoverUnderLockMaterializesPrivateFileReadableByReadHandover(t 
 }
 
 func TestEnsureHandoverUnderLockRejectsRequestWithNoInlineContent(t *testing.T) {
+	t.Parallel()
 	request := validRequest() // legacy shape: HandoverPath set, HandoverContent empty
 	raw, err := EncodeRequest(request)
 	if err != nil {
@@ -1242,7 +1265,7 @@ func TestEnsureHandoverUnderLockRejectsRequestWithNoInlineContent(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = lock.Close() }()
+	t.Cleanup(func() { _ = lock.Close() })
 
 	if _, err := store.EnsureHandoverUnderLock(lock, request.HandoffID, digest); err == nil {
 		t.Fatal("EnsureHandoverUnderLock accepted a request with no inline handover content")
@@ -1250,6 +1273,7 @@ func TestEnsureHandoverUnderLockRejectsRequestWithNoInlineContent(t *testing.T) 
 }
 
 func TestReadHandoverRejectsAModifiedPrivateFile(t *testing.T) {
+	t.Parallel()
 	request := validRequestWithInlineHandover("original content\n")
 	raw, err := EncodeRequest(request)
 	if err != nil {
@@ -1265,7 +1289,7 @@ func TestReadHandoverRejectsAModifiedPrivateFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = lock.Close() }()
+	t.Cleanup(func() { _ = lock.Close() })
 	path, err := store.EnsureHandoverUnderLock(lock, request.HandoffID, digest)
 	if err != nil {
 		t.Fatal(err)

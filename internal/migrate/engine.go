@@ -11,6 +11,8 @@ import (
 	"slices"
 	"sort"
 	"strings"
+
+	"github.com/sneat-dev/wb/internal/filewrite"
 )
 
 // FileChange describes one planned, atomic file replacement.
@@ -41,6 +43,10 @@ type Finding struct {
 // BuildPlan evaluates spec against every selected source file below roots.
 // It never writes to those roots.
 func BuildPlan(spec Spec, roots ...string) (Plan, error) {
+	return buildPlanWithAbsolute(spec, filepath.Abs, roots...)
+}
+
+func buildPlanWithAbsolute(spec Spec, absolute func(string) (string, error), roots ...string) (Plan, error) {
 	if err := spec.Validate(); err != nil {
 		return Plan{}, err
 	}
@@ -50,7 +56,7 @@ func BuildPlan(spec Spec, roots ...string) (Plan, error) {
 	plan := Plan{MigrationID: spec.ID}
 	seen := map[string]bool{}
 	for _, root := range roots {
-		root, err := filepath.Abs(root)
+		root, err := absolute(root)
 		if err != nil {
 			return Plan{}, err
 		}
@@ -71,9 +77,10 @@ func BuildPlan(spec Spec, roots ...string) (Plan, error) {
 			if language == "" || !spec.Scope.includes(language) {
 				return nil
 			}
-			rel, err := filepath.Rel(root, path)
-			if err != nil || !spec.Scope.matches(rel) {
-				return err
+			// WalkDir constructs lexical descendants of the same absolute root.
+			rel, _ := filepath.Rel(root, path)
+			if !spec.Scope.matches(rel) {
+				return nil
 			}
 			original, err := os.ReadFile(path)
 			if err != nil {
@@ -108,8 +115,21 @@ func BuildPlan(spec Spec, roots ...string) (Plan, error) {
 // Apply writes all planned changes, refusing to overwrite a source file that
 // changed after planning. Each individual file write is atomic.
 func Apply(plan Plan) error {
+	return applyInjected(plan, nil)
+}
+
+// applyInjected is Apply's test seam (task-9 PR-8): every production call
+// site reaches it only through Apply, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged. A test passes
+// its own Injector to reach the create/write/chmod/close/rename failure
+// branches deterministically.
+func applyInjected(plan Plan, inj *filewrite.Injector) error {
+	return applyWithRead(plan, inj, os.ReadFile)
+}
+
+func applyWithRead(plan Plan, inj *filewrite.Injector, read func(string) ([]byte, error)) error {
 	for _, change := range plan.Changes {
-		current, err := os.ReadFile(change.Path)
+		current, err := read(change.Path)
 		if err != nil {
 			return fmt.Errorf("read %s: %w", change.Path, err)
 		}
@@ -121,22 +141,22 @@ func Apply(plan Plan) error {
 		if err != nil {
 			return err
 		}
-		tmp, err := os.CreateTemp(filepath.Dir(change.Path), ".wb-migrate-*")
+		tmp, err := filewrite.CreateTemp(filepath.Dir(change.Path), ".wb-migrate-*", inj)
 		if err != nil {
 			return err
 		}
 		tmpName := tmp.Name()
-		if _, err = tmp.Write(change.Updated); err == nil {
-			err = tmp.Chmod(info.Mode())
+		if err = filewrite.Write(tmp, change.Updated, tmpName, inj); err == nil {
+			err = filewrite.ChmodFile(tmp, info.Mode(), tmpName, inj)
 		}
-		if closeErr := tmp.Close(); err == nil {
+		if closeErr := filewrite.Close(tmp, tmpName, inj); err == nil {
 			err = closeErr
 		}
 		if err != nil {
 			_ = os.Remove(tmpName)
 			return fmt.Errorf("write %s: %w", change.Path, err)
 		}
-		if err := os.Rename(tmpName, change.Path); err != nil {
+		if err := filewrite.Rename(tmpName, change.Path, inj); err != nil {
 			_ = os.Remove(tmpName)
 			return fmt.Errorf("replace %s: %w", change.Path, err)
 		}

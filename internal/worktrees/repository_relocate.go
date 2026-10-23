@@ -74,6 +74,10 @@ type repositoryRelocateWorktree struct {
 // directions, and appends path-relocation evidence for active WB claims.
 // It refuses any dirty checkout, ambiguous remote, or occupied destination.
 func RelocateRepository(ctx context.Context, options RepositoryRelocateOptions) (RepositoryRelocateResult, error) {
+	return relocateRepositoryWithReads(ctx, options, CanonicalRepositoryPath, gitRawOutput)
+}
+
+func relocateRepositoryWithReads(ctx context.Context, options RepositoryRelocateOptions, canonicalPath func(string, string) (string, error), readOutput repositoryTransferOutput) (RepositoryRelocateResult, error) {
 	result := RepositoryRelocateResult{SourceRepository: options.SourceRepository, DestinationRepository: options.DestinationRepository,
 		RemoteURL: options.RemoteURL, DefaultBranch: options.DefaultBranch}
 	if options.Now == nil {
@@ -96,11 +100,11 @@ func RelocateRepository(ctx context.Context, options RepositoryRelocateOptions) 
 	if !validBranch(ctx, options.DefaultBranch) {
 		return result, fmt.Errorf("invalid destination default branch %q", options.DefaultBranch)
 	}
-	result.SourceDir, err = CanonicalRepositoryPath(options.ProjectsRoot, options.SourceRepository)
+	result.SourceDir, err = canonicalPath(options.ProjectsRoot, options.SourceRepository)
 	if err != nil {
 		return result, err
 	}
-	result.DestinationDir, err = CanonicalRepositoryPath(options.ProjectsRoot, options.DestinationRepository)
+	result.DestinationDir, err = canonicalPath(options.ProjectsRoot, options.DestinationRepository)
 	if err != nil {
 		return result, err
 	}
@@ -109,30 +113,48 @@ func RelocateRepository(ctx context.Context, options RepositoryRelocateOptions) 
 		return result, fmt.Errorf("open source canonical repository: %w", err)
 	}
 	defer canonical.close()
-	lock, err := acquireRepositoryRegistrationLock(canonical)
+	lock, err := acquireRepositoryRegistrationLock(canonical, time.Now, time.Sleep)
 	if err != nil {
 		return result, fmt.Errorf("lock source repository registration: %w", err)
 	}
 	defer func() { _ = lock.release() }()
 
-	fetchURLs, err := exactOriginURLs(ctx, result.SourceDir, false)
-	if err != nil || len(fetchURLs) != 1 {
-		return result, fmt.Errorf("source origin fetch URL is ambiguous")
+	plan, err := prepareRepositoryTransfer(ctx, options, &result, readOutput)
+	if err != nil || !result.Eligible || !options.Apply {
+		return result, err
 	}
-	pushURLs, err := exactOriginURLs(ctx, result.SourceDir, true)
+	return applyRepositoryTransfer(ctx, options, result, destinationOwner, plan, readOutput)
+}
+
+type repositoryTransferOutput func(context.Context, string, ...string) (string, error)
+
+type repositoryTransferPlan struct {
+	worktrees         []repositoryRelocateWorktree
+	home, remoteHead  string
+	destinationExists bool
+}
+
+// prepareRepositoryTransfer only inspects admission. Its caller retains the
+// canonical descriptor and registration lock through both inspection and apply.
+func prepareRepositoryTransfer(ctx context.Context, options RepositoryRelocateOptions, result *RepositoryRelocateResult, readOutput repositoryTransferOutput) (repositoryTransferPlan, error) {
+	fetchURLs, err := exactOriginURLsWithRead(ctx, result.SourceDir, false, readOutput)
+	if err != nil || len(fetchURLs) != 1 {
+		return repositoryTransferPlan{}, fmt.Errorf("source origin fetch URL is ambiguous")
+	}
+	pushURLs, err := exactOriginURLsWithRead(ctx, result.SourceDir, true, readOutput)
 	if err != nil || len(pushURLs) != 1 {
-		return result, fmt.Errorf("source origin push URL is ambiguous")
+		return repositoryTransferPlan{}, fmt.Errorf("source origin push URL is ambiguous")
 	}
 	parsedSource, err := gitremote.Parse(fetchURLs[0])
 	if err != nil || parsedSource.Identity.Repository != options.SourceRepository {
-		return result, fmt.Errorf("source origin does not identify %s", options.SourceRepository)
+		return repositoryTransferPlan{}, fmt.Errorf("source origin does not identify %s", options.SourceRepository)
 	}
 	result.SourceFetchURL = fetchURLs[0]
 	result.SourcePushURL = pushURLs[0]
 
-	worktrees, err := repositoryRelocateWorktrees(ctx, result.SourceDir, result.DestinationDir)
+	worktrees, err := repositoryRelocateWorktreesWithReads(ctx, result.SourceDir, result.DestinationDir, filepath.Rel, readOutput)
 	if err != nil {
-		return result, err
+		return repositoryTransferPlan{}, err
 	}
 	result.Worktrees = make([]string, 0, len(worktrees))
 	for index := range worktrees {
@@ -140,55 +162,53 @@ func RelocateRepository(ctx context.Context, options RepositoryRelocateOptions) 
 		result.Worktrees = append(result.Worktrees, entry.destination)
 		clean, cleanErr := cleanWorktree(ctx, entry.source)
 		if cleanErr != nil {
-			return result, fmt.Errorf("inspect worktree %s: %w", entry.source, cleanErr)
+			return repositoryTransferPlan{}, fmt.Errorf("inspect worktree %s: %w", entry.source, cleanErr)
 		}
 		if !clean {
 			result.Reason = "worktree has local changes: " + entry.source
-			return result, nil
+			return repositoryTransferPlan{}, nil
 		}
 	}
 	destinationExists := false
 	if _, statErr := os.Lstat(result.DestinationDir); statErr == nil {
 		destinationExists = true
 	} else if !errors.Is(statErr, os.ErrNotExist) {
-		return result, fmt.Errorf("inspect repository destination: %w", statErr)
+		return repositoryTransferPlan{}, fmt.Errorf("inspect repository destination: %w", statErr)
 	}
-	expectedRemoteHead, err := remoteDefaultHead(ctx, result.SourceDir, options.RemoteURL, options.DefaultBranch)
+	expectedRemoteHead, err := remoteDefaultHeadWithRead(ctx, result.SourceDir, options.RemoteURL, options.DefaultBranch, readOutput)
 	if err != nil {
-		return result, fmt.Errorf("verify destination remote: %w", err)
+		return repositoryTransferPlan{}, fmt.Errorf("verify destination remote: %w", err)
 	}
 	if destinationExists {
-		if reason := disposableDestinationReason(ctx, result.DestinationDir, options, expectedRemoteHead); reason != "" {
+		if reason := disposableDestinationReason(ctx, result.DestinationDir, options, expectedRemoteHead, readOutput); reason != "" {
 			result.Reason = "destination is not safely replaceable: " + reason
-			return result, nil
+			return repositoryTransferPlan{}, nil
 		}
 		result.RetiredDestinationDir = filepath.Join(filepath.Dir(result.DestinationDir), ".wb-replaced-"+filepath.Base(result.DestinationDir)+"-"+expectedRemoteHead[:12])
 		if _, statErr := os.Lstat(result.RetiredDestinationDir); !errors.Is(statErr, os.ErrNotExist) {
 			result.Reason = "replacement quarantine already exists: " + result.RetiredDestinationDir
-			return result, nil
+			return repositoryTransferPlan{}, nil
 		}
 	}
 	home, err := wbhome.Root(options.ProjectsRoot)
 	if err != nil {
-		return result, err
+		return repositoryTransferPlan{}, err
 	}
 	for index := range worktrees {
 		entry := &worktrees[index]
-		claim, _, _, claimErr := activeWorkLogClaim(home, entry.source)
-		switch {
-		case claimErr == nil:
-			entry.claim = &claim
-		case errors.Is(claimErr, errWorkLogProjectionNotFound):
-		default:
+		claim, claimErr := optionalRepositoryTransferClaim(home, entry.source)
+		if claimErr != nil {
 			result.Reason = "WB claim is ambiguous for " + entry.source + ": " + claimErr.Error()
-			return result, nil
+			return repositoryTransferPlan{}, nil
 		}
+		entry.claim = claim
 	}
 	result.Eligible = true
-	if !options.Apply {
-		return result, nil
-	}
+	return repositoryTransferPlan{worktrees: worktrees, home: home, remoteHead: expectedRemoteHead, destinationExists: destinationExists}, nil
+}
 
+func applyRepositoryTransfer(ctx context.Context, options RepositoryRelocateOptions, result RepositoryRelocateResult, destinationOwner string, plan repositoryTransferPlan, readOutput repositoryTransferOutput) (RepositoryRelocateResult, error) {
+	worktrees, home, expectedRemoteHead, destinationExists := plan.worktrees, plan.home, plan.remoteHead, plan.destinationExists
 	projects, err := openAbsoluteDirectoryNoFollow(options.ProjectsRoot, false)
 	if err != nil {
 		return result, fmt.Errorf("open projects root: %w", err)
@@ -203,7 +223,7 @@ func RelocateRepository(ctx context.Context, options RepositoryRelocateOptions) 
 		return result, fmt.Errorf("repository destination changed after planning")
 	}
 	if destinationExists {
-		if reason := disposableDestinationReason(ctx, result.DestinationDir, options, expectedRemoteHead); reason != "" {
+		if reason := disposableDestinationReason(ctx, result.DestinationDir, options, expectedRemoteHead, readOutput); reason != "" {
 			return result, fmt.Errorf("repository destination safety changed after planning: %s", reason)
 		}
 	}
@@ -267,9 +287,12 @@ func RelocateRepository(ctx context.Context, options RepositoryRelocateOptions) 
 	}
 	_ = moved.Close()
 	rollback := func(cause error) error {
-		_, _ = git(ctx, result.DestinationDir, "remote", "set-url", "origin", fetchURLs[0])
-		_, _ = git(ctx, result.DestinationDir, "remote", "set-url", "--push", "origin", pushURLs[0])
-		_, _ = moveRenameDirectory(result.DestinationDir, result.SourceDir, nil)
+		_, _ = git(ctx, result.DestinationDir, "remote", "set-url", "origin", result.SourceFetchURL)
+		_, _ = git(ctx, result.DestinationDir, "remote", "set-url", "--push", "origin", result.SourcePushURL)
+		restored, _ := moveRenameDirectory(result.DestinationDir, result.SourceDir, nil)
+		if restored != nil {
+			_ = restored.Close()
+		}
 		oldPaths := make([]string, 0, len(worktrees))
 		for _, entry := range worktrees {
 			oldPaths = append(oldPaths, entry.source)
@@ -296,22 +319,40 @@ func RelocateRepository(ctx context.Context, options RepositoryRelocateOptions) 
 	if fetched, fetchErr := git(ctx, result.DestinationDir, "rev-parse", "refs/remotes/origin/"+options.DefaultBranch); fetchErr != nil || fetched != expectedRemoteHead {
 		return result, rollback(fmt.Errorf("fetched destination default branch does not match verified remote head"))
 	}
-	for index := range worktrees {
-		entry := &worktrees[index]
+	verifyMovedWorktree := func(entry *repositoryRelocateWorktree) error {
 		head, headErr := git(ctx, entry.destination, "rev-parse", "HEAD")
 		if headErr != nil || head != entry.head {
-			return result, rollback(fmt.Errorf("verify relocated worktree %s", entry.destination))
+			return fmt.Errorf("verify relocated worktree %s", entry.destination)
 		}
 		_, common, commonErr := gitDirectories(ctx, entry.destination)
 		if commonErr != nil || filepath.Clean(common) != filepath.Join(result.DestinationDir, ".git") {
-			return result, rollback(fmt.Errorf("verify relocated Git administration for %s", entry.destination))
+			return fmt.Errorf("verify relocated Git administration for %s", entry.destination)
+		}
+		return nil
+	}
+	// No immutable Work Log receipt may be published until every moved
+	// worktree has passed verification. Failures in this phase can still
+	// restore the source repository without contradicting any receipt.
+	for index := range worktrees {
+		if err := verifyMovedWorktree(&worktrees[index]); err != nil {
+			return result, rollback(err)
+		}
+	}
+	// Once publication starts, an error must leave the repository at its
+	// destination for pending-intent recovery. Recheck every worktree, including
+	// unclaimed ones, after any per-claim hook so drift since the first pass is
+	// still detected without rolling a published receipt back to the source.
+	for index := range worktrees {
+		entry := &worktrees[index]
+		if entry.claim != nil && entry.intent != nil && options.beforeWorkLogCompletion != nil {
+			if err := options.beforeWorkLogCompletion(entry.destination); err != nil {
+				return result, fmt.Errorf("record repository relocation receipt for %s: %w", entry.destination, err)
+			}
+		}
+		if err := verifyMovedWorktree(entry); err != nil {
+			return result, err
 		}
 		if entry.claim != nil && entry.intent != nil {
-			if options.beforeWorkLogCompletion != nil {
-				if err := options.beforeWorkLogCompletion(entry.destination); err != nil {
-					return result, fmt.Errorf("record repository relocation receipt for %s: %w", entry.destination, err)
-				}
-			}
 			_, receipt, receiptErr := appendRelocationReceipt(home, *entry.claim, entry.intent, options.Now().UTC())
 			if receiptErr != nil {
 				return result, fmt.Errorf("record repository relocation receipt for %s: %w", entry.destination, receiptErr)
@@ -358,6 +399,10 @@ func RelocateRepository(ctx context.Context, options RepositoryRelocateOptions) 
 // pending intent must bind the exact transfer identities and live destination
 // origin before WB appends its immutable completion.
 func FinalizeRepositoryTransferWorkLogs(ctx context.Context, options RepositoryRelocateOptions) ([]string, error) {
+	return finalizeRepositoryTransferWorkLogsWithPending(ctx, options, pendingRelocationIntent)
+}
+
+func finalizeRepositoryTransferWorkLogsWithPending(ctx context.Context, options RepositoryRelocateOptions, pending func(string, workLogClaim, string, string, string) (*workLogRelocationIntent, string, error)) ([]string, error) {
 	now := options.Now
 	if now == nil {
 		now = time.Now
@@ -376,14 +421,14 @@ func FinalizeRepositoryTransferWorkLogs(ctx context.Context, options RepositoryR
 	}
 	var receipts []string
 	for _, entry := range entries {
-		claim, _, _, claimErr := activeWorkLogClaim(home, entry.destination)
-		if errors.Is(claimErr, errWorkLogProjectionNotFound) {
-			continue
-		}
+		claim, claimErr := optionalRepositoryTransferClaim(home, entry.destination)
 		if claimErr != nil {
 			return nil, fmt.Errorf("resolve transferred Work Log claim for %s: %w", entry.destination, claimErr)
 		}
-		intent, _, intentErr := pendingRelocationIntent(home, claim, entry.destination, claim.Branch, entry.head)
+		if claim == nil {
+			continue
+		}
+		intent, _, intentErr := pending(home, *claim, entry.destination, claim.Branch, entry.head)
 		if intentErr != nil {
 			return nil, intentErr
 		}
@@ -397,7 +442,7 @@ func FinalizeRepositoryTransferWorkLogs(ctx context.Context, options RepositoryR
 		if err := corroborateRepositoryRelocation(ctx, entry.destination, options.DestinationRepository); err != nil {
 			return nil, err
 		}
-		_, receiptPath, receiptErr := appendRelocationReceipt(home, claim, intent, now().UTC())
+		_, receiptPath, receiptErr := appendRelocationReceipt(home, *claim, intent, now().UTC())
 		if receiptErr != nil {
 			return nil, fmt.Errorf("complete transferred Work Log intent for %s: %w", entry.destination, receiptErr)
 		}
@@ -406,13 +451,28 @@ func FinalizeRepositoryTransferWorkLogs(ctx context.Context, options RepositoryR
 	return receipts, nil
 }
 
+func optionalRepositoryTransferClaim(home, worktree string) (*workLogClaim, error) {
+	claim, _, _, err := activeWorkLogClaim(home, worktree)
+	if errors.Is(err, errWorkLogProjectionNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &claim, nil
+}
+
 func exactOriginURLs(ctx context.Context, repository string, push bool) ([]string, error) {
+	return exactOriginURLsWithRead(ctx, repository, push, gitRawOutput)
+}
+
+func exactOriginURLsWithRead(ctx context.Context, repository string, push bool, readOutput repositoryTransferOutput) ([]string, error) {
 	args := []string{"remote", "get-url", "--all"}
 	if push {
 		args = append(args, "--push")
 	}
 	args = append(args, "origin")
-	out, err := gitRawOutput(ctx, repository, args...)
+	out, err := readOutput(ctx, repository, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -426,19 +486,19 @@ func exactOriginURLs(ctx context.Context, repository string, push bool) ([]strin
 }
 
 func repositoryRelocateWorktrees(ctx context.Context, source, destination string) ([]repositoryRelocateWorktree, error) {
-	out, err := gitRawOutput(ctx, source, "worktree", "list", "--porcelain")
+	return repositoryRelocateWorktreesWithReads(ctx, source, destination, filepath.Rel, gitRawOutput)
+}
+
+func repositoryRelocateWorktreesWithReads(ctx context.Context, source, destination string, relativePath func(string, string) (string, error), readOutput repositoryTransferOutput) ([]repositoryRelocateWorktree, error) {
+	out, err := readOutput(ctx, source, "worktree", "list", "--porcelain")
 	if err != nil {
 		return nil, err
 	}
 	var entries []repositoryRelocateWorktree
-	for _, line := range strings.Split(out, "\n") {
-		if !strings.HasPrefix(line, "worktree ") {
-			continue
-		}
-		path := strings.TrimPrefix(line, "worktree ")
+	for _, path := range worktreePathsFromPorcelain(out) {
 		mapped := path
 		if path == source || strings.HasPrefix(path, source+string(os.PathSeparator)) {
-			relative, relErr := filepath.Rel(source, path)
+			relative, relErr := relativePath(source, path)
 			if relErr != nil {
 				return nil, relErr
 			}
@@ -466,7 +526,11 @@ func repositoryRelocateWorktrees(ctx context.Context, source, destination string
 }
 
 func remoteDefaultHead(ctx context.Context, repository, remoteURL, defaultBranch string) (string, error) {
-	out, err := gitRawOutput(ctx, repository, "ls-remote", "--symref", "--", remoteURL, "HEAD", "refs/heads/"+defaultBranch)
+	return remoteDefaultHeadWithRead(ctx, repository, remoteURL, defaultBranch, gitRawOutput)
+}
+
+func remoteDefaultHeadWithRead(ctx context.Context, repository, remoteURL, defaultBranch string, readOutput repositoryTransferOutput) (string, error) {
+	out, err := readOutput(ctx, repository, "ls-remote", "--symref", "--", remoteURL, "HEAD", "refs/heads/"+defaultBranch)
 	if err != nil {
 		return "", err
 	}
@@ -486,13 +550,13 @@ func remoteDefaultHead(ctx context.Context, repository, remoteURL, defaultBranch
 	return head, nil
 }
 
-func disposableDestinationReason(ctx context.Context, destination string, options RepositoryRelocateOptions, expectedHead string) string {
+func disposableDestinationReason(ctx context.Context, destination string, options RepositoryRelocateOptions, expectedHead string, readOutput repositoryTransferOutput) string {
 	canonical, err := openCanonicalRepository(destination)
 	if err != nil {
 		return err.Error()
 	}
 	defer canonical.close()
-	urls, err := exactOriginURLs(ctx, destination, false)
+	urls, err := exactOriginURLsWithRead(ctx, destination, false, readOutput)
 	if err != nil || len(urls) != 1 {
 		return "origin fetch URL is ambiguous"
 	}
@@ -500,7 +564,7 @@ func disposableDestinationReason(ctx context.Context, destination string, option
 	if err != nil || remote.Identity.Repository != options.DestinationRepository {
 		return "origin does not identify the destination repository"
 	}
-	push, err := exactOriginURLs(ctx, destination, true)
+	push, err := exactOriginURLsWithRead(ctx, destination, true, readOutput)
 	if err != nil || len(push) != 1 {
 		return "origin push URL is ambiguous"
 	}
@@ -515,7 +579,7 @@ func disposableDestinationReason(ctx context.Context, destination string, option
 	if status.Dirty() {
 		return status.Summary()
 	}
-	worktrees, err := repositoryRelocateWorktrees(ctx, destination, destination)
+	worktrees, err := repositoryRelocateWorktreesWithReads(ctx, destination, destination, filepath.Rel, readOutput)
 	if err != nil || len(worktrees) != 1 {
 		return "destination has linked worktrees"
 	}
@@ -527,7 +591,7 @@ func disposableDestinationReason(ctx context.Context, destination string, option
 	if err != nil || head != expectedHead {
 		return "destination HEAD differs from the canonical remote default branch"
 	}
-	remoteOutput, err := gitRawOutput(ctx, destination, "ls-remote", "--refs", "origin")
+	remoteOutput, err := readOutput(ctx, destination, "ls-remote", "--refs", "origin")
 	if err != nil {
 		return "cannot inspect destination remote refs"
 	}
@@ -539,7 +603,7 @@ func disposableDestinationReason(ctx context.Context, destination string, option
 		}
 		remoteRefs[fields[1]] = fields[0]
 	}
-	localOutput, err := gitRawOutput(ctx, destination, "for-each-ref", "--format=%(refname) %(objectname)")
+	localOutput, err := readOutput(ctx, destination, "for-each-ref", "--format=%(refname) %(objectname)")
 	if err != nil {
 		return "cannot inspect destination refs"
 	}

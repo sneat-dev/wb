@@ -67,6 +67,10 @@ func PlanCloneMove(ctx context.Context, source, destination string) (CloneMoveRe
 // failed move never leaves the clone stranded at its destination without a
 // working worktree registry.
 func ApplyCloneMove(ctx context.Context, source, destination string) (CloneMoveResult, error) {
+	return applyCloneMoveWithQuery(ctx, source, destination, git)
+}
+
+func applyCloneMoveWithQuery(ctx context.Context, source, destination string, query func(context.Context, string, ...string) (string, error)) (CloneMoveResult, error) {
 	plan, err := PlanCloneMove(ctx, source, destination)
 	if err != nil {
 		return CloneMoveResult{}, err
@@ -74,11 +78,9 @@ func ApplyCloneMove(ctx context.Context, source, destination string) (CloneMoveR
 	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
 		return plan, fmt.Errorf("prepare destination parent directory: %w", err)
 	}
-	moved, err := moveRenameDirectory(source, destination, nil)
-	if err != nil {
+	if err := moveCloneDirectoryAndClose(source, destination, moveRenameDirectoryHooks{}); err != nil {
 		return plan, fmt.Errorf("move canonical clone: %w", err)
 	}
-	_ = moved.Close()
 
 	destinationPaths := make([]string, 0, len(plan.Worktrees))
 	sourcePaths := make([]string, 0, len(plan.Worktrees))
@@ -87,21 +89,34 @@ func ApplyCloneMove(ctx context.Context, source, destination string) (CloneMoveR
 		sourcePaths = append(sourcePaths, worktree.Source)
 	}
 	rollback := func(cause error) error {
-		if _, moveBackErr := moveRenameDirectory(destination, source, nil); moveBackErr != nil {
+		if moveBackErr := moveCloneDirectoryAndClose(destination, source, moveRenameDirectoryHooks{}); moveBackErr != nil {
 			return errors.Join(cause, fmt.Errorf("restore clone to %s after failed move: %w", source, moveBackErr))
 		}
-		if _, repairErr := git(ctx, source, append([]string{"worktree", "repair"}, sourcePaths...)...); repairErr != nil {
+		if _, repairErr := query(ctx, source, append([]string{"worktree", "repair"}, sourcePaths...)...); repairErr != nil {
 			return errors.Join(cause, fmt.Errorf("repair worktree registration at %s after rollback: %w", source, repairErr))
 		}
 		return cause
 	}
-	if _, err := git(ctx, destination, append([]string{"worktree", "repair"}, destinationPaths...)...); err != nil {
+	if _, err := query(ctx, destination, append([]string{"worktree", "repair"}, destinationPaths...)...); err != nil {
 		return plan, rollback(fmt.Errorf("repair worktree registration: %w", err))
 	}
 	if err := VerifyClonePlacement(ctx, destination, destinationPaths); err != nil {
 		return plan, rollback(err)
 	}
 	return plan, nil
+}
+
+// moveCloneDirectoryAndClose consumes the native move's owned descriptor even
+// when the namespace move succeeded but reopening its destination failed.
+func moveCloneDirectoryAndClose(source, destination string, hooks moveRenameDirectoryHooks, observation ...func(*os.File, error)) error {
+	moved, err := moveRenameDirectoryWithHooks(source, destination, hooks)
+	if len(observation) != 0 {
+		observation[0](moved, err)
+	}
+	if moved != nil {
+		_ = moved.Close()
+	}
+	return err
 }
 
 // VerifyClonePlacement checks that every named worktreePath is registered
@@ -121,10 +136,8 @@ func VerifyClonePlacement(ctx context.Context, clonePath string, worktreePaths [
 		return fmt.Errorf("list worktree registration for %s: %w", clonePath, err)
 	}
 	listed := map[string]bool{}
-	for _, line := range strings.Split(out, "\n") {
-		if path, ok := strings.CutPrefix(line, "worktree "); ok {
-			listed[filepath.Clean(path)] = true
-		}
+	for _, path := range worktreePathsFromPorcelain(out) {
+		listed[filepath.Clean(path)] = true
 	}
 	commonDir := filepath.Clean(filepath.Join(clonePath, ".git"))
 	for _, path := range worktreePaths {
@@ -180,6 +193,10 @@ func VerifyClonePlacement(ctx context.Context, clonePath string, worktreePaths [
 // worktree nested inside the clone — and the repair is verified, including
 // `git status`, only for the worktree(s) just repaired.
 func ReconcileClonePlacement(ctx context.Context, clonePath, legacyClonePath string, apply bool) (status string, informational []string, err error) {
+	return reconcileClonePlacementWithQuery(ctx, clonePath, legacyClonePath, apply, git)
+}
+
+func reconcileClonePlacementWithQuery(ctx context.Context, clonePath, legacyClonePath string, apply bool, query func(context.Context, string, ...string) (string, error)) (status string, informational []string, err error) {
 	recorded, err := registeredWorktreePaths(ctx, clonePath)
 	if err != nil {
 		return "", nil, fmt.Errorf("list worktree registration for %s: %w", clonePath, err)
@@ -212,7 +229,7 @@ func ReconcileClonePlacement(ctx context.Context, clonePath, legacyClonePath str
 	if !apply {
 		return "needs_repair", informational, nil
 	}
-	if _, err := git(ctx, clonePath, append([]string{"worktree", "repair"}, toRepair...)...); err != nil {
+	if _, err := query(ctx, clonePath, append([]string{"worktree", "repair"}, toRepair...)...); err != nil {
 		return "", informational, fmt.Errorf("repair worktree registration for %s: %w", clonePath, err)
 	}
 	if err := VerifyClonePlacement(ctx, clonePath, toRepair); err != nil {
@@ -232,12 +249,13 @@ func rebaseUnderNewClone(path, legacyClonePath, clonePath string) (string, bool)
 	}
 	legacyClonePath = filepath.Clean(legacyClonePath)
 	path = filepath.Clean(path)
-	if path != legacyClonePath && !strings.HasPrefix(path, legacyClonePath+string(filepath.Separator)) {
-		return "", false
-	}
-	relative, err := filepath.Rel(legacyClonePath, path)
-	if err != nil {
-		return "", false
+	relative := "."
+	if path != legacyClonePath {
+		var ok bool
+		relative, ok = strings.CutPrefix(path, legacyClonePath+string(filepath.Separator))
+		if !ok {
+			return "", false
+		}
 	}
 	rebased := filepath.Join(clonePath, relative)
 	if _, statErr := os.Stat(rebased); statErr != nil {
@@ -280,11 +298,7 @@ func registeredWorktreePaths(ctx context.Context, clonePath string) ([]string, e
 	}
 	self := filepath.Clean(clonePath)
 	var paths []string
-	for _, line := range strings.Split(out, "\n") {
-		path, ok := strings.CutPrefix(line, "worktree ")
-		if !ok {
-			continue
-		}
+	for _, path := range worktreePathsFromPorcelain(out) {
 		if clean := filepath.Clean(path); clean != self {
 			paths = append(paths, clean)
 		}
@@ -343,9 +357,6 @@ func RecordCloneMoveRelocationIntents(projectsRoot string, moves []CloneMoveWork
 		}
 		for _, layout := range resolution.Read {
 			home := filepath.Clean(layout.Home)
-			if home == "" {
-				continue
-			}
 			claim, _, claimErr := claimForRelocation(home, move.Source)
 			if claimErr != nil {
 				continue

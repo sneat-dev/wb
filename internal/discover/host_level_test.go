@@ -24,6 +24,7 @@ func hostLevelClone(t *testing.T, root, host, organization, name string) string 
 // all — that is what made `wb sync` on a migrated root see nothing and write a
 // second, flat duplicate.
 func TestScanLocalReadsBothCanonicalPlacements(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	hosted := hostLevelClone(t, root, "github.com", "acme", "app")
 	otherForge := hostLevelClone(t, root, "git.example.test", "acme", "other")
@@ -63,6 +64,7 @@ func TestScanLocalReadsBothCanonicalPlacements(t *testing.T) {
 // fleet command actually uses: the index must report host-level clones, cache
 // them, and keep the cache valid on re-read.
 func TestScanLocalIndexedFindsHostLevelClones(t *testing.T) {
+	t.Parallel()
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -102,6 +104,7 @@ func TestScanLocalIndexedFindsHostLevelClones(t *testing.T) {
 // fingerprint still notices a repository appearing under a host level; a
 // fingerprint that only covered the first level would serve stale inventory.
 func TestSnapshotInvalidatesOnANewOrganizationBelowAForgeHost(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	hostLevelClone(t, root, "github.com", "acme", "app")
 
@@ -140,6 +143,7 @@ func TestSnapshotInvalidatesOnANewOrganizationBelowAForgeHost(t *testing.T) {
 // shapes are valid for their own coordinate, and neither may masquerade as the
 // other or escape the root.
 func TestValidCachedReposAcceptsBothPlacements(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	for _, test := range []struct {
 		name       string
@@ -157,6 +161,7 @@ func TestValidCachedReposAcceptsBothPlacements(t *testing.T) {
 		{name: "cached host wrong", repository: Repo{Org: "acme", Name: "app", Host: "gitlab.example.test", Path: filepath.Join(root, "github.com", "acme", "app")}, ok: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			if got := validCachedRepos(root, []Repo{test.repository}); got != test.ok {
 				t.Fatalf("validCachedRepos(%+v) = %t, want %t", test.repository, got, test.ok)
 			}
@@ -168,6 +173,7 @@ func TestValidCachedReposAcceptsBothPlacements(t *testing.T) {
 // clone deliberately created under a forge with an explicit port must be
 // visible to discovery, exactly as the placement rules allow it to be created.
 func TestScanLocalSeesAPortHostedForgeLevel(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	hosted := hostLevelClone(t, root, "github.com:8443", "acme", "app")
 
@@ -187,6 +193,7 @@ func TestScanLocalSeesAPortHostedForgeLevel(t *testing.T) {
 // level exists to express: the same owner/repository cloned from two forges is
 // two repositories, and merging them by bare slug used to silently drop one.
 func TestReconcileKeepsTwoForgesOfOneRepository(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	githubClone := hostLevelClone(t, root, "github.com", "acme", "app")
 	gitlabClone := hostLevelClone(t, root, "gitlab.example.test", "acme", "app")
@@ -219,6 +226,7 @@ func TestReconcileKeepsTwoForgesOfOneRepository(t *testing.T) {
 // a legacy flat clone is still recognized as that GitHub clone, so `wb sync`
 // updates it in place instead of cloning a duplicate.
 func TestReconcileMatchesARemoteListingToTheRightLocalClone(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	githubClone := hostLevelClone(t, root, "github.com", "acme", "app")
 	gitlabClone := hostLevelClone(t, root, "gitlab.example.test", "acme", "app")
@@ -262,6 +270,7 @@ func TestReconcileMatchesARemoteListingToTheRightLocalClone(t *testing.T) {
 // identity are both kept: a duplicate on disk is a finding for the operator,
 // not data the inventory may discard.
 func TestReconcileNeverDropsADuplicateClone(t *testing.T) {
+	t.Parallel()
 	reconciled := Reconcile([]Repo{
 		{Org: "acme", Name: "app", Host: "github.com", Path: "/projects/github.com/acme/app"},
 		{Org: "acme", Name: "app", Host: "github.com", Path: "/other/github.com/acme/app"},
@@ -276,6 +285,7 @@ func TestReconcileNeverDropsADuplicateClone(t *testing.T) {
 // a forge in its path, so a remote listing of its slug still describes it, even
 // when that listing names a host other than github.com.
 func TestReconcileMatchesALegacyCloneToItsOwnForgeListing(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	legacy := mustIndexedRepository(t, root, "acme", "app")
 	local, err := ScanLocal(root)

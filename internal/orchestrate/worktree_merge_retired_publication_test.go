@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // installRetiredPublicationGH fakes the exact `gh pr view` invocation
@@ -22,7 +24,7 @@ func installRetiredPublicationGH(t *testing.T, repository, pullRequest string) {
   *) echo "unexpected gh command: $*" >&2; exit 2 ;;
 esac
 `
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -321,6 +323,7 @@ func TestRetiredPublicationAcknowledgementTamperingKeepsLaneBlocked(t *testing.T
 }
 
 func TestValidateRetiredPublicationReceiptRefusesWrongShape(t *testing.T) {
+	t.Parallel()
 	base := func() WorktreeMergeReceipt {
 		return WorktreeMergeReceipt{
 			ID: "receipt-id", ReceiptPath: "/receipts/lane.json", Lane: worktreeMergeLaneID("acme/app", "main"),
@@ -349,6 +352,7 @@ func TestValidateRetiredPublicationReceiptRefusesWrongShape(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			receipt := base()
 			tt.mutate(&receipt)
 			err := validateRetiredPublicationReceipt(receipt, receipt.ReceiptPath)

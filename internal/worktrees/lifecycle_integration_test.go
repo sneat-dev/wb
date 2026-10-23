@@ -16,7 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sneat-dev/wb/internal/unixcompat"
+	"github.com/sneat-dev/wb/internal/testenv"
+	unix "github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -969,6 +970,7 @@ func TestCleanupRefusesOpenExactHeadPRWhileMergedPRRecoversStaleTarget(t *testin
 }
 
 func TestMatchingOpenPullRequestRequiresExactSourceIdentity(t *testing.T) {
+	t.Parallel()
 	const head = "0123456789012345678901234567890123456789"
 	for _, test := range []struct {
 		name       string
@@ -981,6 +983,7 @@ func TestMatchingOpenPullRequestRequiresExactSourceIdentity(t *testing.T) {
 		{name: "exact source identity", repository: "acme/app", branch: "incidentius-task2-core-contract", want: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			pullRequests := []githubPullRequest{{
 				Number: 325, URL: "https://github.com/acme/app/pull/325", State: "open",
 				Head: githubRef{
@@ -1092,6 +1095,7 @@ func TestCleanupEndsZeroDiffChildIgnoringOpenTargetPullRequestSharingHead(t *tes
 }
 
 func TestMergedPullRequestTargetRequiresUnambiguousExactHead(t *testing.T) {
+	t.Parallel()
 	mergedAt := time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
 	const head = "0123456789012345678901234567890123456789"
 	merged := func(base, sha string) githubPullRequest {
@@ -1115,6 +1119,7 @@ func TestMergedPullRequestTargetRequiresUnambiguousExactHead(t *testing.T) {
 }
 
 func TestDeletedTargetDefaultBranchReceiptRequiresExactImmutableIdentity(t *testing.T) {
+	t.Parallel()
 	mergedAt := time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
 	head := strings.Repeat("a", 40)
 	merge := strings.Repeat("b", 40)
@@ -1136,11 +1141,12 @@ func TestDeletedTargetDefaultBranchReceiptRequiresExactImmutableIdentity(t *test
 		{name: "wrong recorded source", mutate: func(pr *githubPullRequest) { pr.Head.Ref = "feature/other" }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			pullRequest := valid()
 			if test.mutate != nil {
 				test.mutate(&pullRequest)
 			}
-			receipt, err := selectExactDeletedTargetDefaultBranchReceipt(context.Background(), "acme/app", []githubPullRequest{pullRequest}, "stream/deleted", "main", head)
+			receipt, err := landingReceiptService().SelectExactDeletedTargetDefaultBranchReceipt(context.Background(), "acme/app", []githubPullRequest{pullRequest}, "stream/deleted", "main", head)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1159,21 +1165,31 @@ func TestRemoteDefaultBranchReadsOriginHead(t *testing.T) {
 	}
 }
 
+// A recorded target origin no longer has is judged against the default branch.
+// A receipt that does not hold is refused and grants nothing; plain containment
+// of the exact head in the fetched default branch is the only thing that still
+// can, and a candidate it does not cover stays visible with the reason rather
+// than disappearing behind a malformed-candidate diagnostic.
 func TestDeletedTargetFallbackRefusesUnsafeCandidateOrReceipt(t *testing.T) {
 	for _, test := range []struct {
 		name      string
 		configure func(t *testing.T, fixture *gitFixture, result CreateResult, head, merge string, mergedAt time.Time)
 		want      string
 		dirty     bool
+		// contained: the unusable receipt is irrelevant because the exact head
+		// is a Git ancestor of the fetched default branch.
+		contained bool
+		// diagnosed: no target could be established at all.
+		diagnosed bool
 	}{
 		{
-			name: "wrong base", want: "no exact merged receipt",
+			name: "wrong base", contained: true,
 			configure: func(t *testing.T, _ *gitFixture, _ CreateResult, head, merge string, mergedAt time.Time) {
 				installExactMergedPullRequestForDeletedTarget(t, head, merge, "deleted-target", "release", mergedAt)
 			},
 		},
 		{
-			name: "missing immutable merge identity", want: "no exact merged receipt",
+			name: "missing immutable merge identity", contained: true,
 			configure: func(t *testing.T, _ *gitFixture, _ CreateResult, head, _ string, mergedAt time.Time) {
 				installExactMergedPullRequestForDeletedTarget(t, head, "", "deleted-target", "main", mergedAt)
 			},
@@ -1186,7 +1202,16 @@ func TestDeletedTargetFallbackRefusesUnsafeCandidateOrReceipt(t *testing.T) {
 			},
 		},
 		{
-			name: "default fetch failure", want: "origin did not resolve a default branch",
+			// The receipt names a commit this clone has never seen, so whether it
+			// is in the default branch cannot be read. That is a failed
+			// observation, never an answer.
+			name: "receipt merge commit unknown to the clone", want: "verify merged receipt #77 against fetched origin/main", diagnosed: true,
+			configure: func(t *testing.T, _ *gitFixture, _ CreateResult, head, _ string, mergedAt time.Time) {
+				installExactMergedPullRequestForDeletedTarget(t, head, strings.Repeat("d", 40), "deleted-target", "main", mergedAt)
+			},
+		},
+		{
+			name: "default fetch failure", want: "origin did not resolve a default branch", diagnosed: true,
 			configure: func(t *testing.T, fixture *gitFixture, _ CreateResult, head, merge string, mergedAt time.Time) {
 				gitTest(t, fixture.remote, "config", "receive.denyDeleteCurrent", "ignore")
 				gitTest(t, fixture.canonical, "push", "origin", ":main")
@@ -1233,12 +1258,31 @@ func TestDeletedTargetFallbackRefusesUnsafeCandidateOrReceipt(t *testing.T) {
 				}
 				return
 			}
-			if len(outcome.Entries) != 0 {
-				t.Fatalf("unsafe deleted-target recovery produced entries: %#v", outcome.Entries)
+			if test.diagnosed {
+				if len(outcome.Entries) != 0 {
+					t.Fatalf("a candidate with no resolvable target produced entries: %#v", outcome.Entries)
+				}
+				if diagnostics := fmt.Sprint(outcome.Diagnostics); !strings.Contains(diagnostics, test.want) {
+					t.Fatalf("diagnostics = %s, want %q", diagnostics, test.want)
+				}
+				return
 			}
-			diagnostics := fmt.Sprint(outcome.Diagnostics)
-			if !strings.Contains(diagnostics, test.want) {
-				t.Fatalf("diagnostics = %s, want %q", diagnostics, test.want)
+			entry := entryFor(t, outcome, task)
+			if len(outcome.Diagnostics) != 0 {
+				t.Fatalf("an absent recorded target hid the task behind diagnostics: %v", outcome.Diagnostics)
+			}
+			if test.contained {
+				mainHead := remoteBranchForTest(t, fixture.canonical, "main")
+				want := "head is contained in origin/main at " + shortSHA(mainHead) + ", via recorded base deleted-target (absent)"
+				if !entry.Eligible || entry.Class != GCClassContained || entry.Reason != want {
+					t.Fatalf("contained head with an unusable receipt = %#v, want reason %q", entry, want)
+				}
+				return
+			}
+			if entry.Eligible || entry.Class != GCClassUnmerged ||
+				!strings.Contains(entry.Reason, "head is not integrated into the exact origin target origin/main at ") ||
+				!strings.Contains(entry.Reason, "recorded base deleted-target is absent") || !strings.Contains(entry.Reason, test.want) {
+				t.Fatalf("uncontained deleted-target candidate = %#v, want a refusal naming %q", entry, test.want)
 			}
 		})
 	}
@@ -1743,7 +1787,7 @@ func TestCleanupRejectsRebaseReceiptWhoseMergeTreeDiffersFromSource(t *testing.T
 		t.Fatal(err)
 	}
 	if len(planned.Results) != 1 || planned.Results[0].Eligible || planned.Results[0].IntegratedAtOrigin || planned.Results[0].RebaseMergedAtOrigin ||
-		!strings.Contains(planned.Results[0].Reason, "awaiting push") {
+		!strings.Contains(planned.Results[0].Reason, "is not integrated into the exact origin target") {
 		t.Fatalf("tree-mismatched rebase receipt must be rejected: %#v", planned)
 	}
 }
@@ -1776,7 +1820,7 @@ func TestCleanupRejectsMergedPullRequestWithoutTargetIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(planned.Results) != 1 || planned.Results[0].Eligible || planned.Results[0].IntegratedAtOrigin ||
-		!strings.Contains(planned.Results[0].Reason, "awaiting push") {
+		!strings.Contains(planned.Results[0].Reason, "is not integrated into the exact origin target") {
 		t.Fatalf("merged PR without target integration must be rejected: %#v", planned)
 	}
 }
@@ -1836,7 +1880,7 @@ func TestCleanupRejectsBranchAdvancedAfterMergedPullRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(cleanup.Results) != 1 || cleanup.Results[0].Eligible || cleanup.Results[0].Applied ||
-		!strings.Contains(cleanup.Results[0].Reason, "awaiting push") {
+		!strings.Contains(cleanup.Results[0].Reason, "is not integrated into the exact origin target") {
 		t.Fatalf("advanced cleanup result = %#v", cleanup)
 	}
 	if _, err := os.Stat(result.WorktreeDir); err != nil {
@@ -2295,6 +2339,7 @@ func TestCleanupBlocksOnlyCoordinatedTaskOfMismatchedCandidate(t *testing.T) {
 // (a detached worktree, one still on the base branch, and so on) keeps
 // reporting its own plain message unchanged.
 func TestListDiagnosticForInspectErrorFallsBackToPlainMessageForNonMismatchErrors(t *testing.T) {
+	t.Parallel()
 	diagnostic := listDiagnosticForInspectError(
 		"/root/worktrees", "task", "/root/worktrees/task/acme/app", "acme",
 		fmt.Errorf("some other inspection failure"),
@@ -2641,30 +2686,7 @@ func TestCleanupRejectsAdvancedTerminalNotDescendedFromSealedCommit(t *testing.T
 // path; only the new advanced-terminal authorization can retire it.
 func prepareFinalizedThenAdvancedTask(t *testing.T, task string) (fixture *gitFixture, result CreateResult, head1, head2, mergeSHA string, mergedAt time.Time) {
 	t.Helper()
-	fixture = newGitFixture(t)
-	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
-		ProjectsRoot: fixture.projectsRoot,
-		Operation:    task, WorkLog: WorkLogOptions{Model: "unknown"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	result = created[0]
-	if err := os.WriteFile(filepath.Join(result.WorktreeDir, "feature.txt"), []byte(task+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitTest(t, result.WorktreeDir, "add", "feature.txt")
-	gitTest(t, result.WorktreeDir, "commit", "-m", "feature")
-	head1 = gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD")
-	gitTest(t, result.WorktreeDir, "push", "-u", "origin", result.Branch)
-
-	if _, err := LogFinalize(context.Background(), LogFinalizeOptions{
-		ProjectsRoot: fixture.projectsRoot, Worktree: result.WorktreeDir,
-		Result: "success", Message: "landed before the follow-up commit", Apply: true,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
+	fixture, result, head1 = prepareFinalizedTask(t, task, "landed before the follow-up commit")
 	if err := os.WriteFile(filepath.Join(result.WorktreeDir, "follow-up.txt"), []byte("more work\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -2678,18 +2700,51 @@ func prepareFinalizedThenAdvancedTask(t *testing.T, task string) (fixture *gitFi
 	// concurrently-landing repository would produce — the shape that makes
 	// the squash-only absorbed-by proof (tree equality) reject a genuine
 	// merge-commit landing.
-	if err := os.WriteFile(filepath.Join(fixture.canonical, "unrelated.txt"), []byte("someone else's PR\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitTest(t, fixture.canonical, "add", "unrelated.txt")
-	gitTest(t, fixture.canonical, "commit", "-m", "unrelated concurrent change")
-	gitTest(t, fixture.canonical, "push", "origin", "main")
+	advanceFixtureMainWithUnrelatedCommit(t, fixture)
 
 	gitTest(t, fixture.canonical, "merge", "--no-ff", result.Branch, "-m", "merge feature (advanced)")
 	mergeSHA = gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
 	gitTest(t, fixture.canonical, "push", "origin", "main")
 
 	return fixture, result, head1, head2, mergeSHA, time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
+}
+
+func prepareFinalizedTask(t *testing.T, task, finalMessage string) (*gitFixture, CreateResult, string) {
+	t.Helper()
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    task, WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := created[0]
+	if err := os.WriteFile(filepath.Join(result.WorktreeDir, "feature.txt"), []byte(task+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, result.WorktreeDir, "add", "feature.txt")
+	gitTest(t, result.WorktreeDir, "commit", "-m", "feature")
+	head1 := gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD")
+	gitTest(t, result.WorktreeDir, "push", "-u", "origin", result.Branch)
+
+	if _, err := LogFinalize(context.Background(), LogFinalizeOptions{
+		ProjectsRoot: fixture.projectsRoot, Worktree: result.WorktreeDir,
+		Result: "success", Message: finalMessage, Apply: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return fixture, result, head1
+}
+
+func advanceFixtureMainWithUnrelatedCommit(t *testing.T, fixture *gitFixture) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(fixture.canonical, "unrelated.txt"), []byte("someone else's PR\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, fixture.canonical, "add", "unrelated.txt")
+	gitTest(t, fixture.canonical, "commit", "-m", "unrelated concurrent change")
+	gitTest(t, fixture.canonical, "push", "origin", "main")
 }
 
 func prepareMergedTaskInFixture(t *testing.T, fixture *gitFixture, task string) (CreateResult, string, time.Time) {
@@ -2720,19 +2775,6 @@ func installMergedPullRequestFixture(t *testing.T, head string, mergedAt time.Ti
 
 func installExactMergedPullRequestForDeletedTarget(t *testing.T, head, merge, source, base string, mergedAt time.Time) {
 	t.Helper()
-	binDir := t.TempDir()
-	script := filepath.Join(binDir, "gh")
-	content := `#!/bin/sh
-set -eu
-if [ "$1 $2" != "api --paginate" ]; then
-    echo "unexpected gh command: $*" >&2
-    exit 2
-fi
-printf '%s\n' "$WB_TEST_MERGED_PULLS"
-`
-	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	payload, err := json.Marshal([]map[string]any{{
 		"number":           77,
 		"html_url":         "https://github.com/acme/app/pull/77",
@@ -2745,9 +2787,7 @@ printf '%s\n' "$WB_TEST_MERGED_PULLS"
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("WB_TEST_MERGED_PULLS", string(payload))
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	installPullRequestResponses(t, string(payload), "")
 }
 
 func installMergedPullRequestFixtures(t *testing.T, heads []string, mergedAt time.Time) {
@@ -2760,19 +2800,6 @@ func installMergedPullRequestFixtureWithMerge(t *testing.T, head, mergeSHA strin
 
 func installMergedPullRequestFixturesWithMerge(t *testing.T, heads, mergeSHAs []string, mergedAt time.Time) {
 	t.Helper()
-	binDir := t.TempDir()
-	script := filepath.Join(binDir, "gh")
-	content := `#!/bin/sh
-set -eu
-if [ "$1 $2" != "api --paginate" ]; then
-    echo "unexpected gh command: $*" >&2
-    exit 2
-fi
-printf '%s\n' "$WB_TEST_MERGED_PULLS"
-`
-	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	pulls := make([]map[string]any, 0, len(heads))
 	for index, head := range heads {
 		pulls = append(pulls, map[string]any{
@@ -2792,26 +2819,11 @@ printf '%s\n' "$WB_TEST_MERGED_PULLS"
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("WB_TEST_MERGED_PULLS", string(payload))
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	installPullRequestResponses(t, string(payload), "")
 }
 
 func installOpenAndMergedExactHeadPullRequestFixture(t *testing.T, head, repository, source, openBase, mergedBase string, mergedAt time.Time) {
 	t.Helper()
-	binDir := t.TempDir()
-	script := filepath.Join(binDir, "gh")
-	content := `#!/bin/sh
-set -eu
-if [ "$1 $2" != "api --paginate" ]; then
-    echo "unexpected gh command: $*" >&2
-    exit 2
-fi
-printf '%s\n' "$WB_TEST_PULLS"
-`
-	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	pulls := []map[string]any{
 		{
 			"number": 31, "html_url": "https://github.com/acme/app/pull/31", "state": "open",
@@ -2829,28 +2841,11 @@ printf '%s\n' "$WB_TEST_PULLS"
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("WB_TEST_PULLS", string(payload))
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	installPullRequestResponses(t, string(payload), "")
 }
 
 func installOpenTargetPullRequestFixture(t *testing.T, head, branch string) string {
 	t.Helper()
-	binDir := t.TempDir()
-	logPath := filepath.Join(binDir, "gh.log")
-	script := filepath.Join(binDir, "gh")
-	content := `#!/bin/sh
-set -eu
-printf '%s\n' "$*" >> "$WB_TEST_GH_LOG"
-if [ "$1 $2" != "api --paginate" ]; then
-    echo "unexpected mutating gh command: $*" >&2
-    exit 2
-fi
-printf '%s\n' "$WB_TEST_PULLS"
-`
-	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	payload, err := json.Marshal([]map[string]any{{
 		"number": 325, "html_url": "https://github.com/acme/app/pull/325", "state": "open",
 		"head": map[string]any{
@@ -2862,11 +2857,7 @@ printf '%s\n' "$WB_TEST_PULLS"
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("WB_TEST_GH_LOG", logPath)
-	t.Setenv("WB_TEST_PULLS", string(payload))
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	return logPath
+	return installPullRequestResponses(t, string(payload), "")
 }
 
 func assertPullRequestFixtureWasReadOnly(t *testing.T, logPath string) {
@@ -2890,7 +2881,7 @@ func installFailingGitHubFixture(t *testing.T) {
 	t.Helper()
 	binDir := t.TempDir()
 	script := filepath.Join(binDir, "gh")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\necho 'gh must not run' >&2\nexit 99\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte("#!/bin/sh\necho 'gh must not run' >&2\nexit 99\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -2926,11 +2917,15 @@ func remoteBranchForTest(t *testing.T, repository, branch string) string {
 // target by construction, and the landed commit carries more than that
 // candidate's tree, so the exact-tree rebase receipt cannot describe it.
 func prepareAbsorbedCandidate(t *testing.T, task string) (*gitFixture, CreateResult, string, string, time.Time) {
+	return prepareAbsorbedCandidateWithWorkLog(t, task, WorkLogOptions{Model: "unknown"})
+}
+
+func prepareAbsorbedCandidateWithWorkLog(t *testing.T, task string, workLog WorkLogOptions) (*gitFixture, CreateResult, string, string, time.Time) {
 	t.Helper()
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
-		Operation:    task, WorkLog: WorkLogOptions{Model: "unknown"},
+		Operation:    task, WorkLog: workLog,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -3001,7 +2996,7 @@ fi
 echo "unexpected gh command: $*" >&2
 exit 2
 `
-	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(content), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	pull := map[string]any{
@@ -3028,6 +3023,7 @@ exit 2
 }
 
 func TestFetchExactRemotePullRequestHeadUsesStableRefWithoutFetchHead(t *testing.T) {
+	t.Parallel()
 	expected := strings.Repeat("a", 40)
 	var calls [][]string
 	run := func(ctx context.Context, args ...string) (string, error) {
@@ -3044,7 +3040,7 @@ func TestFetchExactRemotePullRequestHeadUsesStableRefWithoutFetchHead(t *testing
 			return "", nil
 		}
 	}
-	fetched, err := fetchExactRemotePullRequestHeadWithRun(context.Background(), "/unused", 77, expected, run)
+	fetched, err := landingReceiptService().FetchExactRemotePullRequestHeadWithRun(context.Background(), "/unused", 77, expected, run)
 	if err != nil || fetched != expected {
 		t.Fatalf("fetch PR head = %q, %v", fetched, err)
 	}
@@ -3058,13 +3054,12 @@ func TestFetchExactRemotePullRequestHeadUsesStableRefWithoutFetchHead(t *testing
 	}
 }
 
-// TestCleanupAcceptsAttestedSquashPullRequestWhenGenericContainmentConflicts
-// models a merger that incorporated a source then amended the same file before
-// squashing the integration PR. The exact source is in the PR head and the PR
-// head equals the landing tree, but replaying the source onto the squash
-// landing conflicts. That legacy patch-containment question must not override
-// the stronger numbered-PR proof.
-func TestCleanupAcceptsAttestedSquashPullRequestWhenGenericContainmentConflicts(t *testing.T) {
+// TestCleanupRefusesAttestedSquashPullRequestWhenContentProofConflicts models
+// a merger that incorporated a source then amended the same file before
+// squashing the integration PR. PR topology still proves the source reached
+// the landing, but the content proof is the shared plan/apply guard and must
+// reject this receipt before cleanup can become eligible.
+func TestCleanupRefusesAttestedSquashPullRequestWhenContentProofConflicts(t *testing.T) {
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot, Operation: "cleanup-attested-pr-amendment", WorkLog: WorkLogOptions{Model: "unknown"},
@@ -3115,9 +3110,11 @@ func TestCleanupAcceptsAttestedSquashPullRequestWhenGenericContainmentConflicts(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(planned.Results) != 1 || !planned.Results[0].Eligible || !planned.Results[0].AbsorbedAtOrigin ||
-		planned.Results[0].AbsorbedBySHA != squashSHA || planned.Results[0].MergedPullRequest == nil {
-		t.Fatalf("attested amended squash cleanup = %#v", planned)
+	if len(planned.Results) != 1 || planned.Results[0].Eligible || planned.Results[0].AbsorbedAtOrigin {
+		t.Fatalf("conflicted attested squash cleanup became eligible: %#v", planned)
+	}
+	if !strings.Contains(planned.Results[0].AbsorbedByRejection, "no longer survives in the exact fetched origin/main target") {
+		t.Fatalf("cleanup rejection does not name content proof refusal: %#v", planned.Results[0])
 	}
 }
 
@@ -3169,7 +3166,7 @@ func TestCleanupRejectsAbsorbedReceiptWhenTargetLaterRevertedTheWork(t *testing.
 	}
 	if len(planned.Results) != 1 || planned.Results[0].Eligible ||
 		planned.Results[0].IntegratedAtOrigin || planned.Results[0].AbsorbedAtOrigin ||
-		!strings.Contains(planned.Results[0].Reason, "awaiting push") {
+		!strings.Contains(planned.Results[0].Reason, "is not integrated into the exact origin target") {
 		t.Fatalf("reverted absorption must be rejected: %#v", planned)
 	}
 }
@@ -3216,7 +3213,7 @@ func TestCleanupRejectsAbsorbedReceiptWhenOnlyPartOfTheBranchLanded(t *testing.T
 		t.Fatalf("partial absorption must be rejected: %#v", planned)
 	}
 	reason := planned.Results[0].Reason
-	if !strings.Contains(reason, "awaiting push") && !strings.Contains(reason, "residual") {
+	if !strings.Contains(reason, "is not integrated into the exact origin target") && !strings.Contains(reason, "residual") {
 		t.Fatalf("partial absorption must explain the unlanded remainder: %q", reason)
 	}
 }
@@ -3237,7 +3234,7 @@ func TestCleanupRejectsAbsorbedReceiptWhoseMergeCommitIsNotInTarget(t *testing.T
 	}
 	if len(planned.Results) != 1 || planned.Results[0].Eligible ||
 		planned.Results[0].IntegratedAtOrigin || planned.Results[0].AbsorbedAtOrigin ||
-		!strings.Contains(planned.Results[0].Reason, "awaiting push") {
+		!strings.Contains(planned.Results[0].Reason, "is not integrated into the exact origin target") {
 		t.Fatalf("unpushed absorption must be rejected: %#v", planned)
 	}
 }
@@ -3288,7 +3285,7 @@ func TestCleanupRejectsAttestedLandingCommitThatDidNotIntroduceTheWork(t *testin
 	}
 	if len(planned.Results) != 1 || planned.Results[0].Eligible ||
 		planned.Results[0].IntegratedAtOrigin || planned.Results[0].AbsorbedAtOrigin ||
-		!strings.Contains(planned.Results[0].Reason, "awaiting push") {
+		!strings.Contains(planned.Results[0].Reason, "is not integrated into the exact origin target") {
 		t.Fatalf("non-introducing attested commit must be rejected: %#v", planned)
 	}
 }
@@ -3920,6 +3917,7 @@ func assertInterruptedLockPreserved(t *testing.T, path, want string) {
 }
 
 func TestCleanupResumeInterruptedRequiresOneNamedTask(t *testing.T) {
+	t.Parallel()
 	if _, err := normalizeCleanupOptions(CleanupOptions{
 		ProjectsRoot: t.TempDir(), AllMerged: true, ResumeInterrupted: true,
 	}); err == nil || !strings.Contains(err.Error(), "requires one explicit task") {
@@ -3961,7 +3959,7 @@ JSON
 echo "gh: No commit found for SHA (HTTP 422)" >&2
 exit 1
 `
-	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(content), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -3994,7 +3992,7 @@ func TestCleanupTreatsUnpushedHeadAsHavingNoAssociatedPullRequest(t *testing.T) 
 func TestCleanupStillReportsAnUnrelatedPullRequestQueryFailure(t *testing.T) {
 	fixture, _, _, _, mergedAt := prepareAbsorbedCandidate(t, "cleanup-gh-broken")
 	binDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(binDir, "gh"),
+	if err := testenv.WriteExecutableFile(filepath.Join(binDir, "gh"),
 		[]byte("#!/bin/sh\necho 'gh: server error' >&2\nexit 1\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}

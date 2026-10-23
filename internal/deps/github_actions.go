@@ -3,6 +3,7 @@ package deps
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -10,6 +11,8 @@ import (
 	"strings"
 
 	"golang.org/x/mod/semver"
+
+	"github.com/sneat-dev/wb/internal/filewrite"
 )
 
 var fullGitSHA = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
@@ -74,7 +77,11 @@ func (githubActionsAdapter) inspect(ctx context.Context, repositoryDir, base str
 	return decisions, nil
 }
 
-func (githubActionsAdapter) inspectWorkingTree(_ context.Context, worktree string, target Target, options Options) ([]Decision, error) {
+func (adapter githubActionsAdapter) inspectWorkingTree(ctx context.Context, worktree string, target Target, options Options) ([]Decision, error) {
+	return adapter.inspectWorkingTreeWithWalk(ctx, worktree, target, options, filepath.WalkDir)
+}
+
+func (githubActionsAdapter) inspectWorkingTreeWithWalk(_ context.Context, worktree string, target Target, options Options, walk func(string, fs.WalkDirFunc) error) ([]Decision, error) {
 	root := filepath.Join(worktree, ".github", "workflows")
 	if _, err := os.Stat(root); os.IsNotExist(err) {
 		return nil, nil
@@ -82,7 +89,7 @@ func (githubActionsAdapter) inspectWorkingTree(_ context.Context, worktree strin
 		return nil, err
 	}
 	var decisions []Decision
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+	err := walk(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -93,10 +100,8 @@ func (githubActionsAdapter) inspectWorkingTree(_ context.Context, worktree strin
 		if err != nil {
 			return err
 		}
-		relative, err := filepath.Rel(worktree, path)
-		if err != nil {
-			return err
-		}
+		// WalkDir supplies lexical descendants of this root, on the same volume.
+		relative, _ := filepath.Rel(worktree, path)
 		_, found, err := rewriteGitHubActions(contents, filepath.ToSlash(relative), target, false, options.AllowDowngrade)
 		if err != nil {
 			return err
@@ -111,7 +116,11 @@ func (githubActionsAdapter) inspectWorkingTree(_ context.Context, worktree strin
 	return decisions, nil
 }
 
-func (githubActionsAdapter) apply(_ context.Context, worktree string, target Target, options Options) ([]Decision, error) {
+func (adapter githubActionsAdapter) apply(ctx context.Context, worktree string, target Target, options Options) ([]Decision, error) {
+	return adapter.applyWithWalk(ctx, worktree, target, options, filepath.WalkDir)
+}
+
+func (githubActionsAdapter) applyWithWalk(_ context.Context, worktree string, target Target, options Options, walk func(string, fs.WalkDirFunc) error) ([]Decision, error) {
 	root := filepath.Join(worktree, ".github", "workflows")
 	if _, err := os.Stat(root); os.IsNotExist(err) {
 		return nil, nil
@@ -125,7 +134,7 @@ func (githubActionsAdapter) apply(_ context.Context, worktree string, target Tar
 	}
 	var pending []pendingFile
 	var decisions []Decision
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+	err := walk(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -136,10 +145,8 @@ func (githubActionsAdapter) apply(_ context.Context, worktree string, target Tar
 		if err != nil {
 			return err
 		}
-		relative, err := filepath.Rel(worktree, path)
-		if err != nil {
-			return err
-		}
+		// WalkDir supplies lexical descendants of this root, on the same volume.
+		relative, _ := filepath.Rel(worktree, path)
 		updated, found, err := rewriteGitHubActions(contents, filepath.ToSlash(relative), target, true, options.AllowDowngrade)
 		if err != nil {
 			return err
@@ -252,7 +259,16 @@ func comparableDowngrade(before, target string) bool {
 }
 
 func writeAtomic(path string, contents []byte, mode os.FileMode) error {
-	file, err := os.CreateTemp(filepath.Dir(path), ".wb-deps-*")
+	return writeAtomicInjected(path, contents, mode, nil)
+}
+
+// writeAtomicInjected is writeAtomic's test seam (task-9 PR-8): every
+// production call site reaches it only through writeAtomic, which always
+// passes a nil *filewrite.Injector, so production behaviour is unchanged.
+// A test passes its own Injector to reach the create/write/chmod/close/
+// rename failure branches deterministically.
+func writeAtomicInjected(path string, contents []byte, mode os.FileMode, inj *filewrite.Injector) error {
+	file, err := filewrite.CreateTemp(filepath.Dir(path), ".wb-deps-*", inj)
 	if err != nil {
 		return err
 	}
@@ -263,18 +279,18 @@ func writeAtomic(path string, contents []byte, mode os.FileMode) error {
 			_ = os.Remove(temporary)
 		}
 	}()
-	if _, err := file.Write(contents); err != nil {
-		_ = file.Close()
+	if err := filewrite.Write(file, contents, temporary, inj); err != nil {
+		_ = filewrite.Close(file, temporary, inj)
 		return err
 	}
-	if err := file.Chmod(mode.Perm()); err != nil {
-		_ = file.Close()
+	if err := filewrite.ChmodFile(file, mode.Perm(), temporary, inj); err != nil {
+		_ = filewrite.Close(file, temporary, inj)
 		return err
 	}
-	if err := file.Close(); err != nil {
+	if err := filewrite.Close(file, temporary, inj); err != nil {
 		return err
 	}
-	if err := os.Rename(temporary, path); err != nil {
+	if err := filewrite.Rename(temporary, path, inj); err != nil {
 		return err
 	}
 	remove = false

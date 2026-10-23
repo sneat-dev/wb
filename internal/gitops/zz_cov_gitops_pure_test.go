@@ -10,6 +10,7 @@ import (
 // which can carry warnings on earlier lines. It must keep everything before the
 // final line intact and trim surrounding whitespace.
 func TestLgCovLastLine(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		in   string
@@ -23,6 +24,7 @@ func TestLgCovLastLine(t *testing.T) {
 		{name: "inner spaces preserved", in: "a\nb  c\n", want: "b  c"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			if got := lastLine(tc.in); got != tc.want {
 				t.Fatalf("lastLine(%q) = %q, want %q", tc.in, got, tc.want)
 			}
@@ -33,6 +35,7 @@ func TestLgCovLastLine(t *testing.T) {
 // isTransientPullFailure(nil) must not panic and must not claim a nil error is
 // worth retrying; Pull relies on that to return success immediately.
 func TestLgCovIsTransientPullFailureNil(t *testing.T) {
+	t.Parallel()
 	if isTransientPullFailure(nil) {
 		t.Fatal("isTransientPullFailure(nil) = true, want false")
 	}
@@ -42,6 +45,7 @@ func TestLgCovIsTransientPullFailureNil(t *testing.T) {
 // which is how SkipSync and HasCommits tell "git refused" apart from "could not
 // run git at all".
 func TestLgCovExitCodeNonProcessError(t *testing.T) {
+	t.Parallel()
 	if got := exitCode(errors.New("no process here")); got != -1 {
 		t.Fatalf("exitCode(plain error) = %d, want -1", got)
 	}
@@ -50,6 +54,7 @@ func TestLgCovExitCodeNonProcessError(t *testing.T) {
 // A detached HEAD has no branch, and Summary must say so instead of rendering
 // an empty name.
 func TestLgCovTrackingStateSummaryDetached(t *testing.T) {
+	t.Parallel()
 	if got := (TrackingState{}).Summary(); got != "detached HEAD" {
 		t.Fatalf("zero TrackingState Summary() = %q, want %q", got, "detached HEAD")
 	}
@@ -58,6 +63,7 @@ func TestLgCovTrackingStateSummaryDetached(t *testing.T) {
 // RepoStatus.Summary must count every category it renders, including conflicts
 // and stash entries, and pluralize each one on its own.
 func TestLgCovRepoStatusSummaryConflictsAndStashes(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		status RepoStatus
@@ -85,6 +91,7 @@ func TestLgCovRepoStatusSummaryConflictsAndStashes(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			if got := tc.status.Summary(); got != tc.want {
 				t.Fatalf("Summary() = %q, want %q", got, tc.want)
 			}
@@ -95,6 +102,7 @@ func TestLgCovRepoStatusSummaryConflictsAndStashes(t *testing.T) {
 // parseUnpushedCommit rejects records that do not carry the sha/subject/parents
 // tab structure the git log format promises.
 func TestLgCovParseUnpushedCommitRejectsMalformedRecords(t *testing.T) {
+	t.Parallel()
 	for _, line := range []string{
 		"no-tabs-at-all",
 		"\tmissing-sha",
@@ -111,6 +119,7 @@ func TestLgCovParseUnpushedCommitRejectsMalformedRecords(t *testing.T) {
 // already reached through another path, and must ignore shas its graph does not
 // know (a parent outside the unpushed set).
 func TestLgCovReachableUnpushedCommitsHandlesSharedAndUnknownParents(t *testing.T) {
+	t.Parallel()
 	graph := map[string]unpushedCommit{
 		"a":  {sha: "a", parents: []string{"b", "c"}},
 		"b":  {sha: "b", parents: []string{"c", "outside"}},

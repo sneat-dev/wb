@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestGoCommandEnvironmentExtendsPrivateModuleSettings(t *testing.T) {
@@ -71,7 +73,7 @@ func TestRunCommandBoundsLeakedPackageManagerOutputPipe(t *testing.T) {
 	// pipe is still provably held open when the WaitDelay bound fires; its
 	// exact length is otherwise irrelevant since the launched process is
 	// killed in cleanup and never awaited.
-	if err := os.WriteFile(launcher, []byte("#!/bin/sh\nsleep 30 &\necho $! > \"$1\"\nexit 0\n"), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(launcher, []byte("#!/bin/sh\nsleep 30 &\necho $! > \"$1\"\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {

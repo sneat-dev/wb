@@ -11,10 +11,12 @@ import (
 const enabledRawExecutionPolicy = `{"version":1,"allow_raw_daemon_execution":true}`
 
 func TestLoadRawExecutionPolicyFailsClosed(t *testing.T) {
+	t.Parallel()
 	projectsRoot := t.TempDir()
 	externalRoot := t.TempDir()
 
 	t.Run("missing", func(t *testing.T) {
+		t.Parallel()
 		allowed, err := LoadRawExecutionPolicy(filepath.Join(externalRoot, "missing.json"), projectsRoot)
 		if err != nil || allowed {
 			t.Fatalf("missing policy = %t, %v", allowed, err)
@@ -22,6 +24,7 @@ func TestLoadRawExecutionPolicyFailsClosed(t *testing.T) {
 	})
 
 	t.Run("malformed", func(t *testing.T) {
+		t.Parallel()
 		path := filepath.Join(externalRoot, "malformed.json")
 		writeRawExecutionPolicy(t, path, []byte(`{"version":`), 0o600)
 		allowed, err := LoadRawExecutionPolicy(path, projectsRoot)
@@ -31,6 +34,7 @@ func TestLoadRawExecutionPolicyFailsClosed(t *testing.T) {
 	})
 
 	t.Run("inside projects root", func(t *testing.T) {
+		t.Parallel()
 		path := filepath.Join(projectsRoot, "policy.json")
 		writeRawExecutionPolicy(t, path, []byte(enabledRawExecutionPolicy), 0o600)
 		allowed, err := LoadRawExecutionPolicy(path, projectsRoot)
@@ -40,6 +44,7 @@ func TestLoadRawExecutionPolicyFailsClosed(t *testing.T) {
 	})
 
 	t.Run("symlink", func(t *testing.T) {
+		t.Parallel()
 		if runtime.GOOS == "windows" {
 			t.Skip("symlink creation is not generally available to unprivileged Windows users")
 		}
@@ -56,6 +61,7 @@ func TestLoadRawExecutionPolicyFailsClosed(t *testing.T) {
 	})
 
 	t.Run("wrong mode", func(t *testing.T) {
+		t.Parallel()
 		if runtime.GOOS == "windows" {
 			t.Skip("Windows does not expose POSIX file modes")
 		}
@@ -69,6 +75,7 @@ func TestLoadRawExecutionPolicyFailsClosed(t *testing.T) {
 }
 
 func TestLoadRawExecutionPolicyAcceptsProtectedExternalOptIn(t *testing.T) {
+	t.Parallel()
 	projectsRoot := t.TempDir()
 	path := filepath.Join(t.TempDir(), "policy.json")
 	writeRawExecutionPolicy(t, path, []byte(enabledRawExecutionPolicy), 0o600)

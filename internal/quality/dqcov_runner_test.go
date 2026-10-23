@@ -8,11 +8,14 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // TestDqCovRunCoverageWithOptionsRejectsImpossibleSharding covers the two
 // callers' mistakes that must fail before any subprocess starts.
 func TestDqCovRunCoverageWithOptionsRejectsImpossibleSharding(t *testing.T) {
+	t.Parallel()
 	module := t.TempDir()
 	if _, _, err := runCoverageWithOptions(context.Background(), RunOptions{GoTestShards: 1, GoShardPackages: []string{"./serial"}}, module, filepath.Join(module, "p.out")); err == nil || !strings.Contains(err.Error(), "at least 2 shards") {
 		t.Fatalf("single-shard error = %v, want the shard minimum", err)
@@ -22,24 +25,127 @@ func TestDqCovRunCoverageWithOptionsRejectsImpossibleSharding(t *testing.T) {
 	}
 }
 
-// TestDqCovRunCoverageWithOptionsBoundsTheWholeShardedRun proves the overall
-// deadline (not only the per-shard attempt deadline) terminates the run and is
-// named in the returned error.
+func TestRunCoverageUsesSelectedPackageScope(t *testing.T) {
+	if qualityFixtureChild(t) {
+		fixtureRunCoverageUsesSelectedPackageScope(t)
+		return
+	}
+	t.Parallel()
+	runQualityFixtureChild(t)
+}
+
+// fixtureRunCoverageUsesSelectedPackageScope mutates only its self-reexec child environment.
+func fixtureRunCoverageUsesSelectedPackageScope(t *testing.T) {
+	module := t.TempDir()
+	dqCovFakeGo(t, module)
+	commandLog := filepath.Join(module, "go.log")
+	dqCovSetGoEnv(t, map[string]string{
+		"DQCOV_GO_LOG":           commandLog,
+		"DQCOV_GO_WRITE_PROFILE": "1",
+	})
+	if _, _, err := runCoverageWithOptions(context.Background(), RunOptions{GoTestPackages: []string{"./selected"}}, module, filepath.Join(module, "coverage.out")); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(commandLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command := string(raw); !strings.Contains(command, "./selected") || strings.Contains(command, "./...") {
+		t.Fatalf("go test command = %q, want only selected package", command)
+	}
+}
+
+func TestRunCoverageRejectsFlagShapedPackagePatternsBeforeSubprocess(t *testing.T) {
+	if qualityFixtureChild(t) {
+		fixtureRunCoverageRejectsFlagShapedPackagePatternsBeforeSubprocess(t)
+		return
+	}
+	t.Parallel()
+	runQualityFixtureChild(t)
+}
+
+// fixtureRunCoverageRejectsFlagShapedPackagePatternsBeforeSubprocess mutates only its self-reexec child environment.
+func fixtureRunCoverageRejectsFlagShapedPackagePatternsBeforeSubprocess(t *testing.T) {
+	for _, pattern := range []string{"-run=^$", "-coverpkg=./...", "-deps"} {
+		for name, options := range map[string]RunOptions{
+			"ordinary": {GoTestPackages: []string{pattern}},
+			"sharded":  {GoTestShards: 2, GoShardPackages: []string{"./serial"}, GoTestPackages: []string{pattern}},
+		} {
+			//nolint:paralleltest // dqCovSetGoEnv changes process-wide fake-go controls for each case.
+			t.Run(name+"/"+pattern, func(t *testing.T) {
+				module := t.TempDir()
+				dqCovFakeGo(t, module)
+				commandLog := filepath.Join(module, "go.log")
+				dqCovSetGoEnv(t, map[string]string{"DQCOV_GO_LOG": commandLog})
+				if _, _, err := runCoverageWithOptions(context.Background(), options, module, filepath.Join(module, "coverage.out")); err == nil || !strings.Contains(err.Error(), "must not start with '-'") {
+					t.Fatalf("package %q error = %v, want flag-shaped package rejection", pattern, err)
+				}
+				if _, err := os.Stat(commandLog); !os.IsNotExist(err) {
+					t.Fatalf("flag-shaped package %q started a subprocess: stat log = %v", pattern, err)
+				}
+			})
+		}
+	}
+}
+
+func TestValidateCoveragePackagePatternsAcceptsRelativeAndImportPaths(t *testing.T) {
+	t.Parallel()
+	if err := ValidateGoCoveragePackagePatterns([]string{"./internal/worktrees", "github.com/sneat-dev/wb/internal/quality"}); err != nil {
+		t.Fatalf("valid package patterns = %v", err)
+	}
+	if err := ValidateGoCoveragePackagePatterns([]string{""}); err == nil || !strings.Contains(err.Error(), "must not be empty") {
+		t.Fatalf("empty package pattern error = %v", err)
+	}
+}
+
+func TestCoverageCommandDescriptionUsesPackageScope(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		options RunOptions
+		want    string
+	}{
+		{name: "default scope", want: "go test -coverprofile … ./..."},
+		{name: "selected scope", options: RunOptions{GoTestPackages: []string{"./one", "./two"}}, want: "go test -coverprofile … ./one,./two"},
+		{name: "selected sharded scope", options: RunOptions{GoTestShards: 2, GoShardPackages: []string{"./one"}, GoTestPackages: []string{"./one", "./two"}}, want: "go test -coverprofile … ./one,./two (2 process-isolated shards for ./one)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := coverageCommandDescription(tc.options); got != tc.want {
+				t.Fatalf("description = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDqCovRunCoverageWithOptionsBoundsTheWholeShardedRun proves an explicit
+// logical check deadline (not only the per-shard attempt deadline) terminates
+// the run and is named in the returned error.
 func TestDqCovRunCoverageWithOptionsBoundsTheWholeShardedRun(t *testing.T) {
+	if qualityFixtureChild(t) {
+		fixtureDqCovRunCoverageWithOptionsBoundsTheWholeShardedRun(t)
+		return
+	}
+	t.Parallel()
+	runQualityFixtureChild(t)
+}
+
+// fixtureDqCovRunCoverageWithOptionsBoundsTheWholeShardedRun mutates only its self-reexec child environment.
+func fixtureDqCovRunCoverageWithOptionsBoundsTheWholeShardedRun(t *testing.T) {
 	module := t.TempDir()
 	dqCovFakeGo(t, module)
 	dqCovSetGoEnv(t, map[string]string{
 		"DQCOV_GO_LIST_MAIN":  "./serial",
 		"DQCOV_GO_LIST_OTHER": "./serial",
 		"DQCOV_GO_TEST_LIST":  "TestAlpha",
-		"DQCOV_GO_SLEEP":      "5",
+		"DQCOV_GO_SLEEP":      "2",
 	})
 	started := time.Now()
 	_, _, err := runCoverageWithOptions(context.Background(), RunOptions{
-		Timeout: 300 * time.Millisecond, ShardAttemptTimeout: 20 * time.Second,
+		Timeout: 20 * time.Second, CheckTimeout: 300 * time.Millisecond, ShardAttemptTimeout: 20 * time.Second,
 		GoTestShards: 2, GoShardPackages: []string{"./serial"},
 	}, module, filepath.Join(module, "merged.out"))
-	if err == nil || !strings.Contains(err.Error(), "timed out after 300ms") {
+	if err == nil || !strings.Contains(err.Error(), "check timed out after 300ms") {
 		t.Fatalf("overall deadline error = %v, want the overall timeout named", err)
 	}
 	if elapsed := time.Since(started); elapsed > 5*time.Second {
@@ -47,9 +153,124 @@ func TestDqCovRunCoverageWithOptionsBoundsTheWholeShardedRun(t *testing.T) {
 	}
 }
 
+// Each queued shard receives its own attempt budget. Seven jobs run through
+// at least four waves with at most two workers, so their total exceeds the
+// shard-attempt budget even though every individual command finishes inside it.
+// Discovery and the logical check have separate allowances for instrumented runs.
+func TestQueuedGoCoverageShardsReceiveFullAttemptBudget(t *testing.T) {
+	if qualityFixtureChild(t) {
+		fixtureQueuedGoCoverageShardsReceiveFullAttemptBudget(t)
+		return
+	}
+	t.Parallel()
+	runQualityFixtureChild(t)
+}
+
+// fixtureQueuedGoCoverageShardsReceiveFullAttemptBudget mutates only its self-reexec child environment.
+func fixtureQueuedGoCoverageShardsReceiveFullAttemptBudget(t *testing.T) {
+	module := t.TempDir()
+	dqCovFakeGo(t, module)
+	dqCovSetGoEnv(t, map[string]string{
+		"DQCOV_GO_LIST_MAIN":     "./ordinary\n./serial1\n./serial2\n./serial3",
+		"DQCOV_GO_LIST_OTHER":    "@pattern",
+		"DQCOV_GO_TEST_LIST":     "TestAlpha\nTestBravo",
+		"DQCOV_GO_SLEEP":         "1",
+		"DQCOV_GO_WRITE_PROFILE": "1",
+	})
+	profile := filepath.Join(module, "merged.cov")
+	started := time.Now()
+	_, attempts, err := runCoverageWithOptions(context.Background(), RunOptions{
+		Timeout: 60 * time.Second, CheckTimeout: 2 * time.Minute, ShardAttemptTimeout: 3 * time.Second,
+		GoTestShards: 2, GoShardPackages: []string{"./serial1", "./serial2", "./serial3"},
+	}, module, profile)
+	if err != nil {
+		t.Fatalf("queued coverage failed despite per-attempt budget: %v", err)
+	}
+	if attempts != 1 || time.Since(started) < 3*time.Second {
+		t.Fatalf("attempts/elapsed = %d/%s, want a completed second wave past the old shared deadline", attempts, time.Since(started))
+	}
+	if statements, covered, err := profileTotals(profile); err != nil || statements == 0 || covered == 0 {
+		t.Fatalf("merged profile = %d/%d, %v; want covered statements", covered, statements, err)
+	}
+}
+
+func TestShardTimeoutDiagnosticsDistinguishCheckAndAttempt(t *testing.T) {
+	if qualityFixtureChild(t) {
+		fixtureShardTimeoutDiagnosticsDistinguishCheckAndAttempt(t)
+		return
+	}
+	t.Parallel()
+	runQualityFixtureChild(t)
+}
+
+// fixtureShardTimeoutDiagnosticsDistinguishCheckAndAttempt mutates only its self-reexec child environment.
+func fixtureShardTimeoutDiagnosticsDistinguishCheckAndAttempt(t *testing.T) {
+	module := t.TempDir()
+	dqCovFakeGo(t, module)
+	dqCovSetGoEnv(t, map[string]string{"DQCOV_GO_SLEEP": "1"})
+	jobs := []goCoverageJob{{label: "shard 1", arguments: []string{"test", "./serial"}}}
+	for _, tc := range []struct {
+		name          string
+		checkTimeout  time.Duration
+		attemptBudget time.Duration
+		wantSource    string
+		wantIndex     string
+		cancelBefore  bool
+	}{
+		{name: "attempt", attemptBudget: 100 * time.Millisecond, wantSource: "attempt", wantIndex: "attempt timeout; elapsed "},
+		{name: "check", checkTimeout: 100 * time.Millisecond, attemptBudget: 2 * time.Second, wantSource: "check", wantIndex: "check timeout; elapsed "},
+		{name: "caller cancellation", attemptBudget: 2 * time.Second, wantSource: "caller-cancelled", wantIndex: "caller-cancelled cancellation; elapsed ", cancelBefore: true},
+	} {
+		//nolint:paralleltest // Child cases share the parent's PATH-scoped fake Go executable.
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			cancel := func() {}
+			if tc.cancelBefore {
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			} else if tc.checkTimeout > 0 {
+				ctx, cancel = context.WithTimeoutCause(ctx, tc.checkTimeout, errLogicalCheckTimeout)
+			}
+			defer cancel()
+			directory := t.TempDir()
+			sink := newCoverageDiagnosticsSink(directory, "example/repo", module)
+			results := runGoCoverageJobs(ctx, module, jobs, 1, tc.attemptBudget, 0, nil, func(index int, result goCoverageJobResult) error {
+				return sink.persist(index, jobs[index], result)
+			})
+			if len(results) != 1 || results[0].err == nil || results[0].timeoutSource != tc.wantSource || results[0].elapsed <= 0 {
+				t.Fatalf("results = %+v, want %s timeout with elapsed time", results, tc.wantSource)
+			}
+			manifestRaw, err := os.ReadFile(filepath.Join(directory, "coverage-diagnostics-"+coverageDiagnosticStem("example/repo", module)+".yaml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var manifest CoverageDiagnosticManifest
+			if err := yaml.Unmarshal(manifestRaw, &manifest); err != nil {
+				t.Fatal(err)
+			}
+			if len(manifest.Files) != 1 || manifest.Files[0].TimeoutSource != tc.wantSource || manifest.Files[0].ElapsedNS <= 0 {
+				t.Fatalf("durable manifest = %+v, want %s source and elapsed nanoseconds", manifest, tc.wantSource)
+			}
+			if index := summarizeCoverageFailures(jobs, results); !strings.Contains(index, tc.wantIndex) {
+				t.Fatalf("failure index = %q, want source and elapsed time", index)
+			}
+		})
+	}
+}
+
 // TestDqCovRunShardedCoverageWithDiagnosticsDelegates pins the non-options
 // wrapper used by callers that have no progress or retry policy.
 func TestDqCovRunShardedCoverageWithDiagnosticsDelegates(t *testing.T) {
+	if qualityFixtureChild(t) {
+		fixtureDqCovRunShardedCoverageWithDiagnosticsDelegates(t)
+		return
+	}
+	t.Parallel()
+	runQualityFixtureChild(t)
+}
+
+// fixtureDqCovRunShardedCoverageWithDiagnosticsDelegates mutates only its self-reexec child environment.
+func fixtureDqCovRunShardedCoverageWithDiagnosticsDelegates(t *testing.T) {
 	module := t.TempDir()
 	dqCovFakeGo(t, module)
 	dqCovSetGoEnv(t, map[string]string{
@@ -76,12 +297,22 @@ func TestDqCovRunShardedCoverageWithDiagnosticsDelegates(t *testing.T) {
 // that resolves to zero or several packages, a duplicate package, a package
 // whose tests cannot be discovered, and one with no tests at all.
 func TestDqCovRunShardedCoverageOptionsRejectsBadPlans(t *testing.T) {
+	if qualityFixtureChild(t) {
+		fixtureDqCovRunShardedCoverageOptionsRejectsBadPlans(t)
+		return
+	}
+	t.Parallel()
+	runQualityFixtureChild(t)
+}
+
+// fixtureDqCovRunShardedCoverageOptionsRejectsBadPlans mutates only its self-reexec child environment.
+func fixtureDqCovRunShardedCoverageOptionsRejectsBadPlans(t *testing.T) {
 	run := func(t *testing.T, env map[string]string, packages []string) error {
 		t.Helper()
 		module := t.TempDir()
 		dqCovFakeGo(t, module)
 		dqCovSetGoEnv(t, env)
-		_, _, err := runShardedCoverageWithDiagnosticsAndProgressOptions(context.Background(), module, filepath.Join(module, "m.out"), packages, 2, "", "", 0, 0, nil)
+		_, _, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(context.Background(), nil, module, filepath.Join(module, "m.out"), packages, 2, "", "", 0, 0, 0, nil, nil, false)
 		return err
 	}
 
@@ -140,11 +371,21 @@ func TestDqCovRunShardedCoverageOptionsRejectsBadPlans(t *testing.T) {
 // TestDqCovRunShardedCoverageOptionsFailsWhenTemporaryRootIsUnusable covers the
 // scratch-directory failure that must stop the run before any shard starts.
 func TestDqCovRunShardedCoverageOptionsFailsWhenTemporaryRootIsUnusable(t *testing.T) {
+	if qualityFixtureChild(t) {
+		fixtureDqCovRunShardedCoverageOptionsFailsWhenTemporaryRootIsUnusable(t)
+		return
+	}
+	t.Parallel()
+	runQualityFixtureChild(t)
+}
+
+// fixtureDqCovRunShardedCoverageOptionsFailsWhenTemporaryRootIsUnusable mutates only its self-reexec child environment.
+func fixtureDqCovRunShardedCoverageOptionsFailsWhenTemporaryRootIsUnusable(t *testing.T) {
 	module := t.TempDir()
 	dqCovFakeGo(t, module)
 	dqCovSetGoEnv(t, map[string]string{"DQCOV_GO_LIST_MAIN": "./serial", "DQCOV_GO_LIST_OTHER": "./serial"})
 	t.Setenv("TMPDIR", filepath.Join(module, "missing"))
-	_, _, err := runShardedCoverageWithDiagnosticsAndProgressOptions(context.Background(), module, filepath.Join(module, "m.out"), []string{"./serial"}, 2, "", "", 0, 0, nil)
+	_, _, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(context.Background(), nil, module, filepath.Join(module, "m.out"), []string{"./serial"}, 2, "", "", 0, 0, 0, nil, nil, false)
 	if err == nil {
 		t.Fatal("an unusable temporary root was accepted")
 	}
@@ -155,6 +396,16 @@ func TestDqCovRunShardedCoverageOptionsFailsWhenTemporaryRootIsUnusable(t *testi
 // their output is labelled even without a trailing newline, and the merged
 // profile is published.
 func TestDqCovRunShardedCoverageMergesEverySuccessfulJobAndReportsProgress(t *testing.T) {
+	if qualityFixtureChild(t) {
+		fixtureDqCovRunShardedCoverageMergesEverySuccessfulJobAndReportsProgress(t)
+		return
+	}
+	t.Parallel()
+	runQualityFixtureChild(t)
+}
+
+// fixtureDqCovRunShardedCoverageMergesEverySuccessfulJobAndReportsProgress mutates only its self-reexec child environment.
+func fixtureDqCovRunShardedCoverageMergesEverySuccessfulJobAndReportsProgress(t *testing.T) {
 	module := t.TempDir()
 	dqCovFakeGo(t, module)
 	dqCovSetGoEnv(t, map[string]string{
@@ -166,9 +417,9 @@ func TestDqCovRunShardedCoverageMergesEverySuccessfulJobAndReportsProgress(t *te
 	})
 	merged := filepath.Join(module, "merged.out")
 	var progress []Progress
-	output, attempts, err := runShardedCoverageWithDiagnosticsAndProgressOptions(context.Background(), module, merged, []string{"./serial"}, 2, "", "", 0, 0, func(event Progress) {
+	output, attempts, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(context.Background(), nil, module, merged, []string{"./serial"}, 2, "", "", 0, 0, 0, func(event Progress) {
 		progress = append(progress, event)
-	})
+	}, nil, false)
 	if err != nil {
 		t.Fatalf("sharded coverage: %v\n%s", err, output)
 	}
@@ -205,6 +456,16 @@ func TestDqCovRunShardedCoverageMergesEverySuccessfulJobAndReportsProgress(t *te
 // terminal error joins: incompatible shard profiles and an unwritable
 // diagnostics directory.
 func TestDqCovRunShardedCoverageSurfacesMergeAndDiagnosticFailures(t *testing.T) {
+	if qualityFixtureChild(t) {
+		fixtureDqCovRunShardedCoverageSurfacesMergeAndDiagnosticFailures(t)
+		return
+	}
+	t.Parallel()
+	runQualityFixtureChild(t)
+}
+
+// fixtureDqCovRunShardedCoverageSurfacesMergeAndDiagnosticFailures mutates only its self-reexec child environment.
+func fixtureDqCovRunShardedCoverageSurfacesMergeAndDiagnosticFailures(t *testing.T) {
 	t.Run("incompatible shard profiles", func(t *testing.T) {
 		module := t.TempDir()
 		dqCovFakeGo(t, module)
@@ -216,7 +477,7 @@ func TestDqCovRunShardedCoverageSurfacesMergeAndDiagnosticFailures(t *testing.T)
 			"DQCOV_GO_TEST_OUT":       "ok",
 			"DQCOV_GO_PROFILE_SHARD2": "mode: count\npkg/a.go:1.1,2.2 2 1",
 		})
-		_, _, err := runShardedCoverageWithDiagnosticsAndProgressOptions(context.Background(), module, filepath.Join(module, "m.out"), []string{"./serial"}, 2, "", "", 0, 0, nil)
+		_, _, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(context.Background(), nil, module, filepath.Join(module, "m.out"), []string{"./serial"}, 2, "", "", 0, 0, 0, nil, nil, false)
 		if err == nil || !strings.Contains(err.Error(), "mode mismatch") {
 			t.Fatalf("merge error = %v, want the profile mode mismatch", err)
 		}
@@ -234,7 +495,7 @@ func TestDqCovRunShardedCoverageSurfacesMergeAndDiagnosticFailures(t *testing.T)
 		})
 		blocker := filepath.Join(module, "not-a-directory")
 		writeQualityFile(t, blocker, "x")
-		output, _, err := runShardedCoverageWithDiagnosticsAndProgressOptions(context.Background(), module, filepath.Join(module, "m.out"), []string{"./serial"}, 2, filepath.Join(blocker, "reports"), "example/repo", 0, 0, nil)
+		output, _, err := runShardedCoverageWithDiagnosticsAndProgressTimeouts(context.Background(), nil, module, filepath.Join(module, "m.out"), []string{"./serial"}, 2, filepath.Join(blocker, "reports"), "example/repo", 0, 0, 0, nil, nil, false)
 		if err == nil || !strings.Contains(err.Error(), "write coverage diagnostics") {
 			t.Fatalf("diagnostics error = %v, want the write failure surfaced", err)
 		}
@@ -245,6 +506,7 @@ func TestDqCovRunShardedCoverageSurfacesMergeAndDiagnosticFailures(t *testing.T)
 }
 
 func TestDqCovFailedGoTestNamesDeduplicatesAndSkipsEmpty(t *testing.T) {
+	t.Parallel()
 	output := strings.Join([]string{
 		"=== RUN   TestAlpha",
 		"--- FAIL: TestAlpha (0.01s)",
@@ -284,6 +546,7 @@ func TestDqCovFailedGoTestNamesDeduplicatesAndSkipsEmpty(t *testing.T) {
 // TestDqCovGoCoverageArgumentsWithTimeoutOmitsDisabledDeadline pins that a zero
 // attempt deadline contributes no -timeout flag at all.
 func TestDqCovGoCoverageArgumentsWithTimeoutOmitsDisabledDeadline(t *testing.T) {
+	t.Parallel()
 	arguments := goCoverageArgumentsWithTimeout(filepath.Join("tmp", "coverage.out"), 0, "./serial", "-run", "^(TestOne)$")
 	if joined := strings.Join(arguments, " "); strings.Contains(joined, "-timeout") {
 		t.Fatalf("disabled deadline leaked a flag: %s", joined)
@@ -294,12 +557,14 @@ func TestDqCovGoCoverageArgumentsWithTimeoutOmitsDisabledDeadline(t *testing.T) 
 // contract: only failed jobs are written, an empty failure records its error,
 // and a manifest without files is not published.
 func TestDqCovWriteCoverageDiagnosticsRetainsRawOutput(t *testing.T) {
+	t.Parallel()
 	repository := "example/diagnostics"
 	module := "/modules/app"
 
 	t.Run("no failures writes no manifest", func(t *testing.T) {
+		t.Parallel()
 		directory := t.TempDir()
-		if err := writeCoverageDiagnostics(directory, repository, module, []goCoverageJob{{label: "ok", profilePath: "p"}}, []goCoverageJobResult{{output: "fine", attempts: 1}}); err != nil {
+		if err := newCoverageDiagnosticsSink(directory, repository, module).persist(0, goCoverageJob{label: "ok", profilePath: "p"}, goCoverageJobResult{output: "fine", attempts: 1}); err != nil {
 			t.Fatal(err)
 		}
 		manifestPath := filepath.Join(directory, "coverage-diagnostics-"+coverageDiagnosticStem(repository, module)+".yaml")
@@ -309,8 +574,9 @@ func TestDqCovWriteCoverageDiagnosticsRetainsRawOutput(t *testing.T) {
 	})
 
 	t.Run("empty failure output records the error", func(t *testing.T) {
+		t.Parallel()
 		directory := t.TempDir()
-		if err := writeCoverageDiagnostics(directory, repository, module, []goCoverageJob{{label: "shard 1"}}, []goCoverageJobResult{{err: errors.New("exit status 1")}}); err != nil {
+		if err := newCoverageDiagnosticsSink(directory, repository, module).persist(0, goCoverageJob{label: "shard 1"}, goCoverageJobResult{err: errors.New("exit status 1")}); err != nil {
 			t.Fatal(err)
 		}
 		raw, err := os.ReadFile(filepath.Join(directory, "coverage-raw-"+coverageDiagnosticStem(repository, module)+"-1.log"))
@@ -323,33 +589,36 @@ func TestDqCovWriteCoverageDiagnosticsRetainsRawOutput(t *testing.T) {
 	})
 
 	t.Run("unusable directory fails", func(t *testing.T) {
+		t.Parallel()
 		blocker := filepath.Join(t.TempDir(), "file")
 		writeQualityFile(t, blocker, "x")
-		err := writeCoverageDiagnostics(filepath.Join(blocker, "reports"), repository, module, []goCoverageJob{{label: "shard 1"}}, []goCoverageJobResult{{err: errors.New("boom")}})
+		err := newCoverageDiagnosticsSink(filepath.Join(blocker, "reports"), repository, module).persist(0, goCoverageJob{label: "shard 1"}, goCoverageJobResult{err: errors.New("boom")})
 		if err == nil {
 			t.Fatal("an unwritable diagnostics directory was accepted")
 		}
 	})
 
 	t.Run("raw artifact collision fails", func(t *testing.T) {
+		t.Parallel()
 		directory := t.TempDir()
 		stem := coverageDiagnosticStem(repository, module)
 		if err := os.Mkdir(filepath.Join(directory, "coverage-raw-"+stem+"-1.log"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		err := writeCoverageDiagnostics(directory, repository, module, []goCoverageJob{{label: "shard 1"}}, []goCoverageJobResult{{output: "boom", err: errors.New("exit status 1")}})
+		err := newCoverageDiagnosticsSink(directory, repository, module).persist(0, goCoverageJob{label: "shard 1"}, goCoverageJobResult{output: "boom", err: errors.New("exit status 1")})
 		if err == nil {
 			t.Fatal("a colliding raw artifact path was accepted")
 		}
 	})
 
 	t.Run("manifest collision fails", func(t *testing.T) {
+		t.Parallel()
 		directory := t.TempDir()
 		stem := coverageDiagnosticStem(repository, module)
 		if err := os.Mkdir(filepath.Join(directory, "coverage-diagnostics-"+stem+".yaml"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		err := writeCoverageDiagnostics(directory, repository, module, []goCoverageJob{{label: "shard 1"}}, []goCoverageJobResult{{output: "boom", err: errors.New("exit status 1")}})
+		err := newCoverageDiagnosticsSink(directory, repository, module).persist(0, goCoverageJob{label: "shard 1"}, goCoverageJobResult{output: "boom", err: errors.New("exit status 1")})
 		if err == nil {
 			t.Fatal("a colliding manifest path was accepted")
 		}
@@ -357,6 +626,7 @@ func TestDqCovWriteCoverageDiagnosticsRetainsRawOutput(t *testing.T) {
 }
 
 func TestDqCovCoverageDiagnosticForMissingManifestIsNil(t *testing.T) {
+	t.Parallel()
 	if diagnostic := coverageDiagnosticFor(t.TempDir(), "example/repo", "/modules/app"); diagnostic != nil {
 		t.Fatalf("diagnostic = %+v, want nil when no manifest was retained", diagnostic)
 	}
@@ -365,6 +635,16 @@ func TestDqCovCoverageDiagnosticForMissingManifestIsNil(t *testing.T) {
 // TestDqCovGoListPackagesHandlesEveryListingShape asserts the line parsing and
 // both failure modes of the package lister.
 func TestDqCovGoListPackagesHandlesEveryListingShape(t *testing.T) {
+	if qualityFixtureChild(t) {
+		fixtureDqCovGoListPackagesHandlesEveryListingShape(t)
+		return
+	}
+	t.Parallel()
+	runQualityFixtureChild(t)
+}
+
+// fixtureDqCovGoListPackagesHandlesEveryListingShape mutates only its self-reexec child environment.
+func fixtureDqCovGoListPackagesHandlesEveryListingShape(t *testing.T) {
 	module := t.TempDir()
 	dqCovFakeGo(t, module)
 
@@ -386,6 +666,16 @@ func TestDqCovGoListPackagesHandlesEveryListingShape(t *testing.T) {
 }
 
 func TestDqCovDiscoverGoTestsFiltersAndReportsFailure(t *testing.T) {
+	if qualityFixtureChild(t) {
+		fixtureDqCovDiscoverGoTestsFiltersAndReportsFailure(t)
+		return
+	}
+	t.Parallel()
+	runQualityFixtureChild(t)
+}
+
+// fixtureDqCovDiscoverGoTestsFiltersAndReportsFailure mutates only its self-reexec child environment.
+func fixtureDqCovDiscoverGoTestsFiltersAndReportsFailure(t *testing.T) {
 	module := t.TempDir()
 	dqCovFakeGo(t, module)
 
@@ -407,6 +697,16 @@ func TestDqCovDiscoverGoTestsFiltersAndReportsFailure(t *testing.T) {
 // TestDqCovRunGoCoverageJobsClampsParallelismAndRecordsAttempts runs more
 // workers than jobs and checks that each job still runs exactly once.
 func TestDqCovRunGoCoverageJobsClampsParallelismAndRecordsAttempts(t *testing.T) {
+	if qualityFixtureChild(t) {
+		fixtureDqCovRunGoCoverageJobsClampsParallelismAndRecordsAttempts(t)
+		return
+	}
+	t.Parallel()
+	runQualityFixtureChild(t)
+}
+
+// fixtureDqCovRunGoCoverageJobsClampsParallelismAndRecordsAttempts mutates only its self-reexec child environment.
+func fixtureDqCovRunGoCoverageJobsClampsParallelismAndRecordsAttempts(t *testing.T) {
 	module := t.TempDir()
 	dqCovFakeGo(t, module)
 	dqCovSetGoEnv(t, map[string]string{"DQCOV_GO_TEST_OUT": "ok"})
@@ -418,6 +718,7 @@ func TestDqCovRunGoCoverageJobsClampsParallelismAndRecordsAttempts(t *testing.T)
 }
 
 func TestDqCovBoundedCoverageParallelismRejectsEmptyInputs(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ requested, jobs, cpu int }{{0, 5, 8}, {8, 0, 8}, {-1, 5, 8}, {8, -1, 8}} {
 		if got := boundedCoverageParallelism(tc.requested, tc.jobs, tc.cpu); got != 0 {
 			t.Fatalf("boundedCoverageParallelism(%d, %d, %d) = %d, want 0", tc.requested, tc.jobs, tc.cpu, got)

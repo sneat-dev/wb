@@ -9,6 +9,7 @@ import (
 )
 
 func TestLoopbackDelivererRequiresLocalMachine(t *testing.T) {
+	t.Parallel()
 	_, err := (LoopbackDeliverer{}).Deliver(context.Background(), []byte("{}"))
 	if err == nil || err.Error() != "loopback courier requires this machine's validated remote.machine" {
 		t.Fatalf("error = %v", err)
@@ -16,6 +17,7 @@ func TestLoopbackDelivererRequiresLocalMachine(t *testing.T) {
 }
 
 func TestLoopbackDelivererInvokesReceiveInProcess(t *testing.T) {
+	t.Parallel()
 	called := false
 	deliverer := LoopbackDeliverer{
 		LocalMachine: "laptop",

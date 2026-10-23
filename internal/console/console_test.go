@@ -13,19 +13,19 @@ func TestIsTerminalRejectsEverythingThatIsNotATerminal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pipe: %v", err)
 	}
-	defer func() { _ = pipeReader.Close(); _ = pipeWriter.Close() }()
+	t.Cleanup(func() { _ = pipeReader.Close(); _ = pipeWriter.Close() })
 
 	devNull, err := os.Open(os.DevNull)
 	if err != nil {
 		t.Fatalf("open %s: %v", os.DevNull, err)
 	}
-	defer func() { _ = devNull.Close() }()
+	t.Cleanup(func() { _ = devNull.Close() })
 
 	regular, err := os.CreateTemp(t.TempDir(), "console-")
 	if err != nil {
 		t.Fatalf("temp file: %v", err)
 	}
-	defer func() { _ = regular.Close() }()
+	t.Cleanup(func() { _ = regular.Close() })
 
 	var nilFile *os.File
 	tests := map[string]any{
@@ -53,7 +53,7 @@ func TestIsTerminalAcceptsARealTerminal(t *testing.T) {
 	if err != nil {
 		t.Skipf("no controlling terminal available: %v", err)
 	}
-	defer func() { _ = tty.Close() }()
+	t.Cleanup(func() { _ = tty.Close() })
 	if !IsTerminal(tty) {
 		t.Error("IsTerminal(/dev/tty) = false, want true")
 	}
@@ -102,5 +102,15 @@ func TestInteractiveIsAlwaysFalseWithoutATerminal(t *testing.T) {
 	t.Parallel()
 	if Interactive(&bytes.Buffer{}, false) {
 		t.Error("Interactive(non-terminal) = true, want false")
+	}
+}
+
+//nolint:paralleltest // sets a process environment variable.
+func TestQuietRequestedReadsTheEnvironmentLikeTheOtherSwitches(t *testing.T) {
+	for value, want := range map[string]bool{"": false, "0": false, "false": false, "1": true, "true": true, "yes": true} {
+		t.Setenv(EnvQuiet, value)
+		if got := QuietRequested(); got != want {
+			t.Errorf("%s=%q: QuietRequested() = %v, want %v", EnvQuiet, value, got, want)
+		}
 	}
 }

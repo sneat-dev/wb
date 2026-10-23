@@ -149,6 +149,7 @@ func TestApplyRefusesStalePlan(t *testing.T) {
 }
 
 func TestReviewRuleExcludesMatchingLines(t *testing.T) {
+	t.Parallel()
 	source := []byte("package p\nfunc f() {\n\tparams.ApplyChanges(ctx, tx)\n\tdal.ApplyChanges(ctx, tx, params.Changes)\n}\n")
 	findings := reviewFindings([]ReviewRule{{
 		ID:             "changes-executor",
@@ -163,6 +164,7 @@ func TestReviewRuleExcludesMatchingLines(t *testing.T) {
 }
 
 func TestValidateKnownFutureAdapterLanguage(t *testing.T) {
+	t.Parallel()
 	spec := Spec{Format: MigrationFormatV1, ID: "python-import", Steps: []Step{{Kind: "import.replace", Language: "python", From: "old", To: "new"}}}
 	if err := spec.Validate(); err != nil {
 		t.Fatalf("known future adapter language should validate: %v", err)
@@ -170,6 +172,7 @@ func TestValidateKnownFutureAdapterLanguage(t *testing.T) {
 }
 
 func TestReportIndexesFilesForHumansAndTools(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	first := filepath.Join(dir, "z", "one.go")
 	second := filepath.Join(dir, "a", "two.go")
@@ -214,6 +217,7 @@ func TestReportIndexesFilesForHumansAndTools(t *testing.T) {
 }
 
 func TestLoadHCLAllowsRepeatedSelectorRename(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "rename.hcl")
 	requireWrite(t, path, `format = "https://sneat.dev/workbench/formats/migration/v1"
@@ -249,6 +253,7 @@ migration "rename-types" {
 }
 
 func TestLoadDALgoRecordExample(t *testing.T) {
+	t.Parallel()
 	spec, err := Load(filepath.Join("..", "..", "examples", "migrations", "dalgo-record-v1.hcl"))
 	if err != nil {
 		t.Fatal(err)

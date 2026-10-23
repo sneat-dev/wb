@@ -69,6 +69,7 @@ func (fake *fakeTmux) DeleteBuffer(_ context.Context, name string) error {
 }
 
 func TestReceiveDurablyRecordsVerifiesAndPastesExactMessageOnce(t *testing.T) {
+	t.Parallel()
 	fixture := newReceiveFixture(t)
 	var workLogCalls atomic.Int32
 	fixture.options.RecordReceived = func(record WorkLogRecord) error {
@@ -118,6 +119,7 @@ func TestReceiveDurablyRecordsVerifiesAndPastesExactMessageOnce(t *testing.T) {
 }
 
 func TestReceiveUsesCanonicalTypedJSONAsTheActionableRequestHandoffPrompt(t *testing.T) {
+	t.Parallel()
 	fixture := newReceiveFixture(t)
 	fixture.message.Kind = sessionmove.MessageKindRequestHandoff
 	fixture.message.Body = ""
@@ -141,6 +143,7 @@ func TestReceiveUsesCanonicalTypedJSONAsTheActionableRequestHandoffPrompt(t *tes
 }
 
 func TestReceiveUsesReceiptBackedTargetIdentityWithoutManufacturingSourceTransportIndex(t *testing.T) {
+	t.Parallel()
 	fixture := newReceiveFixture(t)
 	if _, err := fixture.store.LoadSuccessorAddress(fixture.request.SuccessorWBSessionID); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("target unexpectedly began with a source successor index: %v", err)
@@ -154,6 +157,7 @@ func TestReceiveUsesReceiptBackedTargetIdentityWithoutManufacturingSourceTranspo
 }
 
 func TestReceiveDoesNotRepasteAfterAmbiguousPostIntentFailure(t *testing.T) {
+	t.Parallel()
 	fixture := newReceiveFixture(t)
 	injected := errors.New("crash after paste")
 	fixture.options.Hooks.AfterPaste = func() error { return injected }
@@ -174,6 +178,7 @@ func TestReceiveDoesNotRepasteAfterAmbiguousPostIntentFailure(t *testing.T) {
 }
 
 func TestReceiveAttemptsBoundedBufferCleanupOnPastePipelineFailures(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name     string
 		mutate   func(*fakeTmux)
@@ -185,6 +190,7 @@ func TestReceiveAttemptsBoundedBufferCleanupOnPastePipelineFailures(t *testing.T
 		{"delete after paste", func(fake *fakeTmux) { fake.deleteErr = errors.New("delete failed") }, 1, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			fixture := newReceiveFixture(t)
 			test.mutate(fixture.tmux)
 			if _, err := Receive(context.Background(), fixture.options); !errors.Is(err, ErrMessagePasteAmbiguous) {
@@ -211,6 +217,7 @@ func TestReceiveAttemptsBoundedBufferCleanupOnPastePipelineFailures(t *testing.T
 }
 
 func TestReceiveConcurrentExactRetriesPasteAtMostOnce(t *testing.T) {
+	t.Parallel()
 	fixture := newReceiveFixture(t)
 	const callers = 12
 	results := make(chan error, callers)
@@ -236,6 +243,7 @@ func TestReceiveConcurrentExactRetriesPasteAtMostOnce(t *testing.T) {
 }
 
 func TestReceiveRefusesSessionOrTmuxIdentityDriftBeforeIntent(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		mutate func(*receiveFixture)
@@ -251,6 +259,7 @@ func TestReceiveRefusesSessionOrTmuxIdentityDriftBeforeIntent(t *testing.T) {
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			fixture := newReceiveFixture(t)
 			test.mutate(fixture)
 			if _, err := Receive(context.Background(), fixture.options); err == nil {

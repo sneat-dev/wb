@@ -48,6 +48,7 @@ func (r *rpCovContextRunner) Run(ctx context.Context, _ string, _ ...string) Com
 }
 
 func TestRPCovIsSHAAcceptsOnlyFortyHexCharacters(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		value string
 		want  bool
@@ -66,6 +67,7 @@ func TestRPCovIsSHAAcceptsOnlyFortyHexCharacters(t *testing.T) {
 }
 
 func TestRPCovNpmVersionValidRejectsEmptyAndNonSemver(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		version string
 		want    bool
@@ -82,6 +84,7 @@ func TestRPCovNpmVersionValidRejectsEmptyAndNonSemver(t *testing.T) {
 }
 
 func TestRPCovCloneInputsAndFingerprintTreatEmptyInputsAsAbsent(t *testing.T) {
+	t.Parallel()
 	if cloneInputs(nil) != nil || cloneInputs(map[string]string{}) != nil {
 		t.Fatal("empty workflow inputs must clone to nil, not an allocated empty map")
 	}
@@ -103,6 +106,7 @@ func TestRPCovCloneInputsAndFingerprintTreatEmptyInputsAsAbsent(t *testing.T) {
 }
 
 func TestRPCovNowUsesTheInjectedClockAndFallsBackToWallClock(t *testing.T) {
+	t.Parallel()
 	fixed := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
 	if got := now(Options{Now: func() time.Time { return fixed }}); !got.Equal(fixed) {
 		t.Fatalf("now(injected) = %s, want %s", got, fixed)
@@ -117,6 +121,7 @@ func TestRPCovNowUsesTheInjectedClockAndFallsBackToWallClock(t *testing.T) {
 }
 
 func TestRPCovCommandErrorFallsBackToExitCodeWithoutOutput(t *testing.T) {
+	t.Parallel()
 	err := commandError("dispatch release workflow", CommandResult{Code: 7})
 	if err == nil || err.Error() != "dispatch release workflow: exit code 7" {
 		t.Fatalf("commandError = %v, want the exit-code fallback", err)
@@ -124,6 +129,7 @@ func TestRPCovCommandErrorFallsBackToExitCodeWithoutOutput(t *testing.T) {
 }
 
 func TestRPCovUseSharedGitHubObserverSelectsTheSharedTransport(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		runner CommandRunner
@@ -141,6 +147,7 @@ func TestRPCovUseSharedGitHubObserverSelectsTheSharedTransport(t *testing.T) {
 }
 
 func TestRPCovRunExternalAppliesTimeoutOnlyWhenConfigured(t *testing.T) {
+	t.Parallel()
 	withoutTimeout := &rpCovContextRunner{}
 	// The nil context is exactly what this test asserts is defaulted.
 	//nolint:staticcheck // SA1012: passing nil is the behaviour under test.
@@ -160,6 +167,7 @@ func TestRPCovRunExternalAppliesTimeoutOnlyWhenConfigured(t *testing.T) {
 }
 
 func TestRPCovValidateOptionsRejectsConflictingAndMalformedSelections(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name    string
 		options Options
@@ -183,6 +191,7 @@ func TestRPCovValidateOptionsRejectsConflictingAndMalformedSelections(t *testing
 }
 
 func TestRPCovValidateReleaseRejectsUnsafeIdentifiers(t *testing.T) {
+	t.Parallel()
 	mutate := func(change func(*Release)) Release {
 		release := testRelease()
 		change(&release)
@@ -217,6 +226,7 @@ func TestRPCovValidateReleaseRejectsUnsafeIdentifiers(t *testing.T) {
 }
 
 func TestRPCovEventsForRequiresExactPublishedRegistryEvidence(t *testing.T) {
+	t.Parallel()
 	checkedAt := time.Date(2026, 5, 6, 7, 8, 9, 0, time.UTC)
 	published := Receipt{Release: testRelease(), Status: StatusPublished, RegistryVersion: "0.1.0", RegistryCheckedAt: checkedAt}
 	report := Report{Status: StatusPublished, Releases: []Receipt{published}}
@@ -237,6 +247,7 @@ func TestRPCovEventsForRequiresExactPublishedRegistryEvidence(t *testing.T) {
 }
 
 func TestRPCovReportExistsRecognizesEitherArtifact(t *testing.T) {
+	t.Parallel()
 	directory := t.TempDir()
 	if exists, err := ReportExists(directory); err != nil || exists {
 		t.Fatalf("ReportExists(empty) = %t, %v", exists, err)
@@ -263,6 +274,7 @@ func TestRPCovReportExistsRecognizesEitherArtifact(t *testing.T) {
 }
 
 func TestRPCovLoadReportRejectsBrokenArtifacts(t *testing.T) {
+	t.Parallel()
 	if _, err := LoadReport(t.TempDir()); err == nil {
 		t.Fatal("LoadReport accepted a directory with no report")
 	}
@@ -325,6 +337,7 @@ func TestRPCovLoadReportRejectsBrokenArtifacts(t *testing.T) {
 }
 
 func TestRPCovWriteReportReportsUnusableDirectoriesAndAtomicReplacementFailures(t *testing.T) {
+	t.Parallel()
 	blocker := filepath.Join(t.TempDir(), "file")
 	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
@@ -352,6 +365,7 @@ func TestRPCovWriteReportReportsUnusableDirectoriesAndAtomicReplacementFailures(
 }
 
 func TestRPCovWriteAtomicPublishesAndCleansUpTemporaryFiles(t *testing.T) {
+	t.Parallel()
 	directory := t.TempDir()
 	target := filepath.Join(directory, "value.txt")
 	if err := writeAtomic(target, []byte("hello"), 0o640); err != nil {
@@ -393,6 +407,7 @@ func TestRPCovWriteAtomicPublishesAndCleansUpTemporaryFiles(t *testing.T) {
 }
 
 func TestRPCovValidatePreviousRejectsEveryMismatchedResumeReport(t *testing.T) {
+	t.Parallel()
 	normalized, err := Normalize([]Release{testRelease()}, "main")
 	if err != nil {
 		t.Fatal(err)
@@ -442,6 +457,7 @@ func TestRPCovValidatePreviousRejectsEveryMismatchedResumeReport(t *testing.T) {
 }
 
 func TestRPCovRunRejectsInvalidOptionCombinationsAndMissingResumeReport(t *testing.T) {
+	t.Parallel()
 	if _, err := Run(context.Background(), []Release{testRelease()}, Options{Apply: true, DryRun: true}); err == nil ||
 		!strings.Contains(err.Error(), "--apply and --dry-run") {
 		t.Fatalf("conflicting-option error = %v", err)
@@ -459,6 +475,7 @@ func TestRPCovRunRejectsInvalidOptionCombinationsAndMissingResumeReport(t *testi
 }
 
 func TestRPCovProcessReceiptRefusesIncompletePersistedDispatchState(t *testing.T) {
+	t.Parallel()
 	receipt := &Receipt{
 		Release:    testRelease(),
 		Status:     StatusDispatchUnknown,
@@ -481,6 +498,7 @@ func TestRPCovProcessReceiptRefusesIncompletePersistedDispatchState(t *testing.T
 }
 
 func TestRPCovProcessReceiptRefusesARunWhoseHeadDiffersFromTheDispatchedHead(t *testing.T) {
+	t.Parallel()
 	created := time.Now().UTC().Truncate(time.Second)
 	otherHead := "fedcba9876543210fedcba9876543210fedcba98"
 	receipt := &Receipt{
@@ -498,6 +516,7 @@ func TestRPCovProcessReceiptRefusesARunWhoseHeadDiffersFromTheDispatchedHead(t *
 }
 
 func TestRPCovProcessReceiptReportsPersistFailureAfterLocatingTheRun(t *testing.T) {
+	t.Parallel()
 	created := time.Now().UTC().Truncate(time.Second)
 	run := workflowRunFixture("123", "queued", "", created.Add(time.Second))
 	runner := &rpCovCommandRunner{steps: []CommandResult{{Output: workflowRunList(run)}}}
@@ -516,6 +535,7 @@ func TestRPCovProcessReceiptReportsPersistFailureAfterLocatingTheRun(t *testing.
 }
 
 func TestRPCovProcessReceiptReportsPersistFailureWhenDispatchFails(t *testing.T) {
+	t.Parallel()
 	created := time.Now().UTC().Truncate(time.Second)
 	dispatchErr := errors.New("workflow dispatch rejected")
 	runner := &rpCovCommandRunner{steps: []CommandResult{
@@ -544,6 +564,7 @@ func TestRPCovProcessReceiptReportsPersistFailureWhenDispatchFails(t *testing.T)
 }
 
 func TestRPCovLocateRunRefusesMissingIdentityAndStaleUnbaselinedRuns(t *testing.T) {
+	t.Parallel()
 	if _, err := locateRun(context.Background(), Receipt{}, Options{Runner: &rpCovCommandRunner{}}); err == nil ||
 		!strings.Contains(err.Error(), "without the persisted head, baseline, and dispatch timestamp") {
 		t.Fatalf("missing-identity error = %v", err)
@@ -567,6 +588,7 @@ func TestRPCovLocateRunRefusesMissingIdentityAndStaleUnbaselinedRuns(t *testing.
 }
 
 func TestRPCovLocateRunPollsOnTheDefaultIntervalAndHonoursCancellation(t *testing.T) {
+	t.Parallel()
 	created := time.Now().UTC().Truncate(time.Second)
 	runner := &rpCovCommandRunner{steps: []CommandResult{
 		{Output: `[]`},
@@ -588,6 +610,7 @@ func TestRPCovLocateRunPollsOnTheDefaultIntervalAndHonoursCancellation(t *testin
 }
 
 func TestRPCovWaitRunRejectsMalformedAndMismatchedObservations(t *testing.T) {
+	t.Parallel()
 	receipt := &Receipt{Release: testRelease(), Status: StatusAwaitingRun, RunID: "123", HeadSHA: releaseHead}
 	noPersist := func() error { return nil }
 
@@ -612,6 +635,7 @@ func TestRPCovWaitRunRejectsMalformedAndMismatchedObservations(t *testing.T) {
 }
 
 func TestRPCovWaitRunClassifiesConclusionsTimeoutsAndPersistFailures(t *testing.T) {
+	t.Parallel()
 	base := func(status, conclusion string) *rpCovCommandRunner {
 		return &rpCovCommandRunner{steps: []CommandResult{
 			{Output: workflowRunFixture("123", status, conclusion, time.Now().UTC())},
@@ -665,6 +689,7 @@ func TestRPCovWaitRunClassifiesConclusionsTimeoutsAndPersistFailures(t *testing.
 }
 
 func TestRPCovWaitRunPollsOnTheDefaultIntervalAndHonoursCancellation(t *testing.T) {
+	t.Parallel()
 	runner := &rpCovCommandRunner{steps: []CommandResult{
 		{Output: workflowRunFixture("123", "in_progress", "", time.Now().UTC())},
 		{Output: workflowRunFixture("123", "in_progress", "", time.Now().UTC())},
@@ -685,6 +710,7 @@ func TestRPCovWaitRunPollsOnTheDefaultIntervalAndHonoursCancellation(t *testing.
 }
 
 func TestRPCovWaitRunReportsCommandFailureAndObservesProgress(t *testing.T) {
+	t.Parallel()
 	receipt := &Receipt{Release: testRelease(), Status: StatusAwaitingRun, RunID: "123", HeadSHA: releaseHead}
 	failing := &rpCovCommandRunner{steps: []CommandResult{{Code: 1, Err: errors.New("gh exhausted"), Output: "429 too many requests"}}}
 	err := waitRun(context.Background(), receipt, Options{Runner: failing}, func() error { return nil })
@@ -694,6 +720,7 @@ func TestRPCovWaitRunReportsCommandFailureAndObservesProgress(t *testing.T) {
 }
 
 func TestRPCovListExactWorkflowRunsRejectsDecodingDuplicatesAndSkippedRuns(t *testing.T) {
+	t.Parallel()
 	receipt := Receipt{Release: testRelease(), HeadSHA: releaseHead}
 
 	garbled := &rpCovCommandRunner{steps: []CommandResult{{Output: "{"}}}

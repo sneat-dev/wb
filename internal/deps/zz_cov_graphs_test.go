@@ -115,8 +115,8 @@ func TestDepsCovGraphsBuildGraphRejectsInvalidOptions(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
 func TestDepsCovGraphsDiscoverNpmFleetGraphInvalidSlugArchivedAndPathFallback(t *testing.T) {
-	t.Parallel()
 	fixture := t.TempDir()
 	githubDir := filepath.Join(fixture, "projects")
 	seedNpmGraphRepository(t, fixture, githubDir, "apps", map[string]string{
@@ -152,14 +152,14 @@ func TestDepsCovGraphsDiscoverNpmFleetGraphInvalidSlugArchivedAndPathFallback(t 
 		t.Fatalf("repository packages = %+v", graph.repositoryPackages)
 	}
 	progressMu.Lock()
-	defer progressMu.Unlock()
+	t.Cleanup(func() { progressMu.Unlock() })
 	if len(progress) != 3 || progress[len(progress)-1].RepositoriesCompleted != 3 || progress[len(progress)-1].RepositoriesTotal != 3 {
 		t.Fatalf("progress = %+v, want every repository counted exactly once", progress)
 	}
 }
 
+//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
 func TestDepsCovGraphsDiscoverGoFleetGraphInvalidSlugArchivedAndPathFallback(t *testing.T) {
-	t.Parallel()
 	fixture := t.TempDir()
 	githubDir := filepath.Join(fixture, "projects")
 	seedGraphRepository(t, fixture, "app", "main", map[string]string{
@@ -275,6 +275,7 @@ func TestDepsCovGraphsRepositoryContainsLocalManifests(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			root := t.TempDir()
 			for _, name := range testCase.files {
 				writeTestFile(t, filepath.Join(root, name), "fixture\n")
@@ -304,6 +305,7 @@ func TestDepsCovGraphsInspectRepositoryManifestTreePaths(t *testing.T) {
 	options := orchestrate.Options{Timeout: time.Minute}
 
 	t.Run("npm base ref missing", func(t *testing.T) {
+		t.Parallel()
 		directory := filepath.Join(t.TempDir(), "repo")
 		depsCovCommitRepository(t, directory, map[string]string{"package.json": "{}\n"})
 		if _, err := inspectRepositoryNpmGraph(ctx, "acme/repo", directory, "origin/missing", options); err == nil {
@@ -311,6 +313,7 @@ func TestDepsCovGraphsInspectRepositoryManifestTreePaths(t *testing.T) {
 		}
 	})
 	t.Run("npm package.json cannot be shown", func(t *testing.T) {
+		t.Parallel()
 		directory := filepath.Join(t.TempDir(), "repo")
 		depsCovGitlinkRepository(t, directory, "package.json")
 		if _, err := inspectRepositoryNpmGraph(ctx, "acme/repo", directory, "main", options); err == nil {
@@ -318,6 +321,7 @@ func TestDepsCovGraphsInspectRepositoryManifestTreePaths(t *testing.T) {
 		}
 	})
 	t.Run("npm pnpm-workspace.yaml cannot be shown", func(t *testing.T) {
+		t.Parallel()
 		directory := filepath.Join(t.TempDir(), "repo")
 		depsCovGitlinkRepository(t, directory, "pnpm-workspace.yaml")
 		if _, err := inspectRepositoryNpmGraph(ctx, "acme/repo", directory, "main", options); err == nil {
@@ -325,6 +329,7 @@ func TestDepsCovGraphsInspectRepositoryManifestTreePaths(t *testing.T) {
 		}
 	})
 	t.Run("npm package.json does not parse", func(t *testing.T) {
+		t.Parallel()
 		directory := filepath.Join(t.TempDir(), "repo")
 		depsCovCommitRepository(t, directory, map[string]string{"package.json": "{ this is not JSON }\n"})
 		_, err := inspectRepositoryNpmGraph(ctx, "acme/repo", directory, "main", options)
@@ -333,6 +338,7 @@ func TestDepsCovGraphsInspectRepositoryManifestTreePaths(t *testing.T) {
 		}
 	})
 	t.Run("go base ref missing", func(t *testing.T) {
+		t.Parallel()
 		directory := filepath.Join(t.TempDir(), "repo")
 		depsCovCommitRepository(t, directory, map[string]string{"go.mod": "module example.com/repo\n\ngo 1.24\n"})
 		if _, err := inspectRepositoryGoGraph(ctx, "acme/repo", directory, "origin/missing", options); err == nil {
@@ -340,6 +346,7 @@ func TestDepsCovGraphsInspectRepositoryManifestTreePaths(t *testing.T) {
 		}
 	})
 	t.Run("go go.mod cannot be shown", func(t *testing.T) {
+		t.Parallel()
 		directory := filepath.Join(t.TempDir(), "repo")
 		depsCovGitlinkRepository(t, directory, "go.mod")
 		if _, err := inspectRepositoryGoGraph(ctx, "acme/repo", directory, "main", options); err == nil {
@@ -347,6 +354,7 @@ func TestDepsCovGraphsInspectRepositoryManifestTreePaths(t *testing.T) {
 		}
 	})
 	t.Run("go root go.mod declares no module path", func(t *testing.T) {
+		t.Parallel()
 		directory := filepath.Join(t.TempDir(), "repo")
 		depsCovCommitRepository(t, directory, map[string]string{"go.mod": "go 1.24\n"})
 		_, err := inspectRepositoryGoGraph(ctx, "acme/repo", directory, "main", options)
@@ -585,6 +593,7 @@ func TestDepsCovGraphsRemoteOriginSlug(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			directory := depsCovSeedOriginRepository(t, root, testCase.name, testCase.url)
 			got, err := remoteOriginSlug(context.Background(), directory, options)
 			if err != nil || got != testCase.want {
@@ -602,6 +611,7 @@ func TestDepsCovGraphsRemoteOriginSlug(t *testing.T) {
 		{name: "github without repository", url: "git@github.com:lib", want: "origin remote does not identify owner/repository"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			directory := depsCovSeedOriginRepository(t, root, testCase.name, testCase.url)
 			if _, err := remoteOriginSlug(context.Background(), directory, options); err == nil || !strings.Contains(err.Error(), testCase.want) {
 				t.Fatalf("remoteOriginSlug(%q) error = %v, want %q", testCase.url, err, testCase.want)
@@ -609,14 +619,15 @@ func TestDepsCovGraphsRemoteOriginSlug(t *testing.T) {
 		})
 	}
 	t.Run("not a repository", func(t *testing.T) {
+		t.Parallel()
 		if _, err := remoteOriginSlug(context.Background(), filepath.Join(root, "absent"), options); err == nil {
 			t.Fatal("a directory that is not a git repository must fail remote resolution")
 		}
 	})
 }
 
+//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
 func TestDepsCovGraphsResolveDuplicateCloneModuleDeclaration(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	files := map[string]string{"go.mod": "module github.com/acme/lib\n\ngo 1.24\n"}
@@ -731,6 +742,7 @@ func TestDepsCovGraphsPendingCarriersBlockTargets(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			if got := npmFleet(testCase.packages, testCase.requirements).pendingCarriersBlockTargets(testCase.carriers, testCase.targets); got != testCase.want {
 				t.Errorf("npm pendingCarriersBlockTargets = %t, want %t", got, testCase.want)
 			}
@@ -741,8 +753,8 @@ func TestDepsCovGraphsPendingCarriersBlockTargets(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
 func TestDepsCovGraphsBuildGraphNpmSortsDiscoveryEvidence(t *testing.T) {
-	t.Parallel()
 	fixture := t.TempDir()
 	githubDir := filepath.Join(fixture, "projects")
 	deadA := seedUnreadableCanonicalRepository(t, fixture, "dead-a", map[string]string{
@@ -814,8 +826,8 @@ func TestDepsCovGraphsBuildGraphNpmSortsDiscoveryEvidence(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
 func TestDepsCovGraphsBuildGraphNpmFailsOnUnparseableRootManifest(t *testing.T) {
-	t.Parallel()
 	fixture := t.TempDir()
 	githubDir := filepath.Join(fixture, "projects")
 	broken := seedGraphRepository(t, fixture, "bad-pkg", "main", map[string]string{
@@ -829,8 +841,8 @@ func TestDepsCovGraphsBuildGraphNpmFailsOnUnparseableRootManifest(t *testing.T) 
 	}
 }
 
+//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
 func TestDepsCovGraphsBuildGraphGoSortsDiscoveryEvidence(t *testing.T) {
-	t.Parallel()
 	fixture := t.TempDir()
 	githubDir := filepath.Join(fixture, "projects")
 	healthy := seedGraphRepository(t, fixture, "healthy", "main", map[string]string{
@@ -895,8 +907,8 @@ func TestDepsCovGraphsBuildGraphGoSortsDiscoveryEvidence(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
 func TestDepsCovGraphsBuildGraphGoResolvesDuplicateModuleDeclarations(t *testing.T) {
-	t.Parallel()
 	fixture := t.TempDir()
 	githubDir := filepath.Join(fixture, "projects")
 	seed := func(name, module string) string {
@@ -928,8 +940,8 @@ func TestDepsCovGraphsBuildGraphGoResolvesDuplicateModuleDeclarations(t *testing
 	}
 }
 
+//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
 func TestDepsCovGraphsBuildGraphGoSortsSameRepositoryManifests(t *testing.T) {
-	t.Parallel()
 	fixture := t.TempDir()
 	githubDir := filepath.Join(fixture, "projects")
 	twin := seedGraphRepository(t, fixture, "twin", "main", map[string]string{

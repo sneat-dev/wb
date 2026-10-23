@@ -10,6 +10,7 @@ import (
 )
 
 func TestTargetStoreAdmitsPrivateExactArtifactsAndStrictEvents(t *testing.T) {
+	t.Parallel()
 	root := filepath.Join(t.TempDir(), "target-store")
 	store := NewTargetStore(root)
 	raw := targetEnvelopeForTest(t)
@@ -27,7 +28,7 @@ func TestTargetStoreAdmitsPrivateExactArtifactsAndStrictEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = lock.Close() }()
+	t.Cleanup(func() { _ = lock.Close() })
 	if _, err := store.AppendEventUnderLock(lock, admission.Envelope.Request, admission.Digest, "received", time.Unix(110, 0)); err != nil {
 		t.Fatal(err)
 	}
@@ -41,9 +42,11 @@ func TestTargetStoreAdmitsPrivateExactArtifactsAndStrictEvents(t *testing.T) {
 }
 
 func TestTargetStoreRefusesAggregateAndArtifactSymlinks(t *testing.T) {
+	t.Parallel()
 	raw := targetEnvelopeForTest(t)
 	envelope, _ := DecodeEnvelope(raw)
 	t.Run("aggregate", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		if err := os.Symlink(t.TempDir(), filepath.Join(root, envelope.Request.ResumeID)); err != nil {
 			t.Fatal(err)
@@ -53,6 +56,7 @@ func TestTargetStoreRefusesAggregateAndArtifactSymlinks(t *testing.T) {
 		}
 	})
 	t.Run("envelope", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		dir := filepath.Join(root, envelope.Request.ResumeID)
 		if err := os.Mkdir(dir, 0o700); err != nil {
@@ -72,6 +76,7 @@ func TestTargetStoreRefusesAggregateAndArtifactSymlinks(t *testing.T) {
 }
 
 func TestTargetLockRetainAndCloseRaceNeverReturnsUnvalidatedCapability(t *testing.T) {
+	t.Parallel()
 	store := NewTargetStore(filepath.Join(t.TempDir(), "target-store"))
 	raw := targetEnvelopeForTest(t)
 	admission, err := store.Admit(raw)

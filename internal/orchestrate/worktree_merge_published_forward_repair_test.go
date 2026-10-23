@@ -16,9 +16,9 @@ import (
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
-func publishedForwardRepairFixture(t *testing.T) (engineFixture, WorktreeMergeReceipt, WorktreeMergeValidationFailureSupersession, WorktreeMergePublishedForwardRepairOptions) {
+func publishedForwardRepairFixtureWithFixture(t *testing.T, fixture engineFixture) (engineFixture, WorktreeMergeReceipt, WorktreeMergeValidationFailureSupersession, WorktreeMergePublishedForwardRepairOptions) {
 	t.Helper()
-	fixture, receipt, _, supersession, claimHash := selfSupersessionFixture(t)
+	fixture, receipt, _, supersession, claimHash := selfSupersessionFixtureWithFixture(t, fixture)
 	extra := createMergeSource(t, fixture, "published-forward-falsifier-extra", "feature/published-forward-falsifier-extra", "repair.txt", "repair\n")
 	receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
 	if err != nil {
@@ -177,9 +177,9 @@ func persistHashConsistentHistoricalSideCommit(t *testing.T, fixture engineFixtu
 // historicalSideFixture makes a hash-consistent receipt, claim, and
 // self-supersession with a resolvable historical side commit outside the
 // failed candidate's DAG.
-func historicalSideFixture(t *testing.T, variant historicalSideVariant) historicalRefreshSideState {
+func historicalSideFixture(t *testing.T, variant historicalSideVariant, fixture engineFixture) historicalRefreshSideState {
 	t.Helper()
-	fixture, receipt, replacement, supersession, _ := selfSupersessionFixture(t)
+	fixture, receipt, replacement, supersession, _ := selfSupersessionFixtureWithFixture(t, fixture)
 	currentSourceSHA := receipt.Sources[0].SHA
 	claimHash, supersessionHash := persistHashConsistentHistoricalSideCommit(t, fixture, &receipt, &supersession, variant)
 	receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
@@ -243,14 +243,19 @@ func assertHistoricalSideArtifacts(t *testing.T, fixture engineFixture, receipt 
 }
 
 func TestHistoricalSideCommitRefusesForwardRepairCorrectionAndEffectiveReader(t *testing.T) {
+	t.Parallel()
 	for _, variant := range historicalSideVariants {
 		variant := variant
 		t.Run(variant.name, func(t *testing.T) {
+			t.Parallel()
+			state := historicalSideFixture(t, variant, newExplicitRootEngineFixture(t))
+			receiptBytes, claimBytes, supersessionBytes := snapshotHistoricalSideArtifacts(t, state.fixture, state.receipt, state.supersession)
+			//nolint:paralleltest // Both forward modes and correction share one immutable private baseline and real lane lock; keep these refusal leaves sequential.
 			t.Run("forward repair dry-run and apply", func(t *testing.T) {
 				for _, apply := range []bool{false, true} {
+					//nolint:paralleltest // Apply modes use the same private native evidence and lock; compare the original baseline sequentially.
 					t.Run(fmt.Sprintf("apply=%t", apply), func(t *testing.T) {
-						state := historicalSideFixture(t, variant)
-						receiptBytes, claimBytes, supersessionBytes := snapshotHistoricalSideArtifacts(t, state.fixture, state.receipt, state.supersession)
+						assertHistoricalSideArtifacts(t, state.fixture, state.receipt, state.supersession, receiptBytes, claimBytes, supersessionBytes)
 						options := state.options
 						options.Apply = apply
 						result, err := PreparePublishedValidationFailureForwardRepair(context.Background(), options)
@@ -263,9 +268,9 @@ func TestHistoricalSideCommitRefusesForwardRepairCorrectionAndEffectiveReader(t 
 				}
 			})
 
+			//nolint:paralleltest // Correction reuses the forward-refusal baseline and lane lock; this shared native fixture remains sequential.
 			t.Run("correction", func(t *testing.T) {
-				state := historicalSideFixture(t, variant)
-				receiptBytes, claimBytes, supersessionBytes := snapshotHistoricalSideArtifacts(t, state.fixture, state.receipt, state.supersession)
+				assertHistoricalSideArtifacts(t, state.fixture, state.receipt, state.supersession, receiptBytes, claimBytes, supersessionBytes)
 				_, err := CorrectValidationFailedSelfSupersession(context.Background(), WorktreeMergeSelfSupersessionCorrectionOptions{
 					ProjectsRoot: state.fixture.githubDir, Receipt: state.receipt.ReceiptPath, ReplacementWorktree: state.replacement.WorktreeDir,
 					ExpectedSupersessionSHA256: state.options.ExpectedSupersessionSHA256, ExpectedImmutableClaimSHA256: state.claimHash,
@@ -281,7 +286,8 @@ func TestHistoricalSideCommitRefusesForwardRepairCorrectionAndEffectiveReader(t 
 			})
 
 			t.Run("effective reader", func(t *testing.T) {
-				fixture, receipt, replacement, supersession, claimHash := selfSupersessionFixture(t)
+				t.Parallel()
+				fixture, receipt, replacement, supersession, claimHash := selfSupersessionFixtureWithFixture(t, newExplicitRootEngineFixture(t))
 				supersessionHash, err := worktreeMergeReceiptSHA256(supersession.AcknowledgementPath)
 				if err != nil {
 					t.Fatal(err)
@@ -328,7 +334,8 @@ func TestHistoricalSideCommitRefusesForwardRepairCorrectionAndEffectiveReader(t 
 }
 
 func TestPreparePublishedForwardRepairRetainsImmutableHistoricalSourcesWhileCurrentSourcesAdvance(t *testing.T) {
-	fixture, receipt, _, supersession, claimHash := selfSupersessionFixture(t)
+	t.Parallel()
+	fixture, receipt, _, supersession, claimHash := selfSupersessionFixtureWithFixture(t, newExplicitRootEngineFixture(t))
 	if len(receipt.SourceRefreshes) != 0 {
 		t.Fatalf("fixture source refreshes = %+v, want none", receipt.SourceRefreshes)
 	}
@@ -534,32 +541,46 @@ func TestPreparePublishedForwardRepairRefusesMismatchedPinnedEvidenceWithoutCand
 		Apply: true, Actor: "reviewer", Reason: "must not leak a candidate on pinned-evidence refusal",
 	}
 	for _, test := range []struct {
-		name   string
-		mutate func(*WorktreeMergePublishedForwardRepairOptions)
+		name    string
+		mutate  func(*WorktreeMergePublishedForwardRepairOptions)
+		wantErr string
 	}{
 		{name: "receipt", mutate: func(options *WorktreeMergePublishedForwardRepairOptions) {
 			options.ExpectedReceiptSHA256 = strings.Repeat("0", 64)
-		}},
+		}, wantErr: "receipt SHA256"},
 		{name: "claim", mutate: func(options *WorktreeMergePublishedForwardRepairOptions) {
 			options.ExpectedImmutableClaimSHA256 = strings.Repeat("0", 64)
-		}},
+		}, wantErr: "immutable claim SHA256"},
 		{name: "supersession", mutate: func(options *WorktreeMergePublishedForwardRepairOptions) {
 			options.ExpectedSupersessionSHA256 = strings.Repeat("0", 64)
-		}},
+		}, wantErr: "supersession SHA256"},
 		{name: "target", mutate: func(options *WorktreeMergePublishedForwardRepairOptions) {
 			options.ExpectedCurrentTargetSHA = strings.Repeat("0", 40)
-		}},
+		}, wantErr: "does not match pinned repair and self-supersession target evidence"},
 		{name: "source", mutate: func(options *WorktreeMergePublishedForwardRepairOptions) {
 			options.ExpectedSourceSHAs[1] = strings.Repeat("0", 40)
-		}},
+		}, wantErr: "does not match expected"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			// Not t.Parallel(): every subtest calls
+			// PreparePublishedValidationFailureForwardRepair against the
+			// same fixture.githubDir/receipt.Lane, which AcquireOperationLock
+			// (called at the top of that function) treats as one exclusive
+			// lane. Running these in parallel let siblings race for that
+			// lock; the loser failed with "operation ... is already active"
+			// before ever reaching the claim/supersession mismatch branch
+			// this subtest exists to exercise, and the assertion below
+			// (err == nil || ...) is loose enough to still pass -- so the
+			// test kept passing while silently, nondeterministically
+			// starving internal/orchestrate/worktree_merge_published_forward_repair.go:113-169
+			// of coverage depending on scheduling (sneat-dev/wb#646 task-4
+			// resume, CI run 35996224158's coverage ratchet).
 			refusal := options
 			refusal.ExpectedSourceSHAs = append([]string(nil), options.ExpectedSourceSHAs...)
 			test.mutate(&refusal)
 			result, err := PreparePublishedValidationFailureForwardRepair(context.Background(), refusal)
-			if err == nil || result.Candidate.Worktree != "" {
-				t.Fatalf("%s evidence refusal = %+v err=%v", test.name, result, err)
+			if err == nil || result.Candidate.Worktree != "" || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("%s evidence refusal = %+v err=%v, want an error containing %q", test.name, result, err, test.wantErr)
 			}
 			assertNoPublishedForwardRepairCandidate(t, fixture, receipt, options)
 		})
@@ -567,8 +588,10 @@ func TestPreparePublishedForwardRepairRefusesMismatchedPinnedEvidenceWithoutCand
 }
 
 func TestPreparePublishedForwardRepairRefusesTamperDriftAndRaceBeforeCandidateCreation(t *testing.T) {
+	t.Parallel()
 	t.Run("malformed historical self-supersession", func(t *testing.T) {
-		fixture, receipt, supersession, options := publishedForwardRepairFixture(t)
+		t.Parallel()
+		fixture, receipt, supersession, options := publishedForwardRepairFixtureWithFixture(t, newExplicitRootEngineFixture(t))
 		receiptBefore, err := os.ReadFile(receipt.ReceiptPath)
 		if err != nil {
 			t.Fatal(err)
@@ -601,7 +624,8 @@ func TestPreparePublishedForwardRepairRefusesTamperDriftAndRaceBeforeCandidateCr
 	})
 
 	t.Run("dirty current source", func(t *testing.T) {
-		fixture, receipt, _, options := publishedForwardRepairFixture(t)
+		t.Parallel()
+		fixture, receipt, _, options := publishedForwardRepairFixtureWithFixture(t, newExplicitRootEngineFixture(t))
 		writeEngineFile(t, filepath.Join(options.Sources[1], "dirty.txt"), "dirty\n")
 		if _, err := PreparePublishedValidationFailureForwardRepair(context.Background(), options); err == nil || !strings.Contains(err.Error(), "dirty") {
 			t.Fatalf("dirty-source refusal error = %v", err)
@@ -610,7 +634,8 @@ func TestPreparePublishedForwardRepairRefusesTamperDriftAndRaceBeforeCandidateCr
 	})
 
 	t.Run("omitted historical worktree remains an immutable root", func(t *testing.T) {
-		fixture, receipt, _, options := publishedForwardRepairFixture(t)
+		t.Parallel()
+		fixture, receipt, _, options := publishedForwardRepairFixtureWithFixture(t, newExplicitRootEngineFixture(t))
 		options.Sources = options.Sources[1:]
 		options.ExpectedSourceSHAs = options.ExpectedSourceSHAs[1:]
 		options.Apply = false
@@ -632,7 +657,8 @@ func TestPreparePublishedForwardRepairRefusesTamperDriftAndRaceBeforeCandidateCr
 	})
 
 	t.Run("current target drift", func(t *testing.T) {
-		fixture, receipt, _, options := publishedForwardRepairFixture(t)
+		t.Parallel()
+		fixture, receipt, _, options := publishedForwardRepairFixtureWithFixture(t, newExplicitRootEngineFixture(t))
 		writeEngineFile(t, filepath.Join(fixture.canonical, "target-drift.txt"), "drift\n")
 		runEngineGit(t, fixture.canonical, "add", "target-drift.txt")
 		runEngineGit(t, fixture.canonical, "commit", "-m", "test: published forward repair target drift")
@@ -644,7 +670,8 @@ func TestPreparePublishedForwardRepairRefusesTamperDriftAndRaceBeforeCandidateCr
 	})
 
 	t.Run("malformed existing correction", func(t *testing.T) {
-		fixture, receipt, _, options := publishedForwardRepairFixture(t)
+		t.Parallel()
+		fixture, receipt, _, options := publishedForwardRepairFixtureWithFixture(t, newExplicitRootEngineFixture(t))
 		if err := os.WriteFile(selfSupersessionCorrectionPath(receipt.ReceiptPath), []byte("not json\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -655,37 +682,36 @@ func TestPreparePublishedForwardRepairRefusesTamperDriftAndRaceBeforeCandidateCr
 	})
 
 	t.Run("self-supersession race", func(t *testing.T) {
-		fixture, receipt, supersession, options := publishedForwardRepairFixture(t)
-		previous := beforePublishedForwardRepairCreate
-		beforePublishedForwardRepairCreate = func() {
+		t.Parallel()
+		fixture, receipt, supersession, options := publishedForwardRepairFixtureWithFixture(t, newExplicitRootEngineFixture(t))
+		beforeCreate := func() {
 			if err := os.WriteFile(supersession.AcknowledgementPath, []byte("tampered\n"), 0o600); err != nil {
 				t.Fatalf("tamper race evidence: %v", err)
 			}
 		}
-		t.Cleanup(func() { beforePublishedForwardRepairCreate = previous })
-		if _, err := PreparePublishedValidationFailureForwardRepair(context.Background(), options); err == nil || !strings.Contains(err.Error(), "validation-failed supersession") {
+		if _, err := preparePublishedValidationFailureForwardRepair(context.Background(), options, defaultRunner, worktreeMergeReceiptSHA256, os.ReadFile, beforeCreate, nil); err == nil || !strings.Contains(err.Error(), "validation-failed supersession") {
 			t.Fatalf("race refusal error = %v", err)
 		}
 		assertNoPublishedForwardRepairCandidate(t, fixture, receipt, options)
 	})
 
 	t.Run("post-construction acknowledgement race retires partial candidate", func(t *testing.T) {
-		fixture, receipt, supersession, options := publishedForwardRepairFixture(t)
-		previous := beforePublishedForwardRepairFinalRevalidation
-		beforePublishedForwardRepairFinalRevalidation = func() {
+		t.Parallel()
+		fixture, receipt, supersession, options := publishedForwardRepairFixtureWithFixture(t, newExplicitRootEngineFixture(t))
+		beforeFinalRevalidation := func() {
 			if err := os.WriteFile(supersession.AcknowledgementPath, []byte("tampered after candidate construction\n"), 0o600); err != nil {
 				t.Fatalf("tamper post-construction evidence: %v", err)
 			}
 		}
-		t.Cleanup(func() { beforePublishedForwardRepairFinalRevalidation = previous })
-		if _, err := PreparePublishedValidationFailureForwardRepair(context.Background(), options); err == nil || !strings.Contains(err.Error(), "validation-failed supersession") {
+		if _, err := preparePublishedValidationFailureForwardRepair(context.Background(), options, defaultRunner, worktreeMergeReceiptSHA256, os.ReadFile, nil, beforeFinalRevalidation); err == nil || !strings.Contains(err.Error(), "validation-failed supersession") {
 			t.Fatalf("post-construction race refusal error = %v", err)
 		}
 		assertNoPublishedForwardRepairCandidate(t, fixture, receipt, options)
 	})
 
 	t.Run("post-construction current-source terminalization retires partial candidate", func(t *testing.T) {
-		fixture, receipt, supersession, options := publishedForwardRepairFixture(t)
+		t.Parallel()
+		fixture, receipt, supersession, options := publishedForwardRepairFixtureWithFixture(t, newExplicitRootEngineFixture(t))
 		receiptBefore, err := os.ReadFile(receipt.ReceiptPath)
 		if err != nil {
 			t.Fatal(err)
@@ -702,8 +728,7 @@ func TestPreparePublishedForwardRepairRefusesTamperDriftAndRaceBeforeCandidateCr
 		if err != nil {
 			t.Fatal(err)
 		}
-		previous := beforePublishedForwardRepairFinalRevalidation
-		beforePublishedForwardRepairFinalRevalidation = func() {
+		beforeFinalRevalidation := func() {
 			view, viewErr := worktrees.LoadWorkLogView(context.Background(), worktrees.LoadWorkLogOptions{ProjectsRoot: fixture.githubDir, Worktree: options.Sources[1]})
 			if viewErr != nil || view.Claim == nil {
 				t.Fatalf("load current source claim for terminalization: view=%+v err=%v", view, viewErr)
@@ -721,8 +746,7 @@ func TestPreparePublishedForwardRepairRefusesTamperDriftAndRaceBeforeCandidateCr
 				t.Fatalf("terminalize current source claim: %v", writeErr)
 			}
 		}
-		t.Cleanup(func() { beforePublishedForwardRepairFinalRevalidation = previous })
-		if _, err := PreparePublishedValidationFailureForwardRepair(context.Background(), options); err == nil || !strings.Contains(err.Error(), "active Work Log claim") {
+		if _, err := preparePublishedValidationFailureForwardRepair(context.Background(), options, defaultRunner, worktreeMergeReceiptSHA256, os.ReadFile, nil, beforeFinalRevalidation); err == nil || !strings.Contains(err.Error(), "active Work Log claim") {
 			t.Fatalf("terminalized current-source claim refusal error = %v", err)
 		}
 		if current, readErr := os.ReadFile(receipt.ReceiptPath); readErr != nil || !bytes.Equal(current, receiptBefore) {

@@ -52,6 +52,7 @@ func checkFixture(t *testing.T, files map[string]string) Result {
 }
 
 func TestCheckFlagsSiblingImplementationImport(t *testing.T) {
+	t.Parallel()
 	result := checkFixture(t, map[string]string{
 		"go.mod":               "module github.com/acme/cal/backend\n\ngo 1.26\n",
 		"facade4cal/facade.go": "package facade4cal\n\nimport \"github.com/acme/other/backend/dbo4other\"\n",
@@ -72,6 +73,7 @@ func TestCheckFlagsSiblingImplementationImport(t *testing.T) {
 }
 
 func TestCheckAllowsContractAndOwnRepo(t *testing.T) {
+	t.Parallel()
 	result := checkFixture(t, map[string]string{
 		"go.mod":               "module github.com/acme/cal/backend\n\ngo 1.26\n",
 		"facade4cal/facade.go": "package facade4cal\n\nimport (\n\t\"fmt\"\n\t\"github.com/acme/ext-other/backend/dto\"\n\t\"github.com/acme/cal/backend/dal4cal\"\n\t\"github.com/dal-go/dalgo/dal\"\n)\n",
@@ -82,6 +84,7 @@ func TestCheckAllowsContractAndOwnRepo(t *testing.T) {
 }
 
 func TestCheckSeparatesTestScope(t *testing.T) {
+	t.Parallel()
 	files := map[string]string{
 		"go.mod":               "module github.com/acme/cal/backend\n\ngo 1.26\n",
 		"dal4cal/repo_test.go": "package dal4cal\n\nimport \"github.com/dal-go/dalgo2firestore\"\n",
@@ -96,6 +99,7 @@ func TestCheckSeparatesTestScope(t *testing.T) {
 }
 
 func TestCheckFlagsManifestRequirementBeforeAnyImport(t *testing.T) {
+	t.Parallel()
 	result := checkFixture(t, map[string]string{
 		"go.mod": "module github.com/acme/cal/backend\n\ngo 1.26\n\nrequire github.com/acme/other/backend v1.0.0\n",
 	})
@@ -108,6 +112,7 @@ func TestCheckFlagsManifestRequirementBeforeAnyImport(t *testing.T) {
 }
 
 func TestCheckFlagsLayerInversion(t *testing.T) {
+	t.Parallel()
 	result := checkFixture(t, map[string]string{
 		"go.mod":          "module github.com/acme/cal/backend\n\ngo 1.26\n",
 		"dal4cal/repo.go": "package dal4cal\n\nimport \"github.com/acme/cal/backend/api4cal\"\n",
@@ -125,6 +130,7 @@ func TestCheckFlagsLayerInversion(t *testing.T) {
 }
 
 func TestCheckAllowsDownwardAndSameLayerImports(t *testing.T) {
+	t.Parallel()
 	result := checkFixture(t, map[string]string{
 		"go.mod":               "module github.com/acme/cal/backend\n\ngo 1.26\n",
 		"facade4cal/facade.go": "package facade4cal\n\nimport \"github.com/acme/cal/backend/dal4cal\"\n",
@@ -137,6 +143,7 @@ func TestCheckAllowsDownwardAndSameLayerImports(t *testing.T) {
 }
 
 func TestCheckFlagsForbiddenEdgeEvenWhenDownward(t *testing.T) {
+	t.Parallel()
 	result := checkFixture(t, map[string]string{
 		"go.mod":          "module github.com/acme/cal/backend\n\ngo 1.26\n",
 		"api4cal/http.go": "package api4cal\n\nimport \"github.com/acme/cal/backend/dal4cal\"\n",
@@ -150,6 +157,7 @@ func TestCheckFlagsForbiddenEdgeEvenWhenDownward(t *testing.T) {
 }
 
 func TestCheckReportModeDoesNotBlock(t *testing.T) {
+	t.Parallel()
 	body := strings.Replace(layeredPolicy, "mode: enforce", "mode: report", 1)
 	loaded, err := Load(writePolicy(t, body))
 	if err != nil {
@@ -175,6 +183,7 @@ func TestCheckReportModeDoesNotBlock(t *testing.T) {
 }
 
 func TestCheckExplicitTypeOverridesDetection(t *testing.T) {
+	t.Parallel()
 	result := checkFixture(t, map[string]string{
 		"go.mod": "module github.com/acme/cal/backend\n\ngo 1.26\n",
 	})
@@ -205,6 +214,7 @@ func TestCheckExplicitTypeOverridesDetection(t *testing.T) {
 }
 
 func TestCheckRejectsUnknownExplicitType(t *testing.T) {
+	t.Parallel()
 	loaded, err := Load(writePolicy(t, layeredPolicy))
 	if err != nil {
 		t.Fatal(err)

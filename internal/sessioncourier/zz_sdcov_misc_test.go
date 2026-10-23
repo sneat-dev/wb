@@ -30,6 +30,7 @@ func TestSDCovLoopbackFallsBackToInProcessReceive(t *testing.T) {
 }
 
 func TestSDCovDeliverSSHReportsConstructorFailure(t *testing.T) {
+	t.Parallel()
 	_, raw := courierTestRequest(t)
 	_, err := DeliverSSH(context.Background(), sessionmove.SSHConfig{Host: "target;touch"}, raw)
 	if err == nil || !strings.Contains(err.Error(), "must start with a letter or digit") {

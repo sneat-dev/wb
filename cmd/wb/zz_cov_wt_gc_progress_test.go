@@ -7,13 +7,13 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/console"
-	"github.com/sneat-dev/wb/internal/diskusage"
 	"github.com/sneat-dev/wb/internal/worktrees"
+	"github.com/spf13/cobra"
 )
 
 func TestCwWtInventoryProgressStreamsAndSummarises(t *testing.T) {
 	var out bytes.Buffer
-	progress := newInventoryProgress(&out, true)
+	progress := newInventoryProgress(&invocation{}, &out, true)
 	if !progress.enabled {
 		t.Fatal("verbose progress must be enabled")
 	}
@@ -43,7 +43,7 @@ func TestCwWtInventoryProgressStreamsAndSummarises(t *testing.T) {
 func TestCwWtInventoryProgressDisabledAndNilAreInert(t *testing.T) {
 	t.Setenv(console.EnvDisable, "1")
 	var out bytes.Buffer
-	disabled := newInventoryProgress(&out, false)
+	disabled := newInventoryProgress(&invocation{}, &out, false)
 	if disabled.enabled {
 		t.Fatal("WB_NON_INTERACTIVE must disable progress without --verbose")
 	}
@@ -60,7 +60,7 @@ func TestCwWtInventoryProgressDisabledAndNilAreInert(t *testing.T) {
 
 func TestCwWtInventoryProgressZeroCountWritesNothing(t *testing.T) {
 	var out bytes.Buffer
-	progress := newInventoryProgress(&out, true)
+	progress := newInventoryProgress(&invocation{}, &out, true)
 	progress.finish()
 	if out.Len() != 0 {
 		t.Fatalf("zero-candidate finish wrote %q", out.String())
@@ -68,7 +68,7 @@ func TestCwWtInventoryProgressZeroCountWritesNothing(t *testing.T) {
 
 	// An open start line is closed even when nothing completed.
 	out.Reset()
-	progress = newInventoryProgress(&out, true)
+	progress = newInventoryProgress(&invocation{}, &out, true)
 	progress.report(worktrees.ListProgress{Index: 1, Task: "alpha", Path: "/tmp/acme/app"})
 	progress.finish()
 	if got := out.String(); !strings.HasSuffix(got, "\n") || strings.Contains(got, "inspected") {
@@ -76,111 +76,9 @@ func TestCwWtInventoryProgressZeroCountWritesNothing(t *testing.T) {
 	}
 }
 
-func TestCwWtShortPathTrimsToOwnerSlashRepository(t *testing.T) {
-	cases := map[string]string{
-		"/tmp/projects/acme/app":        "acme/app",
-		"/tmp/projects/acme/app/":       "acme/app",
-		"/tmp/projects/acme/app/.//":    "acme/app",
-		"app":                           "app",
-		"":                              ".",
-		"/":                             "",
-		"relative/acme/app":             "acme/app",
-		"/tmp/projects/acme/app/../app": "acme/app",
-	}
-	for input, want := range cases {
-		if got := shortPath(input); got != want {
-			t.Errorf("shortPath(%q) = %q, want %q", input, got, want)
-		}
-	}
-}
-
-func TestCwWtFormatWorktreeGCOutcomeInProcess(t *testing.T) {
-	command := newWorktreeGCCmd()
-	var out bytes.Buffer
-	command.SetOut(&out)
-	outcome := worktrees.GCOutcome{
-		SchemaVersion: 1,
-		Entries: []worktrees.GCEntry{
-			{
-				Task: "alpha", Repository: "acme/app", WorktreeDir: "/tmp/wt/alpha",
-				Class: "dirty", Reason: "uncommitted changes", Evidence: []string{"a.go"},
-				Warnings: []string{"branch renamed"}, SanctionedCommand: "wb worktree cleanup alpha",
-				Management: "unmanaged", Error: "boom",
-			},
-			{Task: "beta", Repository: "acme/app", Class: "unpushed", Reason: "never pushed", Management: "managed"},
-		},
-		PartialTasks: []worktrees.GCPartialTask{{Task: "gamma", Retired: []string{"a"}, LeftAlone: []string{"b"}}},
-		Artifacts:    []worktrees.LifecycleArtifact{{Kind: "stage", Path: "/tmp/stage", Reason: "quarantined"}},
-		Shells:       []worktrees.RetiredShell{{Task: "alpha", Path: "/tmp/shell", Error: "shell failed"}},
-		Totals: map[string]int{
-			"retired": 1, "eligible": 2, "refused": 3, "purged_artefacts": 4,
-			"retired_shells": 5, "eligible_shells": 6,
-		},
-		Reclaimable: diskusage.Usage{ApparentBytes: 1024, UnsharedBytes: 512},
-	}
-	if err := printWorktreeGC(command, outcome); err != nil {
-		t.Fatal(err)
-	}
-	text := out.String()
-	for _, want := range []string{
-		"dirty", "uncommitted changes", "evidence: [a.go]", "warning: branch renamed",
-		"resolve with: wb worktree cleanup alpha", "WB management: unmanaged", "error: boom",
-		"partial: task gamma retired [a] and left [b] behind",
-		"artifact stage /tmp/stage: quarantined",
-		"shell alpha /tmp/shell: shell failed",
-		"\n1 retired, 2 eligible, 3 kept, 4 terminal artefacts purged, 0 repository-root stages to purge, 6 empty shells to retire; reclaimable",
-	} {
-		if !strings.Contains(text, want) {
-			t.Errorf("gc text missing %q:\n%s", want, text)
-		}
-	}
-
-	// --apply switches the footer to the reclaimed figure and retired shells.
-	out.Reset()
-	outcome.Apply = true
-	if err := printWorktreeGC(command, outcome); err != nil {
-		t.Fatal(err)
-	}
-	if got := out.String(); !strings.Contains(got, "reclaimed") || !strings.Contains(got, "5 empty shells retired") {
-		t.Fatalf("apply footer = %q", got)
-	}
-
-	// An empty sweep still says so.
-	out.Reset()
-	if err := printWorktreeGC(command, worktrees.GCOutcome{}); err != nil {
-		t.Fatal(err)
-	}
-	if got := out.String(); !strings.Contains(got, "no WB worktrees") {
-		t.Fatalf("empty gc output = %q", got)
-	}
-}
-
-func TestCwWtPrintWorktreeGCPropagatesWriteFailures(t *testing.T) {
-	outcome := worktrees.GCOutcome{
-		Entries:      []worktrees.GCEntry{{Task: "alpha", Repository: "acme/app", Reason: "dirty", Evidence: []string{"e"}, Warnings: []string{"w"}, SanctionedCommand: "cmd", Management: "unmanaged", Error: "boom"}},
-		PartialTasks: []worktrees.GCPartialTask{{Task: "gamma"}},
-		Artifacts:    []worktrees.LifecycleArtifact{{Kind: "k", Path: "p", Reason: "r"}},
-		Shells:       []worktrees.RetiredShell{{Task: "s", Path: "p", Error: "e"}},
-		Totals:       map[string]int{"retired": 1},
-	}
-	for allow := 0; allow < 11; allow++ {
-		command := newWorktreeGCCmd()
-		command.SetOut(&cwWtFailWriter{Allow: allow})
-		if err := printWorktreeGC(command, outcome); err == nil {
-			t.Fatalf("printWorktreeGC with %d writes allowed returned nil, want write failure", allow)
-		}
-	}
-	// An empty outcome still writes one line.
-	command := newWorktreeGCCmd()
-	command.SetOut(&cwWtFailWriter{Allow: 0})
-	if err := printWorktreeGC(command, worktrees.GCOutcome{}); err == nil {
-		t.Fatal("empty printWorktreeGC did not propagate the write failure")
-	}
-}
-
 func TestCwWtWorktreeGCCmdUsageAndInProcess(t *testing.T) {
 	projects := t.TempDir()
-	_, _, err := cwCovExec(t, projects, newWorktreeGCCmd, "--session-freshness", "-1s")
+	_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeGCCmd(&invocation{projectsRoot: projects}) }, "--session-freshness", "-1s")
 	if code := exitCodeOf(t, err); code != exitUsage {
 		t.Fatalf("negative session freshness exit = %d (%v)", code, err)
 	}
@@ -188,12 +86,12 @@ func TestCwWtWorktreeGCCmdUsageAndInProcess(t *testing.T) {
 		t.Fatalf("negative session freshness error = %v", err)
 	}
 
-	_, _, err = cwCovExec(t, projects, newWorktreeGCCmd, "--format", "bogus")
+	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeGCCmd(&invocation{projectsRoot: projects}) }, "--format", "bogus")
 	if err == nil || !strings.Contains(err.Error(), "format") {
 		t.Fatalf("bogus format error = %v", err)
 	}
 
-	stdout, stderr, err := cwCovExec(t, projects, newWorktreeGCCmd)
+	stdout, stderr, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeGCCmd(&invocation{projectsRoot: projects}) })
 	if err != nil {
 		t.Fatalf("gc on an empty root: %v (stderr=%s)", err, stderr)
 	}
@@ -201,7 +99,7 @@ func TestCwWtWorktreeGCCmdUsageAndInProcess(t *testing.T) {
 		t.Fatalf("gc on empty root stdout = %q", stdout)
 	}
 
-	stdout, _, err = cwCovExec(t, projects, newWorktreeGCCmd, "--format", "json")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeGCCmd(&invocation{projectsRoot: projects}) }, "--format", "json")
 	if err != nil {
 		t.Fatalf("gc json on an empty root: %v", err)
 	}
@@ -212,7 +110,7 @@ func TestCwWtWorktreeGCCmdUsageAndInProcess(t *testing.T) {
 
 func TestCwWtWorktreeGCCmdRefusesDirtyCheckoutInProcess(t *testing.T) {
 	projects, _, _ := initGCFixture(t)
-	stdout, _, err := cwCovExec(t, projects, newWorktreeGCCmd)
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeGCCmd(&invocation{projectsRoot: projects}) })
 	if code := exitCodeOf(t, err); code != exitFindings {
 		t.Fatalf("gc exit = %d (%v)\n%s", code, err, stdout)
 	}
@@ -221,14 +119,5 @@ func TestCwWtWorktreeGCCmdRefusesDirtyCheckoutInProcess(t *testing.T) {
 	}
 	if err != nil && !strings.Contains(err.Error(), "checkout(s) were kept") {
 		t.Fatalf("gc findings error = %v", err)
-	}
-}
-
-func TestCwWtDisabledWhenZero(t *testing.T) {
-	if got := disabledWhenZero(0); got != worktrees.DisableSessionFreshness {
-		t.Fatalf("disabledWhenZero(0) = %v, want the library disable value", got)
-	}
-	if got := disabledWhenZero(3 * time.Hour); got != 3*time.Hour {
-		t.Fatalf("disabledWhenZero(3h) = %v", got)
 	}
 }

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func lgCovLandOptions() LandOptions {
@@ -106,6 +108,7 @@ func TestLgCovLandFailsWhenDefaultBranchRefIsMissing(t *testing.T) {
 	lgCovGitIdentity(t)
 	origin := t.TempDir()
 	gitIn(t, origin, "init", "-q", "--bare", "-b", "main")
+	testenv.ConfigureGitAutoMaintenanceOff(t, origin)
 	clone := filepath.Join(t.TempDir(), "clone")
 	gitIn(t, t.TempDir(), "clone", "-q", origin, clone)
 

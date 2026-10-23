@@ -5,9 +5,12 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestReconcileTransfersFoldsOldLocalAndNewRemoteIntoOneOperation(t *testing.T) {
+	t.Parallel()
 	repos := Reconcile(
 		[]Repo{{Org: "oldco", Name: "app", Path: "/projects/oldco/app"}},
 		[]Repo{{Org: "newco", Name: "renamed", CloneURL: "git@github.com:newco/renamed.git"}},
@@ -22,6 +25,7 @@ func TestReconcileTransfersFoldsOldLocalAndNewRemoteIntoOneOperation(t *testing.
 }
 
 func TestReconcileTransfersFoldsAnExistingDestinationClone(t *testing.T) {
+	t.Parallel()
 	repos := Reconcile(
 		[]Repo{
 			{Org: "oldco", Name: "app", Path: "/projects/oldco/app"},
@@ -56,7 +60,7 @@ func installFakeGhRepoView(t *testing.T, wantSlug, stdout string, ok bool) {
 		"if [ \"$1 $2 $3 $4 $5 $6 $7\" != \"repo view " + wantSlug + " --json isArchived --jq .isArchived\" ]; then\n" +
 		"  echo \"unexpected gh command: $*\" >&2\n  exit 2\nfi\n" +
 		"printf '%s\\n' '" + stdout + "'\nexit " + exit + "\n"
-	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(script, []byte(content), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -92,6 +96,7 @@ func TestIsArchivedFailsClosedOnGhError(t *testing.T) {
 }
 
 func TestReconcile(t *testing.T) {
+	t.Parallel()
 	local := []Repo{
 		{Org: "sneat-dev", Name: "wb", Path: "/p/sneat-dev/wb"},
 		{Org: "dalgo", Name: "only-local", Path: "/p/dalgo/only-local"},
@@ -133,6 +138,7 @@ func TestReconcile(t *testing.T) {
 }
 
 func TestReconcileSortedDeterministic(t *testing.T) {
+	t.Parallel()
 	got := Reconcile([]Repo{{Org: "z", Name: "b"}, {Org: "a", Name: "a"}}, nil)
 	if got[0].Slug() != "a/a" || got[1].Slug() != "z/b" {
 		t.Errorf("not sorted by slug: %v", got)
@@ -140,6 +146,7 @@ func TestReconcileSortedDeterministic(t *testing.T) {
 }
 
 func TestScanLocalExcludesLinkedWorktrees(t *testing.T) {
+	t.Parallel()
 	projectsRoot := t.TempDir()
 	organization := filepath.Join(projectsRoot, "acme")
 	canonical := filepath.Join(organization, "widgets")

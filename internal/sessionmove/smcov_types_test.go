@@ -9,6 +9,7 @@ import (
 )
 
 func TestSmCovTypesNewHandoffIDIsOpaqueAndUnique(t *testing.T) {
+	t.Parallel()
 	seen := map[string]bool{}
 	for range 3 {
 		id, err := NewHandoffID()
@@ -33,6 +34,7 @@ func TestSmCovTypesNewHandoffIDIsOpaqueAndUnique(t *testing.T) {
 }
 
 func TestSmCovTypesDigestValidateRejectsNonCanonicalSpelling(t *testing.T) {
+	t.Parallel()
 	digest := DigestBytes([]byte("payload"))
 	if err := digest.validate(); err != nil {
 		t.Fatalf("canonical digest %q was rejected: %v", digest, err)
@@ -54,6 +56,7 @@ func TestSmCovTypesDigestValidateRejectsNonCanonicalSpelling(t *testing.T) {
 }
 
 func TestSmCovTypesExternalHandoffClaimIDRejectsBadIdentity(t *testing.T) {
+	t.Parallel()
 	digest := DigestBytes([]byte("request bytes"))
 	first, err := ExternalHandoffClaimID(digest, "wbs-successor")
 	if err != nil {
@@ -75,6 +78,7 @@ func TestSmCovTypesExternalHandoffClaimIDRejectsBadIdentity(t *testing.T) {
 }
 
 func TestSmCovTypesExpectedTargetWorkLogReferenceRejectsBadInput(t *testing.T) {
+	t.Parallel()
 	request := validRequest()
 	raw, err := EncodeRequest(request)
 	if err != nil {
@@ -99,6 +103,7 @@ func TestSmCovTypesExpectedTargetWorkLogReferenceRejectsBadInput(t *testing.T) {
 }
 
 func TestSmCovTypesRequestValidationRejectsEachInvalidField(t *testing.T) {
+	t.Parallel()
 	base := validRequest()
 	largeContent := strings.Repeat("x", MaxHandoverContentBytes+1)
 	tests := []struct {
@@ -144,6 +149,7 @@ func TestSmCovTypesRequestValidationRejectsEachInvalidField(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			value := base
 			test.mutate(&value)
 			_, err := EncodeRequest(value)
@@ -180,6 +186,7 @@ func TestSmCovTypesReceiptValidationRejectsEachInvalidField(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			value := base
 			test.mutate(&value)
 			_, err := EncodeReceipt(value)
@@ -191,6 +198,7 @@ func TestSmCovTypesReceiptValidationRejectsEachInvalidField(t *testing.T) {
 }
 
 func TestSmCovTypesMessageValidationRejectsEachInvalidField(t *testing.T) {
+	t.Parallel()
 	base := validMessage(validRequest())
 	tests := []struct {
 		name   string
@@ -204,6 +212,7 @@ func TestSmCovTypesMessageValidationRejectsEachInvalidField(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			value := base
 			test.mutate(&value)
 			_, err := EncodeMessage(value)
@@ -215,6 +224,7 @@ func TestSmCovTypesMessageValidationRejectsEachInvalidField(t *testing.T) {
 }
 
 func TestSmCovTypesDecodersRejectMalformedWireValues(t *testing.T) {
+	t.Parallel()
 	if _, err := DecodeRequest([]byte("{")); err == nil || !strings.Contains(err.Error(), "parse session move request") {
 		t.Fatalf("DecodeRequest error = %v", err)
 	}
@@ -233,6 +243,7 @@ func TestSmCovTypesDecodersRejectMalformedWireValues(t *testing.T) {
 }
 
 func TestSmCovTypesJSONHelpersRejectTrailingAndUnsupportedValues(t *testing.T) {
+	t.Parallel()
 	var target map[string]any
 	if err := decodeJSON([]byte(`{} {}`), &target); err == nil || !strings.Contains(err.Error(), "unexpected trailing JSON value") {
 		t.Fatalf("decoding trailing JSON error = %v", err)

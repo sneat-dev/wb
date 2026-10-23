@@ -183,6 +183,10 @@ type GCPartialTask struct {
 // durable receipt — with this pass supplying only the classification and the
 // per-repository scope.
 func GC(ctx context.Context, options GCOptions) (GCOutcome, error) {
+	return gcObserved(ctx, options, nil)
+}
+
+func gcObserved(ctx context.Context, options GCOptions, observe func(string)) (GCOutcome, error) {
 	if strings.TrimSpace(options.Base) == "" {
 		options.Base = "main"
 	}
@@ -196,6 +200,16 @@ func GC(ctx context.Context, options GCOptions) (GCOutcome, error) {
 	if strings.TrimSpace(options.SupersededBy) != "" && len(options.Tasks) != 1 {
 		return GCOutcome{}, fmt.Errorf("--superseded-by names one trusted receipt for one task; supply exactly one task")
 	}
+	// GC delegates every deletion to Cleanup. Resolve the same Work Log home
+	// before classification so a dry-run never calls a checkout eligible when
+	// Cleanup's read-only seal preflight will refuse it. This does not replace
+	// the apply-time reinspection: Cleanup still re-fetches and validates the
+	// exact branch, remote lease, and Work Log immediately before removal.
+	resolution, err := wbhome.Resolve(options.ProjectsRoot)
+	if err != nil {
+		return GCOutcome{}, err
+	}
+	ctx = withProjectsRoot(ctx, resolution.Root)
 	listed, err := ListWithDiagnostics(ctx, ListOptions{
 		ProjectsRoot:    options.ProjectsRoot,
 		Tasks:           options.Tasks,
@@ -231,12 +245,16 @@ func GC(ctx context.Context, options GCOptions) (GCOutcome, error) {
 		// The receipt is verified, never trusted: applySupersessionReceipt
 		// re-reads the bound source and target heads and records a rejection
 		// the classification below turns into a refusal.
-		if err := applySupersessionReceipt(ctx, options.SupersededBy, &listed.Results[index]); err != nil {
-			return GCOutcome{}, err
-		}
+		applySupersessionReceipt(ctx, options.SupersededBy, &listed.Results[index])
 	}
 	for _, result := range listed.Results {
 		entry := classifyForGC(result, options, now())
+		if entry.Eligible {
+			if err := preflightWorkLogSealForCleanup(ctx, resolution.Write.Home, resolution.Root, result); err != nil {
+				entry.Eligible = false
+				entry.Reason = fmt.Sprintf("preflight Work Log for %s: %v", result.Repository, err)
+			}
+		}
 		if entry.Eligible && !options.SkipSizes {
 			if usage, measureErr := walk.Measure(ctx, result.WorktreeDir); measureErr == nil {
 				entry.Size = usage
@@ -265,10 +283,16 @@ func GC(ctx context.Context, options GCOptions) (GCOutcome, error) {
 	// otherwise accumulate one directory per sweep, including the sweeps gc's
 	// own advice produces. It is reported in a dry run for the same reason
 	// everything else is: a plan that omits work the apply will do is not a plan.
+	if observe != nil {
+		observe("sweep")
+	}
 	if err := sweepTaskShells(ctx, options, &outcome); err != nil {
 		return outcome, err
 	}
 	if options.Apply {
+		if observe != nil {
+			observe("apply")
+		}
 		if err := applyGC(ctx, options, &outcome); err != nil {
 			return outcome, err
 		}
@@ -370,6 +394,10 @@ func classifyForGC(result ListResult, options GCOptions, now time.Time) GCEntry 
 		entry.Class = GCClassContained
 		entry.Eligible = true
 		entry.Reason = "head is contained in the fetched origin target"
+		if result.IntegrationProof != "" {
+			// The recorded base did not prove this; say which target did.
+			entry.Reason = "head is " + result.IntegrationProof
+		}
 	case result.Landing != nil && result.Landing.Truncated:
 		entry.Class = GCClassUnmerged
 		entry.Reason = "the landing walk reached its --residue-depth bound without finding a landed ancestor, " +
@@ -388,6 +416,10 @@ func classifyForGC(result ListResult, options GCOptions, now time.Time) GCEntry 
 	default:
 		entry.Class = GCClassUnmerged
 		entry.Reason = "head is not integrated into the exact origin target"
+		if result.Base != "" && result.RemoteTargetSHA != "" {
+			entry.Reason += " origin/" + result.Base + " at " + shortSHA(result.RemoteTargetSHA)
+		}
+		entry.Reason += targetRefusalDetail(result)
 		entry.SanctionedCommand = "wb worktree merge " + result.Task + " --route auto"
 	}
 	if options.OlderThan > 0 && entry.Eligible && result.MergedPullRequest != nil &&
@@ -459,57 +491,56 @@ func applyGC(ctx context.Context, options GCOptions, outcome *GCOutcome) error {
 	}
 	for index := range outcome.Entries {
 		entry := &outcome.Entries[index]
-		if !entry.Eligible {
-			// Every repository this pass did not retire is one the operator
-			// must be told about, whatever kept it: a coordinated task that
-			// retires two of three repositories has to name the third, and
-			// keying that on the class silently dropped the ones held back by
-			// the merge-grace window.
-			left[entry.Task] = append(left[entry.Task], entry.Repository)
-			continue
-		}
-		cleanupOutcome, err := Cleanup(ctx, CleanupOptions{
-			ProjectsRoot:    options.ProjectsRoot,
-			Tasks:           []string{entry.Task},
-			ExactRepository: entry.Repository,
-			Base:            options.Base,
-			Apply:           true,
-			AllowResidue:    options.AllowResidue,
-			SupersededBy:    options.SupersededBy,
-			IncludeDetached: !options.SkipDetached,
-			Activity:        true,
-			OlderThan:       options.OlderThan,
-			TTL:             options.TTL,
-			ResidueDepth:    options.ResidueDepth,
-			// Retire an exact matching remote or a proved older ancestor of an
-			// already-landed local head. Cleanup leases the independently observed
-			// remote SHA, so ref drift still refuses before local removal.
-			DeleteRemote: options.DeleteRemote && entry.RemoteHeadSHA != "" &&
-				(entry.RemoteHeadSHA == entry.HeadSHA || entry.RemoteHeadAncestorOfHead),
-			Workers: 1,
-			Now:     options.Now,
-			// One sweep writes one receipt tree, with a directory per retired
-			// checkout. Letting each delegated cleanup pick its own timestamped
-			// default would make two repositories retired in the same instant
-			// overwrite each other's audit record.
-			ReportDir: filepath.Join(sweepRoot, entry.Task, strings.ReplaceAll(entry.Repository, "/", "-")),
-		})
-		if err != nil {
-			entry.Error = err.Error()
-			left[entry.Task] = append(left[entry.Task], entry.Repository)
-			continue
-		}
-		for _, result := range cleanupOutcome.Results {
-			if result.WorktreeDir == entry.WorktreeDir && result.Applied {
-				entry.Applied = true
+		retiredThisPass := entry.Eligible
+		if retiredThisPass {
+			cleanupOutcome, err := Cleanup(ctx, CleanupOptions{
+				ProjectsRoot:    options.ProjectsRoot,
+				Tasks:           []string{entry.Task},
+				ExactRepository: entry.Repository,
+				Base:            options.Base,
+				Apply:           true,
+				AllowResidue:    options.AllowResidue,
+				SupersededBy:    options.SupersededBy,
+				IncludeDetached: !options.SkipDetached,
+				Activity:        true,
+				OlderThan:       options.OlderThan,
+				TTL:             options.TTL,
+				ResidueDepth:    options.ResidueDepth,
+				// Retire an exact matching remote or a proved older ancestor of an
+				// already-landed local head. Cleanup leases the independently observed
+				// remote SHA, so ref drift still refuses before local removal.
+				DeleteRemote: options.DeleteRemote && entry.RemoteHeadSHA != "" &&
+					(entry.RemoteHeadSHA == entry.HeadSHA || entry.RemoteHeadAncestorOfHead),
+				Workers: 1,
+				Now:     options.Now,
+				// One sweep writes one receipt tree, with a directory per retired
+				// checkout. Letting each delegated cleanup pick its own timestamped
+				// default would make two repositories retired in the same instant
+				// overwrite each other's audit record.
+				ReportDir: filepath.Join(sweepRoot, entry.Task, strings.ReplaceAll(entry.Repository, "/", "-")),
+			})
+			if err != nil {
+				entry.Error = err.Error()
+				retiredThisPass = false
+			} else {
+				for _, result := range cleanupOutcome.Results {
+					if result.WorktreeDir == entry.WorktreeDir && result.Applied {
+						entry.Applied = true
+					}
+				}
+				if !entry.Applied {
+					entry.Error = "cleanup did not retire this checkout; rerun with --format json for its plan"
+					retiredThisPass = false
+				}
 			}
 		}
-		if !entry.Applied {
-			entry.Error = "cleanup did not retire this checkout; rerun with --format json for its plan"
+		if retiredThisPass {
+			retired[entry.Task] = append(retired[entry.Task], entry.Repository)
+		} else {
+			// Name every repository left behind, including a refused entry with
+			// stale Applied or Error fields from a prior observation.
 			left[entry.Task] = append(left[entry.Task], entry.Repository)
-			continue
 		}
-		retired[entry.Task] = append(retired[entry.Task], entry.Repository)
 	}
 	for task, repositories := range retired {
 		if len(left[task]) == 0 {

@@ -59,12 +59,12 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/agent_test.go",
+              "path": "internal/cli/cmdagent/integration/agent_test.go",
               "name": "TestAgentAwaitReportsAnElapsedBoundAsAFinding",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/agent_test.go",
+              "path": "internal/cli/cmdagent/integration/agent_test.go",
               "name": "TestAgentAwaitResolvesAnAbandonedRunInsteadOfBlocking",
               "kind": "integration"
             }
@@ -141,9 +141,9 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/agent_test.go",
+              "path": "internal/cli/cmdagent/arguments_test.go",
               "name": "TestAgentDispatchRefusesAmbiguousOrIncompleteInvocations",
-              "kind": "integration"
+              "kind": "unit"
             },
             {
               "path": "internal/agents/dispatch_test.go",
@@ -214,7 +214,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/agent_test.go",
+              "path": "internal/cli/cmdagent/integration/agent_test.go",
               "name": "TestAgentListIsEmptyThenPopulated",
               "kind": "integration"
             }
@@ -279,7 +279,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/agent_test.go",
+              "path": "internal/cli/cmdagent/integration/agent_test.go",
               "name": "TestAgentLogsLocatesTheTranscriptAndBoundsTheSummary",
               "kind": "integration"
             }
@@ -344,9 +344,9 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/agent_test.go",
+              "path": "internal/cli/cmdagent/arguments_test.go",
               "name": "TestAgentStatusRendersExecutionFactsWithoutThePrivateTask",
-              "kind": "integration"
+              "kind": "unit"
             },
             {
               "path": "internal/agents/run_test.go",
@@ -411,7 +411,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/agent_test.go",
+              "path": "internal/cli/cmdagent/integration/agent_test.go",
               "name": "TestAgentStopRefusesTerminalAndUnknownRuns",
               "kind": "integration"
             },
@@ -556,6 +556,70 @@
       "notes": "Deliberately not a mode of wb sync: sync mutates by default and its own archived-clone pruning uses a looser check with no linked-worktree, local-only-branch, unpushed-tag, or WB Work Log awareness."
     },
     {
+      "id": "wb.branch.archive-target",
+      "feature_refs": [
+        "spec/features/branch-hygiene/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb branch archive-target",
+              "flags": [
+                "--format",
+                "--repo"
+              ],
+              "modes": [
+                "Resolves user-only per-organization archive configuration and live private-target status",
+                "Read-only: no remote ref rename, worktree deletion, Work Log export, report creation, or apply mode"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb branch archive-target --help",
+              "contains": [
+                "read-only",
+                "--repo"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-branches/SKILL.md",
+              "marker": "## Local quarantine",
+              "examples": [
+                "wb branch archive-target --repo sneat-co/app --format json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/cli/cmdbranch/command_test.go",
+              "name": "TestBranchArchiveTargetIsReadOnlyAndRendersThePreflight",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "The command is an archive-target visibility preflight only. It does not make a remote retirement eligible or perform one."
+    },
+    {
       "id": "wb.branch.cleanup",
       "feature_refs": [
         "spec/features/branch-hygiene/README.md"
@@ -571,11 +635,16 @@
                 "--absorbed-by",
                 "--apply",
                 "--base",
+                "--branch",
                 "--format",
                 "--older-than",
+                "--peer-evidence",
+                "--repo",
                 "--receipts",
                 "--report-dir",
-                "--scope"
+                "--require-host",
+                "--scope",
+                "--superseded-by"
               ],
               "modes": [
                 "Dry-run plan is the default; --apply is required for every deletion in every scope",
@@ -585,7 +654,10 @@
                 "Remote deletion uses force-with-lease against the observed SHA and fails closed without pull-request evidence",
                 "A branch checked out in any linked worktree, or named by a live WB Work Log claim, is always in-use and never deleted here",
                 "Immediately before each deletion WB refetches the exact target and re-verifies containment; a branch that moved between plan and apply refuses only itself",
-                "An apply attempt writes a durable JSON plan below --report-dir before its first destructive Git operation and updates it with each outcome"
+                "An apply attempt writes a durable JSON plan below --report-dir before its first destructive Git operation and updates it with each outcome",
+                "--superseded-by requires exact --repo and --branch, validates a trusted reviewer receipt, archives and restores the exact source head before deletion, and rechecks receipt bytes and all guards",
+                "Reviewed retirement in remote or all scope requires fresh machine-generated --peer-evidence for every explicit --require-host; missing, stale, mismatched, or unsafe evidence refuses deletion immediately before the leased push",
+                "Recovery reports are rejected inside the source clone or any linked worktree and through symlink ancestors; the manifest records fsynced SHA-bound bundle and receipt digests plus an independent restore verification"
               ]
             }
           ],
@@ -604,7 +676,10 @@
                 "pull-request evidence",
                 "never removes, moves, or modifies any working tree",
                 "--receipts",
-                "--absorbed-by"
+                "--absorbed-by",
+                "--superseded-by",
+                "--peer-evidence",
+                "--require-host"
               ]
             }
           ],
@@ -670,6 +745,77 @@
       "notes": "absorbed is permanently report-only: patch-id/tree equality proves identical content exists upstream, not that this branch's work is still present in the target now. No flag ever makes the absorbed disposition itself eligible; --receipts and --absorbed-by only ever move a candidate to receipted BEFORE absorbed is assigned, and only via an independent, stronger proof (a real GitHub landing receipt, or an operator-attested landing commit proving it is exactly where the work entered the target), never via patch-id."
     },
     {
+      "id": "wb.branch.count",
+      "feature_refs": [
+        "spec/features/branch-hygiene/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb branch count",
+              "flags": [
+                "--base",
+                "--format",
+                "--name",
+                "--older-than",
+                "--only",
+                "--org",
+                "--repo",
+                "--scope"
+              ],
+              "modes": [
+                "Shares one locally discovered branch inventory with list",
+                "Reports active dispositions separately from retired refs; --only retired scopes the same repo/org/fleet inventory",
+                "Retired-only selectors read local retired refs without fetching origin/main; remote scope refreshes only origin retired refs and reports failures through diagnostics and retired_remote_unavailable"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb branch count --help",
+              "contains": [
+                "retired",
+                "local, remote, or all"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-branches/SKILL.md",
+              "marker": "## Local quarantine",
+              "examples": [
+                "wb branch count --org sneat-co --only retired --format yaml"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/cli/cmdbranch/command_test.go",
+              "name": "TestBranchCountUsesTheSharedInventorySelectors",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Count is a presentation over one branch inventory, not a separate fleet scan."
+    },
+    {
       "id": "wb.branch.list",
       "feature_refs": [
         "spec/features/branch-hygiene/README.md"
@@ -683,16 +829,24 @@
               "path": "wb branch list",
               "flags": [
                 "--base",
+                "--branch",
                 "--format",
+                "--include-retired",
+                "--name",
                 "--older-than",
                 "--only",
-                "--scope"
+                "--org",
+                "--repo",
+                "--scope",
+                "--with-prs"
               ],
               "modes": [
-                "Read-only in every configuration; the only permitted remote interaction is fetching",
+                "Read-only in every configuration; --with-prs reads paginated GitHub PR metadata for selected remote branches, including in-use branches but excluding protected, unreadable, and retired rows",
                 "Every disposition is computed against the exact commit SHA fetched from origin/<base> during the run",
                 "A repository whose target cannot be fetched yields unreadable for its branches without blocking the rest of the sweep",
-                "Closed evidence taxonomy: contained, absorbed, unique, protected, in-use, unreadable"
+                "Retired branches are excluded from the active backlog by default but counted separately; --only retired and --include-retired expose them",
+                "Closed evidence taxonomy: contained, absorbed, retired, unique, protected, in-use, unreadable",
+                "--org selects locally discovered canonical clones only; it is not a GitHub-wide organization query"
               ]
             }
           ],
@@ -709,6 +863,7 @@
                 "unique",
                 "protected",
                 "in-use",
+                "retired",
                 "unreadable",
                 "never eligible for --apply"
               ]
@@ -743,6 +898,83 @@
         }
       },
       "notes": "Progress streams to stderr as '[n/N] repository' plus a closing per-disposition summary; stdout stays reserved for the report so --format json stays machine-parseable."
+    },
+    {
+      "id": "wb.branch.quarantine",
+      "feature_refs": [
+        "spec/features/branch-hygiene/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb branch quarantine",
+              "flags": [
+                "--apply",
+                "--annotate",
+                "--branch",
+                "--description",
+                "--manifest",
+                "--replacement",
+                "--retention",
+                "--reason",
+                "--repo",
+                "--report-dir",
+                "--sha"
+              ],
+              "modes": [
+                "Dry-run plan is the default; --apply creates a tree-identical metadata commit and uses local compare-and-swap ref updates",
+                "Every retirement commit records the preserved repository, ref, original SHA, description, reason, UTC review date, replacement references, retention decision, stable receipt ID, and WB documentation link",
+                "--annotate requires one explicit local retired/* ref and exact SHA; manifest rows bind exact repository, ref, SHA, and reason with optional metadata",
+                "Per-row outcomes and the metadata commit SHA are durably reported before and after ref mutation",
+                "Open pull requests using the source as either head or base, protected/current refs, checked-out refs, live claims, moved sources, and destination collisions are refused",
+                "Remote quarantine is unavailable by design until independent peer evidence and leased remote mutation are implemented"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb branch quarantine --help",
+              "contains": [
+                "dry-run",
+                "Remote quarantine"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-branches/SKILL.md",
+              "marker": "## Local quarantine",
+              "examples": [
+                "wb branch quarantine --repo owner/repository --branch old/topic --reason superseded-work"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/worktrees/branches_test.go",
+              "name": "TestAtomicLocalBranchQuarantinePreservesExactCommitAndRefusesCollision",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Retired refs are explicit operator quarantine and are never automatic cleanup candidates. Remote archive preflight exists only as an internal future-retirement planner; this public command neither resolves archive configuration nor performs remote/worktree retirement."
     },
     {
       "id": "wb.check",
@@ -946,7 +1178,7 @@
               ]
             }
           ],
-          "limitation": "Merge-queue merge-group SHA discovery and check observation are not implemented; source-head PR waits fail closed when a merge-queue rule applies."
+          "limitation": "A source-head PR wait fails closed when a merge-queue rule applies: the merge group exists only once the PR is enqueued, which this read-only waiter never does. wb pr land and wb worktree land enqueue and observe it."
         },
         "help": {
           "status": "Full",
@@ -963,7 +1195,7 @@
                 "fully enumerated policy is empty",
                 "server-enforced strict policy",
                 "target advance rejects",
-                "merge-queue PRs fail closed",
+                "merge-queue target fails closed",
                 "required-check policy",
                 "terminal reread",
                 "future optional workflow",
@@ -1126,68 +1358,68 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_test.go",
-              "name": "TestCIWaitDirectTargetStatusReceiptsBlockFailureAndAcceptStatusOnlyPass",
+              "path": "internal/githubchecks/ciwait_observer_integration_e2e_test.go",
+              "name": "TestE2ECIWaitDirectTargetStatusReceiptsBlockFailureAndAcceptStatusOnlyPass",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_test.go",
-              "name": "TestCIWaitDirectTargetPassesWithAuthoritativeNoApplicableChecks",
+              "path": "internal/githubchecks/ciwait_observer_integration_e2e_test.go",
+              "name": "TestE2ECIWaitDirectTargetPassesWithAuthoritativeNoApplicableChecks",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_test.go",
-              "name": "TestCIWaitDirectTargetWaitsWhenCheckRegistersAfterEmptyReceipt",
+              "path": "internal/githubchecks/ciwait_observer_integration_e2e_test.go",
+              "name": "TestE2ECIWaitDirectTargetWaitsWhenCheckRegistersAfterEmptyReceipt",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_test.go",
-              "name": "TestCIWaitWaitsForStableRereadAfterLateSuiteRegistration",
+              "path": "internal/githubchecks/ciwait_observer_integration_e2e_test.go",
+              "name": "TestE2ECIWaitWaitsForStableRereadAfterLateSuiteRegistration",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_test.go",
-              "name": "TestCIWaitDirectTargetHonorsPinnedRequiredCheckIntegration",
+              "path": "internal/githubchecks/ciwait_observer_integration_e2e_test.go",
+              "name": "TestE2ECIWaitDirectTargetHonorsPinnedRequiredCheckIntegration",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_test.go",
-              "name": "TestCIWaitPullRequestHonorsPinnedRequiredCheckIntegration",
+              "path": "internal/githubchecks/ciwait_observer_integration_e2e_test.go",
+              "name": "TestE2ECIWaitPullRequestHonorsPinnedRequiredCheckIntegration",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_test.go",
-              "name": "TestCIWaitFreshPullRequestDoesNotWaitForRedTargetCI",
+              "path": "internal/githubchecks/ciwait_observer_integration_e2e_test.go",
+              "name": "TestE2ECIWaitFreshPullRequestDoesNotWaitForRedTargetCI",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_test.go",
-              "name": "TestCIWaitRejectsStalePullRequestBeforeChecks",
+              "path": "internal/githubchecks/ciwait_observer_integration_e2e_test.go",
+              "name": "TestE2ECIWaitRejectsStalePullRequestBeforeChecks",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_test.go",
-              "name": "TestCIWaitRejectsPullRequestWithoutServerFreshnessFence",
+              "path": "internal/githubchecks/ciwait_observer_integration_e2e_test.go",
+              "name": "TestE2ECIWaitRejectsPullRequestWithoutServerFreshnessFence",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_test.go",
-              "name": "TestCIWaitRejectsClassicFreshnessPolicyWithoutStrictReceipt",
+              "path": "internal/githubchecks/ciwait_observer_integration_e2e_test.go",
+              "name": "TestE2ECIWaitRejectsClassicFreshnessPolicyWithoutStrictReceipt",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_test.go",
-              "name": "TestCIWaitRejectsEmptyStrictFreshnessPolicy",
+              "path": "internal/githubchecks/ciwait_observer_integration_e2e_test.go",
+              "name": "TestE2ECIWaitRejectsEmptyStrictFreshnessPolicy",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_test.go",
-              "name": "TestCIWaitRejectsTargetAdvanceAfterStablePullRequestChecks",
+              "path": "internal/githubchecks/ciwait_observer_integration_e2e_test.go",
+              "name": "TestE2ECIWaitRejectsTargetAdvanceAfterStablePullRequestChecks",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_test.go",
-              "name": "TestCIWaitDoesNotTreatMergeQueueRuleAsSourceHeadFreshness",
+              "path": "internal/githubchecks/ciwait_observer_integration_e2e_test.go",
+              "name": "TestE2ECIWaitDoesNotTreatMergeQueueRuleAsSourceHeadFreshness",
               "kind": "integration"
             },
             {
@@ -1201,37 +1433,37 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_test.go",
-              "name": "TestCIWaitCannotPassWithoutAuthoritativeBranchRules",
+              "path": "internal/githubchecks/ciwait_observer_integration_e2e_test.go",
+              "name": "TestE2ECIWaitCannotPassWithoutAuthoritativeBranchRules",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_test.go",
-              "name": "TestCIWaitCannotClaimAuthorityForRequiredWorkflowRule",
+              "path": "internal/githubchecks/ciwait_observer_integration_e2e_test.go",
+              "name": "TestE2ECIWaitCannotClaimAuthorityForRequiredWorkflowRule",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_test.go",
-              "name": "TestCIWaitRejectsIncompleteDirectCheckPagination",
+              "path": "internal/githubchecks/ciwait_observer_integration_e2e_test.go",
+              "name": "TestE2ECIWaitRejectsIncompleteDirectCheckPagination",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_test.go",
-              "name": "TestCIWaitRejectsIncompleteDirectStatusPagination",
+              "path": "internal/githubchecks/ciwait_observer_integration_e2e_test.go",
+              "name": "TestE2ECIWaitRejectsIncompleteDirectStatusPagination",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_test.go",
-              "name": "TestCIWaitRejectsDirectTargetHeadDrift",
+              "path": "internal/githubchecks/ciwait_observer_integration_e2e_test.go",
+              "name": "TestE2ECIWaitRejectsDirectTargetHeadDrift",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_transient_read_test.go",
+              "path": "internal/githubchecks/ciwait_transient_read_test.go",
               "name": "TestWaitForCommitChecksRecoversFromASignalKilledTargetHeadReadThenSucceeds",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/ciwait_transient_read_test.go",
+              "path": "internal/githubchecks/ciwait_transient_read_test.go",
               "name": "TestWaitForCommitChecksTreatsExhaustedTransientReadAsPendingNotFailed",
               "kind": "integration"
             }
@@ -1246,30 +1478,80 @@
       "feature_refs": [
         "spec/plans/work-log-recovery.md"
       ],
-      "since": null,
+      "since": "unreleased",
       "surfaces": {
         "runtime": {
-          "status": "Planned",
-          "commands": [],
-          "limitation": "WB does not discover a merge-group SHA, observe its checks, enqueue it, or verify its eventual target landing."
+          "status": "Partial",
+          "commands": [
+            {
+              "path": "wb pr land",
+              "flags": [],
+              "modes": [
+                "Detects a merge_queue rule among the target's active rules and stops with an error, rather than guessing, when the rules cannot be read (a 403 on that read is a recorded gap only under explicit --allow-unfenced, which then gives up queue detection)",
+                "Enqueues the exact observed head with GraphQL enqueuePullRequest and observes the queue entry, its merge-group SHA and the newest added/removed timeline event until merged, removed or the budget ends",
+                "Never calls a merge endpoint or arms auto-merge on a queue target, so a ruleset bypass actor cannot merge around the queue",
+                "Names the failing merge-group checks on removal, never re-enqueues a head the queue already removed without --requeue or a newer push, releases the landing lane once queued, and verifies the merge commit is on the base before syncing and cleaning up"
+              ]
+            },
+            {
+              "path": "wb worktree land",
+              "flags": [],
+              "modes": [
+                "Routes a merge-queue target through the pull-request route, which enqueues instead of merging; --route direct is refused"
+              ]
+            }
+          ],
+          "limitation": "wb ci wait stays fail-closed on a queue target by design: it is a read-only source-head receipt and the merge group exists only once a PR is enqueued. Queues configured through classic branch protection rather than a ruleset are not detected."
         },
         "help": {
-          "status": "Planned",
-          "anchors": [],
-          "limitation": "No merge-group receipt mode is advertised."
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb pr land --help",
+              "contains": [
+                "MERGE QUEUE TARGETS ARE ENQUEUED, NEVER MERGED",
+                "enqueuePullRequest"
+              ]
+            }
+          ],
+          "limitation": null
         },
         "ai_skill": {
-          "status": "Planned",
-          "skills": [],
-          "limitation": "The merger skill explicitly fails closed instead of claiming unsupported synthetic-SHA authority."
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/pr-land.md",
+              "marker": "## Merge-queue targets are enqueued, never merged",
+              "examples": [
+                "wb pr land datatug/datatug-apps#480"
+              ]
+            }
+          ],
+          "limitation": null
         },
         "tests": {
-          "status": "Planned",
-          "references": [],
-          "limitation": "No merge-group webhook/API lifecycle and landing E2E exists."
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/pr_land_merge_queue_e2e_test.go",
+              "name": "TestLandOnAMergeQueueTargetEnqueuesAndNeverMergesDirectlyEvenAsABypassActor",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_pr_land_merge_queue_test.go",
+              "name": "TestWorktreeLandOnAMergeQueueTargetEnqueuesThroughThePullRequestRoute",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/pr_land_merge_queue_test.go",
+              "name": "TestMergeQueueReportsAFailedMergeGroupWithItsFailingChecks",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
         }
       },
-      "notes": "A future implementation must observe the authoritative merge-group SHA and checks, enqueue through GitHub's merge queue, and confirm the exact target receipt after landing."
+      "notes": "Landing on a merge-queue target hands the merge to GitHub's queue, which tests the merge group (current target plus the queued pull requests) before merging; WB's receipt is the pull request's own green checks, the pinned enqueue, and the merge commit verified on the base."
     },
     {
       "id": "wb.clone-layout.audit",
@@ -1358,6 +1640,171 @@
         }
       },
       "notes": "Prefer the wb.layout.* leaf rows for the shipped CLI. Future work is admission refusal at create/sync, which WB cannot enforce against arbitrary external git clone."
+    },
+    {
+      "id": "wb.cockpit",
+      "feature_refs": [
+        "spec/features/cockpit/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb cockpit",
+              "flags": [
+                "--format",
+                "--hosted",
+                "--json",
+                "--listen",
+                "--print-url"
+              ],
+              "modes": [
+                "Starts or reuses the loopback daemon, requests a single-use login code over the owner channel and opens the Cockpit login URL on the canonical origin; the URL's fragment carries the session key the page sends with each request, without which the session cookie is not an owner.",
+                "--listen <host:port> names the loopback address to start the daemon on (default 127.0.0.1:8766); without it a running daemon is used wherever it listens; a running daemon on another address is refused, never replaced; non-loopback is refused.",
+                "--hosted opens the configured cockpit.hosted_url and starts no daemon.",
+                "The login URL is a credential: it is requested and printed only when stdout is a terminal or with --print-url; otherwise the plain Cockpit URL is printed.",
+                "JSON output prints {url, scope, opened} with no login code and no session key and launches no browser; with --print-url it adds login_url.",
+                "A running daemon too old to issue a session key is refused with exit 1 and the advice to run wb daemon restart.",
+                "Non-interactive invocations launch no browser."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb cockpit --help",
+              "contains": [
+                "single-use login code",
+                "--format",
+                "--hosted",
+                "--json",
+                "--listen"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-daemon/SKILL.md",
+              "marker": "# WB daemon",
+              "examples": [
+                "wb cockpit",
+                "wb cockpit --hosted",
+                "wb cockpit --format=json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/cli/cmdcockpit/command_test.go",
+              "name": "TestCockpitLocalOpensTheLoginURL",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/cli/cmdcockpit/command_test.go",
+              "name": "TestCockpitJSONCarriesNoCodeAndOpensNothing",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/cli/cmdcockpit/command_test.go",
+              "name": "TestCockpitHostedUsesTheConfiguredURLAndStartsNoDaemon",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Cockpit is opened with a single-use login code the daemon mints for the owner; machine callers receive a code-free URL receipt."
+    },
+    {
+      "id": "wb.cockpit.export",
+      "feature_refs": [
+        "spec/features/cockpit-views/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb cockpit export",
+              "flags": [
+                "--format",
+                "--metrics-only"
+              ],
+              "modes": [
+                "Prints one JSON envelope {schema_version, machine, exported_at, fleet, metrics} of this machine's own entries and its machine-metrics history, read from the running daemon over its loopback listener as the anonymous-local principal, within 8 MiB.",
+                "--metrics-only omits the fleet.",
+                "With no running daemon, one that refuses anonymous reads, one whose first scan has not finished, or any other failure, prints {schema_version, error} with daemon_not_running, export_refused, warming_up or export_failed and exits 1; the text is fixed.",
+                "Never starts a daemon, opens a browser or mints a login code, and writes nothing (no heartbeat). On macOS a daemon is found through launchd, so one started by hand in the foreground is reported as not running."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb cockpit export --help",
+              "contains": [
+                "daemon_not_running",
+                "--format",
+                "--metrics-only"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-daemon/SKILL.md",
+              "marker": "# WB daemon",
+              "examples": [
+                "wb cockpit export --format json",
+                "wb cockpit export --format json --metrics-only"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/cli/cmdcockpit/integration/export_test.go",
+              "name": "TestCockpitExportWithNoRunningDaemonFailsAndStartsNothing",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/cli/cmdcockpit/integration/export_test.go",
+              "name": "TestCockpitExportCarriesOnlyTheMetadataSet",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/cli/cmdcockpit/integration/export_test.go",
+              "name": "TestCockpitExportHasNoWayToStartAnything",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Read-only export of this machine's Cockpit metadata for another machine's daemon to read over SSH; it reads the daemon record and makes anonymous loopback reads and never starts a daemon."
     },
     {
       "id": "wb.commands",
@@ -1701,7 +2148,7 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/worktree_merge_test.go",
+              "path": "internal/cli/cmdworktree/merge_original_test.go",
               "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney",
               "kind": "integration"
             }
@@ -1782,17 +2229,25 @@
             {
               "path": "wb coverage",
               "flags": [
+                "--affected-packages",
+                "--baseline-file",
+                "--baseline-timeout",
+                "--changed",
+                "--ci",
                 "--coverage-profile",
+                "--include-e2e",
                 "--fleet",
                 "--format",
                 "--match",
                 "--minimum",
+                "--package",
                 "--parallel",
                 "--regex",
                 "--report-dir",
                 "--resume",
                 "--retry",
                 "--shard-package",
+                "--target",
                 "--test-shards",
                 "--timeout"
               ],
@@ -1800,7 +2255,10 @@
                 "Measures statement-weighted Go coverage for one repository or a selected local fleet.",
                 "Opt-in process isolation shards explicitly named serial Go packages, runs every other package once, merges coverage losslessly, and can enforce a minimum while retaining the exact merged profile.",
                 "Tracked .wb/quality.yaml lets worktree-merge candidate validation reuse approved repository sharding; a passing candidate skips the otherwise redundant exact-target baseline.",
-                "The summary format writes the full coverage.md and coverage.yaml report, then emits only a bounded aggregate line with the durable report path and SHA-256 digest for agent/session notifications."
+                "The summary format writes the full coverage.md and coverage.yaml report, then emits only a bounded aggregate line with the durable report path and SHA-256 digest for agent/session notifications.",
+                "--changed applies the per-change coverage ratchet against --target: a package fails when its uncovered-statement count rises against its --baseline-file (or the directly measured merge base, bounded by --baseline-timeout), or when a statement the diff added or changed against the merge base is uncovered and is not a moved, unmodified line.",
+                "--changed still measures a merge base whose own tests fail, from the profile those test runs wrote, with a stderr warning and a red_base field in the JSON report; a base that fails to build, times out, or produces no profile still fails the command.",
+                "--changed reads .wb/coverage-ratchet.yaml from the checkout being judged: a listed package may exceed its baseline by at most the configured 1-5 statements, only inside the functions the entry names and only on lines the change did not add, modify or move, with a stderr WARNING (a GitHub Actions annotation in CI) and tolerance/tolerated fields in the JSON report; changed statements and unlisted packages stay strict."
               ]
             }
           ],
@@ -1813,6 +2271,7 @@
               "command": "wb coverage --help",
               "contains": [
                 "--coverage-profile",
+                "--include-e2e",
                 "--fleet",
                 "--format",
                 "--minimum",
@@ -1872,12 +2331,224 @@
               "path": "internal/orchestrate/worktree_merge_test.go",
               "name": "TestPrepareWorktreeMergeSkipsUnneededPassingTargetValidation",
               "kind": "integration"
+            },
+            {
+              "path": "internal/quality/ratchet_test.go",
+              "name": "TestGitChangedLinesFixturePRMovingUncoveredFunctionUnchangedPasses",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/quality/ratchet_test.go",
+              "name": "TestGitChangedLinesFixturePRAddingUncoveredStatementFailsAndNamesLine",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/coverage_ratchet_test.go",
+              "name": "TestCoverageChangedFixturePRMovingUncoveredFunctionUnchangedPasses",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/coverage_ratchet_test.go",
+              "name": "TestCoverageChangedFixturePRAddingUncoveredStatementFailsAndNamesLine",
+              "kind": "integration"
             }
           ],
           "limitation": null
         }
       },
-      "notes": "Reports can be emitted as Markdown, YAML, or JSON and persisted for resume."
+      "notes": "Reports can be emitted as Markdown, YAML, or JSON and persisted for resume. --changed applies the per-change coverage ratchet (spec/plans/coverage-to-100/README.md task-3): a package fails when its uncovered-statement count rises against its baseline, or when a statement a diff added or changed against the merge base is uncovered and is not a moved, unmodified line."
+    },
+    {
+      "id": "wb.coverage.baseline",
+      "feature_refs": [],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb coverage baseline",
+              "flags": [
+                "--include-e2e",
+                "--module",
+                "--out",
+                "--sha"
+              ],
+              "modes": [
+                "Parses an already-measured Go coverage profile into the per-package uncovered-count baseline JSON nightly coverage publishes as a full-module build artifact on main (spec/plans/coverage-to-100/README.md task-3(b)), the sole baseline `wb coverage --changed --baseline-file` consumes."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb coverage baseline --help",
+              "contains": [
+                "--module",
+                "--out"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Planned",
+          "skills": [],
+          "limitation": "Consumed by go-ci.yml directly; no standalone operator runbook is published yet."
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/qualityrun/baseline_test.go",
+              "name": "TestCoverageBaselineWritesPerPackageUncoveredCounts",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/qualityrun/baseline_test.go",
+              "name": "TestCoverageBaselineRejectsMissingProfile",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/qualityrun/baseline_test.go",
+              "name": "TestCoverageBaselineRejectsMissingGoMod",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "go-ci.yml's coverage job runs this on every push to main and uploads its output as the wb-coverage-baseline artifact; wb coverage --changed --baseline-file reads it back for pull requests."
+    },
+    {
+      "id": "wb.coverage.summary",
+      "feature_refs": [
+        "spec/features/fleet-quality/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb coverage summary",
+              "flags": [
+                "--module",
+                "--out",
+                "--ref",
+                "--repo",
+                "--sha",
+                "--workflow-run-id",
+                "--workflow-run-url"
+              ],
+              "modes": [
+                "Parses an already-measured Go coverage profile into the standardized JSON coverage summary artifact uploaded by CI workflows on push to main."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb coverage summary --help",
+              "contains": [
+                "--module",
+                "--out"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Planned",
+          "skills": [],
+          "limitation": "Published by CI workflows and harvested by Workbench GitHub App; no operator skill needed."
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/qualityrun/summary_test.go",
+              "name": "TestCoverageSummaryCmd",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Parses coverage profile into wb-coverage-summary artifact on push to main for remote harvesting."
+    },
+    {
+      "id": "wb.coverage.worklist",
+      "feature_refs": [],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb coverage worklist",
+              "flags": [
+                "--format",
+                "--module",
+                "--unit-size"
+              ],
+              "modes": [
+                "Reads an already-measured Go coverage profile plus the module source under --module and lists every uncovered block with its file, line range, statement count, and enclosing function, mapped with go/ast (spec/plans/coverage-to-100/README.md task-25).",
+                "Groups the uncovered blocks into units of about --unit-size statements (default 300): a function's blocks never split across units, and a file's functions stay in one unit while the running total allows it. Every unit that shares a file with another unit names it, so the coordinator never schedules them concurrently.",
+                "Deterministic for a given profile and module tree regardless of the profile's own line order, and every uncovered block appears in exactly one unit. --format text (default) prints a human summary; --format json emits the full unit/block structure."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb coverage worklist --help",
+              "contains": [
+                "--module",
+                "--unit-size",
+                "--format"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Planned",
+          "skills": [],
+          "limitation": "The coordinator regenerates worklists ad hoc from the latest cov/integration profile; no standalone operator runbook is published yet."
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/quality/worklist_test.go",
+              "name": "TestBuildWorklistGroupsWholeFunctionsAndMarksSharedFiles",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/quality/worklist_test.go",
+              "name": "TestBuildWorklistIsDeterministicRegardlessOfProfileOrder",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/qualityrun/worklist_test.go",
+              "name": "TestCoverageWorklistReadOnlyReports",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "A lane's brief carries its unit's blocks instead of exploration; the coordinator regenerates the list from the latest cov/integration profile before cutting new units."
     },
     {
       "id": "wb.create",
@@ -2027,7 +2698,7 @@
           "limitation": null
         }
       },
-      "notes": "The read-only dashboard remains on loopback TCP and cannot route to these mutation handlers."
+      "notes": "The read-only loopback listener (Cockpit and the JSON API) remains on TCP and cannot route to these mutation handlers."
     },
     {
       "id": "wb.daemon.operation.get",
@@ -2083,7 +2754,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/daemon_local_unix_test.go",
+              "path": "internal/daemonruntime/local_unix_test.go",
               "name": "TestDaemonLocalTransportRequiresTokenAndProtectsSocket",
               "kind": "integration"
             }
@@ -2287,17 +2958,17 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/daemon_test.go",
+              "path": "internal/daemonruntime/runtime_test.go",
               "name": "TestDaemonRecoverDryRunThenAppliesOnlyProvenStaleLock",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/daemon_test.go",
+              "path": "internal/daemonruntime/runtime_test.go",
               "name": "TestDaemonRecoverRefusesActiveAndNonTerminalTransitions",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/daemon_test.go",
+              "path": "internal/daemonruntime/runtime_test.go",
               "name": "TestDaemonLifecycleLockReclaimsDeadOwnerAndKeepsStableInode",
               "kind": "unit"
             }
@@ -2320,13 +2991,18 @@
             {
               "path": "wb daemon restart",
               "flags": [
+                "--force-detached",
                 "--format",
                 "--if-running",
-                "--json"
+                "--json",
+                "--replace-other-root"
               ],
               "modes": [
                 "Restarts with a durable queue ownership handoff",
-                "--if-running is safe after verified self-update"
+                "--if-running is safe after verified self-update",
+                "Hands a supervised (systemd/launchd) daemon back to its supervisor instead of launching a detached replacement",
+                "--force-detached overrides a refusal to start a detached daemon under a recorded supervisor",
+                "On macOS, refuses to replace the launchd service registered for a different projects root unless --replace-other-root is given"
               ]
             }
           ],
@@ -2338,9 +3014,11 @@
             {
               "command": "wb daemon restart --help",
               "contains": [
+                "--force-detached",
                 "--format",
                 "--if-running",
-                "--json"
+                "--json",
+                "--replace-other-root"
               ]
             }
           ],
@@ -2363,7 +3041,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/daemon_test.go",
+              "path": "internal/daemonruntime/runtime_test.go",
               "name": "TestDaemonStartIsIdempotentAndHandoffsChangedInstalledBinary",
               "kind": "unit"
             }
@@ -2391,7 +3069,7 @@
                 "--quiet"
               ],
               "modes": [
-                "Serves the embedded read-only dashboard and versioned JSON API on a loopback listener",
+                "Serves Cockpit (the daemon's web interface, under /cockpit/, with / redirecting to it) and the versioned read-only JSON API on a loopback listener",
                 "Mounts the self-hosted bench hub under /v0/workbench/ and the embedded bench dashboard under /workbench/ when wb.yaml has a hub: section, and answers the dashboard's data routes (dashboard, stats, series, leaderboards, latest-merges, worktrees) from this machine's published snapshots, so the dashboard needs no hosted control plane",
                 "Polls GitHub for default-branch pushes and repository renames when hub.github.token_file is set and no App is configured (default interval 20m, floor 30s), narrating one console line per webhook delivery and per poll observation",
                 "--quiet silences the console lines; wb daemon start never passes it, so the detached daemon log keeps every line",
@@ -2437,7 +3115,7 @@
           "references": [
             {
               "path": "internal/dashboard/dashboard_test.go",
-              "name": "TestDashboardServesUIAndHealth",
+              "name": "TestHealthIsServedAsJSONWithSecurityHeaders",
               "kind": "integration"
             },
             {
@@ -2466,7 +3144,7 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/daemon_hub_webhook_test.go",
+              "path": "internal/daemonhost/hub_webhook_test.go",
               "name": "TestWebhookModeVerifiesDeliveriesWithTheOperatorsSecret",
               "kind": "integration"
             },
@@ -2494,12 +3172,17 @@
             {
               "path": "wb daemon start",
               "flags": [
+                "--force-detached",
                 "--format",
                 "--json",
-                "--listen"
+                "--listen",
+                "--replace-other-root"
               ],
               "modes": [
-                "Idempotently starts the loopback daemon and hands off an older installed executable"
+                "Idempotently starts the loopback daemon and hands off an older installed executable",
+                "Refuses a detached start when the runtime's recorded owner is a systemd or launchd supervisor still confirmed present",
+                "--force-detached overrides that refusal",
+                "On macOS, refuses to replace the launchd service registered for a different projects root unless --replace-other-root is given"
               ]
             }
           ],
@@ -2511,9 +3194,11 @@
             {
               "command": "wb daemon start --help",
               "contains": [
+                "--force-detached",
                 "--format",
                 "--json",
-                "--listen"
+                "--listen",
+                "--replace-other-root"
               ]
             }
           ],
@@ -2536,7 +3221,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/daemon_test.go",
+              "path": "internal/daemonruntime/runtime_test.go",
               "name": "TestDaemonStartIsIdempotentAndHandoffsChangedInstalledBinary",
               "kind": "unit"
             }
@@ -2569,7 +3254,9 @@
                 "Reports a daemon still serving the pre-resolver runtime directory, and why a start was refused while one is live",
                 "Reports whether the bench hub is mounted, with its store engine, store location, and listen address",
                 "Reports whether polling is active, its interval, how many repositories the last poll tick read, and the last repository event received and acknowledged",
-                "Reports whether webhook mode is on and the public URL GitHub delivers to"
+                "Reports whether webhook mode is on and the public URL GitHub delivers to",
+                "Reports supervisor=systemd|launchd|none, what the daemon recorded about its own start",
+                "Flags a supervisor_mismatch when the recorded supervisor disagrees with what this build can independently observe (Linux cgroup membership)"
               ]
             }
           ],
@@ -2616,7 +3303,7 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/daemon_poller_test.go",
+              "path": "internal/daemonruntime/poller_test.go",
               "name": "TestDaemonStatusReportsPollingFromTheRunningDaemon",
               "kind": "unit"
             },
@@ -2685,7 +3372,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/daemon_test.go",
+              "path": "internal/daemonruntime/runtime_test.go",
               "name": "TestDaemonStartIsIdempotentAndHandoffsChangedInstalledBinary",
               "kind": "unit"
             }
@@ -2714,7 +3401,7 @@
               ],
               "modes": [
                 "Opens the hosted cross-machine dashboard in the platform browser by default.",
-                "--local starts or reuses the loopback daemon and opens its local dashboard.",
+                "--local (deprecated: use wb cockpit) starts or reuses the loopback daemon and opens Cockpit, without signing in.",
                 "JSON and non-interactive invocations return the resolved URL without launching a browser."
               ]
             }
@@ -2755,22 +3442,22 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/dashboard_test.go",
+              "path": "internal/cli/cmddashboard/original_test.go",
               "name": "TestDashboardOpensHostedURL",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/dashboard_test.go",
+              "path": "internal/cli/cmddashboard/original_test.go",
               "name": "TestDashboardJSONDoesNotOpenBrowser",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/dashboard_test.go",
+              "path": "internal/cli/cmddashboard/original_test.go",
               "name": "TestDashboardLocalStartsDaemonAndOpensItsURL",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/browser_test.go",
+              "path": "internal/browser/original_test.go",
               "name": "TestBrowserCommandUsesPlatformMechanism",
               "kind": "unit"
             }
@@ -2778,7 +3465,7 @@
           "limitation": null
         }
       },
-      "notes": "The hosted and local dashboards share a short human entry point while machine callers receive a side-effect-free URL receipt."
+      "notes": "The hosted dashboard has a short human entry point while machine callers receive a side-effect-free URL receipt. The local operations dashboard is retired; Cockpit (wb cockpit) replaces it and --local only repoints to it."
     },
     {
       "id": "wb.deadcode",
@@ -2802,6 +3489,7 @@
               ],
               "modes": [
                 "Reports functions that no path from any main package can reach, using golang.org/x/tools/cmd/deadcode's Rapid Type Analysis at a pinned version.",
+                "Analyses linux, darwin and windows and reports a function only when it is unreachable on all three, so the verdict is the same on every host.",
                 "Gates on a committed baseline: only findings absent from .wb/deadcode-baseline.txt fail, so the check can be adopted by a repository that is not already clean.",
                 "Reports baseline entries that became reachable or were deleted, which never fail, so the tolerated set only shrinks without review.",
                 "--update-baseline rewrites the tolerated set from the current run instead of gating; --no-baseline reports everything and never fails."
@@ -2853,6 +3541,11 @@
             {
               "path": "internal/quality/deadcode_test.go",
               "name": "TestDeadcodeFailsWhenTheAnalyzerItselfFails",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/quality/deadcode_platforms_test.go",
+              "name": "TestDeadcodeReportsOnlyFunctionsDeadOnEveryPlatform",
               "kind": "unit"
             }
           ],
@@ -2976,7 +3669,7 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/deps_test.go",
+              "path": "internal/cli/cmddeps/original_contracts_test.go",
               "name": "TestDependencyValidationModesKeepFastBoundToExactPRHeadCI",
               "kind": "unit"
             },
@@ -3200,7 +3893,7 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/deps_go_directive_test.go",
+              "path": "internal/cli/cmddeps/integration/directive_original_test.go",
               "name": "TestDepsGoDirectiveCheckApplyWritesAndLeavesCannotComplyUntouched",
               "kind": "integration"
             },
@@ -3210,7 +3903,7 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/deps_go_directive_test.go",
+              "path": "internal/depsrun/directive_original_test.go",
               "name": "TestCodeQLRiskFlagsOnlyWhatDefaultSetupCannotRun",
               "kind": "unit"
             }
@@ -3284,7 +3977,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/deps_go_directive_test.go",
+              "path": "internal/cli/cmddeps/integration/directive_original_test.go",
               "name": "TestDepsGoDirectiveReportWalksFleetAndNeverWrites",
               "kind": "integration"
             }
@@ -3449,7 +4142,7 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/deps_peers_test.go",
+              "path": "internal/cli/cmddeps/integration/original_commands_test.go",
               "name": "TestDepsPeersExitsWithFindingsAndPrintsTheVerdictTable",
               "kind": "integration"
             }
@@ -3516,12 +4209,12 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/deps_policy_test.go",
+              "path": "internal/cli/cmddeps/integration/policy_original_test.go",
               "name": "TestPolicyCheckExitsOneOnBlockingViolation",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/deps_policy_test.go",
+              "path": "internal/cli/cmddeps/integration/policy_original_test.go",
               "name": "TestPolicyCheckStrictPromotesReportFindings",
               "kind": "integration"
             },
@@ -3592,7 +4285,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/deps_policy_test.go",
+              "path": "internal/cli/cmddeps/policy_original_test.go",
               "name": "TestPolicySubcommandsAndFlagsArePresent",
               "kind": "integration"
             }
@@ -3656,12 +4349,12 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/deps_policy_test.go",
+              "path": "internal/cli/cmddeps/integration/policy_original_test.go",
               "name": "TestPolicyExplainShowsPatternPrecedenceAndShadowing",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/deps_policy_test.go",
+              "path": "internal/cli/cmddeps/integration/policy_original_test.go",
               "name": "TestPolicyExplainSeparatesScopeVerdicts",
               "kind": "integration"
             }
@@ -3726,7 +4419,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/deps_policy_test.go",
+              "path": "internal/cli/cmddeps/policy_original_test.go",
               "name": "TestPolicySubcommandsAndFlagsArePresent",
               "kind": "integration"
             }
@@ -3788,12 +4481,12 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/deps_policy_test.go",
+              "path": "internal/cli/cmddeps/integration/policy_original_test.go",
               "name": "TestPolicyInitWritesTheDeclarationAndThenChecks",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/deps_policy_test.go",
+              "path": "internal/cli/cmddeps/integration/policy_original_test.go",
               "name": "TestPolicyInitRefusesToOverwrite",
               "kind": "integration"
             }
@@ -3859,7 +4552,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/deps_policy_test.go",
+              "path": "internal/cli/cmddeps/policy_original_test.go",
               "name": "TestPolicySubcommandsAndFlagsArePresent",
               "kind": "integration"
             }
@@ -3923,7 +4616,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/deps_policy_test.go",
+              "path": "internal/cli/cmddeps/integration/policy_original_test.go",
               "name": "TestPolicyShowPrintsEffectiveRules",
               "kind": "integration"
             },
@@ -3988,12 +4681,12 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/deps_policy_test.go",
+              "path": "internal/cli/cmddeps/integration/policy_original_test.go",
               "name": "TestPolicyTestRunsAssertions",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/deps_policy_test.go",
+              "path": "internal/cli/cmddeps/integration/policy_original_test.go",
               "name": "TestPolicyTestFailsWhenAPolicyDeclaresNoAssertions",
               "kind": "integration"
             }
@@ -4053,7 +4746,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/deps_policy_test.go",
+              "path": "internal/cli/cmddeps/integration/policy_original_test.go",
               "name": "TestPolicyValidateAcceptsAGoodPolicyAndRejectsAShadowedOne",
               "kind": "integration"
             },
@@ -4333,12 +5026,12 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/deps_test.go",
+              "path": "internal/depsrun/publication_original_test.go",
               "name": "TestParseWorkflowInputsScopesValuesToAlignedTuples",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/deps_test.go",
+              "path": "internal/cli/cmddeps/integration/publication_original_test.go",
               "name": "TestNpmPublishPlanUsesSharedWaveEngineAndPersistsItsReport",
               "kind": "integration"
             },
@@ -4452,12 +5145,12 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/deps_test.go",
+              "path": "internal/cli/cmddeps/original_contracts_test.go",
               "name": "TestDepsSetRejectsUnusableDependencyOrderCombinations",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/deps_test.go",
+              "path": "internal/cli/cmddeps/original_contracts_test.go",
               "name": "TestDependencyValidationModesKeepFastBoundToExactPRHeadCI",
               "kind": "unit"
             }
@@ -4616,6 +5309,155 @@
       "notes": "This row records that the runnable parent is a real public command, not only a namespace for overview, stats, and status."
     },
     {
+      "id": "wb.fleet.coverage",
+      "feature_refs": [
+        "spec/features/fleet-quality/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb fleet coverage",
+              "flags": [
+                "--format",
+                "--match",
+                "--regex",
+                "--report-dir"
+              ],
+              "modes": [
+                "Inspects latest test coverage across the fleet without running tests locally by querying the central or local coverage store."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb fleet coverage --help",
+              "contains": [
+                "--format",
+                "--match"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Planned",
+          "skills": [],
+          "limitation": "Fleet coverage reporting is a read-only query command."
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/cli/cmdquality/operations_test.go",
+              "name": "TestStoredCoverageCommandsTranslateRequestsAndPreserveEmptyOrder",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/qualityrun/stored_test.go",
+              "name": "TestStoredCoverageReadsParentOwnedMemoryStore",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/cli/cmdquality/operations_test.go",
+              "name": "TestCoverageFormatsAndLateAdmissionUseActualArtifactReferences",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Queries the DALgo coverage store for latest harvested CI coverage across the fleet without running local test suites."
+    },
+    {
+      "id": "wb.fleet.default-branch",
+      "feature_refs": [
+        "spec/features/default-branch-migration/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb fleet default-branch",
+              "flags": [
+                "--all-orgs",
+                "--apply",
+                "--branch",
+                "--format",
+                "--json",
+                "--migrate-pages-source",
+                "--org",
+                "--parallel",
+                "--reconcile-from",
+                "--reconcile-sha256",
+                "--repo",
+                "--report-dir",
+                "--restore-archive-from",
+                "--restore-archive-sha256",
+                "--rewrite-workflow-triggers",
+                "--temporarily-unarchive",
+                "--user"
+              ],
+              "modes": [
+                "Audit is read-only. Desired policy uses --branch, then fleet.organizations.<owner>.default_branch, then fleet.default_branch.",
+                "Apply needs explicit --all-orgs, --org, --repo, or --user scope and writes a durable report before mutation. GitHub rename visibility may lag: WB records an accepted response, performs bounded read-only checks, and does not retry. --reconcile-from needs its exact-byte --reconcile-sha256 and fresh proof, is remote read-only, and blocks any refreshed repository that is not compliant.",
+                "Differing target SHA, source-head pull requests, protection/rules impacts, and unsupported workflow references are refusals. --migrate-pages-source permits legacy source with / or /docs. --rewrite-workflow-triggers permits only plain top-level push/pull_request branch-list scalars, commits replacements with expectedHeadOid, then verifies bytes and commit parent before rename. Other Pages and workflow shapes remain refused. Archived repositories require --temporarily-unarchive."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb fleet default-branch --help",
+              "contains": [
+                "read-only",
+                "--all-orgs",
+                "--apply",
+                "never rewrites"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/default-branch.md",
+              "marker": "# Audit and safely migrate GitHub default branches",
+              "examples": [
+                "wb fleet default-branch --all-orgs --format json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/defaultbranch/fleet_default_branch_test.go",
+              "name": "TestRunDefaultBranchSameSHAChangesOnlyDefaultAfterFreshProof",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Default branch changes are report-first, source/head-bound, and fail closed for unsafe migration effects. Workflow content is never rewritten; canonical clone reconciliation records dirty, unpublished, diverged, destination-conflicting, or linked-worktree state as a blocker."
+    },
+    {
       "id": "wb.fleet.merge-policy",
       "feature_refs": [
         "spec/features/agent-sdlc-throughput/README.md"
@@ -4688,42 +5530,42 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/fleet_merge_policy_test.go",
+              "path": "internal/mergepolicy/fleet_merge_policy_test.go",
               "name": "TestInspectMergePolicyReportsRepositoryDriftAndProtectionConflicts",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/fleet_merge_policy_test.go",
+              "path": "internal/mergepolicy/fleet_merge_policy_test.go",
               "name": "TestRunMergePolicyApplyPlansBeforeMutationAndRefusesDrift",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/fleet_merge_policy_test.go",
+              "path": "internal/mergepolicy/fleet_merge_policy_test.go",
               "name": "TestApplyRepositoryRulesetPreservesUnrelatedProtections",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/fleet_merge_policy_test.go",
+              "path": "internal/mergepolicy/fleet_merge_policy_test.go",
               "name": "TestRepositoryRulesetLinearHistoryIsPlannedAsRemovableDrift",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/fleet_merge_policy_test.go",
+              "path": "internal/mergepolicy/fleet_merge_policy_test.go",
               "name": "TestApplyClassicLinearHistoryUsesFullPreservingUpdateAndRecordsPartialResult",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/fleet_merge_policy_test.go",
+              "path": "internal/mergepolicy/fleet_merge_policy_test.go",
               "name": "TestRunMergePolicyResumeCarriesPartialActions",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/fleet_merge_policy_test.go",
+              "path": "internal/mergepolicy/fleet_merge_policy_test.go",
               "name": "TestApplyMergePolicyBoundsRepositoryMutationsAndCheckpoints",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/fleet_merge_policy_test.go",
+              "path": "internal/mergepolicy/fleet_merge_policy_test.go",
               "name": "TestApplyMergePolicyStopsAdmissionAfterCheckpointFailure",
               "kind": "unit"
             }
@@ -5074,12 +5916,12 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/hooks_agent_test.go",
+              "path": "internal/claudesettings/agent_test.go",
               "name": "TestMergeAgentHookSettingsIsIdempotent",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/hooks_agent_test.go",
+              "path": "internal/cli/cmdhooks/render_test.go",
               "name": "TestAgentHookShellCommandForcesExitZero",
               "kind": "unit"
             }
@@ -5104,7 +5946,12 @@
               ],
               "modes": [
                 "Reads a Claude Code PreToolUse payload on stdin and writes a deny document when the call would write inside a canonical clone.",
-                "Redirects CPU-heavy validation in a WB-managed worktree to wb run -- so it receives telemetry and machine-wide admission.",
+                "Rewrites CPU-heavy validation run directly in a WB-managed worktree into wb run -- ... instead of refusing it (wb#637), but only for the narrow \"simple command\" shape wb#645's review restricted this to: a single governed command, optionally prefixed by VAR=value assignments and/or a leading cd <dir> &&. The env assignments move in front of wb run so they still apply; a leading cd stays outside wb run -- so it still changes the shell's directory.",
+                "Any wider compound command (a second &&, ;, a pipeline, ||, a subshell, a heredoc, or a wrapper like nice/timeout/time first) is never rewritten and falls back to the pre-PR refusal \u2014 there is no sh -c wrapping anywhere. Outside a managed worktree, and for a call already under wb run --, nothing changes. Every deny policy is evaluated across the whole line, ignoring any governed match, before a rewrite is considered, so a real deny anywhere always wins over a rewrite (deny wins).",
+                "When the payload carries agent_id (sent only from a subagent) and the Bash command is, entirely on its own, a simple invocation of wb (no other command chained onto the line), prefixes export WB_SUBAGENT_ID=<agent_id> WB_SUBAGENT_TOOL_USE_ID=<tool_use_id>; onto it, feeding the provenance fields wb#631 stamps onto claims, fleet events, wb run events, and wait records.",
+                "These names are deliberately outside the WB_AGENT_* family WB's own owner-identity variables use, so a subagent stamp is never mistaken for a declared owner identity. Both IDs are validated against a safe charset before interpolation; an unsafe or absent agent_id drops the whole prefix.",
+                "A rewrite is written as updatedInput.command with no permissionDecision at all, the guard's one exception to writing only a deny; every other tool_input field the call sent is carried through unchanged.",
+                "Claude Code v2.1.276 applies a response carrying updatedInput with no permissionDecision as the new input and then runs its normal permission flow on it, so the user's own prompts and allow/deny/ask rules still apply to the rewritten command \u2014 an explicit allow here was found to suppress that prompt entirely, which is not this guard's call to make. This relies on Claude Code >= 2.1.276's undocumented behaviour.",
                 "Refuses every call gh itself would run as pr merge, naming wb worktree land/wb land and wb pr land instead (rule land-with-wb-verb, sneat-co/backstage). gh's arguments are read the way gh's own command lookup reads them: gh pr -R o/r merge 1 and gh pr --squash 1 merge are refused, while gh help pr merge, gh search issues pr merge and gh pr merge --help are allowed.",
                 "Finds that call chained with &&, ||, ;, | or a newline; inside ( ), { } or an unquoted $( ); in if/elif/while/until conditions, then/else branches and loop do bodies; after ! or coproc; and behind VAR=value assignments.",
                 "Also finds it behind sudo, env, nice, nohup, time, stdbuf, exec, command, builtin, noglob, nocorrect, timeout, caffeinate, xargs and wb run --, together with each wrapper's own options, and in the -c payload of bash, sh, zsh, dash and ksh, taken the way that shell takes it (bounded depth); through the shell's brace expansion of any word (gh pr {merge,} 1); and whatever the letter case of the program name (Gh pr merge 1 runs gh on macOS).",
@@ -5168,7 +6015,57 @@
             },
             {
               "path": "internal/agentguard/agentguard_test.go",
-              "name": "TestManagedWorktreeRequiresGovernedHeavyValidation",
+              "name": "TestManagedWorktreeRewritesGovernedHeavyValidation",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestNonSimpleGovernedCommandsAreRefusedNotRewritten",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestDenyWinsOverAGovernedRewrite",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestCompoundWBInvocationIsNeverStamped",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestRewrittenSimpleCommandsRunCorrectlyInARealShell",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestWbRunCommandIsNeverRewritten",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestSubagentWBCallGetsTheIDPrefix",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestMainThreadWBCallGetsNoPrefix",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestOtherToolInputFieldsArePreservedAcrossARewrite",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestRewriteAndStampNeverSetPermissionDecision",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/worktrees/worklog_test.go",
+              "name": "TestSubagentStampEnvVarsDoNotDeclareAnIdentity",
               "kind": "unit"
             },
             {
@@ -5257,12 +6154,12 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/hooks_agent_test.go",
+              "path": "internal/agentguard/hooks_integration_test.go",
               "name": "TestAgentHookNeverExitsNonZero",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/hooks_agent_test.go",
+              "path": "internal/agentguard/hooks_integration_test.go",
               "name": "TestAgentHookGhPrMergeOverrideMustBeInlineOnTheCall",
               "kind": "integration"
             }
@@ -5338,12 +6235,12 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/hooks_test.go",
+              "path": "internal/cli/cmdhooks/render_test.go",
               "name": "TestPrintHooksCheckShowsExplicitProfileExclusion",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/hooks_test.go",
+              "path": "internal/hooks/cli_integration_test.go",
               "name": "TestApplyAndCheckHooksFleet",
               "kind": "integration"
             }
@@ -5510,12 +6407,12 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/hooks_lifecycle_test.go",
+              "path": "internal/lifecyclehooks/cli_integration_test.go",
               "name": "TestLifecycleBackfillPlansAndAppliesOnlyMatchingCanonicalRepositories",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/sync_test.go",
+              "path": "internal/syncrun/original_test.go",
               "name": "TestFinishSyncLifecycleHooksDispatchesOnlyChangedCheckouts",
               "kind": "unit"
             },
@@ -5525,8 +6422,8 @@
               "kind": "unit"
             },
             {
-              "path": "internal/orchestrate/worktree_merge_test.go",
-              "name": "TestSyncCanonicalMergeTargetNotifiesOnlyWhenHeadChanges",
+              "path": "internal/orchestrate/worktree_merge_e2e_test.go",
+              "name": "TestE2ESyncCanonicalMergeTargetNotifiesOnlyWhenHeadChanges",
               "kind": "integration"
             }
           ],
@@ -5687,7 +6584,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/hooks_lifecycle_test.go",
+              "path": "internal/lifecyclehooks/cli_integration_test.go",
               "name": "TestLifecycleBackfillPlansAndAppliesOnlyMatchingCanonicalRepositories",
               "kind": "integration"
             },
@@ -5757,7 +6654,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/hooks_lifecycle_test.go",
+              "path": "internal/lifecyclehooks/cli_integration_test.go",
               "name": "TestLifecycleCheckCommandReportsTrustedExecutor",
               "kind": "unit"
             },
@@ -5900,7 +6797,7 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/hooks_lifecycle_test.go",
+              "path": "internal/lifecyclehooks/cli_integration_test.go",
               "name": "TestLifecycleResumeAndGCAreSafeOnEmptyState",
               "kind": "unit"
             }
@@ -6029,7 +6926,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/hooks_lifecycle_test.go",
+              "path": "internal/lifecyclehooks/cli_integration_test.go",
               "name": "TestLifecycleStatusCommandShowsPrivateDiagnosticsAndRetry",
               "kind": "unit"
             },
@@ -6130,7 +7027,7 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/hooks_measure_test.go",
+              "path": "internal/hooks/cli_integration_test.go",
               "name": "TestHooksMeasureShowsTheStreamProfileDelta",
               "kind": "e2e"
             }
@@ -6202,7 +7099,7 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/hooks_test.go",
+              "path": "internal/cli/cmdhooks/render_test.go",
               "name": "TestPrintHookMetricsExplainsPushAttempts",
               "kind": "unit"
             }
@@ -6342,7 +7239,7 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/install_test.go",
+              "path": "internal/cli/cmdinstall/install_test.go",
               "name": "TestInstallErrors_FailureExitCodes",
               "kind": "unit"
             }
@@ -6351,6 +7248,137 @@
         }
       },
       "notes": "Behavior comes from github.com/strongo/cli-helpers/cliinstall against wb's own compiled catalog entry; an unknown target or a usage mistake (invalid --format, --all with names) exits wb's exitUsage (2, rejected before any work started); every other failure, including the two remaining kinds cli-install adds, maps to wb's exitFindings (1). Every message carries an exact \"install: \" prefix, never \"self-update: \"/\"upgrade: \"."
+    },
+    {
+      "id": "wb.integration.merge",
+      "feature_refs": [
+        "spec/features/integration-branch-batches/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb integration merge",
+              "flags": [
+                "--checks",
+                "--format",
+                "--to",
+                "--worktree"
+              ],
+              "modes": [
+                "Merges reviewed lane pins as wb pr batch add does, then runs the repository's local-check recipe",
+                "Pushes to origin/<integration> without force only when every local check passed; a moved branch is refused, never overwritten",
+                "Needs no ruleset or CI on the integration branch; a rerun with nothing new runs no check"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb integration merge --help",
+              "contains": [
+                "check locally, push"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/pr-land.md",
+              "marker": "## Merge reviewed lanes into an integration branch",
+              "examples": [
+                "wb integration merge <owner/repository> <integration> <branch@sha=review-url>..."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/integration_e2e_test.go",
+              "name": "TestE2EIntegrationMergeChecksAndPushesReviewedLanes",
+              "kind": "e2e"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Lanes push branches with no pull request; reviews are commit comments on the lane SHA. Promotion to main (wb integration promote) and the integration delta ship in a follow-up."
+    },
+    {
+      "id": "wb.integration.promote",
+      "feature_refs": [
+        "spec/features/integration-branch-batches/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb integration promote",
+              "flags": [
+                "--format",
+                "--to",
+                "--worktree"
+              ],
+              "modes": [
+                "Refuses batch-unrecorded-merge when any merge the target lacks cannot be proved to bring in a still-reviewed lane commit or target history",
+                "Opens, or refreshes the body of, the one pull request from the integration branch to its target, listing every lane and carrying the promotion marker",
+                "wb pr land then needs a fresh independent review of that pull request's exact head and never updates the branch or arms auto-merge"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb integration promote --help",
+              "contains": [
+                "Re-prove an integration branch"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/pr-land.md",
+              "marker": "## Merge reviewed lanes into an integration branch",
+              "examples": [
+                "wb integration promote <owner/repository> <integration>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/integration_promote_e2e_test.go",
+              "name": "TestE2EPromoteOpensOnePullRequestAndAnEmptyDelta",
+              "kind": "e2e"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Lanes push branches with no pull request; one promotion pull request carries the integration branch to main under full CI and a fresh review of its head."
     },
     {
       "id": "wb.land",
@@ -6375,6 +7403,7 @@
                 "--check-timeout",
                 "--cleanup",
                 "--cli",
+                "--defer-direct-ci-pr",
                 "--format",
                 "--lane-reason",
                 "--model",
@@ -6758,6 +7787,579 @@
       "notes": "The planned coordination.migration-scope capability is separate from this declarative source-migration runtime."
     },
     {
+      "id": "wb.peers.block",
+      "feature_refs": [
+        "spec/features/peer-connectivity/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb peers block",
+              "flags": [
+                "--format",
+                "--json"
+              ],
+              "modes": [
+                "Refuses a peer's sessions and HTTP calls over the daemon's owner-token RPC, keeping its record, cursor and lifetime counters."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb peers block --help",
+              "contains": [
+                "--format"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/peers.md",
+              "marker": "# Connect a peer",
+              "examples": [
+                "wb peers block laptop"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/peers_integration_test.go",
+              "name": "TestPeersBlockUnblockDisconnectCallTheOwnerPath",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "block, unblock and disconnect resolve <peer> by name or ID; on a laptop they act on the configured upstream locally instead of the (nonexistent) owner RPC."
+    },
+    {
+      "id": "wb.peers.disconnect",
+      "feature_refs": [
+        "spec/features/peer-connectivity/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb peers disconnect",
+              "flags": [
+                "--format",
+                "--json"
+              ],
+              "modes": [
+                "Closes a peer's live session only; the peer stays trusted and reconnects by itself. Reports \"no live session\" until Task 2 adds sessions."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb peers disconnect --help",
+              "contains": [
+                "--format"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/peers.md",
+              "marker": "# Connect a peer",
+              "examples": [
+                "wb peers disconnect laptop"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/peers_integration_test.go",
+              "name": "TestPeersBlockUnblockDisconnectCallTheOwnerPath",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Answers a clear \"no live session\" result for any known peer until Task 2's session registry lands."
+    },
+    {
+      "id": "wb.peers.get",
+      "feature_refs": [
+        "spec/features/peer-connectivity/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb peers get",
+              "flags": [
+                "--format",
+                "--json"
+              ],
+              "modes": [
+                "Shows one peer's full record, read through the local daemon's /api/v1/peers API. The reserved name \"upstream\" shows this machine's configured hub instead."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb peers get --help",
+              "contains": [
+                "--format"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/peers.md",
+              "marker": "# Connect a peer",
+              "examples": [
+                "wb peers get laptop"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/peers_integration_test.go",
+              "name": "TestPeersGetRendersAPeerDetailOrTheUpstream",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Session, counters and admin_available are empty/false until Tasks 2, 6 and 7 fill them in."
+    },
+    {
+      "id": "wb.peers.invite",
+      "feature_refs": [
+        "spec/features/peer-connectivity/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb peers invite",
+              "flags": [
+                "--format",
+                "--json",
+                "--rotate",
+                "--token-file"
+              ],
+              "modes": [
+                "Mints a one-time peer credential on this hub over the owner-token RPC and prints the token once, or writes it privately to --token-file."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb peers invite --help",
+              "contains": [
+                "--rotate",
+                "--token-file"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/peers.md",
+              "marker": "# Connect a peer",
+              "examples": [
+                "wb peers invite laptop --token-file ~/.wb/credentials/laptop.token"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/peers_integration_test.go",
+              "name": "TestPeersInvitePrintsTokenOnceOrWritesTokenFile",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Refuses an existing peer name without --rotate, the hub's own machine name, a name held by a non-peer credential, and the memory store engine."
+    },
+    {
+      "id": "wb.peers.join",
+      "feature_refs": [
+        "spec/features/peer-connectivity/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb peers join",
+              "flags": [
+                "--format",
+                "--json",
+                "--restart-daemon",
+                "--token-file",
+                "--token-stdin"
+              ],
+              "modes": [
+                "Verifies a one-time peer token against the hub's connect route, writes peers.upstream in wb.yaml without touching remote:, and restarts a running daemon."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb peers join --help",
+              "contains": [
+                "--token-stdin",
+                "--token-file"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/peers.md",
+              "marker": "# Connect a peer",
+              "examples": [
+                "wb peers join https://vm1.sneat.dev --token-stdin"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/cli/cmdpeers/integration/join_original_test.go",
+              "name": "TestPeersJoinWritesConfigAndCredentialLeavingRemoteByteIdentical",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Refuses a same-origin remote.provider: hub, since two receivers cannot consume one queue."
+    },
+    {
+      "id": "wb.peers.list",
+      "feature_refs": [
+        "spec/features/peer-connectivity/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb peers list",
+              "flags": [
+                "--format",
+                "--json"
+              ],
+              "modes": [
+                "Lists every downstream peer this hub knows, plus the upstream hub row when peers.upstream is configured."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb peers list --help",
+              "contains": [
+                "--format"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/peers.md",
+              "marker": "# Connect a peer",
+              "examples": [
+                "wb peers list"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/peers_integration_test.go",
+              "name": "TestPeersListRendersDownstreamAndUpstreamRows",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Reads through the local daemon's /api/v1/peers API; a daemon that is not reachable yields an empty downstream list rather than failing the command."
+    },
+    {
+      "id": "wb.peers.unblock",
+      "feature_refs": [
+        "spec/features/peer-connectivity/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb peers unblock",
+              "flags": [
+                "--format",
+                "--json"
+              ],
+              "modes": [
+                "Allows a blocked peer's sessions again over the owner-token RPC and sets reset_pending, so its next redial reconciles from the hub's heads."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb peers unblock --help",
+              "contains": [
+                "--format"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/peers.md",
+              "marker": "# Connect a peer",
+              "examples": [
+                "wb peers unblock laptop"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/peers_integration_test.go",
+              "name": "TestPeersBlockUnblockDisconnectCallTheOwnerPath",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "See wb.peers.block for the shared name/ID resolution and the laptop-local upstream path."
+    },
+    {
+      "id": "wb.pr.batch.add",
+      "feature_refs": [
+        "spec/features/integration-branch-batches/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb pr batch add",
+              "flags": [
+                "--format",
+                "--target",
+                "--worktree"
+              ],
+              "modes": [
+                "Verifies every <branch>@<sha>=<commit-comment-url> pin before any Git mutation and reports every refusal together",
+                "Merges each pinned SHA with its own --no-ff merge commit carrying Wb-Lane, Wb-Review, Wb-Review-Digest, Wb-Reviewer and Wb-Merged-By trailers, never rebasing, squashing or pushing",
+                "Stops on a conflict with the files listed; a rerun after git commit --no-edit skips merged pins"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb pr batch add --help",
+              "contains": [
+                "Merge reviewed lane commits into an integration branch locally"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/pr-land.md",
+              "marker": "## Merge reviewed lanes into an integration branch",
+              "examples": [
+                "wb pr batch add <owner/repository> --target <integration> <branch@sha=review-url>..."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/integration_e2e_test.go",
+              "name": "TestE2EBatchConflictStopsAndARerunContinues",
+              "kind": "e2e"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Lanes push branches with no pull request; reviews are commit comments on the lane SHA. Promotion to main (wb integration promote) and the integration delta ship in a follow-up."
+    },
+    {
+      "id": "wb.pr.batch.delta",
+      "feature_refs": [
+        "spec/features/integration-branch-batches/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb pr batch delta",
+              "flags": [
+                "--format",
+                "--overlap",
+                "--target",
+                "--to",
+                "--worktree"
+              ],
+              "modes": [
+                "Prints only conflict resolutions, fix commits and the full diff of unrecorded merges between the integration branch and its target",
+                "Re-proves every lane merge from its Wb-* trailers against the still-current commit comment",
+                "--overlap adds each lane's own diff of every file more than one lane changed; an empty delta still needs the promotion review"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb pr batch delta --help",
+              "contains": [
+                "Print only the integration delta"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/pr-land.md",
+              "marker": "## Merge reviewed lanes into an integration branch",
+              "examples": [
+                "wb pr batch delta <owner/repository> --target <integration> --overlap"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/integration_promote_e2e_test.go",
+              "name": "TestE2EDeltaShowsOnlyResolutionsFixesAndOverlap",
+              "kind": "e2e"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Lanes push branches with no pull request; one promotion pull request carries the integration branch to main under full CI and a fresh review of its head."
+    },
+    {
       "id": "wb.pr.create",
       "feature_refs": [
         "spec/features/dependency-streams/README.md"
@@ -6789,7 +8391,11 @@
                 "--review-comment",
                 "--review-comment-file",
                 "--timeout",
-                "--title"
+                "--title",
+                "--waive-aggregate",
+                "--waive-baseline",
+                "--waive-check",
+                "--waive-reason"
               ],
               "modes": [
                 "Addressed by worktree path or task name, defaulting to the current directory; a canonical clone is refused, naming wb worktree create, and a dirty worktree is refused by listing the uncommitted paths unless a commit mode is given",
@@ -6874,17 +8480,17 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/pr_create_test.go",
+              "path": "internal/cli/cmdpr/pr_create_test.go",
               "name": "TestPRCreateRejectsBodyAndBodyFileTogether",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/pr_create_test.go",
+              "path": "internal/cli/cmdpr/pr_create_test.go",
               "name": "TestPRCreateRejectsAddWithCommitAll",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/pr_create_test.go",
+              "path": "internal/cli/cmdpr/pr_create_test.go",
               "name": "TestPRCreateHelpStatesItsContract",
               "kind": "unit"
             }
@@ -6919,11 +8525,16 @@
                 "--non-interactive",
                 "--poll-interval",
                 "--reason",
+                "--requeue",
                 "--review-comment",
                 "--review-comment-file",
                 "--subject",
                 "--take-over-lane",
-                "--timeout"
+                "--timeout",
+                "--waive-aggregate",
+                "--waive-baseline",
+                "--waive-check",
+                "--waive-reason"
               ],
               "modes": [
                 "Cleanup is the default: the task's worktree is retired and its claim released unless --keep is passed, because the measured failure was an opt-in cleanup that was never passed",
@@ -6942,6 +8553,7 @@
                 "The landing is verified as an effect: the pull request must report itself merged and the merge commit must be reachable from the base before the branch is deleted",
                 "Auto-merge is armed before any wait, so the pull request lands even if the invoking process, session or host dies; a failed check refuses the invocation but never disarms, because CI is the gate and a pushed fix lands once the required checks pass. --no-auto-merge opts out",
                 "A candidate behind the target is brought up to date through GitHub update-branch with the observed head as expected_head_sha, then its checks are waited on again inside one --timeout budget, repeating when the target moves mid-wait; a conflicting update refuses with update-branch-conflict, and --no-update-branch refuses a behind candidate instead",
+                "On a merge_queue target the PR's own checks are waited on without update-branch or auto-merge, the exact head is enqueued with GraphQL enqueuePullRequest, and the queue is observed until merged, removed (merge-group-failed, merge-queue-dequeued) or out of budget (merge-queue-pending, resumable without a second enqueue); no merge endpoint is called, so a bypass actor cannot land around the queue",
                 "After each successful update-branch, a local WB worktree holding the PR's head branch is fast-forwarded to the new head, best effort: clean and an ancestor of it is fast-forwarded and recorded on local_sync, otherwise it is left untouched with a note; never blocks the landing",
                 "Exit 0 landed, 1 the work is not ready, 2 a guard refused; --format json emits the envelope with refusal_code, sanctioned_command, evidence and the saved-call figures"
               ]
@@ -6963,7 +8575,8 @@
                 "gh api",
                 "AUTO-MERGE IS ARMED FIRST",
                 "BEHIND IS NOT A REFUSAL",
-                "--no-update-branch"
+                "--no-update-branch",
+                "MERGE QUEUE TARGETS ARE ENQUEUED, NEVER MERGED"
               ]
             }
           ],
@@ -7022,7 +8635,7 @@
               "kind": "unit"
             },
             {
-              "path": "internal/orchestrate/pr_land_test.go",
+              "path": "internal/mechanicalchange/pr_land_test.go",
               "name": "TestMechanicalIsDecidedFromContent",
               "kind": "unit"
             },
@@ -7062,7 +8675,7 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/pr_test.go",
+              "path": "internal/prselector/selector_test.go",
               "name": "TestPRLandSelectorAcceptsEveryFormAnOperatorHolds",
               "kind": "unit"
             },
@@ -7081,6 +8694,76 @@
         }
       },
       "notes": "The review ledger itself is a later phase: --approved-by records the reviewer's pointer verbatim rather than verifying a recorded APPROVE against the patch-identity set. Deliberately separate from wb worktree merge: merge lands one or many local worktrees by whichever route the target permits, while this lands one existing pull request. They share the vendored GitHub reads and the same cleanup transaction, so there is one implementation of the checks stage and one of the deletion path. A transient GitHub read (signal-killed/timed-out gh, HTTP 502/503/504, secondary rate limit, transient network error) recovers in-process with bounded retries and a >=30s per-attempt timeout; only an authoritative failure or exhausted retries reaches the caller, naming the last cause plus the exact resumable `wb pr land` invocation, with `github_read_retries` recorded on the evidence when recovery happened."
+    },
+    {
+      "id": "wb.pr.update",
+      "feature_refs": [
+        "spec/features/dependency-streams/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb pr update",
+              "flags": [
+                "--format"
+              ],
+              "modes": [
+                "Uses GitHub update-branch with expected_head_sha to merge the observed target into an open same-repository PR head and persists exact before, after, and target SHAs",
+                "Returns a receipt-backed no-op when the head already contains the target; never arms auto-merge, waits for CI, lands the PR, or cleans up",
+                "Fast-forwards only a clean active WB-claimed local checkout; no local checkout is optional, while an existing dirty or unowned checkout is left untouched and reported as partial"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb pr update --help",
+              "contains": [
+                "Bring one open pull request's head up to date",
+                "GitHub update-branch",
+                "never waits for CI"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/pr-land.md",
+              "marker": "# Land a pull request with wb pr land",
+              "examples": [
+                "wb pr update <owner/repository#number>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/pr_update_test.go",
+              "name": "TestUpdatePullRequestPinsHeadProvesMergeAndRecordsBeforeLocalSync",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/orchestrate/pr_update_test.go",
+              "name": "TestUpdatePullRequestReturnsReceiptBackedNoOpWithoutMutation",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "This is an update-only target-to-feature operation. A later wb pr land remains a separate explicit action."
     },
     {
       "id": "wb.remote.claim",
@@ -7142,12 +8825,12 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/remote_claim_test.go",
+              "path": "internal/cli/cmdremote/integration/original_test.go",
               "name": "TestRemoteClaimAcquireReleaseRoundTrip",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/remote_claim_test.go",
+              "path": "internal/cli/cmdremote/integration/original_test.go",
               "name": "TestRemoteClaimTakeOverRequiresStaleness",
               "kind": "integration"
             }
@@ -7212,7 +8895,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/remote_claim_test.go",
+              "path": "internal/cli/cmdremote/integration/original_test.go",
               "name": "TestRemoteClaimsListsWithStaleness",
               "kind": "integration"
             }
@@ -7281,7 +8964,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/remote_enroll_test.go",
+              "path": "internal/cli/cmdremote/integration/original_test.go",
               "name": "TestRemoteEnrollKeepsCredentialOutOfOutputAndConfig",
               "kind": "integration"
             },
@@ -7351,7 +9034,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/remote_test.go",
+              "path": "internal/cli/cmdremote/integration/original_test.go",
               "name": "TestRemoteMachinesFlagsStaleEntries",
               "kind": "integration"
             }
@@ -7419,7 +9102,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/remote_test.go",
+              "path": "internal/remotepublish/integration/manual_original_test.go",
               "name": "TestRemotePublishWritesSnapshotToStore",
               "kind": "integration"
             }
@@ -7485,12 +9168,12 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/remote_claim_test.go",
+              "path": "internal/cli/cmdremote/integration/original_test.go",
               "name": "TestRemoteReleaseHeldByOtherRefusesWithoutForce",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/remote_claim_test.go",
+              "path": "internal/cli/cmdremote/integration/original_test.go",
               "name": "TestRemoteReleaseJSONOutcome",
               "kind": "integration"
             }
@@ -7555,7 +9238,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/remote_test.go",
+              "path": "internal/cli/cmdremote/integration/original_test.go",
               "name": "TestRemoteStatusRendersCrossMachineWorklist",
               "kind": "integration"
             }
@@ -7818,9 +9501,9 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/repo_transfer_test.go",
+              "path": "internal/cli/cmdrepo/repo_test.go",
               "name": "TestRepoTransferCleanupRequiresReceiptAsUsage",
-              "kind": "integration"
+              "kind": "unit"
             },
             {
               "path": "internal/worktrees/repository_relocate_test.go",
@@ -8085,13 +9768,13 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/quality_test.go",
-              "name": "TestQualityTargetsSupportsGlobAndRegex",
+              "path": "internal/reposelection/selection_test.go",
+              "name": "TestSelectionSupportsRealFleetGlobRegexFilterAndSorting",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/quality_test.go",
-              "name": "TestQualityTargetsRejectsOwnerRepositorySelectorsForDirectPaths",
+              "path": "internal/reposelection/selection_test.go",
+              "name": "TestDirectPathRejectsOwnerRepositorySelectors",
               "kind": "unit"
             }
           ],
@@ -8099,6 +9782,178 @@
         }
       },
       "notes": "The executable matrix also covers --projects-root, --org, and --non-interactive."
+    },
+    {
+      "id": "wb.root.quiet",
+      "feature_refs": [
+        "spec/features/quiet-verbs-and-masked-status-guard/README.md",
+        "docs/cli-flag-matrix.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb create",
+              "flags": [
+                "--quiet"
+              ],
+              "modes": [
+                "Prints the created worktree line only; the remote-claim success note is dropped."
+              ]
+            },
+            {
+              "path": "wb land",
+              "flags": [
+                "--quiet"
+              ],
+              "modes": [
+                "Prints the receipt and refusal lines only; no landing progress or heartbeat lines."
+              ]
+            },
+            {
+              "path": "wb pr create",
+              "flags": [
+                "--quiet"
+              ],
+              "modes": [
+                "Prints the created/adopted line and any refusal only; no CI-wait progress under --land and no --closes suggestion."
+              ]
+            },
+            {
+              "path": "wb pr land",
+              "flags": [
+                "--quiet"
+              ],
+              "modes": [
+                "Prints the landing outcome and any refusal block only; no CI-wait heartbeats and no savings footer."
+              ]
+            },
+            {
+              "path": "wb worktree cleanup",
+              "flags": [
+                "--quiet"
+              ],
+              "modes": [
+                "Prints the plan or outcome lines and warnings only; no inspection progress, info lines, or claim-release success note."
+              ]
+            },
+            {
+              "path": "wb worktree create",
+              "flags": [
+                "--quiet"
+              ],
+              "modes": [
+                "Prints the created worktree line only; the remote-claim success note is dropped."
+              ]
+            },
+            {
+              "path": "wb worktree land",
+              "flags": [
+                "--quiet"
+              ],
+              "modes": [
+                "Prints the receipt and refusal lines only; no landing progress or heartbeat lines."
+              ]
+            },
+            {
+              "path": "wb worktree merge",
+              "flags": [
+                "--quiet"
+              ],
+              "modes": [
+                "Prints the receipt and refusal lines only; --quiet wins over --progress."
+              ]
+            },
+            {
+              "path": "wb worktree merge land",
+              "flags": [
+                "--quiet"
+              ],
+              "modes": [
+                "Prints the receipt and refusal lines only; --quiet wins over --progress."
+              ]
+            },
+            {
+              "path": "wb worktree merge prepare",
+              "flags": [
+                "--quiet"
+              ],
+              "modes": [
+                "Prints the receipt and refusal lines only; --quiet wins over --progress."
+              ]
+            },
+            {
+              "path": "wb worktree merge resume",
+              "flags": [
+                "--quiet"
+              ],
+              "modes": [
+                "Prints the receipt and refusal lines only; --quiet wins over --progress."
+              ]
+            },
+            {
+              "path": "wb worktree merge revert",
+              "flags": [
+                "--quiet"
+              ],
+              "modes": [
+                "Prints the receipt and refusal lines only; --quiet wins over --progress."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb --help",
+              "contains": [
+                "--quiet",
+                "print only the outcome and any refusal"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb/SKILL.md",
+              "marker": "## Triggers",
+              "examples": [
+                "wb pr create --quiet"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/quiet_test.go",
+              "name": "TestQuietIsConsumedByExactlyTheLifecycleVerbs",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/main_test.go",
+              "name": "TestPersistentFlagMatrix",
+              "kind": "conformance"
+            },
+            {
+              "path": "internal/agentguard/pipeline_test.go",
+              "name": "TestBashRefusesAPipedStateChangingWBVerb",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "WB_QUIET=1 is the environment spelling and affects only these verbs. wb run and wb worktree guard keep their own local --quiet. The agent pre-tool-use hook refuses a pipe after a state-changing wb verb."
     },
     {
       "id": "wb.run",
@@ -8114,6 +9969,7 @@
                 "--allow-saturated-host",
                 "--apply",
                 "--async",
+                "--changed",
                 "--config",
                 "--days",
                 "--history",
@@ -8123,10 +9979,12 @@
                 "--list",
                 "--queue",
                 "--quiet",
+                "--target",
                 "--worker"
               ],
               "modes": [
                 "Executes an argv command after -- while preserving standard streams and its exit code, recording privacy-safe timing and CPU receipts.",
+                "--changed appends the Go packages a local diff touches (staged/unstaged/committed since the merge base with --target, default: detected default branch) to the command, scoped to the Go module containing cwd, excluding any module nested further inside it; untracked files are never included; nothing changed prints that and exits 0 without running; -args, --args, or a nested -- in the command is rejected (issue #570, task-19).",
                 "With --async --worker <stable-id>, durably persists bounded argv without environment for only that sandboxed worker identity and returns a JSON operation receipt without waiting; missing worker identity is rejected.",
                 "An exact retry after a lost file-bridge response reattaches to the unresolved envelope-bound idempotency key; --idempotency-key distinguishes intentional identical submissions.",
                 "Prefers the protected local socket and explicitly falls back on sandbox permission or reachability failures to authenticated atomic project-root envelopes fenced by scheduler generation, payload digest, and target worker identity.",
@@ -8148,12 +10006,14 @@
               "contains": [
                 "--apply",
                 "--async",
+                "--changed",
                 "--config",
                 "--history",
                 "--idempotency-key",
                 "--list",
                 "--queue",
                 "--quiet",
+                "--target",
                 "--worker",
                 "run -- <command>"
               ]
@@ -8172,7 +10032,9 @@
                 "wb run --async --worker codex-local -- go test ./internal/worktrees -run TestCreate",
                 "wb run -- go test ./internal/worktrees -run TestCreate",
                 "wb run --history --days 7",
-                "wb run --queue"
+                "wb run --queue",
+                "wb run --changed -- go test",
+                "wb run --changed --target origin/main -- go vet"
               ]
             }
           ],
@@ -8182,7 +10044,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/run_command_test.go",
+              "path": "internal/cli/cmdrun/admission_flags_test.go",
               "name": "TestRunAsyncFlagRequiresCommandMode",
               "kind": "unit"
             },
@@ -8217,17 +10079,17 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/run_queue_progress_test.go",
+              "path": "internal/cli/cmdrun/progress_test.go",
               "name": "TestRunQueueProgressFormatsQueuedHeartbeatAdmittedAndDoneLines",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/run_queue_test.go",
+              "path": "internal/runexec/admission_native_test.go",
               "name": "TestAcquireWithQueueVisibilityEmitsQueuedHeartbeatsThenAdmitted",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/run_queue_test.go",
+              "path": "internal/cli/cmdrun/integration/observer_test.go",
               "name": "TestRunCommandReportsQueueVisibilityOnStderr",
               "kind": "integration"
             },
@@ -8237,13 +10099,13 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/run_queue_test.go",
-              "name": "TestRunHistoryRecordsQueueWaitAndAdmissionTime",
+              "path": "internal/runexec/history_admission_native_test.go",
+              "name": "TestNativeHistoryRecordsQueueWaitAndAdmissionTime",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/run_queue_test.go",
-              "name": "TestRunQueueListsRunningAndWaitingEntries",
+              "path": "internal/cli/cmdrun/integration/queue_test.go",
+              "name": "TestQueueNativeListsRealRunningAndWaitingEntries",
               "kind": "integration"
             },
             {
@@ -8255,6 +10117,26 @@
               "path": "internal/orchestrate/engine_integration_test.go",
               "name": "TestRunDryRunCreatesNoOperationState",
               "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/run_changed_test.go",
+              "name": "TestRunChangedAppendsOnlyTouchedPackagesToCommand",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/runexec/changed_native_test.go",
+              "name": "TestChangedNativeImmutableBaseNoWorkMissingDefaultAndInvalidTarget",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/cli/cmdrun/command_test.go",
+              "name": "TestChangedOrderingNoWorkAndResolvedArguments",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/quality/changed_packages_test.go",
+              "name": "TestChangedPackagesIncludesCommittedStagedAndUnstagedChangesTogether",
+              "kind": "unit"
             }
           ],
           "limitation": null
@@ -8318,12 +10200,12 @@
           "status": "Partial",
           "references": [
             {
-              "path": "cmd/wb/selfupdate_test.go",
+              "path": "internal/wbupdate/config_test.go",
               "name": "TestNewSelfUpdateConfigHomebrewOnly",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/selfupdate_test.go",
+              "path": "internal/cli/cmdinstall/selfupdate_test.go",
               "name": "TestSelfUpdateErrorsFailurePermissionNamesPathAndBrew",
               "kind": "unit"
             }
@@ -8396,7 +10278,7 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/session_list_test.go",
+              "path": "internal/cli/cmdsession/integration/list_test.go",
               "name": "TestSessionListJSONExposesParkedSessionIDForResume",
               "kind": "integration"
             }
@@ -8497,27 +10379,27 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/session_move_test.go",
+              "path": "internal/cli/cmdsession/integration/move_test.go",
               "name": "TestSessionMoveSameMachineUsesLoopbackCourier",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/session_move_test.go",
+              "path": "internal/cli/cmdsession/integration/move_test.go",
               "name": "TestSessionMoveCommandCheckpointsThenDeliversThroughSSH",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/session_move_test.go",
+              "path": "internal/cli/cmdsession/integration/move_test.go",
               "name": "TestSessionMoveResumeReusesExactRequestAndImmutableSSHRoute",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/session_move_test.go",
+              "path": "internal/cli/cmdsession/integration/move_test.go",
               "name": "TestSessionMoveRefusesHandoverContainingNamedSecretPattern",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/session_move_test.go",
+              "path": "internal/cli/cmdsession/integration/move_test.go",
               "name": "TestSessionMoveAcceptsOverriddenSecretFindingAndLogsAdvisory",
               "kind": "unit"
             },
@@ -8647,32 +10529,32 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/session_park_test.go",
+              "path": "internal/cli/cmdsession/integration/park_test.go",
               "name": "TestSessionParkCommandKeepsPrivateContextOutOfPublicAndWorkLogSurfaces",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/session_park_test.go",
+              "path": "internal/cli/cmdsession/integration/park_test.go",
               "name": "TestSessionParkRejectsContentBearingContinuationFlags",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/session_park_test.go",
+              "path": "internal/cli/cmdsession/integration/park_test.go",
               "name": "TestSessionParkChecklistPromptsJudgmentOnStderrWithoutTouchingStdout",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/session_park_test.go",
+              "path": "internal/cli/cmdsession/integration/park_test.go",
               "name": "TestSessionParkMissingContextFilePromptsJudgmentChecklist",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/session_park_test.go",
+              "path": "internal/cli/cmdsession/integration/park_test.go",
               "name": "TestSessionParkRefusesContinuationContainingNamedSecretPattern",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/session_park_test.go",
+              "path": "internal/cli/cmdsession/integration/park_test.go",
               "name": "TestSessionParkAcceptsOverriddenSecretFindingAndLogsAdvisory",
               "kind": "unit"
             },
@@ -8687,12 +10569,12 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/session_park_test.go",
+              "path": "internal/cli/cmdsession/integration/park_test.go",
               "name": "TestSessionParkRegistersAnUnregisteredSessionBeforeParking",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/session_park_test.go",
+              "path": "internal/cli/cmdsession/integration/park_test.go",
               "name": "TestSessionParkTargetsAnExplicitWBSessionIDWithoutRegistering",
               "kind": "integration"
             },
@@ -8828,7 +10710,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/session_message_test.go",
+              "path": "internal/cli/cmdsession/integration/message_test.go",
               "name": "TestSessionRequestHandoffUsesTypedKindAndPreservesKindOnResume",
               "kind": "unit"
             },
@@ -8900,7 +10782,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/session_receive_test.go",
+              "path": "internal/cli/cmdsession/session_receive_test.go",
               "name": "TestSessionReceiveCommandUsesConfiguredMachineAndExactStdinBytes",
               "kind": "unit"
             },
@@ -8984,7 +10866,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/session_message_test.go",
+              "path": "internal/cli/cmdsession/integration/message_test.go",
               "name": "TestSessionReceiveMessageReturnsCanonicalReceiptOnly",
               "kind": "unit"
             },
@@ -9059,12 +10941,12 @@
           "status": "Partial",
           "references": [
             {
-              "path": "cmd/wb/session_receive_park_test.go",
+              "path": "internal/cli/cmdsession/session_receive_park_test.go",
               "name": "TestSessionReceiveParkPassesExactEnvelopeAndPrintsOnlyReceipt",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/session_receive_park_test.go",
+              "path": "internal/cli/cmdsession/session_receive_park_test.go",
               "name": "TestSessionReceiveParkJSONDoesNotDiscloseContinuation",
               "kind": "unit"
             },
@@ -9095,6 +10977,7 @@
               "flags": [
                 "--agent-id",
                 "--handoff-id",
+                "--join",
                 "--machine",
                 "--model",
                 "--native-harness-id",
@@ -9105,7 +10988,7 @@
                 "--wb-session-id"
               ],
               "modes": [
-                "Announces an agent session so later WB writes are attributed to it without per-command declaration."
+                "Announces an agent session so later WB writes are attributed to it without per-command declaration; --join then joins an already owned linked worktree and reports registration separately if joining fails."
               ]
             }
           ],
@@ -9118,6 +11001,7 @@
               "command": "wb session register --help",
               "contains": [
                 "--pid",
+                "--join",
                 "--runtime",
                 "--model",
                 "--wb-session-id",
@@ -9160,6 +11044,11 @@
             {
               "path": "internal/session/session_test.go",
               "name": "TestResolveForProcessFindsAnAncestorSession",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/worktree_collaboration_e2e_test.go",
+              "name": "TestE2ECollaborationCLIRegistersAndJoinsRealLinkedWorktree",
               "kind": "integration"
             },
             {
@@ -9244,22 +11133,22 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/session_park_test.go",
+              "path": "internal/cli/cmdsession/integration/park_test.go",
               "name": "TestSessionResumeLocalZeroMemberLaunchesOnceAndReplays",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/session_park_test.go",
+              "path": "internal/cli/cmdsession/integration/park_test.go",
               "name": "TestSessionResumeLocalInterruptionReusesAuthenticatedAttempt",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/session_park_test.go",
+              "path": "cmd/wb/session_park_native_test.go",
               "name": "TestSessionResumeLocalActualCustodyRefusalDoesNotClaimRoute",
-              "kind": "unit"
+              "kind": "integration"
             },
             {
-              "path": "cmd/wb/session_park_test.go",
+              "path": "internal/cli/cmdsession/integration/park_test.go",
               "name": "TestSessionResumeLocalPreflightsBeforeClaimingRouteOrCustody",
               "kind": "unit"
             },
@@ -9274,22 +11163,22 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/session_park_test.go",
+              "path": "internal/cli/cmdsession/integration/park_test.go",
               "name": "TestSessionResumeRemoteSingleWorktreeReachesTransport",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/session_park_test.go",
+              "path": "internal/cli/cmdsession/integration/park_test.go",
               "name": "TestSessionResumeRemoteBundleReachesTransport",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/session_park_test.go",
+              "path": "internal/cli/cmdsession/integration/park_test.go",
               "name": "TestSessionResumeRemoteRetryUsesRetainedSSHEndpoint",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/session_park_test.go",
+              "path": "internal/cli/cmdsession/integration/park_test.go",
               "name": "TestSessionResumeRemoteReceiptRetryRepairsRegistryWithoutRedelivery",
               "kind": "unit"
             },
@@ -9365,7 +11254,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/session_message_test.go",
+              "path": "internal/cli/cmdsession/integration/message_test.go",
               "name": "TestSessionSendRequiresBoundedInputAndBuildsFreshDurableMessage",
               "kind": "unit"
             },
@@ -9439,12 +11328,12 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/skills_hook_test.go",
+              "path": "internal/claudesettings/session_start_test.go",
               "name": "TestMergeSkillsHookSettingsIsIdempotent",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/skills_hook_test.go",
+              "path": "internal/claudesettings/hook_integration_test.go",
               "name": "TestNewSkillsHookInstallCmdWritesThenReportsAlreadyRegistered",
               "kind": "unit"
             }
@@ -9502,7 +11391,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/skills_hook_test.go",
+              "path": "internal/cli/cmdskills/hook_test.go",
               "name": "TestNewSkillsHookPrintCmdPrintsAPasteableSnippet",
               "kind": "unit"
             }
@@ -9575,27 +11464,12 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/skills_sync_test.go",
-              "name": "TestNewSkillsSyncCmdInstallsIntoAnExplicitDirAndIsIdempotent",
+              "path": "internal/wbskills/sync_integration_test.go",
+              "name": "TestEmbeddedSkillsHarnessJourneys",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/skills_sync_test.go",
-              "name": "TestNewSkillsSyncCmdHarnessFlagInstallsIntoCursor",
-              "kind": "unit"
-            },
-            {
-              "path": "cmd/wb/skills_sync_test.go",
-              "name": "TestNewSkillsSyncCmdReportsConflictsAsFindings",
-              "kind": "unit"
-            },
-            {
-              "path": "cmd/wb/skills_sync_test.go",
-              "name": "TestNewSkillsSyncCmdDefaultSyncsEveryPresentHarness",
-              "kind": "unit"
-            },
-            {
-              "path": "cmd/wb/skills_sync_test.go",
+              "path": "internal/wbskills/embedded_test.go",
               "name": "TestNewSkillsSyncConfigBindsTheEmbeddedWBPluginToThisBuild",
               "kind": "unit"
             }
@@ -9672,7 +11546,7 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/status_test.go",
+              "path": "internal/cli/statusview/moved_test.go",
               "name": "TestStatusMarkdownReportsAnAllCleanFleet",
               "kind": "unit"
             }
@@ -10422,7 +12296,7 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/sync_report_test.go",
+              "path": "internal/syncrun/issues_original_test.go",
               "name": "TestFinishSyncWritesReportEvenWhenARepositoryFailed",
               "kind": "integration"
             },
@@ -10517,7 +12391,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/sync_report_command_test.go",
+              "path": "internal/cli/cmdsync/report_original_test.go",
               "name": "TestSyncReportPublishReturnsImmutableViewerURL",
               "kind": "unit"
             },
@@ -10586,7 +12460,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/sync_report_command_test.go",
+              "path": "internal/cli/cmdsync/report_original_test.go",
               "name": "TestSyncReportValidateLoadsAndValidatesTheWholeBatch",
               "kind": "unit"
             },
@@ -10662,7 +12536,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/task_test.go",
+              "path": "internal/taskrun/task_test.go",
               "name": "TestTaskOffloadLaunchesSuccessor",
               "kind": "unit"
             }
@@ -10730,7 +12604,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/task_test.go",
+              "path": "internal/taskrun/task_test.go",
               "name": "TestTaskParkCreatesWorktreeWithoutLaunch",
               "kind": "unit"
             }
@@ -10797,7 +12671,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/task_test.go",
+              "path": "internal/taskrun/task_test.go",
               "name": "TestTaskPickupLaunchesParkedTask",
               "kind": "unit"
             }
@@ -10870,17 +12744,17 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/upgrade_test.go",
+              "path": "internal/cli/cmdinstall/upgrade_test.go",
               "name": "TestUpgradeErrors_FailureExitCodes",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/upgrade_test.go",
+              "path": "internal/wbupdate/parity_test.go",
               "name": "TestSelfUpdateAndUpgradeSelf_ReachSameCheckVerdict",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/upgrade_test.go",
+              "path": "internal/cli/cmdinstall/upgrade_test.go",
               "name": "TestWBAfterUpdate_SelfUpdateAndUpgradeCommandsProduceIdenticalOutput",
               "kind": "unit"
             }
@@ -11023,7 +12897,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/verify_receipt_test.go",
+              "path": "internal/cli/cmdworktree/integration/receipt_original_test.go",
               "name": "TestVerifyReceiptComposesExactMachineReadableEvidence",
               "kind": "integration"
             }
@@ -11089,7 +12963,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/verify_receipt_test.go",
+              "path": "internal/cli/cmdworktree/integration/receipt_original_test.go",
               "name": "TestVerifyReceiptRemoteTargetUsesFixedGitObservation",
               "kind": "unit"
             }
@@ -11381,12 +13255,12 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/wait_test.go",
+              "path": "internal/cli/cmdwait/integration/list_test.go",
               "name": "TestWaitListTellsAQuietSessionApartFromAStoppedOne",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/wait_test.go",
+              "path": "internal/cli/cmdwait/integration/list_test.go",
               "name": "TestWaitListReportsAStaleWaiterInJSON",
               "kind": "integration"
             },
@@ -11549,52 +13423,52 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/wait_test.go",
+              "path": "internal/waitrun/observe_test.go",
               "name": "TestWaitPRSettlesOnlyWhenEveryTargetIsTerminal",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/wait_test.go",
+              "path": "internal/cli/cmdwait/command_test.go",
               "name": "TestWaitPRPendingResumesOnlyTheUnsettledTargets",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/wait_test.go",
+              "path": "internal/waitrun/observe_test.go",
               "name": "TestWaitPRChangedComparesOnlyActionableFacts",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/wait_test.go",
+              "path": "internal/waitrun/observe_test.go",
               "name": "TestWaitPRClosedIgnoresChecks",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/wait_test.go",
+              "path": "internal/waitrun/observe_test.go",
               "name": "TestWaitPRTransientReadStaysPendingRatherThanErroring",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/wait_test.go",
+              "path": "internal/waitrun/observe_test.go",
               "name": "TestWaitPRErroredTargetNeverSettles",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/wait_test.go",
+              "path": "internal/cli/cmdwait/command_test.go",
               "name": "TestWaitPRDeduplicatesRepeatedTargets",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/wait_test.go",
+              "path": "internal/cli/cmdwait/command_test.go",
               "name": "TestWaitPRRejectsUnusableInvocations",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/wait_test.go",
+              "path": "internal/waitrun/reader_test.go",
               "name": "TestWaitPRReadsGitHubForARealTarget",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/wait_test.go",
+              "path": "internal/cli/cmdwait/render_test.go",
               "name": "TestWaitPRResumeLineQuotesSelectorsForAShell",
               "kind": "integration"
             }
@@ -11676,17 +13550,17 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/worker_test.go",
+              "path": "internal/workerrun/roots_test.go",
               "name": "TestWorkerIndependentlyRefusesAssignedDirectoryOutsidePermittedRoots",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/daemon_file_bridge_test.go",
+              "path": "internal/daemonruntime/file_bridge_test.go",
               "name": "TestDaemonFileBridgeTargetsOneOfTwoWorkersAndCancelsWithoutLease",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/daemon_file_bridge_test.go",
+              "path": "internal/daemonruntime/file_bridge_test.go",
               "name": "TestDaemonFileBridgeQueuedWorkSurvivesRestartAndSameWorkerReconnects",
               "kind": "integration"
             }
@@ -11717,6 +13591,7 @@
                 "--base",
                 "--claim",
                 "--cli",
+                "--closed-pr",
                 "--disposition",
                 "--format",
                 "--model",
@@ -11729,6 +13604,7 @@
                 "discarded seals before lease-safe remote and descriptor-safe local exact-ref removal",
                 "a proven unclaimed pre-apply recycle reservation is terminalized without --remote while its immutable prompt archive remains retained",
                 "discarded --absorbed-by verifies the named merged pull request's fetched head ancestry, merge containment in the fresh target, and exact head/merge tree equality before a clean source is removed",
+                "discarded --closed-pr verifies a closed unmerged pull request whose head equals the clean checkout's exact head, re-proves it under the task lock, and records a durable audit file before removal",
                 "orphaned seals one exact absent claim only after actor/reason authorization and an under-lock reread of worktree, registration, local-ref, remote-ref, and terminal absence",
                 "discarded dirty worktrees retain a bounded hook-independent private byte capture before deletion",
                 "multi-repository terminal transitions require an explicit member --filter or --all acknowledgement",
@@ -11754,6 +13630,7 @@
                 "--provider",
                 "--remote",
                 "--absorbed-by",
+                "--closed-pr",
                 "--all",
                 "resumable",
                 "discarded",
@@ -11774,6 +13651,7 @@
                 "wb worktree abort fair-split --disposition discarded --apply --remote",
                 "wb worktree abort next-task --disposition discarded --apply",
                 "wb worktree abort fair-split --disposition discarded --absorbed-by <merged-pr> --apply --remote",
+                "wb worktree abort fair-split --disposition discarded --closed-pr <closed-pr> --reason <why-closed> --apply --remote",
                 "wb worktree abort fair-split --disposition orphaned --claim <claim-id> --actor founder --reason <audit-reason> --apply"
               ]
             }
@@ -11919,12 +13797,12 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/worktree_active_test.go",
+              "path": "internal/worktreerun/active_original_test.go",
               "name": "TestWorktreeActiveCombinesLiveLocalAndOtherMachineSnapshots",
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/worktree_active_test.go",
+              "path": "internal/worktreerun/active_original_test.go",
               "name": "TestWorktreeActiveMakesRemoteFailureExplicitAndSupportsLocalOnly",
               "kind": "unit"
             }
@@ -12709,7 +14587,7 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/worktree_end_test.go",
+              "path": "internal/worktreerun/end_original_test.go",
               "name": "TestWorktreeEndCapturesDirtyWorkAndRetiresTheCheckout",
               "kind": "e2e"
             }
@@ -13006,7 +14884,7 @@
           "references": [
             {
               "path": "internal/worktrees/worktrees_test.go",
-              "name": "TestGuardRejectsFeatureBranchesAndChangesInCanonicalClone",
+              "name": "TestGuardAcceptsAnyBranchInACanonicalCloneAndRejectsChanges",
               "kind": "integration"
             },
             {
@@ -13058,6 +14936,7 @@
     {
       "id": "wb.worktree.info",
       "feature_refs": [
+        "spec/features/shared-worktree-coordination/README.md",
         "spec/features/work-log/README.md"
       ],
       "since": "unreleased",
@@ -13071,7 +14950,7 @@
                 "--format"
               ],
               "modes": [
-                "Read-only redacted summary of manifest, claim identity, prompt ordinals/digests, and live Git evidence for one worktree."
+                "Read-only redacted summary of manifest, claim identity, prompt ordinals/digests, live Git evidence, one effective owner and joined sessions for one worktree."
               ]
             }
           ],
@@ -13124,6 +15003,66 @@
       "notes": "Safe default inspect surface. Prompt bodies are never included; use wb worktree log for the private agent dump."
     },
     {
+      "id": "wb.worktree.join",
+      "feature_refs": [
+        "spec/features/shared-worktree-coordination/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree join",
+              "flags": [],
+              "modes": [
+                "Join an already explicitly owned linked worktree without changing its owner or immutable claim."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree join --help",
+              "contains": [
+                "Join",
+                "worktree"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/SKILL.md",
+              "marker": "# WB worktrees",
+              "examples": [
+                "wb worktree join ."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/cli/cmdworktree/integration/collaboration_original_test.go",
+              "name": "TestCollaborationCommandsOwnerJoinMessageAndTransfer",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Opt-in local cooperation. Messages and acknowledgements do not prove work completion; no edit lease, daemon, idle wakeup or automatic Git operation isolation is installed."
+    },
+    {
       "id": "wb.worktree.land",
       "feature_refs": [
         "spec/features/agent-sdlc-throughput/README.md",
@@ -13146,6 +15085,7 @@
                 "--check-timeout",
                 "--cleanup",
                 "--cli",
+                "--defer-direct-ci-pr",
                 "--format",
                 "--lane-reason",
                 "--model",
@@ -13200,7 +15140,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/worktree_merge_test.go",
+              "path": "internal/cli/cmdworktree/merge_original_test.go",
               "name": "TestWorktreeLandDefaultsToCleanup",
               "kind": "unit"
             }
@@ -13209,6 +15149,66 @@
         }
       },
       "notes": "The primary completion verb validates one candidate, proves the remote landing receipt, and defaults receipt-gated cleanup on."
+    },
+    {
+      "id": "wb.worktree.leave",
+      "feature_refs": [
+        "spec/features/shared-worktree-coordination/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree leave",
+              "flags": [],
+              "modes": [
+                "Leave only after transferring current ownership."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree leave --help",
+              "contains": [
+                "Leave",
+                "worktree"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/SKILL.md",
+              "marker": "# WB worktrees",
+              "examples": [
+                "wb worktree leave ."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/cli/cmdworktree/integration/collaboration_original_test.go",
+              "name": "TestCollaborationCommandsOwnerJoinMessageAndTransfer",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Opt-in local cooperation. Messages and acknowledgements do not prove work completion; no edit lease, daemon, idle wakeup or automatic Git operation isolation is installed."
     },
     {
       "id": "wb.worktree.list",
@@ -14321,6 +16321,7 @@
                 "--check-timeout",
                 "--cleanup",
                 "--cli",
+                "--defer-direct-ci-pr",
                 "--format",
                 "--lane-reason",
                 "--model",
@@ -14386,7 +16387,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/worktree_merge_test.go",
+              "path": "internal/cli/cmdworktree/merge_original_test.go",
               "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney",
               "kind": "integration"
             },
@@ -14439,7 +16440,7 @@
               ],
               "modes": [
                 "Proves, source by source, that every receipted source of an unpublished prepare conflict is already reachable from the freshly fetched current remote target by graph ancestry, path by path identical-blob content absorption, or lines-absorbed proof for a *.jsonl append-only ledger path",
-                "Accepts only a prepare-phase conflict receipt with no published candidate and no landing SHA whose every receipted source worktree is already gone from disk, and never reads or requires a receipted source worktree",
+                "Accepts an unpublished prepare conflict, or a land conflict whose published candidate, candidate, previous target, and target SHA are identical with no branch pull request, landing SHA, live worktree, or live source/candidate branch and strict ancestry for every source",
                 "Repeatable --derived-path audits an operator exclusion for one known generated-index shape (spec/**/README.md) that also exists on the fetched target, recorded in the sidecar alongside the actor and reason"
               ]
             }
@@ -14758,7 +16759,7 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/worktree_merge_test.go",
+              "path": "internal/cli/cmdworktree/merge_original_test.go",
               "name": "TestWorktreeMergeReceiptCollisionCommandRequiresExpectedEvidence",
               "kind": "integration"
             }
@@ -14767,6 +16768,96 @@
         }
       },
       "notes": "This incident-specific recovery never edits the receipt or Work Log, and rebatch/cleanup re-read the acknowledgement before using its historical candidate evidence."
+    },
+    {
+      "id": "wb.worktree.merge.acknowledge-retired-prepare-candidate",
+      "feature_refs": [
+        "spec/features/mechanical-worktree-merge/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree merge acknowledge-retired-prepare-candidate",
+              "flags": [
+                "--actor",
+                "--apply",
+                "--format",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ],
+              "modes": [
+                "Proves one clean unpublished legacy empty-candidate prepare/conflict checkout remains exactly at the receipt target SHA after the recorded target ref was deleted",
+                "Requires the exact unchanged receipt bytes, complete source identity distinct from the candidate, a freshly resolved default branch, and fresh candidate/default acknowledgement ancestry into its fetched target without asserting source absorption",
+                "Writes an append-only candidate-only acknowledgement; adoption and ordinary cleanup revalidate it without rewriting the receipt or freeing the historical merge lane"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree merge acknowledge-retired-prepare-candidate --help",
+              "contains": [
+                "unpublished legacy prepare/conflict candidate",
+                "default target",
+                "never asserts",
+                "--apply",
+                "--actor",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/worktree-merge.md",
+              "marker": "# Mechanical worktree merge",
+              "examples": [
+                "wb worktree merge acknowledge-retired-prepare-candidate <merge-receipt> --apply --actor <operator> --reason <reason>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/worktree_merge_retired_prepare_candidate_test.go",
+              "name": "TestValidateRetiredPrepareCandidateReceiptRejectsCandidateOrSourceConfusion",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/worktrees/retired_prepare_candidate_ack_test.go",
+              "name": "TestAdoptCurrentLayoutOnlyWithRetiredPrepareCandidateAcknowledgement",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/retired_prepare_candidate_ack_test.go",
+              "name": "TestCleanupRecoversRetiredPrepareCandidateAfterRecordedTargetDeleted",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/retired_prepare_candidate_ack_test.go",
+              "name": "TestRetiredPrepareCandidateAcknowledgementRejectsChangedDefaultTarget",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Candidate-only recovery for a historical failed prepare receipt whose recorded target branch disappeared after its exact candidate commit reached the remote default branch. The acknowledgement says nothing about source absorption, and cleanup uses the ordinary descriptor-safe transaction only after rechecking the fresh default target and candidate publication state."
     },
     {
       "id": "wb.worktree.merge.acknowledge-retired-publication",
@@ -14904,8 +16995,8 @@
                 "--reason"
               ],
               "modes": [
-                "Accepts only an unpublished prepare/validation_failed receipt with no landing SHA, pull request, or published candidate SHA",
-                "Freshly proves that the candidate branch is absent from the remote, the candidate is not reachable from the remote target, and every exact receipted source remains clean and actively claimed",
+                "Accepts an unpublished prepare/validation_failed, interrupted prepare/preparing, or retired land/validation_failed receipt with no recorded landing SHA, pull request, or published candidate SHA",
+                "Freshly proves that the candidate branch is absent from the remote, the candidate is not reachable from the remote target, and every exact receipted source remains clean and actively claimed or has exact cleanup and independent pull-request landing proof",
                 "Writes only an append-only acknowledgement; the receipt, candidate, sources, branches, and Work Logs remain unchanged while a different source set may acquire the lane"
               ]
             }
@@ -15035,6 +17126,93 @@
       "notes": "This recovers a land/conflict receipt whose own landing-result read failed on I/O or environment error, typically because the candidate worktree was already removed before a resume could confirm the server landing. Unlike acknowledge-landed-failed it depends on no local worktree at all; containment is proved purely against GitHub's remote state and rechecked live under the lane lock at apply time."
     },
     {
+      "id": "wb.worktree.merge.acknowledge-target-absorbed",
+      "feature_refs": [
+        "spec/features/mechanical-worktree-merge/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree merge acknowledge-target-absorbed",
+              "flags": [
+                "--actor",
+                "--apply",
+                "--format",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ],
+              "modes": [
+                "Proves every recorded source, candidate, and landing commit of a non-complete receipt is an ancestor of the freshly fetched remote target",
+                "Records an immutable acknowledgement bound to the receipt's exact bytes so the receipt no longer owns its merger lane, without rewriting it"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree merge acknowledge-target-absorbed --help",
+              "contains": [
+                "separate immutable acknowledgement",
+                "--apply",
+                "--actor",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/worktree-merge.md",
+              "marker": "# Mechanical worktree merge",
+              "examples": [
+                "wb worktree merge acknowledge-target-absorbed [merge-receipt...] --apply --actor <operator> --reason <reason>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/worktree_merge_target_absorbed_e2e_test.go",
+              "name": "TestE2EPrepareReleasesLaneHeldByPreparedReceiptWhoseCandidateAlreadyLanded",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_target_absorbed_e2e_test.go",
+              "name": "TestE2ESweepTargetAbsorbedReceiptsDryRunThenApply",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_target_absorbed_test.go",
+              "name": "TestTargetAbsorptionGateHoldsLandedReceiptsUntilPostTargetCIPassedAndSettled",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/cli/cmdworktree/merge_target_absorbed_test.go",
+              "name": "TestAcknowledgeTargetAbsorbedReportsEachSweptReceipt",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "The merge prepare and land lane scan writes the same acknowledgement on demand; this verb only clears lanes before their next lander. Live candidate branch heads must be on the target too; landed receipts need passed post-target CI for the exact landing and a 15-minute quiet period; preparing and landed_post_target_ci_failed receipts are never released, and any proof or write failure keeps the lane blocked."
+    },
+    {
       "id": "wb.worktree.merge.adopt-published-candidate",
       "feature_refs": [
         "spec/features/mechanical-worktree-merge/README.md"
@@ -15104,7 +17282,7 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/worktree_merge_test.go",
+              "path": "internal/cli/cmdworktree/merge_original_test.go",
               "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney",
               "kind": "integration"
             }
@@ -15190,7 +17368,7 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/worktree_merge_test.go",
+              "path": "internal/cli/cmdworktree/merge_original_test.go",
               "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney",
               "kind": "integration"
             }
@@ -15217,6 +17395,7 @@
                 "--allow-unfenced",
                 "--check-interval",
                 "--cleanup",
+                "--defer-direct-ci-pr",
                 "--format",
                 "--lane-reason",
                 "--on-failure",
@@ -15276,7 +17455,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/worktree_merge_test.go",
+              "path": "internal/cli/cmdworktree/merge_original_test.go",
               "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney",
               "kind": "integration"
             }
@@ -15304,6 +17483,7 @@
                 "--allow-saturated-host",
                 "--check-timeout",
                 "--cli",
+                "--defer-direct-ci-pr",
                 "--format",
                 "--lane-reason",
                 "--model",
@@ -15369,13 +17549,13 @@
           "status": "Full",
           "references": [
             {
-              "path": "internal/orchestrate/worktree_merge_test.go",
-              "name": "TestPrepareWorktreeMergeCreatesIsolatedConsumableCandidate",
+              "path": "internal/orchestrate/worktree_merge_e2e_test.go",
+              "name": "TestE2EPrepareWorktreeMergeCreatesIsolatedConsumableCandidate",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/worktree_merge_test.go",
-              "name": "TestPrepareWorktreeMergeCarriesForwardRepairAfterTargetCIFailure",
+              "path": "internal/orchestrate/worktree_merge_e2e_test.go",
+              "name": "TestE2EPrepareWorktreeMergeCarriesForwardRepairAfterTargetCIFailure",
               "kind": "integration"
             }
           ],
@@ -15479,7 +17659,7 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/worktree_merge_test.go",
+              "path": "internal/cli/cmdworktree/merge_original_test.go",
               "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney",
               "kind": "integration"
             }
@@ -15584,7 +17764,7 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/worktree_merge_test.go",
+              "path": "internal/cli/cmdworktree/merge_original_test.go",
               "name": "TestWorktreeMergePublishedForwardRepairCommandRequiresPinnedEvidence",
               "kind": "integration"
             }
@@ -15614,6 +17794,7 @@
                 "--prepare-timeout",
                 "--shard-attempt-timeout",
                 "--cleanup",
+                "--defer-direct-ci-pr",
                 "--format",
                 "--lane-reason",
                 "--on-failure",
@@ -15675,7 +17856,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/worktree_merge_test.go",
+              "path": "internal/cli/cmdworktree/merge_original_test.go",
               "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney",
               "kind": "integration"
             },
@@ -15685,8 +17866,8 @@
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/worktree_merge_test.go",
-              "name": "TestLandWorktreeMergeResumeValidationStillFailingStaysBlocked",
+              "path": "internal/orchestrate/worktree_merge_e2e_test.go",
+              "name": "TestE2ELandWorktreeMergeResumeValidationStillFailingStaysBlocked",
               "kind": "integration"
             },
             {
@@ -15700,13 +17881,13 @@
               "kind": "unit"
             },
             {
-              "path": "internal/orchestrate/worktree_merge_test.go",
-              "name": "TestLandWorktreeMergeLandPhaseResumeRefusesUnrevalidatedAdvancedCandidate",
+              "path": "internal/orchestrate/worktree_merge_e2e_test.go",
+              "name": "TestE2ELandWorktreeMergeLandPhaseResumeRefusesUnrevalidatedAdvancedCandidate",
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/worktree_merge_test.go",
-              "name": "TestLandWorktreeMergeLandPhaseResumeRevalidatesAdvancedCandidateThenPushes",
+              "path": "internal/orchestrate/worktree_merge_e2e_test.go",
+              "name": "TestE2ELandWorktreeMergeLandPhaseResumeRevalidatesAdvancedCandidateThenPushes",
               "kind": "integration"
             }
           ],
@@ -15732,6 +17913,7 @@
                 "--allow-unfenced",
                 "--check-interval",
                 "--cleanup",
+                "--defer-direct-ci-pr",
                 "--format",
                 "--lane-reason",
                 "--on-failure",
@@ -15787,7 +17969,7 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/worktree_merge_test.go",
+              "path": "internal/cli/cmdworktree/merge_original_test.go",
               "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney",
               "kind": "integration"
             }
@@ -15965,6 +18147,189 @@
         }
       },
       "notes": "The separate transition is for an unlanded prepare failure only; its acknowledgement binds the exact receipt hash, current remote target, replacement identity, and immutable source roots without modifying a receipt or Work Log."
+    },
+    {
+      "id": "wb.worktree.message.ack",
+      "feature_refs": [
+        "spec/features/shared-worktree-coordination/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree message ack",
+              "flags": [],
+              "modes": [
+                "Acknowledge consumption of the next exact inbox message."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree message send --help",
+              "contains": [
+                "--to-session",
+                "--idempotency-key",
+                "--message-file"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/SKILL.md",
+              "marker": "# WB worktrees",
+              "examples": [
+                "wb worktree message ack . <message-id>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/cli/cmdworktree/integration/collaboration_original_test.go",
+              "name": "TestCollaborationCommandsOwnerJoinMessageAndTransfer",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Opt-in local cooperation. Messages and acknowledgements do not prove work completion; no edit lease, daemon, idle wakeup or automatic Git operation isolation is installed."
+    },
+    {
+      "id": "wb.worktree.message.inbox",
+      "feature_refs": [
+        "spec/features/shared-worktree-coordination/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree message inbox",
+              "flags": [],
+              "modes": [
+                "Read unacknowledged local messages and the latest independent owner notice."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree message inbox --help",
+              "contains": [
+                "inbox"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/SKILL.md",
+              "marker": "# WB worktrees",
+              "examples": [
+                "wb worktree message inbox ."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/cli/cmdworktree/integration/collaboration_original_test.go",
+              "name": "TestCollaborationCommandsOwnerJoinMessageAndTransfer",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Opt-in local cooperation. Messages and acknowledgements do not prove work completion; no edit lease, daemon, idle wakeup or automatic Git operation isolation is installed."
+    },
+    {
+      "id": "wb.worktree.message.send",
+      "feature_refs": [
+        "spec/features/shared-worktree-coordination/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree message send",
+              "flags": [
+                "--idempotency-key",
+                "--message-file",
+                "--to-session"
+              ],
+              "modes": [
+                "Record a bounded private peer message with a stable client retry key."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree message ack --help",
+              "contains": [
+                "message-id"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/SKILL.md",
+              "marker": "# WB worktrees",
+              "examples": [
+                "wb worktree message send . --to-session <wb-session-id> --idempotency-key <key> --message-file <file>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/cli/cmdworktree/integration/collaboration_original_test.go",
+              "name": "TestCollaborationCommandsOwnerJoinMessageAndTransfer",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Opt-in local cooperation. Messages and acknowledgements do not prove work completion; no edit lease, daemon, idle wakeup or automatic Git operation isolation is installed."
     },
     {
       "id": "wb.worktree.orphans",
@@ -16163,6 +18528,73 @@
         }
       },
       "notes": "Prompt text must never enter source Git, generic operational events/projections, a Git fallback/mirror, or normal output; public state carries only a digest and authorized receipt."
+    },
+    {
+      "id": "wb.worktree.rebind",
+      "feature_refs": [
+        "spec/features/shared-worktree-coordination/README.md",
+        "spec/features/work-log/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree rebind",
+              "flags": [
+                "--expected-root"
+              ],
+              "modes": [
+                "Repairs a stale collaboration root only after the prior path was retired and Git reused the linked-worktree identity",
+                "Requires the exact recorded prior root, an absent old path, and matching GitDir and CommonDir",
+                "Requires a live admitted WB session and does not change ownership or infer a checkout identity"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree rebind --help",
+              "contains": [
+                "prior worktree root",
+                "retired",
+                "--expected-root",
+                "live admitted WB session"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/references/lifecycle.md",
+              "marker": "## Rebind a stale root after worktree reuse",
+              "examples": [
+                "wb worktree rebind <current-path> --expected-root <retired-path>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/worktree_collaboration_test.go",
+              "name": "TestWorktreeRebindCommandRequiresExpectedRootAndRecordsAudit",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "A narrow repair for a retired checkout root reused by Git; it is owner- and session-authorized, exact-root-bound, and append-only."
     },
     {
       "id": "wb.worktree.relocate",
@@ -16464,6 +18896,81 @@
       "notes": "Preserving and discarding are separate decisions on purpose. git stash is deliberately unused: its stack is shared with every linked worktree, and git stash create omits untracked files, which is exactly the content most at risk. The clean that --restore runs omits -x so ignored paths, including WB's own generated marker, survive."
     },
     {
+      "id": "wb.worktree.retire",
+      "feature_refs": [
+        "spec/features/branch-hygiene/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree retire",
+              "flags": [
+                "--apply",
+                "--format",
+                "--json",
+                "--message",
+                "--preserve",
+                "--mode",
+                "--initiator"
+              ],
+              "modes": [
+                "Dry-run is the default; --apply commits outstanding source changes with normal hooks",
+                "Preserves the exact source commit at retired/* as a branch by default, or as refs/tags/retired/* with --preserve=tag, then archives actual plain Work Log files and worktree metadata in the configured private organization retirement repository",
+                "Verifies both remote receipts before deleting the original remote ref with an exact lease and removing the local worktree and branch",
+                "Refuses open pull requests, competing ownership, changed refs, and unavailable or public retirement repositories; interrupted applies resume from durable intent"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree retire --help",
+              "contains": [
+                "dry run",
+                "private",
+                "--apply",
+                "--preserve",
+                "--mode",
+                "--initiator"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/references/lifecycle.md",
+              "marker": "wb worktree retire",
+              "examples": [
+                "wb worktree retire <task> --apply"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/worktrees/retire_test.go",
+              "name": "TestRetireBareRemotePreservesSourceAndPlainWorkLog",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Retirement preserves the source commit in the original repository and records actual plain Work Log files and worktree metadata in a separate private organization repository."
+    },
+    {
       "id": "wb.worktree.set",
       "feature_refs": [
         "spec/features/work-log/README.md"
@@ -16602,6 +19109,132 @@
         }
       },
       "notes": "Task-scoped brief overview of live linked checkouts only; archived Work Log history is not joined. Contrasts with list (flat inventory, optional task) and info/log (single-checkout journal views)."
+    },
+    {
+      "id": "wb.worktree.take-ownership",
+      "feature_refs": [
+        "spec/features/shared-worktree-coordination/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree take-ownership",
+              "flags": [
+                "--expected-owner",
+                "--force",
+                "--reason"
+              ],
+              "modes": [
+                "Compare the exact current or observed owner under lock; force requires an audited reason and never bypasses comparison."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree take-ownership --help",
+              "contains": [
+                "--expected-owner",
+                "--force",
+                "--reason"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/SKILL.md",
+              "marker": "# WB worktrees",
+              "examples": [
+                "wb worktree take-ownership . --expected-owner none"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/cli/cmdworktree/integration/collaboration_original_test.go",
+              "name": "TestCollaborationCommandsOwnerJoinMessageAndTransfer",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Opt-in local cooperation. Messages and acknowledgements do not prove work completion; no edit lease, daemon, idle wakeup or automatic Git operation isolation is installed."
+    },
+    {
+      "id": "wb.worktree.transfer-ownership",
+      "feature_refs": [
+        "spec/features/shared-worktree-coordination/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree transfer-ownership",
+              "flags": [
+                "--to-session"
+              ],
+              "modes": [
+                "The authenticated current owner appoints a live joined successor."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree transfer-ownership --help",
+              "contains": [
+                "--to-session"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/SKILL.md",
+              "marker": "# WB worktrees",
+              "examples": [
+                "wb worktree transfer-ownership . --to-session <wb-session-id>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/cli/cmdworktree/integration/collaboration_original_test.go",
+              "name": "TestCollaborationCommandsOwnerJoinMessageAndTransfer",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Opt-in local cooperation. Messages and acknowledgements do not prove work completion; no edit lease, daemon, idle wakeup or automatic Git operation isolation is installed."
     }
   ]
 }

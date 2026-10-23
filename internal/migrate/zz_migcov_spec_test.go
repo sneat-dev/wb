@@ -6,6 +6,7 @@ import (
 )
 
 func TestMigCovSpecValidateRejectsEveryMalformedShape(t *testing.T) {
+	t.Parallel()
 	validStep := Step{Kind: "text.replace", From: "old", To: "new"}
 	validRule := ReviewRule{ID: "rule", Pattern: "old", Message: "review"}
 	base := func() Spec {
@@ -50,6 +51,7 @@ func TestMigCovSpecValidateRejectsEveryMalformedShape(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			spec := base()
 			test.mutate(&spec)
 			err := spec.Validate()
@@ -67,6 +69,7 @@ func TestMigCovSpecValidateRejectsEveryMalformedShape(t *testing.T) {
 }
 
 func TestMigCovStepValidateRejectsEachKindGap(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		step Step
@@ -95,6 +98,7 @@ func TestMigCovStepValidateRejectsEachKindGap(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			err := test.step.Validate()
 			if test.want == "" {
 				if err != nil {
@@ -110,6 +114,7 @@ func TestMigCovStepValidateRejectsEachKindGap(t *testing.T) {
 }
 
 func TestMigCovReviewRuleValidateRejectsEachGap(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		rule ReviewRule
@@ -125,6 +130,7 @@ func TestMigCovReviewRuleValidateRejectsEachGap(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			err := test.rule.Validate()
 			if test.want == "" {
 				if err != nil {
@@ -140,6 +146,7 @@ func TestMigCovReviewRuleValidateRejectsEachGap(t *testing.T) {
 }
 
 func TestMigCovLoadRejectsMalformedDocuments(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		contents string
@@ -184,6 +191,7 @@ func TestMigCovLoadRejectsMalformedDocuments(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			path := migCovWriteFile(t, "spec.hcl", test.contents)
 			_, err := Load(path)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
@@ -194,6 +202,7 @@ func TestMigCovLoadRejectsMalformedDocuments(t *testing.T) {
 }
 
 func TestMigCovLoadDecodesEveryBlockKind(t *testing.T) {
+	t.Parallel()
 	contents := `format = "` + MigrationFormatV1 + `"
 
 migration "everything" {

@@ -108,6 +108,7 @@ func TestDaemonServiceRejectsOversizedRequestFields(t *testing.T) {
 	}
 	for _, check := range checks {
 		t.Run(check.name, func(t *testing.T) {
+			t.Parallel()
 			_, err := service.SubmitOperation(context.Background(), connect.NewRequest(check.request))
 			if connect.CodeOf(err) != connect.CodeInvalidArgument || !strings.Contains(err.Error(), check.want) {
 				t.Fatalf("oversize error = %v", err)
@@ -320,6 +321,7 @@ func waitForTestOperation(t *testing.T, service *Service, operation *daemonv1.Op
 }
 
 func TestDaemonServiceHelperProcess(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("WB_DAEMON_TEST_HELPER") != "1" {
 		return
 	}

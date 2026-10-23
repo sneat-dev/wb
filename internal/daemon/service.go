@@ -19,8 +19,10 @@ import (
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	daemonv1 "github.com/sneat-dev/wb/internal/gen/wb/daemon/v1"
 	"github.com/sneat-dev/wb/internal/process"
+	"github.com/sneat-dev/wb/internal/runenv"
 	"github.com/sneat-dev/wb/internal/runqueue"
 )
 
@@ -87,11 +89,7 @@ func NewService(projectsRoot, operationsDirectory, build, generation string, aut
 		return nil, fmt.Errorf("create daemon operation store: %w", err)
 	}
 	if generation == "" {
-		var err error
-		generation, err = randomID("wbg-")
-		if err != nil {
-			return nil, err
-		}
+		generation = randomID("wbg-")
 	}
 	service := &Service{
 		projects: projectsRoot, directory: directory, build: build,
@@ -261,11 +259,7 @@ func (service *Service) SubmitOperation(_ context.Context, request *connect.Requ
 			return connect.NewResponse(operation), nil
 		}
 	}
-	id, err := randomID("wbo-")
-	if err != nil {
-		service.mu.Unlock()
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
+	id := randomID("wbo-")
 	now := service.now()
 	operation := &daemonv1.Operation{
 		SchemaVersion: QueueSchema, OperationId: id, IdempotencyKey: input.IdempotencyKey,
@@ -433,7 +427,7 @@ func (service *Service) execute(id string) {
 	service.notifyLocked()
 	argv := append([]string(nil), item.Argv...)
 	workingDir := item.WorkingDir
-	environment := governedChildEnvironment(os.Environ(), argv, item.Environment, id, units)
+	environment := runenv.Daemon(os.Environ(), argv, item.Environment, id, units, runqueue.EffectiveGOFLAGS())
 	service.mu.Unlock()
 
 	var stdout, stderr tailBuffer
@@ -511,28 +505,38 @@ func (service *Service) persistLocked(item *record) error {
 }
 
 func (service *Service) persistRecord(item *record) error {
-	contents, err := json.MarshalIndent(item, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encode daemon operation: %w", err)
-	}
+	return service.persistRecordInjected(item, nil)
+}
+
+// persistRecordInjected is persistRecord's test seam (task-9 PR-7): every
+// production call site reaches it only through persistRecord, which always
+// passes a nil *filewrite.Injector, so production behaviour is unchanged. A
+// test passes its own Injector to reach the create/write/sync/close/rename
+// failure branches deterministically. filewrite.CreateOrTruncatePath uses
+// the identical O_WRONLY|O_CREATE|O_TRUNC flag set the original
+// os.OpenFile call used.
+func (service *Service) persistRecordInjected(item *record, inj *filewrite.Injector) error {
+	// record and its generated Operation expose only primitive JSON fields,
+	// string maps and byte/string slices, with no custom JSON marshalers.
+	contents, _ := json.MarshalIndent(item, "", "  ")
 	path := filepath.Join(service.directory, item.Operation.OperationId+".json")
 	temporary := path + ".tmp"
-	file, err := os.OpenFile(temporary, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	file, err := filewrite.CreateOrTruncatePath(temporary, 0o600, inj)
 	if err != nil {
 		return fmt.Errorf("write daemon operation: %w", err)
 	}
-	if _, err := file.Write(contents); err != nil {
-		_ = file.Close()
+	if err := filewrite.Write(file, contents, temporary, inj); err != nil {
+		_ = filewrite.Close(file, temporary, inj)
 		return fmt.Errorf("write daemon operation: %w", err)
 	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
+	if err := filewrite.Sync(file, temporary, inj); err != nil {
+		_ = filewrite.Close(file, temporary, inj)
 		return fmt.Errorf("sync daemon operation: %w", err)
 	}
-	if err := file.Close(); err != nil {
+	if err := filewrite.Close(file, temporary, inj); err != nil {
 		return fmt.Errorf("close daemon operation: %w", err)
 	}
-	if err := os.Rename(temporary, path); err != nil {
+	if err := filewrite.Rename(temporary, path, inj); err != nil {
 		return fmt.Errorf("publish daemon operation: %w", err)
 	}
 	return nil
@@ -565,12 +569,11 @@ func cloneOperation(operation *daemonv1.Operation) *daemonv1.Operation {
 	return proto.Clone(operation).(*daemonv1.Operation)
 }
 
-func randomID(prefix string) (string, error) {
+func randomID(prefix string) string {
 	value := make([]byte, 16)
-	if _, err := rand.Read(value); err != nil {
-		return "", fmt.Errorf("generate daemon ID: %w", err)
-	}
-	return prefix + hex.EncodeToString(value), nil
+	// Go 1.27 crypto/rand.Read fills the buffer or terminates the process.
+	_, _ = rand.Read(value)
+	return prefix + hex.EncodeToString(value)
 }
 
 func nextCursor(cursor string) string {
@@ -639,36 +642,6 @@ func allowedEnvironment(input map[string]string) (map[string]string, error) {
 		result[key] = value
 	}
 	return result, nil
-}
-
-func governedChildEnvironment(base []string, argv []string, additions map[string]string, operationID string, units int) []string {
-	result := mergeEnvironment(base, additions)
-	cpuAdditions := map[string]string{
-		"GOMAXPROCS":      runqueue.GovernGOMAXPROCS(runqueue.LookupEnv(base, "GOMAXPROCS"), units),
-		"NX_PARALLEL":     fmt.Sprint(units),
-		"WB_CPU_UNITS":    fmt.Sprint(units),
-		"WB_OPERATION_ID": operationID,
-	}
-	if goFlags := runqueue.GovernGoFlags(argv, runqueue.EffectiveGOFLAGS(), units); goFlags != "" {
-		cpuAdditions["GOFLAGS"] = goFlags
-	}
-	result = mergeEnvironment(result, cpuAdditions)
-	return result
-}
-
-func mergeEnvironment(base []string, additions map[string]string) []string {
-	result := append([]string(nil), base...)
-	for key, value := range additions {
-		prefix := key + "="
-		filtered := result[:0]
-		for _, entry := range result {
-			if !strings.HasPrefix(entry, prefix) {
-				filtered = append(filtered, entry)
-			}
-		}
-		result = append(filtered, prefix+value)
-	}
-	return result
 }
 
 type tailBuffer struct{ bytes.Buffer }

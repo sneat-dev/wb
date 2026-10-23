@@ -22,6 +22,7 @@ func findingCodes(findings []Finding, code string) int {
 // installs a tool with no pinned version reddens the gate on a tree nobody
 // touched the next time the vendor ships a change.
 func TestAuditReportsUnpinnedToolInstalls(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		workflow string
@@ -75,6 +76,7 @@ jobs:
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			root := t.TempDir()
 			write(t, root, ".github/workflows/ci.yml", testCase.workflow)
 			report, err := Audit(root)
@@ -92,6 +94,7 @@ jobs:
 // construct above, done the pinned way, and the constructs that merely look
 // similar.
 func TestAuditAllowsPinnedToolInstalls(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		workflow string
@@ -192,6 +195,7 @@ jobs:
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			root := t.TempDir()
 			write(t, root, ".github/workflows/ci.yml", testCase.workflow)
 			report, err := Audit(root)

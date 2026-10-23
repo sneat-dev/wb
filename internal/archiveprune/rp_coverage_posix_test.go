@@ -44,7 +44,9 @@ func TestRPCovCleanReportsARemovalFailureAfterEligibility(t *testing.T) {
 }
 
 func TestRPCovPlanUntrackedRejectsUnreadableAndSpecialEntries(t *testing.T) {
+	t.Parallel()
 	t.Run("unreadable file", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		mustWriteFile(t, filepath.Join(root, "secret.txt"), "secret\n")
 		rpCovRestrict(t, filepath.Join(root, "secret.txt"), 0o000)
@@ -55,6 +57,7 @@ func TestRPCovPlanUntrackedRejectsUnreadableAndSpecialEntries(t *testing.T) {
 	})
 
 	t.Run("unreadable directory", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		mustMkdirAll(t, filepath.Join(root, "locked"))
 		rpCovRestrict(t, filepath.Join(root, "locked"), 0o000)
@@ -68,6 +71,7 @@ func TestRPCovPlanUntrackedRejectsUnreadableAndSpecialEntries(t *testing.T) {
 	})
 
 	t.Run("unreadable nested file", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		mustWriteFile(t, filepath.Join(root, "nested", "secret.txt"), "secret\n")
 		rpCovRestrict(t, filepath.Join(root, "nested", "secret.txt"), 0o000)
@@ -77,6 +81,7 @@ func TestRPCovPlanUntrackedRejectsUnreadableAndSpecialEntries(t *testing.T) {
 	})
 
 	t.Run("special file", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		fifo := filepath.Join(root, "pipe")
 		if err := syscall.Mkfifo(fifo, 0o600); err != nil {
@@ -90,6 +95,7 @@ func TestRPCovPlanUntrackedRejectsUnreadableAndSpecialEntries(t *testing.T) {
 }
 
 func TestRPCovCleanAuthorizedUntrackedReportsReceiptWriteFailure(t *testing.T) {
+	t.Parallel()
 	repo := discover.Repo{Org: "acme", Name: "widgets", Path: t.TempDir()}
 	planned := Result{
 		Repository: repo.Slug(), Path: repo.Path,
@@ -229,6 +235,7 @@ func TestRPCovWriteArchiveCleanReceiptReportsAnUnwritableDirectory(t *testing.T)
 }
 
 func TestRPCovRemoveExactPathAtReportsADirectoryThatCannotBeOpened(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	locked := filepath.Join(root, "locked")
 	if err := os.Mkdir(locked, 0o700); err != nil {
@@ -249,7 +256,7 @@ func TestRPCovRemoveExactPathAtReportsADirectoryThatCannotBeOpened(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = rootFile.Close() }()
+	t.Cleanup(func() { _ = rootFile.Close() })
 
 	err = removeExactPathAt(rootFile, root, "locked", manifest, 0)
 	if err == nil || !strings.Contains(err.Error(), "open untracked directory") {
@@ -258,7 +265,9 @@ func TestRPCovRemoveExactPathAtReportsADirectoryThatCannotBeOpened(t *testing.T)
 }
 
 func TestRPCovRemoveExactPathAtReportsUnlinkFailures(t *testing.T) {
+	t.Parallel()
 	t.Run("file", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		mustWriteFile(t, filepath.Join(root, "sub", "file.txt"), "content\n")
 		rpCovRestrict(t, filepath.Join(root, "sub"), 0o500)
@@ -283,6 +292,7 @@ func TestRPCovRemoveExactPathAtReportsUnlinkFailures(t *testing.T) {
 	})
 
 	t.Run("directory", func(t *testing.T) {
+		t.Parallel()
 		root := t.TempDir()
 		mustMkdirAll(t, filepath.Join(root, "sub", "inner"))
 		rpCovRestrict(t, filepath.Join(root, "sub"), 0o500)

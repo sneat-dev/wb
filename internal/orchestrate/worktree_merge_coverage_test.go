@@ -173,6 +173,9 @@ func TestOrchCovValidateExactPreparingReceiptAdmitsOnlyAnExactResume(t *testing.
 			},
 		},
 	} {
+		// Left serial: several cases and the trailing dirty-worktree check
+		// below share the same real sourceWorktree on disk (git pushes,
+		// uncommitted writes), which a parallel sibling would race.
 		t.Run(test.name, func(t *testing.T) {
 			candidate := base
 			test.mutate(&candidate)
@@ -238,6 +241,7 @@ func TestOrchCovValidatePreparingCandidateProvesTheWholeGraph(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			candidate := receipt
 			candidate.Sources = append([]WorktreeMergeSource(nil), receipt.Sources...)
 			test.mutate(&candidate)
@@ -250,6 +254,7 @@ func TestOrchCovValidatePreparingCandidateProvesTheWholeGraph(t *testing.T) {
 }
 
 func TestOrchCovPreparedValidationStillValidNeedsAFingerprintablePass(t *testing.T) {
+	t.Parallel()
 	valid := WorktreeMergeReceipt{
 		Status:    WorktreeMergePrepared,
 		TargetSHA: strings.Repeat("b", 40),
@@ -264,13 +269,13 @@ func TestOrchCovPreparedValidationStillValidNeedsAFingerprintablePass(t *testing
 		t.Fatal("a receipt with no recorded validators could not be fingerprinted")
 	}
 	valid.ValidationIdentity = &identity
-	if ok, err := preparedValidationStillValid(valid, worktreeMergeValidationPlan{}); err != nil || !ok {
+	if ok, err := preparedValidationStillValidContext(context.Background(), valid, worktreeMergeValidationPlan{}, 0, 0, 0); err != nil || !ok {
 		t.Fatalf("exact passed validation = %t, err %v", ok, err)
 	}
 	drifted := valid
 	drifted.Sources = append([]WorktreeMergeSource(nil), valid.Sources...)
 	drifted.Sources[0].SHA = strings.Repeat("e", 40)
-	if ok, err := preparedValidationStillValid(drifted, worktreeMergeValidationPlan{}); err != nil || ok {
+	if ok, err := preparedValidationStillValidContext(context.Background(), drifted, worktreeMergeValidationPlan{}, 0, 0, 0); err != nil || ok {
 		t.Fatalf("source drift = %t, err %v", ok, err)
 	}
 	for _, test := range []struct {
@@ -289,17 +294,18 @@ func TestOrchCovPreparedValidationStillValidNeedsAFingerprintablePass(t *testing
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			candidate := valid
 			test.mutate(&candidate)
-			if ok, err := preparedValidationStillValid(candidate, worktreeMergeValidationPlan{}); err != nil || ok {
+			if ok, err := preparedValidationStillValidContext(context.Background(), candidate, worktreeMergeValidationPlan{}, 0, 0, 0); err != nil || ok {
 				t.Fatalf("invalid receipt = %t, err %v", ok, err)
 			}
 		})
 	}
 }
 
+//nolint:paralleltest // legacy external-process fixture remains serial during runner migration
 func TestOrchCovWorktreeMergeCandidateAbsorbedProvesTreeEquality(t *testing.T) {
-	t.Parallel()
 	dir := orchCovGitRepo(t)
 	base := strings.TrimSpace(runEngineGit(t, dir, "rev-parse", "HEAD"))
 
@@ -380,6 +386,10 @@ func TestOrchCovCanRefreshWorktreeMergeReceiptRequiresAnAdditiveAdvance(t *testi
 			r.PublishedCandidateSHA = oldSHA
 		}},
 	} {
+		// Left serial: the trailing checks below mutate the same real
+		// source.WorktreeDir on disk (dirty write, git push) that
+		// canRefreshWorktreeMergeReceipt inspects here, and parallel
+		// subtests return before their body runs, so it would race.
 		t.Run(test.name, func(t *testing.T) {
 			candidate := prior
 			candidate.Sources = append([]WorktreeMergeSource(nil), prior.Sources...)
@@ -426,8 +436,8 @@ func TestOrchCovCanRefreshWorktreeMergeReceiptRequiresAnAdditiveAdvance(t *testi
 	}
 }
 
+//nolint:paralleltest // legacy external-process fixture remains serial during runner migration
 func TestOrchCovVerifyWorktreeMergeTargetRefusesUnusableInput(t *testing.T) {
-	t.Parallel()
 	dir := orchCovGitRepo(t)
 	head := strings.TrimSpace(runEngineGit(t, dir, "rev-parse", "HEAD"))
 	if _, err := verifyWorktreeMergeTarget(context.Background(), "acme/app", dir, "  ", time.Minute, 0, 0, 0); err == nil ||

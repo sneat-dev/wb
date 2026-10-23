@@ -87,9 +87,16 @@ func TestDepsCovBumpCoreValidateBumpOptionsRefusesEveryInvalidContract(t *testin
 			want:    "at least one --changed module@version event is required",
 		},
 		{
+			// normalizeBumpOptions mutates its events slice in place
+			// (reusing the backing array via events[:0]), so every case
+			// below that reaches that mutation needs its own freshly
+			// allocated slice from depsCovSeedEvents() rather than the
+			// shared valid: parallel subtests sharing one backing array
+			// raced on it under -race once #646 made this test's subtests
+			// parallel (WARNING: DATA RACE, CI run 35995162478).
 			name:    "unsupported ecosystem",
 			options: BumpOptions{Ecosystem: "python", Options: Options{GitHubDir: githubDir}},
-			events:  valid,
+			events:  depsCovSeedEvents(),
 			want:    `unsupported dependency ecosystem "python"`,
 		},
 		{
@@ -116,37 +123,37 @@ func TestDepsCovBumpCoreValidateBumpOptionsRefusesEveryInvalidContract(t *testin
 		{
 			name:    "negative max waves",
 			options: BumpOptions{MaxWaves: -1, Options: Options{GitHubDir: githubDir}},
-			events:  valid,
+			events:  depsCovSeedEvents(),
 			want:    "max waves must be at least 1",
 		},
 		{
 			name:    "negative poll interval",
 			options: BumpOptions{PollInterval: -time.Second, Options: Options{GitHubDir: githubDir}},
-			events:  valid,
+			events:  depsCovSeedEvents(),
 			want:    "release poll interval must not be negative",
 		},
 		{
 			name:    "negative refresh interval",
 			options: BumpOptions{RefreshAfter: -time.Second, Options: Options{GitHubDir: githubDir}},
-			events:  valid,
+			events:  depsCovSeedEvents(),
 			want:    "release refresh interval must not be negative",
 		},
 		{
 			name:    "missing github directory",
 			options: BumpOptions{},
-			events:  valid,
+			events:  depsCovSeedEvents(),
 			want:    "GitHub directory is required",
 		},
 		{
 			name:    "resume without a persisted report",
 			options: BumpOptions{Options: Options{GitHubDir: githubDir, Resume: true}},
-			events:  valid,
+			events:  depsCovSeedEvents(),
 			want:    "--resume requires the persisted deps-bump.yaml report",
 		},
 		{
 			name:    "previous report without resume",
 			options: BumpOptions{Previous: &previous, Options: Options{GitHubDir: githubDir}},
-			events:  valid,
+			events:  depsCovSeedEvents(),
 			want:    "a previous bump report requires --resume",
 		},
 		{
@@ -158,6 +165,7 @@ func TestDepsCovBumpCoreValidateBumpOptionsRefusesEveryInvalidContract(t *testin
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			err := ValidateBumpOptions(testCase.options, testCase.events)
 			if err == nil || !strings.Contains(err.Error(), testCase.want) {
 				t.Fatalf("ValidateBumpOptions error = %v, want it to contain %q", err, testCase.want)
@@ -363,6 +371,7 @@ func TestDepsCovBumpCoreResumeBumpReportRefusesMismatchedIdentity(t *testing.T) 
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			recorder := &depsCovPersist{}
 			options := depsCovResumeOptions()
 			options.Persist = recorder.persist
@@ -393,6 +402,7 @@ func TestDepsCovBumpCoreResumeBumpReportResumesEachWaveState(t *testing.T) {
 	empty := depsCovEmptyReport(seed)
 
 	t.Run("completed campaign is terminal", func(t *testing.T) {
+		t.Parallel()
 		previous := empty
 		previous.Status = "completed"
 		previous.Waves = []BumpWaveReport{{Index: 1, Status: "completed", Events: seed}}
@@ -408,6 +418,7 @@ func TestDepsCovBumpCoreResumeBumpReportResumesEachWaveState(t *testing.T) {
 	})
 
 	t.Run("no waves restarts at wave one", func(t *testing.T) {
+		t.Parallel()
 		previous := empty
 		previous.Status = "awaiting_release"
 		options := depsCovResumeOptions()
@@ -422,6 +433,7 @@ func TestDepsCovBumpCoreResumeBumpReportResumesEachWaveState(t *testing.T) {
 	})
 
 	t.Run("completed last wave accumulates its events", func(t *testing.T) {
+		t.Parallel()
 		previous := empty
 		previous.Status = "running"
 		previous.Waves = []BumpWaveReport{{
@@ -442,6 +454,7 @@ func TestDepsCovBumpCoreResumeBumpReportResumesEachWaveState(t *testing.T) {
 	})
 
 	t.Run("awaiting release completes once the release appears", func(t *testing.T) {
+		t.Parallel()
 		previous := empty
 		previous.Waves = []BumpWaveReport{depsCovAwaitingWave(seed)}
 		recorder := &depsCovPersist{}
@@ -468,6 +481,7 @@ func TestDepsCovBumpCoreResumeBumpReportResumesEachWaveState(t *testing.T) {
 	})
 
 	t.Run("held wave keeps naming the human blocker on failure", func(t *testing.T) {
+		t.Parallel()
 		previous := empty
 		wave := depsCovAwaitingWave(seed)
 		wave.Status = "awaiting_hold_release"
@@ -490,6 +504,7 @@ func TestDepsCovBumpCoreResumeBumpReportResumesEachWaveState(t *testing.T) {
 	})
 
 	t.Run("an interrupted wave is replayed from its own events", func(t *testing.T) {
+		t.Parallel()
 		previous := empty
 		previous.Waves = []BumpWaveReport{{
 			Index: 1, Status: "processing",
@@ -813,8 +828,8 @@ func TestDepsCovBumpCoreRunBumpResumesCompletedAndRefusesMismatchedReports(t *te
 	})
 }
 
+//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
 func TestDepsCovBumpCoreRunBumpSurfacesPersistFailureAtEveryStage(t *testing.T) {
-	t.Parallel()
 	githubDir, repositories := depsCovGoDryRunFleet(t)
 	options := depsCovDryRunBumpOptions(githubDir)
 	seed := depsCovSeedEvents()
@@ -850,8 +865,8 @@ func TestDepsCovBumpCoreRunBumpSurfacesPersistFailureAtEveryStage(t *testing.T) 
 	}
 }
 
+//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
 func TestDepsCovBumpCoreRunBumpSurfacesPersistFailureWhenRecordingCompletion(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	repositories := []Repository{
@@ -871,8 +886,8 @@ func TestDepsCovBumpCoreRunBumpSurfacesPersistFailureWhenRecordingCompletion(t *
 	}
 }
 
+//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
 func TestDepsCovBumpCoreRunBumpFailsDiscoveryOnMalformedRootManifest(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	provider := newBumpRepository(t, root, githubDir, "provider", "module example.com/provider\n\ngo 1.24\n")
@@ -891,8 +906,8 @@ func TestDepsCovBumpCoreRunBumpFailsDiscoveryOnMalformedRootManifest(t *testing.
 	}
 }
 
+//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
 func TestDepsCovBumpCoreRunBumpFailsOnACrossRepositoryCycle(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
 	repositories := []Repository{
@@ -909,8 +924,8 @@ func TestDepsCovBumpCoreRunBumpFailsOnACrossRepositoryCycle(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
 func TestDepsCovBumpCoreRunBumpSurfacesAStaleEventRefreshFailure(t *testing.T) {
-	t.Parallel()
 	githubDir, repositories := depsCovGoDryRunFleet(t)
 	sentinel := errors.New("registry unavailable")
 	options := depsCovDryRunBumpOptions(githubDir)
@@ -1197,8 +1212,8 @@ func depsCovPublishedCarrierFleet(t *testing.T) (string, []Repository) {
 	}
 }
 
+//nolint:paralleltest // calls runnertest.AllowRealProcess (via a fixture helper), which Go's testing package forbids combined with t.Parallel
 func TestDepsCovBumpCoreRunBumpCompletesWhenEveryConsumerAlreadyCarriesTheRelease(t *testing.T) {
-	t.Parallel()
 	githubDir, repositories := depsCovPublishedCarrierFleet(t)
 	report, err := RunBump(context.Background(), depsCovSeedEvents(), repositories, BumpOptions{
 		Options: Options{GitHubDir: githubDir, Ref: "main", Parallel: 1, ParallelExplicit: true, DryRun: true},

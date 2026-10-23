@@ -10,6 +10,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/quality"
+	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -71,6 +72,7 @@ func TestReportWritesLinkedMarkdownAndDeterministicYAML(t *testing.T) {
 }
 
 func TestRepositoryReportEmitsExactDependencyDeltaEvidence(t *testing.T) {
+	t.Parallel()
 	result := orchestrate.Result[[]Decision]{
 		Repository: "acme/app", PR: "https://github.com/acme/app/pull/17", Commit: strings.Repeat("c", 40),
 		Metadata: []Decision{{
@@ -95,6 +97,7 @@ func TestRepositoryReportEmitsExactDependencyDeltaEvidence(t *testing.T) {
 }
 
 func TestProductionReportDeltasPassFullValidatorForSupportedLockfiles(t *testing.T) {
+	t.Parallel()
 	for _, fixture := range []struct {
 		name             string
 		manifest         string
@@ -113,6 +116,7 @@ func TestProductionReportDeltasPassFullValidatorForSupportedLockfiles(t *testing
 		{name: "go-sum", manifest: "go.mod", baseManifest: "module example.com/app\n\nrequire example.com/mod v1.2.2\n", sourceManifest: "module example.com/app\n\nrequire example.com/mod v1.2.3\n", targetManifest: "module example.com/app\n\nrequire example.com/mod v1.2.3\n", lockfile: "go.sum", lockfileContents: "example.com/mod v1.2.3 h1:checksum\n", packageName: "example.com/mod", ecosystem: EcosystemGo, before: "v1.2.2", requested: "v1.2.3"},
 	} {
 		t.Run(fixture.name, func(t *testing.T) {
+			t.Parallel()
 			canonical, source, targetHead, sourceHead := dependencyReportGitFixture(t, fixture.manifest, fixture.baseManifest, fixture.sourceManifest, fixture.targetManifest, fixture.lockfile, fixture.lockfileContents)
 			pr := "https://github.com/acme/app/pull/17"
 			result := orchestrate.Result[[]Decision]{
@@ -158,6 +162,7 @@ func dependencyReportGitFixture(t *testing.T, manifest, baseManifest, sourceMani
 	canonical = filepath.Join(root, "canonical")
 	source = filepath.Join(root, "source")
 	runDependencyGit(t, root, "init", "--bare", "--initial-branch=main", remote)
+	testenv.ConfigureGitAutoMaintenanceOff(t, remote)
 	runDependencyGit(t, root, "clone", remote, canonical)
 	runDependencyGit(t, canonical, "config", "user.email", "test@example.test")
 	runDependencyGit(t, canonical, "config", "user.name", "Test")
@@ -197,6 +202,7 @@ func runDependencyGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	command := exec.Command("git", args...)
 	command.Dir = dir
+	command.Env = testenv.GitAutoMaintenanceOffEnv(os.Environ())
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)

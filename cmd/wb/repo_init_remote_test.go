@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // bareOrigin creates a bare repo and returns its path, for use as an origin
@@ -10,7 +12,7 @@ import (
 func bareOrigin(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	scratchGit(t, dir, "init", "-q", "--bare", "-b", "main")
+	testenv.InitBareRemoteForTest(t, dir)
 	return dir
 }
 

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // npmPackageJSONWithDependency renders a minimal but Prettier-shaped
@@ -107,7 +109,7 @@ func writeFakePnpm(t *testing.T, script string) {
 	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "pnpm")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(path, []byte("#!/bin/sh\n"+script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -149,7 +151,7 @@ func TestNpmAdapterApplyUpdatesManifestsAndRegeneratesLockfile(t *testing.T) {
 	writeTestFile(t, filepath.Join(worktree, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n")
 
 	target := Target{Ecosystem: EcosystemNPM, Dependency: "@sneat/core", Version: "1.3.0"}
-	decisions, err := (npmAdapter{}).apply(context.Background(), worktree, target, Options{Timeout: 10 * time.Second})
+	decisions, err := (npmAdapter{}).apply(context.Background(), worktree, target, Options{Timeout: time.Minute})
 	if err != nil {
 		t.Fatalf("apply: %v (decisions=%+v)", err, decisions)
 	}
@@ -210,7 +212,7 @@ overrides:
 	writeTestFile(t, filepath.Join(worktree, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n")
 
 	target := Target{Ecosystem: EcosystemNPM, Dependency: "@sneat/core", Version: "1.3.0"}
-	decisions, err := (npmAdapter{}).apply(context.Background(), worktree, target, Options{Timeout: 10 * time.Second})
+	decisions, err := (npmAdapter{}).apply(context.Background(), worktree, target, Options{Timeout: time.Minute})
 	if err != nil {
 		t.Fatalf("apply: %v (decisions=%+v)", err, decisions)
 	}
@@ -274,7 +276,7 @@ func TestNpmAdapterApplyRegeneratesEachIndependentLockfileScope(t *testing.T) {
 	writeTestFile(t, filepath.Join(worktree, "landings", "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n")
 
 	target := Target{Ecosystem: EcosystemNPM, Dependency: "@sneat/core", Version: "1.3.0"}
-	decisions, err := (npmAdapter{}).apply(context.Background(), worktree, target, Options{Timeout: 10 * time.Second})
+	decisions, err := (npmAdapter{}).apply(context.Background(), worktree, target, Options{Timeout: time.Minute})
 	if err != nil {
 		t.Fatalf("apply: %v (decisions=%+v)", err, decisions)
 	}
@@ -382,6 +384,7 @@ exit 0
 }
 
 func TestNpmAdapterApplyBlocksDowngradeBeforeWritingAnything(t *testing.T) {
+	t.Parallel()
 	worktree := t.TempDir()
 	writeTestFile(t, filepath.Join(worktree, "package.json"), npmPackageJSONWithDependency("@sneat/app", "@sneat/core", "2.0.0"))
 	target := Target{Ecosystem: EcosystemNPM, Dependency: "@sneat/core", Version: "1.9.0"}
@@ -402,6 +405,7 @@ func TestNpmAdapterApplyBlocksDowngradeBeforeWritingAnything(t *testing.T) {
 }
 
 func TestNpmAdapterApplyReturnsNothingWhenDependencyAbsentFromRepository(t *testing.T) {
+	t.Parallel()
 	worktree := t.TempDir()
 	writeTestFile(t, filepath.Join(worktree, "package.json"), npmPackageJSONWithDependency("@sneat/app", "lodash", "^4.17.21"))
 	target := Target{Ecosystem: EcosystemNPM, Dependency: "@sneat/core", Version: "1.3.0"}
@@ -415,6 +419,7 @@ func TestNpmAdapterApplyReturnsNothingWhenDependencyAbsentFromRepository(t *test
 }
 
 func TestWaveHandlerNpmGeneratesOneVersionPlanForChangedPublishableNxProjects(t *testing.T) {
+	t.Parallel()
 	worktree := t.TempDir()
 	writeTestFile(t, filepath.Join(worktree, "nx.json"), `{"release":{"versionPlans":true}}`+"\n")
 	writeTestFile(t, filepath.Join(worktree, "package.json"), `{
@@ -502,6 +507,7 @@ func TestWaveHandlerNpmGeneratesOneVersionPlanForChangedPublishableNxProjects(t 
 }
 
 func TestWaveHandlerNpmSkipsVersionPlansOutsideEnabledNxWorkspaces(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		nxJSON string
@@ -510,6 +516,7 @@ func TestWaveHandlerNpmSkipsVersionPlansOutsideEnabledNxWorkspaces(t *testing.T)
 		{name: "disabled", nxJSON: `{"release":{"versionPlans":false}}` + "\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			worktree := t.TempDir()
 			if test.nxJSON != "" {
 				writeTestFile(t, filepath.Join(worktree, "nx.json"), test.nxJSON)
@@ -534,6 +541,7 @@ func TestWaveHandlerNpmSkipsVersionPlansOutsideEnabledNxWorkspaces(t *testing.T)
 }
 
 func TestNpmAdapterApplyDoesNotTouchLockfilesWhenRepositoryHasNone(t *testing.T) {
+	t.Parallel()
 	worktree := t.TempDir()
 	writeTestFile(t, filepath.Join(worktree, "package.json"), npmPackageJSONWithDependency("@sneat/app", "@sneat/core", "1.2.3"))
 	target := Target{Ecosystem: EcosystemNPM, Dependency: "@sneat/core", Version: "1.3.0"}

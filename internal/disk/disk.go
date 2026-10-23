@@ -104,6 +104,12 @@ type Options struct {
 	// MinimumAvailableRatio raises a finding when headroom falls below it.
 	// Zero applies the default.
 	MinimumAvailableRatio float64
+	// FilesystemProbe overrides how the volume's total/available bytes are
+	// read. Nil uses the real platform statfs (filesystemFor). Tests that
+	// must not depend on the host's own free space at test time inject a
+	// fake here instead of asserting on whatever headroom this machine
+	// happens to have.
+	FilesystemProbe func(path string) (Filesystem, error)
 }
 
 // DefaultMinimumAvailableRatio is the headroom below which a report complains.
@@ -113,13 +119,17 @@ const DefaultMinimumAvailableRatio = 0.10
 
 // Collect measures the machine.
 func Collect(ctx context.Context, options Options) (Report, error) {
+	return collectWithDiscovery(ctx, options, os.UserHomeDir, candidateGroups)
+}
+
+func collectWithDiscovery(ctx context.Context, options Options, userHomeDir func() (string, error), discoverGroups func(string, string) []group) (Report, error) {
 	projectsRoot := options.ProjectsRoot
 	if projectsRoot == "" {
 		return Report{}, errors.New("projects root is required")
 	}
 	home := options.WBHome
 	if home == "" {
-		userHome, err := os.UserHomeDir()
+		userHome, err := userHomeDir()
 		if err != nil {
 			return Report{}, fmt.Errorf("resolve home directory: %w", err)
 		}
@@ -130,14 +140,18 @@ func Collect(ctx context.Context, options Options) (Report, error) {
 		minimum = DefaultMinimumAvailableRatio
 	}
 
+	probe := options.FilesystemProbe
+	if probe == nil {
+		probe = filesystemFor
+	}
 	report := Report{}
-	filesystem, err := filesystemFor(projectsRoot)
+	filesystem, err := probe(projectsRoot)
 	if err != nil {
 		return Report{}, err
 	}
 	report.Filesystem = filesystem
 
-	groups := candidateGroups(projectsRoot, home)
+	groups := discoverGroups(projectsRoot, home)
 
 	// One walk across every category: a pnpm store hard-linked into a worktree
 	// belongs to whichever category is measured first and must not be added
@@ -248,8 +262,13 @@ func candidateGroups(projectsRoot, home string) []group {
 // worktreeRoots finds every .worktrees directory two levels under the projects
 // root, which is the {org}/{repo} layout WB maintains.
 func worktreeRoots(projectsRoot string) []string {
+	return worktreeRootsWithReadDir(projectsRoot, os.ReadDir)
+}
+
+// worktreeRootsWithReadDir keeps directory failures testable without permission-dependent fixtures.
+func worktreeRootsWithReadDir(projectsRoot string, readDir func(string) ([]os.DirEntry, error)) []string {
 	var roots []string
-	orgs, err := os.ReadDir(projectsRoot)
+	orgs, err := readDir(projectsRoot)
 	if err != nil {
 		return nil
 	}
@@ -257,7 +276,7 @@ func worktreeRoots(projectsRoot string) []string {
 		if !org.IsDir() || strings.HasPrefix(org.Name(), ".") {
 			continue
 		}
-		repos, err := os.ReadDir(filepath.Join(projectsRoot, org.Name()))
+		repos, err := readDir(filepath.Join(projectsRoot, org.Name()))
 		if err != nil {
 			continue
 		}
@@ -299,8 +318,13 @@ func scratchRoots() []string {
 // goEnv asks the toolchain rather than guessing a path that varies by platform
 // and by GOPATH. A missing toolchain yields no root rather than a wrong one.
 func goEnv(name string) string {
-	command := exec.Command("go", "env", name)
-	output, err := command.Output()
+	return goEnvWithOutput(func() ([]byte, error) {
+		return exec.Command("go", "env", name).Output()
+	})
+}
+
+func goEnvWithOutput(readOutput func() ([]byte, error)) string {
+	output, err := readOutput()
 	if err != nil {
 		return ""
 	}

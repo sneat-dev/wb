@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/githubobserver/testfixture"
 )
 
 // orchCovMergeGHState installs the scripted `gh` the exact-merge tests drive.
@@ -30,16 +32,16 @@ echo "unexpected gh args: $*" >&2
 exit 30
 `
 
-func orchCovMergeGH(t *testing.T, settings, view string) (orchCovGHState, string) {
+func orchCovMergeGH(t *testing.T, settings, view string) (testfixture.State, string) {
 	t.Helper()
-	state := orchCovScriptState(t, orchCovMergeGHScript)
-	state.answer(t, "settings", settings)
-	state.answer(t, "settings-exit", "0")
-	state.answer(t, "view", view)
-	state.answer(t, "view-exit", "0")
-	state.answer(t, "merge-exit", "0")
-	state.answer(t, "merge-args", "")
-	args := filepath.Join(state.dir, "merge-args")
+	state := testfixture.ScriptState(t, orchCovMergeGHScript)
+	state.Answer(t, "settings", settings)
+	state.Answer(t, "settings-exit", "0")
+	state.Answer(t, "view", view)
+	state.Answer(t, "view-exit", "0")
+	state.Answer(t, "merge-exit", "0")
+	state.Answer(t, "merge-args", "")
+	args := filepath.Join(state.Dir, "merge-args")
 	return state, args
 }
 
@@ -118,7 +120,7 @@ func TestOrchCovRepositoryPullRequestMergeMethodRefusesEveryUnusableRoute(t *tes
 		}
 	})
 	t.Run("unreadable settings", func(t *testing.T) {
-		orchCovInstallGH(t, orchCovNotFound)
+		testfixture.InstallGH(t, testfixture.NotFound)
 		_, err := repositoryPullRequestMergeMethod(context.Background(), "acme/app")
 		if err == nil || !strings.Contains(err.Error(), "read repository merge methods") {
 			t.Fatalf("error = %v", err)
@@ -171,7 +173,7 @@ func TestOrchCovPullRequestLandingReceiptFailsClosedOnUnusableReads(t *testing.T
 		!strings.Contains(err.Error(), "decode pull-request landing receipt") {
 		t.Fatalf("undecodable receipt error = %v", err)
 	}
-	state.answer(t, "view-exit", "1")
+	state.Answer(t, "view-exit", "1")
 	if _, _, err := pullRequestLandingReceipt(context.Background(), receipt, WorktreeMergeLandOptions{Timeout: time.Minute}); err == nil ||
 		!strings.Contains(err.Error(), "read pull-request landing receipt") {
 		t.Fatalf("unreadable receipt error = %v", err)
@@ -225,9 +227,9 @@ func TestOrchCovFindExactOpenPullRequestMatchesEveryMutableIdentity(t *testing.T
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			state := orchCovScriptState(t, orchCovCommitPullsScript)
-			state.answer(t, "pulls", test.body)
-			state.answer(t, "pulls-exit", "0")
+			state := testfixture.ScriptState(t, orchCovCommitPullsScript)
+			state.Answer(t, "pulls", test.body)
+			state.Answer(t, "pulls-exit", "0")
 			url, err := findExactOpenWorktreeMergePullRequest(context.Background(), receipt)
 			if test.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
@@ -244,14 +246,14 @@ func TestOrchCovFindExactOpenPullRequestMatchesEveryMutableIdentity(t *testing.T
 
 func TestOrchCovFindExactOpenPullRequestFailsClosedOnUnusableReads(t *testing.T) {
 	receipt := orchCovExactMergeReceipt(t)
-	state := orchCovScriptState(t, orchCovCommitPullsScript)
-	state.answer(t, "pulls", "not json")
-	state.answer(t, "pulls-exit", "0")
+	state := testfixture.ScriptState(t, orchCovCommitPullsScript)
+	state.Answer(t, "pulls", "not json")
+	state.Answer(t, "pulls-exit", "0")
 	if _, err := findExactOpenWorktreeMergePullRequest(context.Background(), receipt); err == nil ||
 		!strings.Contains(err.Error(), "decode pull requests for exact candidate") {
 		t.Fatalf("undecodable query error = %v", err)
 	}
-	state.answer(t, "pulls-exit", "1")
+	state.Answer(t, "pulls-exit", "1")
 	if _, err := findExactOpenWorktreeMergePullRequest(context.Background(), receipt); err == nil ||
 		!strings.Contains(err.Error(), "query pull requests for exact candidate") {
 		t.Fatalf("unreadable query error = %v", err)
@@ -259,6 +261,7 @@ func TestOrchCovFindExactOpenPullRequestFailsClosedOnUnusableReads(t *testing.T)
 }
 
 func TestOrchCovTerminalWorkLogExpectationsNamesEveryTerminalCheckout(t *testing.T) {
+	t.Parallel()
 	valid := WorktreeMergeReceipt{
 		Repository: "acme/app", Target: "main",
 		Candidate: WorktreeMergeCandidate{Task: "candidate-task", Worktree: "/candidate", Branch: "wb/merge", SHA: "aaa"},
@@ -304,6 +307,7 @@ func TestOrchCovTerminalWorkLogExpectationsNamesEveryTerminalCheckout(t *testing
 		}, wantIn: "conflicting terminal cleanup identities for task rebatch"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			receipt := valid
 			receipt.Sources = append([]WorktreeMergeSource(nil), valid.Sources...)
 			receipt.RebatchedCandidates = append([]WorktreeMergeCandidate(nil), valid.RebatchedCandidates...)
@@ -391,6 +395,7 @@ func TestOrchCovExtractWorktreeMergeArchiveRefusesUnsafeEntries(t *testing.T) {
 		{name: "unsupported entry", header: &tar.Header{Name: "fifo", Typeflag: tar.TypeFifo}, wantIn: "unsupported archived entry"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			err := extractWorktreeMergeArchive(write(test.header), destination)
 			if err == nil || !strings.Contains(err.Error(), test.wantIn) {
 				t.Fatalf("error = %v, want %q", err, test.wantIn)
@@ -450,6 +455,7 @@ func TestOrchCovSameLegacyIdentityComparesEveryField(t *testing.T) {
 		{name: "Reason", mutate: func(i *WorktreeMergeLegacyValidationFailureIdentity) { i.Reason = "other" }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			other := failure
 			other.Sources = append([]WorktreeMergeSource(nil), failure.Sources...)
 			test.mutate(&other)
@@ -492,6 +498,7 @@ func TestOrchCovSameLegacyIdentityComparesEveryField(t *testing.T) {
 		{name: "Reason", mutate: func(i *WorktreeMergeLegacyConflictIdentity) { i.Reason = "other" }},
 	} {
 		t.Run("conflict "+test.name, func(t *testing.T) {
+			t.Parallel()
 			other := conflict
 			other.Sources = append([]WorktreeMergeSource(nil), conflict.Sources...)
 			test.mutate(&other)

@@ -18,6 +18,7 @@ import (
 // prefixed gpCov to stay out of the way of the package's own tests.
 
 func TestGpCovProcessAliveAndLookupRejectNonPositivePIDs(t *testing.T) {
+	t.Parallel()
 	if !ProcessAlive(os.Getpid()) {
 		t.Fatal("ProcessAlive(this process) = false, want true")
 	}
@@ -35,6 +36,7 @@ func TestGpCovProcessAliveAndLookupRejectNonPositivePIDs(t *testing.T) {
 }
 
 func TestGpCovRegisterRejectsAConflictingHarnessIdentity(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	_, err := Register(dir, Record{PID: os.Getpid(), NativeHarnessID: "native-1", AgentID: "legacy-1"})
 	if err == nil {
@@ -55,6 +57,7 @@ func TestGpCovRegisterRejectsAConflictingHarnessIdentity(t *testing.T) {
 }
 
 func TestGpCovRegisterReportsDirectoryAndRecordWriteFailures(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	blocked := filepath.Join(root, "not-a-directory")
 	if err := os.WriteFile(blocked, []byte("x"), 0o644); err != nil {
@@ -78,6 +81,7 @@ func TestGpCovRegisterReportsDirectoryAndRecordWriteFailures(t *testing.T) {
 }
 
 func TestGpCovMarkParkedRejectsAnUnregisteredPID(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	if _, err := MarkParked(dir, 424242, "gp-park"); err == nil {
 		t.Fatal("MarkParked accepted a PID that never registered")
@@ -87,6 +91,7 @@ func TestGpCovMarkParkedRejectsAnUnregisteredPID(t *testing.T) {
 }
 
 func TestGpCovMarkParkedIsIdempotentForTheSameParkedSession(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	registered, err := Register(dir, Record{
 		PID: os.Getpid(), WBSessionID: "wbs-gp-park", Runtime: "codex",
@@ -111,6 +116,7 @@ func TestGpCovMarkParkedIsIdempotentForTheSameParkedSession(t *testing.T) {
 }
 
 func TestGpCovMarkParkedRefusesAStaleParkedMarker(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	registered, err := Register(dir, Record{PID: os.Getpid(), WBSessionID: "wbs-gp-marker", Runtime: "codex"})
 	if err != nil {
@@ -147,6 +153,7 @@ func TestGpCovMarkParkedRefusesAStaleParkedMarker(t *testing.T) {
 }
 
 func TestGpCovMarkParkedRejectsASessionThatAlreadyResumed(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	registered, err := Register(dir, Record{PID: os.Getpid(), WBSessionID: "wbs-gp-parked-then-resumed", Runtime: "codex"})
 	if err != nil {
@@ -167,6 +174,7 @@ func TestGpCovMarkParkedRejectsASessionThatAlreadyResumed(t *testing.T) {
 }
 
 func TestGpCovMarkParkedRejectsAResumedRegistrationWithoutAMarker(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	registered, err := Register(dir, Record{
 		PID: os.Getpid(), WBSessionID: "wbs-gp-resumed-only", Runtime: "codex", Lifecycle: "resumed",
@@ -182,6 +190,7 @@ func TestGpCovMarkParkedRejectsAResumedRegistrationWithoutAMarker(t *testing.T) 
 }
 
 func TestGpCovMarkParkedRequiresAParkedSessionID(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	registered, err := Register(dir, Record{PID: os.Getpid(), WBSessionID: "wbs-gp-no-parked-id", Runtime: "codex"})
 	if err != nil {
@@ -197,6 +206,7 @@ func TestGpCovMarkParkedRequiresAParkedSessionID(t *testing.T) {
 }
 
 func TestGpCovMarkParkedReportsALifecycleDirectoryThatIsAFile(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	registered, err := Register(dir, Record{PID: os.Getpid(), WBSessionID: "wbs-gp-lifecycle-file", Runtime: "codex"})
 	if err != nil {
@@ -215,6 +225,7 @@ func TestGpCovMarkParkedReportsALifecycleDirectoryThatIsAFile(t *testing.T) {
 }
 
 func TestGpCovMarkParkedReportsAParkedMarkerThatCannotBeCreated(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	// A session ID that names a missing subdirectory makes marker creation
 	// itself impossible while the directory above it is still creatable.
@@ -230,6 +241,7 @@ func TestGpCovMarkParkedReportsAParkedMarkerThatCannotBeCreated(t *testing.T) {
 }
 
 func TestGpCovMarkResumedRejectsAnUnregisteredPID(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	if _, err := MarkResumed(dir, 424242, "gp-park", "wbs-gp-successor"); err == nil {
 		t.Fatal("MarkResumed accepted a PID that never registered")
@@ -239,6 +251,7 @@ func TestGpCovMarkResumedRejectsAnUnregisteredPID(t *testing.T) {
 }
 
 func TestGpCovMarkResumedRequiresAParkedSource(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	registered, err := Register(dir, Record{PID: os.Getpid(), WBSessionID: "wbs-gp-resume-src", Runtime: "codex"})
 	if err != nil {
@@ -261,6 +274,7 @@ func TestGpCovMarkResumedRequiresAParkedSource(t *testing.T) {
 }
 
 func TestGpCovMarkResumedRequiresADistinctSuccessor(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	registered, err := Register(dir, Record{PID: os.Getpid(), WBSessionID: "wbs-gp-succ-src", Runtime: "codex"})
 	if err != nil {
@@ -289,6 +303,7 @@ func TestGpCovMarkResumedRequiresADistinctSuccessor(t *testing.T) {
 }
 
 func TestGpCovLifecycleMarkerReadersRejectCorruptPayloads(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	if err := os.MkdirAll(filepath.Join(dir, "lifecycle"), 0o755); err != nil {
 		t.Fatal(err)
@@ -371,6 +386,7 @@ func TestGpCovLifecycleMarkerReadersRejectCorruptPayloads(t *testing.T) {
 }
 
 func TestGpCovParkedAndResumedRejectBlankIdentities(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	if parked(dir, "") {
 		t.Fatal(`parked("") = true, want false`)
@@ -387,6 +403,7 @@ func TestGpCovParkedAndResumedRejectBlankIdentities(t *testing.T) {
 }
 
 func TestGpCovListAndPruneReportAnUnreadableDirectory(t *testing.T) {
+	t.Parallel()
 	blocked := filepath.Join(t.TempDir(), "blocked")
 	if err := os.WriteFile(blocked, []byte("not a directory"), 0o644); err != nil {
 		t.Fatal(err)
@@ -400,6 +417,7 @@ func TestGpCovListAndPruneReportAnUnreadableDirectory(t *testing.T) {
 }
 
 func TestGpCovResolveForProcessStopsWhenAProcessCannotBeInspected(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	// No PID near 2^30 can exist, so the ancestor walk must give up rather than
 	// invent an owner.
@@ -460,6 +478,7 @@ func TestGpCovResolveOrRegisterReportsARegistrationFailure(t *testing.T) {
 }
 
 func TestGpCovLookupByWBSessionIDRejectsBlankIDsAndUnreadableDirectories(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	for _, wanted := range []string{"", "   "} {
 		if record, ok := LookupByWBSessionID(dir, wanted); ok {
@@ -477,6 +496,7 @@ func TestGpCovLookupByWBSessionIDRejectsBlankIDsAndUnreadableDirectories(t *test
 }
 
 func TestGpCovLookupExactRejectsInvalidInputs(t *testing.T) {
+	t.Parallel()
 	target := filepath.Join(t.TempDir(), "sessions")
 	for _, pid := range []int{0, -1, -4242} {
 		if _, _, err := LookupExact(target, pid); err == nil {
@@ -498,6 +518,7 @@ func TestGpCovLookupExactRejectsInvalidInputs(t *testing.T) {
 }
 
 func TestGpCovLookupExactRejectsMalformedRecords(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)

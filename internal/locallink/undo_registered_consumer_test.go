@@ -55,6 +55,7 @@ func newLinkedConsumerFixture(t *testing.T, libraryFiles, consumerFiles map[stri
 // it as link-not-recordable), and --undo clears both the filesystem and the
 // LinkedConsumers record.
 func TestUndoOfRegisteredConsumerPnpmLinkRecord(t *testing.T) {
+	t.Parallel()
 	fixture := newLinkedConsumerFixture(t,
 		map[string]string{
 			"libs/core/package.json": `{"name":"@acme/core"}`,
@@ -133,6 +134,7 @@ func TestUndoOfRegisteredConsumerPnpmLinkRecord(t *testing.T) {
 // of erroring, and the LinkedConsumers record still clears exactly as a
 // normal undo would.
 func TestUndoOfRegisteredConsumerPnpmLinkRecordSuperseded(t *testing.T) {
+	t.Parallel()
 	fixture := newLinkedConsumerFixture(t,
 		map[string]string{
 			"libs/core/package.json": `{"name":"@acme/core"}`,
@@ -182,6 +184,7 @@ func TestUndoOfRegisteredConsumerPnpmLinkRecordSuperseded(t *testing.T) {
 // applied to the Go mechanism, since resolveConsumerStreams gated recording a
 // go.work link exactly the way it gated an npm one.
 func TestUndoOfRegisteredConsumerGoWorkRecord(t *testing.T) {
+	t.Parallel()
 	fixture := newLinkedConsumerFixture(t,
 		map[string]string{"backend/go.mod": goLibraryModule},
 		map[string]string{"backend/go.mod": "module github.com/acme/app/backend\n\ngo 1.27\n\nrequire github.com/acme/library/backend v0.4.0\n"})

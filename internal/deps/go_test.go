@@ -10,6 +10,7 @@ import (
 )
 
 func TestGoAdapterUsesGoToolingForExactExistingRequirement(t *testing.T) {
+	t.Parallel()
 	dependency := filepath.Join(t.TempDir(), "model")
 	writeTestFile(t, filepath.Join(dependency, "go.mod"), "module example.com/model\n\ngo 1.24\n")
 	writeTestFile(t, filepath.Join(dependency, "model.go"), "package model\n\nconst Name = \"model\"\n")

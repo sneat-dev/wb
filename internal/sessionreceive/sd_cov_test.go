@@ -96,6 +96,7 @@ func sdCovAttemptFailure(request sessionmove.Request, digest sessionmove.Digest)
 }
 
 func TestSdCovReceiveRejectsUndecodableOrMisaddressedRequests(t *testing.T) {
+	t.Parallel()
 	request, raw, _ := receiveTestRequest(t)
 	projectsRoot := t.TempDir()
 
@@ -122,6 +123,7 @@ func TestSdCovReceiveRejectsUndecodableOrMisaddressedRequests(t *testing.T) {
 }
 
 func TestSdCovReceiveFailsWhenExecutionLockCannotBeAcquired(t *testing.T) {
+	t.Parallel()
 	request, raw, _ := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 	// A directory where the per-handoff execution fence belongs can never be
@@ -141,6 +143,7 @@ func TestSdCovReceiveFailsWhenExecutionLockCannotBeAcquired(t *testing.T) {
 }
 
 func TestSdCovReceiveFailsWhenAggregateEventsAreUnreadable(t *testing.T) {
+	t.Parallel()
 	request, raw, _ := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 	if err := os.MkdirAll(sdCovHandoffDir(store, request.HandoffID), 0o700); err != nil {
@@ -161,6 +164,7 @@ func TestSdCovReceiveFailsWhenAggregateEventsAreUnreadable(t *testing.T) {
 }
 
 func TestSdCovReceiveFailsWhenReceivedEventCannotBeAppended(t *testing.T) {
+	t.Parallel()
 	request, raw, digest := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 	if _, err := store.Admit(raw, digest); err != nil {
@@ -179,6 +183,7 @@ func TestSdCovReceiveFailsWhenReceivedEventCannotBeAppended(t *testing.T) {
 }
 
 func TestSdCovReceiveRejectsImpossibleTargetWorktreePath(t *testing.T) {
+	t.Parallel()
 	request, raw, _ := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 	options := sdCovReceiveOptions(store, "", request, raw)
@@ -200,6 +205,7 @@ func TestSdCovReceiveRejectsImpossibleTargetWorktreePath(t *testing.T) {
 }
 
 func TestSdCovReceiveRepairsCompletedPhaseWhenCompletedEventCannotBeAppended(t *testing.T) {
+	t.Parallel()
 	request, raw, digest := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 	if _, err := store.Admit(raw, digest); err != nil {
@@ -229,6 +235,7 @@ func TestSdCovReceiveRepairsCompletedPhaseWhenCompletedEventCannotBeAppended(t *
 }
 
 func TestSdCovReceiveReportsSuccessorInspectionFailureOnStartedReplay(t *testing.T) {
+	t.Parallel()
 	injected := errors.New("published successor inspection failed")
 	request, raw, digest := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
@@ -253,6 +260,7 @@ func TestSdCovReceiveReportsSuccessorInspectionFailureOnStartedReplay(t *testing
 }
 
 func TestSdCovReceiveDefaultsToProductionVerifierOnWorktreeReadyReplay(t *testing.T) {
+	t.Parallel()
 	request, raw, digest := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 	if _, err := store.Admit(raw, digest); err != nil {
@@ -275,6 +283,7 @@ func TestSdCovReceiveDefaultsToProductionVerifierOnWorktreeReadyReplay(t *testin
 }
 
 func TestSdCovReceiveDefaultsToProductionReceiverWithoutDurableWorktree(t *testing.T) {
+	t.Parallel()
 	request, raw, _ := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 	options := sdCovReceiveOptions(store, t.TempDir(), request, raw)
@@ -298,6 +307,7 @@ func TestSdCovReceiveDefaultsToProductionReceiverWithoutDurableWorktree(t *testi
 }
 
 func TestSdCovReceiveReportsFailureWhenFailedEventCannotBeAppended(t *testing.T) {
+	t.Parallel()
 	request, raw, _ := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 	receiveErr := errors.New("remote branch tip moved")
@@ -314,6 +324,7 @@ func TestSdCovReceiveReportsFailureWhenFailedEventCannotBeAppended(t *testing.T)
 }
 
 func TestSdCovReceiveFailsWhenWorktreeReadyEventCannotBeAppended(t *testing.T) {
+	t.Parallel()
 	request, raw, _ := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 	projectsRoot := t.TempDir()
@@ -330,6 +341,7 @@ func TestSdCovReceiveFailsWhenWorktreeReadyEventCannotBeAppended(t *testing.T) {
 }
 
 func TestSdCovReceiveRejectsWorktreeOutsideDeterministicTargetPath(t *testing.T) {
+	t.Parallel()
 	request, raw, _ := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 	projectsRoot := t.TempDir()
@@ -357,6 +369,7 @@ func TestSdCovReceiveRejectsWorktreeOutsideDeterministicTargetPath(t *testing.T)
 }
 
 func TestSdCovReceiveRejectsSuccessorIdentityThatConflictsWithAdmittedHandoff(t *testing.T) {
+	t.Parallel()
 	request, raw, _ := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 	projectsRoot := t.TempDir()
@@ -384,6 +397,7 @@ func TestSdCovReceiveRejectsSuccessorIdentityThatConflictsWithAdmittedHandoff(t 
 }
 
 func TestSdCovReceiveRejectsSuccessorReceiptThatFailsAdmission(t *testing.T) {
+	t.Parallel()
 	request, raw, _ := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 	projectsRoot := t.TempDir()
@@ -411,6 +425,7 @@ func TestSdCovReceiveRejectsSuccessorReceiptThatFailsAdmission(t *testing.T) {
 }
 
 func TestSdCovReceiveFailsWhenSuccessorStartedEventCannotBeAppended(t *testing.T) {
+	t.Parallel()
 	request, raw, _ := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 	projectsRoot := t.TempDir()
@@ -436,6 +451,7 @@ func TestSdCovReceiveFailsWhenSuccessorStartedEventCannotBeAppended(t *testing.T
 }
 
 func TestSdCovReceiveFailsWhenTargetCompletionCannotBeRecorded(t *testing.T) {
+	t.Parallel()
 	request, raw, _ := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 	projectsRoot := t.TempDir()
@@ -466,6 +482,7 @@ func TestSdCovReceiveFailsWhenTargetCompletionCannotBeRecorded(t *testing.T) {
 }
 
 func TestSdCovReceiveDefaultsToProductionCompletionSeam(t *testing.T) {
+	t.Parallel()
 	request, raw, _ := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 	projectsRoot := t.TempDir()
@@ -493,6 +510,7 @@ func TestSdCovReceiveDefaultsToProductionCompletionSeam(t *testing.T) {
 }
 
 func TestSdCovReceiveFailsWhenReceiptPublicationIsBlocked(t *testing.T) {
+	t.Parallel()
 	request, raw, _ := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 	projectsRoot := t.TempDir()
@@ -529,6 +547,7 @@ func TestSdCovReceiveFailsWhenReceiptPublicationIsBlocked(t *testing.T) {
 }
 
 func TestSdCovReceiveFailsWhenCompletedEventCannotBeAppendedAfterReceipt(t *testing.T) {
+	t.Parallel()
 	request, raw, _ := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 	projectsRoot := t.TempDir()
@@ -554,6 +573,7 @@ func TestSdCovReceiveFailsWhenCompletedEventCannotBeAppendedAfterReceipt(t *test
 }
 
 func TestSdCovReceiveReportsRetryableLaunchWhenFailurePhaseCannotBeRecorded(t *testing.T) {
+	t.Parallel()
 	request, raw, digest := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 	if _, err := store.Admit(raw, digest); err != nil {
@@ -583,6 +603,7 @@ func TestSdCovReceiveReportsRetryableLaunchWhenFailurePhaseCannotBeRecorded(t *t
 }
 
 func TestSdCovReceiveReportsRetryableLaunchReplacementFailure(t *testing.T) {
+	t.Parallel()
 	request, raw, digest := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 	if _, err := store.Admit(raw, digest); err != nil {
@@ -622,6 +643,7 @@ func TestSdCovReceiveReportsRetryableLaunchReplacementFailure(t *testing.T) {
 }
 
 func TestSdCovReceiveUsesProductionFailureSeamWhenUnset(t *testing.T) {
+	t.Parallel()
 	request, raw, digest := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 	if _, err := store.Admit(raw, digest); err != nil {
@@ -656,6 +678,7 @@ func TestSdCovReceiveUsesProductionFailureSeamWhenUnset(t *testing.T) {
 }
 
 func TestSdCovReceiveReportsNonReleasedInspectionFailureBeforeWorktreeReplay(t *testing.T) {
+	t.Parallel()
 	request, raw, digest := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 	if _, err := store.Admit(raw, digest); err != nil {
@@ -678,6 +701,7 @@ func TestSdCovReceiveReportsNonReleasedInspectionFailureBeforeWorktreeReplay(t *
 }
 
 func TestSdCovReceiveDefaultsToProductionLauncherSeam(t *testing.T) {
+	t.Parallel()
 	request, raw, _ := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 	projectsRoot := t.TempDir()
@@ -700,6 +724,7 @@ func TestSdCovReceiveDefaultsToProductionLauncherSeam(t *testing.T) {
 }
 
 func TestSdCovReceiveDefaultsToProductionInspectionOnWorktreeReadyReplay(t *testing.T) {
+	t.Parallel()
 	request, raw, digest := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 	if _, err := store.Admit(raw, digest); err != nil {
@@ -722,6 +747,7 @@ func TestSdCovReceiveDefaultsToProductionInspectionOnWorktreeReadyReplay(t *test
 }
 
 func TestSdCovReceiveCompletesRetryableLaunchReplacement(t *testing.T) {
+	t.Parallel()
 	request, raw, digest := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 	if _, err := store.Admit(raw, digest); err != nil {
@@ -765,6 +791,7 @@ func TestSdCovReceiveCompletesRetryableLaunchReplacement(t *testing.T) {
 }
 
 func TestSdCovReceiveReportsReplacementFailureWhenFailedAttemptCannotBeRecorded(t *testing.T) {
+	t.Parallel()
 	request, raw, digest := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 	projectsRoot := t.TempDir()
@@ -799,6 +826,7 @@ func TestSdCovReceiveReportsReplacementFailureWhenFailedAttemptCannotBeRecorded(
 }
 
 func TestSdCovReceiveCompletesSuccessorWithCustomReleaseSeam(t *testing.T) {
+	t.Parallel()
 	request, raw, _ := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 	projectsRoot := t.TempDir()
@@ -829,6 +857,7 @@ func TestSdCovReceiveCompletesSuccessorWithCustomReleaseSeam(t *testing.T) {
 }
 
 func TestSdCovReceiveRejectsSuccessorWorktreeOutsideDeterministicTargetPath(t *testing.T) {
+	t.Parallel()
 	request, raw, _ := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 	projectsRoot := t.TempDir()
@@ -857,6 +886,7 @@ func TestSdCovReceiveRejectsSuccessorWorktreeOutsideDeterministicTargetPath(t *t
 }
 
 func TestSdCovReceiveRejectsReceiptThatDiffersFromItsDurableProjection(t *testing.T) {
+	t.Parallel()
 	request, raw, _ := receiveTestRequest(t)
 	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 	projectsRoot := t.TempDir()
@@ -889,6 +919,7 @@ func TestSdCovReceiveRejectsReceiptThatDiffersFromItsDurableProjection(t *testin
 }
 
 func TestSdCovReceiveReportsTargetWorkLogPrepareSeamFailures(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		mutate  func(*Options, worktrees.SessionReceiveResult)
@@ -945,6 +976,7 @@ func TestSdCovReceiveReportsTargetWorkLogPrepareSeamFailures(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			request, raw, _ := receiveTestRequest(t)
 			store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
 			projectsRoot := t.TempDir()

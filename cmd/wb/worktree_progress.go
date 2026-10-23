@@ -4,11 +4,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -40,10 +39,11 @@ type inventoryProgress struct {
 // newInventoryProgress renders when there is a human at the terminal, or when
 // verbose forces it. Forcing matters most for the unattended case: a scripted
 // or backgrounded run is exactly where a silent forty-minute stall is invisible.
-func newInventoryProgress(out io.Writer, verbose bool) *inventoryProgress {
+// --quiet wins over both: a caller who asked for the outcome alone gets it.
+func newInventoryProgress(inv *invocation, out io.Writer, verbose bool) *inventoryProgress {
 	return &inventoryProgress{
 		out:     out,
-		enabled: verbose || console.Interactive(os.Stderr, nonInteractive),
+		enabled: !inv.quiet && (verbose || console.Interactive(os.Stderr, inv.nonInteractive)),
 		started: time.Now(),
 	}
 }
@@ -108,12 +108,4 @@ func (p *inventoryProgress) finish() {
 
 // shortPath keeps the owner/repository tail of a worktree path rather than the
 // long shared prefix every candidate has.
-func shortPath(path string) string {
-	trimmed := strings.TrimRight(filepath.Clean(path), string(filepath.Separator))
-	owner, repository := filepath.Split(trimmed)
-	owner = strings.TrimRight(owner, string(filepath.Separator))
-	if base := filepath.Base(owner); base != "" && base != "." && base != string(filepath.Separator) {
-		return base + "/" + repository
-	}
-	return repository
-}
+func shortPath(path string) string { return shared.ShortPath(path) }

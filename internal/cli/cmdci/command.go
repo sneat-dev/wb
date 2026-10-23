@@ -1,0 +1,426 @@
+package cmdci
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"strings"
+	"time"
+
+	"github.com/sneat-dev/wb/internal/ciaudit"
+	cliprogress "github.com/sneat-dev/wb/internal/cli/progress"
+	"github.com/sneat-dev/wb/internal/cli/shared"
+	"github.com/sneat-dev/wb/internal/console"
+	"github.com/sneat-dev/wb/internal/githubchecks"
+	"github.com/spf13/cobra"
+)
+
+func New(runtime shared.Runtime, deps Dependencies) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "ci",
+		Short: "Inspect and validate CI/CD policy",
+	}
+	cmd.AddCommand(newAuditCmd(runtime, deps))
+	cmd.AddCommand(newWaitCmd(runtime, deps))
+	return cmd
+}
+
+type Dependencies struct {
+	WaitChecks     func(context.Context, githubchecks.PullRequestWaitOptions) (githubchecks.PullRequestWaitResult, error)
+	Audit          func(ciaudit.BatchOptions) ([]ciaudit.Report, error)
+	ValidateBranch func(string) error
+	Now            func() time.Time
+}
+
+func NewChecks(runtime shared.Runtime, deps Dependencies) *cobra.Command {
+	command := newWaitCmd(runtime, deps)
+	command.Use = strings.Replace(command.Use, "wait ", "checks ", 1)
+	command.Short = "Wait one bounded slice for checks on an exact head (was: wb ci wait)"
+	command.Aliases = append(command.Aliases, "ci")
+	return command
+}
+
+type WaitOutput struct {
+	SchemaVersion int       `json:"schema_version"`
+	ObservedAt    time.Time `json:"observed_at"`
+	githubchecks.PullRequestWaitResult
+	ResumeArgs []string `json:"resume_args,omitempty"`
+}
+
+// newCIWaitCmd provides a terminating foreground observation slice. It never
+// creates a daemon or background process: pending is a first-class finding
+// whose exact identity can be passed unchanged to the next invocation.
+func newWaitCmd(runtime shared.Runtime, deps Dependencies) *cobra.Command {
+	var repository, pullRequest, target, head string
+	var slice, interval time.Duration
+	var jsonOut bool
+	var format string
+	var workflows, checkPatterns []string
+	command := &cobra.Command{
+		Use:   "wait --repo <owner/repository> --target <branch> --head <sha> [--pr <number-or-url>] [--workflow <name>]... [--check <pattern>]...",
+		Short: "Wait one bounded foreground slice for checks on an exact head",
+		Long: `Observe all GitHub checks for exactly one pull-request or direct-push head.
+
+Pass --workflow (repeatable, exact GitHub Actions workflow name; two
+workflows that share a name are both selected) or --check (repeatable, exact
+check-run name/commit-status context, or a glob where "*" matches any run of
+characters, including "/" — everything else is literal; no "?", "[...]",
+escapes, or regex) to narrow the wait to a subset of the head's checks, for
+example when only a release or deploy job matters and other checks are still
+running. Required-check completeness is then evaluated only over the
+required checks the filter selects, and the JSON result carries a "filter"
+block naming what matched. What "wait for" means differs by how a check is
+named: an exact --check waits only for that one job, so an unrelated sibling
+job in the same Actions run — still in progress, or the whole run stuck on an
+environment approval — never holds up the wait once that job itself is
+terminal. A --check glob instead keeps its owning Actions run open until the
+run itself finishes, since a glob can still match a job the run has not
+registered yet, such as one gated by "needs:" on an earlier job in the same
+run — the case #627 exists for. --workflow always waits for the whole run,
+since that is its meaning regardless of --check. With several --check
+patterns, a pass requires every exact (non-glob) pattern to have matched at
+least one observed check, not merely one of them — a mistyped or
+not-yet-registered exact name is reported pending, naming the pattern (plus
+any nearby observed name it almost matches, such as a matrix job "build
+(ubuntu)" or a reusable-workflow-qualified "caller / build"), rather than
+letting an unrelated matched pattern wave the wait through. The same "every
+name must match" rule applies to several --workflow names: one finishing
+never passes the wait while another named workflow — for example one that
+only starts via workflow_run after the first finishes — has produced no
+observed check at all yet; when --workflow and --check are combined, this
+means every named workflow needs some job matching the --check patterns, or
+that workflow's name simply never clears. While --check is active, a
+still-registering Actions run with no job of its own yet is also kept open,
+but only among the workflows an active --workflow filter itself allows: a
+job can never be selected under a workflow --workflow excludes, so a jobless
+run under a different, excluded workflow is dropped rather than held open.
+Among allowed workflows this is deliberately coarse — an exact or glob
+--check selection can be held pending by any other still-registering run on
+the head, under the same or a different (allowed) workflow, not only one
+related to what has already matched, since WB cannot know in advance which
+run a job will register under. A skipped job a selected --check or
+--workflow names is not automatically a pass: while its owning Actions run
+has not yet concluded, the wait reports it pending, not passed — the common
+real-CI shape is an earlier job failing and a downstream job it "needs:"
+turning up "skipped" well before a slow sibling job in the same run
+finishes, and reading the skip as a pass in that window would let a filtered
+wait finish before an unfiltered wait watching the same commit ever would.
+Once the run concludes, a skip is reported failed if the run itself
+concluded failure or was cancelled (including when the skip was caused by
+an unrelated sibling job's failure in the same run, not only a job the
+selection's own "needs:" graph depends on — WB cannot tell the two apart
+without evaluating that graph), and a selection where every check is
+"skipping" and the run concluded is also reported failed even when the run's
+own conclusion was not itself a failure — the common shape of a
+workflow_run Release job gated "if: conclusion == 'success'" after CI
+failed, where nothing in it individually reads as failed but nothing in it
+ever ran either. This matches the verdict an unfiltered wait reaches by
+observing the upstream job's own check-run directly. A filter that selects
+nothing at all is never a vacuous pass either: it keeps observing, at the
+normal cadence, until a matching check registers or the slice ends —
+reported pending with "no check matching the filter has registered yet",
+never a claim that the filter can never match. Never pass these flags to a
+landing route (` + "`wb pr land`" + ` or a worktree merge) — landing always
+evaluates the full required set.
+
+Every invocation is bounded (eight minutes by default, never ten), foreground,
+and terminating. A pending result exits 1 with exact resume arguments; invoke
+those again until checks pass or fail. In every mode WB reads the exact head's
+GitHub check runs and commit statuses, preserving each check-run producer App.
+With --pr it also re-reads that PR's head and target and corroborates GitHub's
+PR check views. A direct target whose fully enumerated policy is empty and
+whose complete check-run and status receipts remain empty may pass after the
+same stable reread. PR mode fetches the exact target SHA, proves that SHA is an
+ancestor of the candidate, and requires a server-enforced strict policy with at
+least one required check. It never waits for current target CI to turn green;
+the candidate may fix a red target. A same-named PR summary or legacy status
+cannot satisfy a required context pinned to another GitHub App. A pass requires
+GitHub's authoritative required-check policy plus a terminal reread that is
+unchanged, so the first green snapshot cannot become sole merger evidence while
+suites are still registering. A target advance rejects the receipt. A
+merge-queue target fails closed: no source-head receipt can authorize what the
+queue merges, and its merge group exists only once the PR is enqueued, which
+this read-only command never does; 'wb pr land' enqueues and observes it. The reread
+proves bounded observed-set quiescence, not that a future optional workflow can
+never appear; collect separate release evidence where the repository requires
+it. This command never starts a detached watcher or background loop.`,
+		Args: func(command *cobra.Command, args []string) error {
+			if err := cobra.NoArgs(command, args); err != nil {
+				return err
+			}
+			if err := shared.RequireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			return validateCIWaitInputs(repository, pullRequest, target, head, slice, interval, workflows, checkPatterns, deps.ValidateBranch)
+		},
+		RunE: func(command *cobra.Command, args []string) error {
+			machineOutput := jsonOut || format == "json"
+			interactive := console.Interactive(command.ErrOrStderr(), runtime.Flags().NonInteractive)
+			progress := cliprogress.NewChecks(cliprogress.Output(command.ErrOrStderr(), interactive), true)
+			progress.Start(repository, pullRequest, target, head)
+			result, err := deps.WaitChecks(command.Context(), githubchecks.PullRequestWaitOptions{
+				Repository: repository, PullRequest: pullRequest, Target: target, Head: strings.ToLower(head),
+				Workflow: workflows, Check: checkPatterns,
+				Slice: slice, CheckPollInterval: interval, Progress: progress.Report, OperationProgress: progress.OperationReporter("ci wait"),
+			})
+			if err != nil {
+				progress.Fail(err)
+				return err
+			}
+			progress.Finish(result)
+			output := WaitOutput{SchemaVersion: 1, ObservedAt: deps.Now().UTC(), PullRequestWaitResult: result}
+			if result.Status == githubchecks.PullRequestWaitPending {
+				output.ResumeArgs = ciWaitResumeArgs(repository, pullRequest, target, strings.ToLower(head), slice, interval, workflows, checkPatterns, machineOutput)
+			}
+			if machineOutput {
+				encoder := json.NewEncoder(command.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				if err := encoder.Encode(output); err != nil {
+					return err
+				}
+			} else if err := printCIWait(command, output); err != nil {
+				return err
+			}
+			if result.Status != githubchecks.PullRequestWaitPassed {
+				return runtime.ExitError(shared.ExitFindings, "CI wait "+string(result.Status)+": "+result.Reason)
+			}
+			return nil
+		},
+	}
+	command.Flags().StringVar(&repository, "repo", "", "GitHub owner/repository containing the target")
+	command.Flags().StringVar(&pullRequest, "pr", "", "optional pull request number or URL to corroborate before waiting")
+	command.Flags().StringVar(&target, "target", "", "required target branch containing the exact direct-push head, or the PR base")
+	command.Flags().StringVar(&head, "head", "", "required exact 40- or 64-hex Git head SHA")
+	command.Flags().DurationVar(&slice, "slice", shared.DefaultCIWaitSlice, "maximum foreground observation slice (must be at most 9m)")
+	command.Flags().DurationVar(&interval, "interval", githubchecks.DefaultCheckPollInterval, "foreground interval between GitHub check observations (a checks-bearing terminal set's confirming reread waits at most 15s)")
+	command.Flags().BoolVar(&jsonOut, "json", false, "emit a versioned machine-readable result")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json (--json is a shortcut for --format=json)")
+	command.Flags().StringArrayVar(&workflows, "workflow", nil, "repeatable: restrict the wait to check runs from this exact GitHub Actions workflow name (workflows sharing a name are all selected); waits for the whole Actions run; never pass this to a landing route")
+	command.Flags().StringArrayVar(&checkPatterns, "check", nil, "repeatable: restrict the wait to check-run names/commit-status contexts matching this exact name (waits only for that job; every exact pattern must match to pass), or a glob where * matches any run of characters including / and everything else is literal, no regex (waits for the owning Actions run to finish); never pass this to a landing route")
+	return command
+}
+
+func validateCIWaitInputs(repository, pullRequest, target, head string, slice, interval time.Duration, workflows, checkPatterns []string, validateBranch func(string) error) error {
+	owner, name, validRepository := strings.Cut(strings.TrimSpace(repository), "/")
+	if !validRepository || owner == "" || name == "" || strings.Contains(name, "/") {
+		return fmt.Errorf("--repo must be owner/repository")
+	}
+	if strings.TrimSpace(target) == "" || strings.TrimSpace(target) != target {
+		return fmt.Errorf("--target is required and must not have surrounding whitespace")
+	}
+	if err := validateBranch(target); err != nil {
+		return err
+	}
+	if !shared.ExactGitObjectID.MatchString(head) {
+		return fmt.Errorf("--head must be an exact 40- or 64-hex Git SHA")
+	}
+	if slice <= 0 || slice > githubchecks.MaxForegroundCheckWaitSlice {
+		return fmt.Errorf("--slice must be positive and at most %s", githubchecks.MaxForegroundCheckWaitSlice)
+	}
+	if interval <= 0 {
+		return fmt.Errorf("--interval must be positive")
+	}
+	if interval >= slice {
+		return fmt.Errorf("--interval must be shorter than --slice so WB can confirm a stable terminal reread")
+	}
+	for _, workflow := range workflows {
+		if strings.TrimSpace(workflow) == "" {
+			return fmt.Errorf("--workflow must not be empty")
+		}
+	}
+	for _, pattern := range checkPatterns {
+		// Every "--check" value is syntactically valid: "*" matches any run
+		// of characters (including "/"), and every other rune is literal.
+		if strings.TrimSpace(pattern) == "" {
+			return fmt.Errorf("--check must not be empty")
+		}
+	}
+	return nil
+}
+
+func ciWaitResumeArgs(repository, pullRequest, target, head string, slice, interval time.Duration, workflows, checkPatterns []string, jsonOut bool) []string {
+	args := []string{"wb", "ci", "wait", "--repo", repository, "--target", target, "--head", head, "--slice", slice.String(), "--interval", interval.String()}
+	if pullRequest != "" {
+		args = append(args, "--pr", pullRequest)
+	}
+	for _, workflow := range workflows {
+		args = append(args, "--workflow", workflow)
+	}
+	for _, pattern := range checkPatterns {
+		args = append(args, "--check", pattern)
+	}
+	if jsonOut {
+		args = append(args, "--json")
+	}
+	return args
+}
+
+func printCIWait(command *cobra.Command, output WaitOutput) error {
+	identity := output.Target + "@" + output.Head
+	if output.PullRequest != "" {
+		identity = "PR " + output.PullRequest + " -> " + identity
+	}
+	if _, err := fmt.Fprintf(command.OutOrStdout(), "%s %s %s: %s\n", output.Status, output.Repository, identity, output.Reason); err != nil {
+		return err
+	}
+	if output.Filter != nil {
+		if err := printCIWaitFilter(command, *output.Filter); err != nil {
+			return err
+		}
+	}
+	if len(output.ResumeArgs) > 0 {
+		quoted := make([]string, 0, len(output.ResumeArgs))
+		for _, argument := range output.ResumeArgs {
+			quoted = append(quoted, shared.ShellQuoteArg(argument))
+		}
+		_, err := fmt.Fprintf(command.OutOrStdout(), "resume: %s\n", strings.Join(quoted, " "))
+		return err
+	}
+	for _, detail := range output.FailureDetails {
+		if _, err := fmt.Fprintf(command.OutOrStdout(), "failed %s\n", detail.Check); err != nil {
+			return err
+		}
+		if detail.RunURL != "" {
+			if _, err := fmt.Fprintf(command.OutOrStdout(), "run: %s\n", detail.RunURL); err != nil {
+				return err
+			}
+		}
+		if detail.JobURL != "" {
+			if _, err := fmt.Fprintf(command.OutOrStdout(), "job: %s\n", detail.JobURL); err != nil {
+				return err
+			}
+		}
+		for _, annotation := range detail.Annotations {
+			location := fmt.Sprintf("%s:%d", annotation.Path, annotation.StartLine)
+			if annotation.EndLine > annotation.StartLine {
+				location += fmt.Sprintf("-%d", annotation.EndLine)
+			}
+			if _, err := fmt.Fprintf(command.OutOrStdout(), "annotation: %s: %s\n", location, annotation.Message); err != nil {
+				return err
+			}
+		}
+		if detail.Excerpt != "" {
+			if _, err := fmt.Fprintf(command.OutOrStdout(), "failed-step tail:\n%s\n", detail.Excerpt); err != nil {
+				return err
+			}
+		}
+		if detail.Reason != "" {
+			if _, err := fmt.Fprintf(command.OutOrStdout(), "diagnostic: %s\n", detail.Reason); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func printCIWaitFilter(command *cobra.Command, filter githubchecks.CheckWaitFilter) error {
+	line := "filter:"
+	if len(filter.Workflows) > 0 {
+		line += " workflow=" + strings.Join(filter.Workflows, ",")
+	}
+	if len(filter.Checks) > 0 {
+		line += " check=" + strings.Join(filter.Checks, ",")
+	}
+	line += fmt.Sprintf(" matched %d check(s), %d required check(s)", filter.MatchedChecks, filter.RequiredChecks)
+	_, err := fmt.Fprintln(command.OutOrStdout(), line)
+	return err
+}
+
+func newAuditCmd(runtime shared.Runtime, deps Dependencies) *cobra.Command {
+	var (
+		fleetMode bool
+		strict    bool
+		jsonOut   bool
+		target    string
+	)
+	cmd := &cobra.Command{
+		Use:   "audit [repository-path]",
+		Short: "Check coverage gates and build-artifact promotion",
+		Long: `Check coverage gates and build-artifact promotion.
+
+Pass --target <branch> to additionally compare every numeric
+min_test_coverage_percent against the same workflow file on the fetched
+target branch (lesson l10-coverage-floors-are-raised-with-real-tests-never-lowered-to-fit):
+a threshold lower here than on the target is a coverage-floor-lowered
+finding. It also compares internal/quality/testdata/unit_tier.pending's
+grand total against the target's committed copy (spec/plans/coverage-to-100
+task-24): a rise is a unit-tier-pending-total-rose finding unless this PR
+shrinks other entries by at least as much. Both comparisons are a no-op when
+the current branch already equals --target, and fetch origin/<target> (the
+one place this command is not read-only).`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			path := "."
+			if len(args) == 1 {
+				path = args[0]
+			}
+			flags := runtime.Flags()
+			reports, err := deps.Audit(ciaudit.BatchOptions{Path: path, ProjectsRoot: flags.ProjectsRoot, Filter: flags.Filter, Target: target, Fleet: fleetMode})
+			if err != nil {
+				return err
+			}
+			if jsonOut {
+				encoder := json.NewEncoder(cmd.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				if err := encoder.Encode(reports); err != nil {
+					return err
+				}
+			} else if err := printCIAudit(cmd.OutOrStdout(), reports); err != nil {
+				return err
+			}
+			findings := 0
+			for _, report := range reports {
+				findings += len(report.Findings)
+			}
+			if strict && findings > 0 {
+				return runtime.ExitError(shared.ExitFindings, "CI policy findings reported above; fix them or drop --strict to report without failing")
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&fleetMode, "fleet", false, "audit every local repository under --projects-root")
+	cmd.Flags().BoolVar(&strict, "strict", false, "exit non-zero when policy findings exist")
+	cmd.Flags().StringVar(&target, "target", "", "also compare coverage floors and the unit-tier pending total against this fetched target branch")
+	shared.AddJSONFormatFlags(cmd, &jsonOut)
+	return cmd
+}
+
+func printCIAudit(out io.Writer, reports []ciaudit.Report) error {
+	for _, report := range reports {
+		if _, err := fmt.Fprintln(out, report.Path); err != nil {
+			return err
+		}
+		if !report.HasGo && !report.HasFrontend && !report.HasDeploy {
+			if _, err := fmt.Fprintln(out, "  – no Go/frontend/deploy CI policy applies"); err != nil {
+				return err
+			}
+			continue
+		}
+		if report.HasGo && report.GoCoverageThreshold {
+			if _, err := fmt.Fprintln(out, "  ✓ Go coverage threshold"); err != nil {
+				return err
+			}
+		}
+		if report.HasFrontend && report.FrontendCoverageThreshold {
+			if _, err := fmt.Fprintln(out, "  ✓ frontend coverage threshold"); err != nil {
+				return err
+			}
+		}
+		if report.HasDeploy && report.ArtifactPromotion {
+			if _, err := fmt.Fprintln(out, "  ✓ deploys promote verified build artifacts"); err != nil {
+				return err
+			}
+		}
+		for _, finding := range report.Findings {
+			where := ""
+			if finding.File != "" {
+				where = " (" + finding.File + ")"
+			}
+			if _, err := fmt.Fprintf(out, "  ✗ %s: %s%s\n", finding.Code, finding.Message, where); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}

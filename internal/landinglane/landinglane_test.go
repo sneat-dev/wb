@@ -15,6 +15,7 @@ func fixedNow(t time.Time) func() time.Time {
 }
 
 func TestAcquireGrantsFreshLane(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	record, err := Acquire(home, AcquireRequest{
 		Repository:  "sneat-dev/wb",
@@ -35,6 +36,7 @@ func TestAcquireGrantsFreshLane(t *testing.T) {
 }
 
 func TestAcquireRefusesDifferentLiveSession(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	if _, err := Acquire(home, AcquireRequest{
 		Repository:  "sneat-dev/wb",
@@ -67,6 +69,7 @@ func TestAcquireRefusesDifferentLiveSession(t *testing.T) {
 }
 
 func TestAcquireAdmitsSameSessionAndRefreshes(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	if _, err := Acquire(home, AcquireRequest{
 		Repository:  "sneat-dev/wb",
@@ -100,6 +103,7 @@ func TestAcquireAdmitsSameSessionAndRefreshes(t *testing.T) {
 }
 
 func TestAcquireTakesOverDeadOwner(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	if _, err := Acquire(home, AcquireRequest{
 		Repository:  "sneat-dev/wb",
@@ -139,6 +143,7 @@ func TestAcquireTakesOverDeadOwner(t *testing.T) {
 // staleness is only ever a proxy for "the owner stopped running"; liveness
 // (the session registry) is authoritative and must gate the takeover alone.
 func TestAcquireRefusesLiveOwnerDespiteStaleHeartbeat(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	if _, err := Acquire(home, AcquireRequest{
 		Repository:  "sneat-dev/wb",
@@ -175,6 +180,7 @@ func TestAcquireRefusesLiveOwnerDespiteStaleHeartbeat(t *testing.T) {
 // --take-over-lane (with --lane-reason) still works against a live-but-stale
 // owner, exactly as it does against a live-and-fresh one.
 func TestAcquireExplicitTakeoverOverridesLiveStaleOwner(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	if _, err := Acquire(home, AcquireRequest{
 		Repository:  "sneat-dev/wb",
@@ -211,6 +217,7 @@ func TestAcquireExplicitTakeoverOverridesLiveStaleOwner(t *testing.T) {
 // gates the decision alone; a fresh heartbeat from a dead process (the last
 // beat before it crashed) must never block the takeover.
 func TestAcquireTakesOverDeadOwnerRegardlessOfHeartbeatFreshness(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	if _, err := Acquire(home, AcquireRequest{
 		Repository:  "sneat-dev/wb",
@@ -240,6 +247,7 @@ func TestAcquireTakesOverDeadOwnerRegardlessOfHeartbeatFreshness(t *testing.T) {
 }
 
 func TestAcquireExplicitTakeoverRequiresReason(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	if _, err := Acquire(home, AcquireRequest{
 		Repository: "sneat-dev/wb", Target: "main",
@@ -274,6 +282,7 @@ func TestAcquireExplicitTakeoverRequiresReason(t *testing.T) {
 }
 
 func TestReleaseOnlyRemovesOwnersLane(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	if _, err := Acquire(home, AcquireRequest{
 		Repository: "sneat-dev/wb", Target: "main",
@@ -311,6 +320,7 @@ func TestReleaseOnlyRemovesOwnersLane(t *testing.T) {
 // refuse, naming the file, until an explicit --take-over-lane --lane-reason
 // override replaces it.
 func TestAcquireFailsClosedOnCorruptRecord(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	lane := LaneID("sneat-dev/wb", "main")
 	if err := os.MkdirAll(filepath.Join(home, DirName), 0o700); err != nil {
@@ -356,6 +366,7 @@ func TestAcquireFailsClosedOnCorruptRecord(t *testing.T) {
 }
 
 func TestHeartbeatAdvancesOwnedLane(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	if _, err := Acquire(home, AcquireRequest{
 		Repository: "sneat-dev/wb", Target: "main",
@@ -380,6 +391,7 @@ func TestHeartbeatAdvancesOwnedLane(t *testing.T) {
 // between two sessions acquiring the same fresh lane must be serialized by
 // the flock, not corrupt the record or admit both.
 func TestAcquireConcurrentRaceIsFileLockSafe(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	const contenders = 12
 	var wins int64

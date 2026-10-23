@@ -44,6 +44,7 @@ func tailCovSpawnFileSizeLimitedChild(t *testing.T) bool {
 // freshly created log, which is the only portable way to reach that branch —
 // open and flock have already succeeded by then.
 func TestTailCovAppendReportsWriteFailure(t *testing.T) {
+	t.Parallel()
 	if tailCovSpawnFileSizeLimitedChild(t) {
 		return
 	}
@@ -55,11 +56,11 @@ func TestTailCovAppendReportsWriteFailure(t *testing.T) {
 	if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &limit); err != nil {
 		t.Fatalf("setrlimit(RLIMIT_FSIZE, 0): %v", err)
 	}
-	defer func() {
+	t.Cleanup(func() {
 		if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &original); err != nil {
 			t.Errorf("restore RLIMIT_FSIZE: %v", err)
 		}
-	}()
+	})
 
 	path := filepath.Join(t.TempDir(), "events.jsonl")
 	err := Append(path, Event{SchemaVersion: EventSchemaVersion, State: "requested"})

@@ -74,14 +74,18 @@ func (npmAdapter) inspect(ctx context.Context, repositoryDir, base string, targe
 	return decisions, nil
 }
 
-func (npmAdapter) inspectWorkingTree(_ context.Context, worktree string, target Target, options Options) ([]Decision, error) {
+func (adapter npmAdapter) inspectWorkingTree(ctx context.Context, worktree string, target Target, options Options) ([]Decision, error) {
+	return adapter.inspectWorkingTreeWithRead(ctx, worktree, target, options, os.ReadFile)
+}
+
+func (npmAdapter) inspectWorkingTreeWithRead(_ context.Context, worktree string, target Target, options Options, read func(string) ([]byte, error)) ([]Decision, error) {
 	packageManifests, workspaceManifests, err := npmManifestFiles(worktree)
 	if err != nil {
 		return nil, err
 	}
 	var decisions []Decision
 	for _, relative := range packageManifests {
-		contents, err := os.ReadFile(filepath.Join(worktree, filepath.FromSlash(relative)))
+		contents, err := read(filepath.Join(worktree, filepath.FromSlash(relative)))
 		if err != nil {
 			return nil, err
 		}
@@ -98,7 +102,7 @@ func (npmAdapter) inspectWorkingTree(_ context.Context, worktree string, target 
 		}
 	}
 	for _, relative := range workspaceManifests {
-		contents, err := os.ReadFile(filepath.Join(worktree, filepath.FromSlash(relative)))
+		contents, err := read(filepath.Join(worktree, filepath.FromSlash(relative)))
 		if err != nil {
 			return nil, err
 		}
@@ -127,12 +131,10 @@ func (npmAdapter) apply(ctx context.Context, worktree string, target Target, opt
 	type pendingPackageJSON struct {
 		relative string
 		contents []byte
-		refs     []npmPackageJSONRef
 	}
 	type pendingWorkspace struct {
 		relative string
 		contents []byte
-		refs     []pnpmWorkspaceRef
 	}
 	var decisions []Decision
 	var pendingPackages []pendingPackageJSON
@@ -144,7 +146,7 @@ func (npmAdapter) apply(ctx context.Context, worktree string, target Target, opt
 		if err != nil {
 			return decisions, err
 		}
-		var matches []npmPackageJSONRef
+		matched := false
 		for _, ref := range scanNpmPackageJSONRefs(contents) {
 			if ref.Key != target.Dependency {
 				continue
@@ -155,10 +157,10 @@ func (npmAdapter) apply(ctx context.Context, worktree string, target Target, opt
 				sortDecisions(decisions)
 				return decisions, fmt.Errorf("%s: %s", relative, decision.Reason)
 			}
-			matches = append(matches, ref)
+			matched = true
 		}
-		if len(matches) > 0 {
-			pendingPackages = append(pendingPackages, pendingPackageJSON{relative: relative, contents: contents, refs: matches})
+		if matched {
+			pendingPackages = append(pendingPackages, pendingPackageJSON{relative: relative, contents: contents})
 		}
 	}
 	for _, relative := range workspaceManifests {
@@ -166,7 +168,7 @@ func (npmAdapter) apply(ctx context.Context, worktree string, target Target, opt
 		if err != nil {
 			return decisions, err
 		}
-		var matches []pnpmWorkspaceRef
+		matched := false
 		for _, ref := range scanPnpmWorkspaceRefs(contents) {
 			if ref.Key != target.Dependency {
 				continue
@@ -177,10 +179,10 @@ func (npmAdapter) apply(ctx context.Context, worktree string, target Target, opt
 				sortDecisions(decisions)
 				return decisions, fmt.Errorf("%s: %s", relative, decision.Reason)
 			}
-			matches = append(matches, ref)
+			matched = true
 		}
-		if len(matches) > 0 {
-			pendingWorkspaces = append(pendingWorkspaces, pendingWorkspace{relative: relative, contents: contents, refs: matches})
+		if matched {
+			pendingWorkspaces = append(pendingWorkspaces, pendingWorkspace{relative: relative, contents: contents})
 		}
 	}
 
@@ -192,26 +194,16 @@ func (npmAdapter) apply(ctx context.Context, worktree string, target Target, opt
 	}
 
 	for _, pending := range pendingPackages {
-		updated, applied, err := applyNpmPackageJSONOverride(pending.contents, target.Dependency, target.Version)
-		if err != nil {
-			return decisions, fmt.Errorf("%s: %w", pending.relative, err)
-		}
-		if len(applied) != len(pending.refs) {
-			return decisions, fmt.Errorf("%s: expected to update %d reference(s), matched %d", pending.relative, len(pending.refs), len(applied))
-		}
+		// Planning and rewriting scan the same immutable bytes for the same key.
+		updated, _, _ := applyNpmPackageJSONOverride(pending.contents, target.Dependency, target.Version)
 		if err := writeAtomic(filepath.Join(worktree, filepath.FromSlash(pending.relative)), updated, 0o644); err != nil {
 			return decisions, err
 		}
 		changedFiles[pending.relative] = true
 	}
 	for _, pending := range pendingWorkspaces {
-		updated, applied, err := applyPnpmWorkspaceOverride(pending.contents, target.Dependency, target.Version)
-		if err != nil {
-			return decisions, fmt.Errorf("%s: %w", pending.relative, err)
-		}
-		if len(applied) != len(pending.refs) {
-			return decisions, fmt.Errorf("%s: expected to update %d reference(s), matched %d", pending.relative, len(pending.refs), len(applied))
-		}
+		// Planning and rewriting scan the same immutable bytes for the same key.
+		updated, _, _ := applyPnpmWorkspaceOverride(pending.contents, target.Dependency, target.Version)
 		if err := writeAtomic(filepath.Join(worktree, filepath.FromSlash(pending.relative)), updated, 0o644); err != nil {
 			return decisions, err
 		}
@@ -276,10 +268,8 @@ func npmManifestFiles(root string) (packageManifests, workspaceManifests []strin
 			}
 			return nil
 		}
-		relative, relErr := filepath.Rel(root, path)
-		if relErr != nil {
-			return relErr
-		}
+		// WalkDir supplies lexical descendants of this root, on the same volume.
+		relative, _ := filepath.Rel(root, path)
 		relative = filepath.ToSlash(relative)
 		if ignoredManifestPath(relative) {
 			return nil
@@ -336,10 +326,8 @@ func npmLockfileDirectories(root string) (map[string][]npmLockfileKind, error) {
 		default:
 			return nil
 		}
-		relativeDir, relErr := filepath.Rel(root, filepath.Dir(path))
-		if relErr != nil {
-			return relErr
-		}
+		// The parent of a WalkDir descendant stays beneath this root.
+		relativeDir, _ := filepath.Rel(root, filepath.Dir(path))
 		relativeDir = filepath.ToSlash(relativeDir)
 		if relativeDir == "." {
 			relativeDir = ""

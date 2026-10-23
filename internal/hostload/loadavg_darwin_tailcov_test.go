@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // tailCovWithFakeSysctl installs a fake `sysctl` first on PATH that prints
@@ -28,7 +30,7 @@ func tailCovWithFakeSysctl(t *testing.T, output string, exitCode int) {
 	script := "#!/bin/sh\n" +
 		"cat '" + payload + "'\n" +
 		"exit " + strconv.Itoa(exitCode) + "\n"
-	if err := os.WriteFile(filepath.Join(directory, "sysctl"), []byte(script), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(filepath.Join(directory, "sysctl"), []byte(script), 0o755); err != nil {
 		t.Fatalf("write the fake sysctl: %v", err)
 	}
 	t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))

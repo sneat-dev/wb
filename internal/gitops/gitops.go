@@ -18,7 +18,11 @@ import (
 	"github.com/sneat-dev/wb/internal/console"
 )
 
-// run executes a command in dir and returns combined output. The child runs
+// run executes a command in dir and returns combined output. Git calls made
+// through run use the git executable rather than a Go Git library: WB needs
+// linked worktrees, rebase, stash, apply and bundle, and must honour the user's
+// own Git configuration and credential helpers.
+// See README "Why WB runs the `git` CLI". The child runs
 // with prompting disabled so a missing credential or an unknown host key fails
 // with a message instead of blocking on a terminal nobody is watching.
 func run(dir, name string, args ...string) (string, error) {
@@ -225,6 +229,15 @@ func lastLine(s string) string {
 // machine and errors on another. Refusing is the only safe answer; the caller
 // classifies the refusal.
 func Pull(repoPath string) error {
+	return pull(repoPath, time.Sleep)
+}
+
+// pull is Pull's retry-backoff seam: sleep is a function parameter, not a
+// package-level mutable var, so a test can inject a recorder without ever
+// leaving shared package state mutated for another test running in
+// parallel. Pull always passes time.Sleep; a same-package test calls pull
+// directly with a recorder to exercise every retry at full speed.
+func pull(repoPath string, sleep func(time.Duration)) error {
 	const attempts = 5
 	var err error
 	for attempt := 0; attempt < attempts; attempt++ {
@@ -237,7 +250,7 @@ func Pull(repoPath string) error {
 			// occasionally close one of them under load. Exponential backoff,
 			// staggered per checkout, gives the connection burst time to clear
 			// without hiding real Git refusals.
-			time.Sleep(pullRetryDelay(repoPath, attempt))
+			sleep(pullRetryDelay(repoPath, attempt))
 		}
 	}
 	return err
@@ -301,20 +314,9 @@ type UnpushedBranch struct {
 	Commits  []string `yaml:"commits" json:"commits"`
 }
 
-// UnpushedCommits lists commits present on some local branch and on no
-// remote-tracking branch, newest first, as `<short-sha> <subject>` lines.
-//
-// Deliberately every local branch, not just the checked-out one: work is
-// abandoned on a side branch at least as often as on the default one, and a
-// clone holding either is holding work that exists nowhere else.
-func UnpushedCommits(repoPath string) ([]string, error) {
-	commits, _, err := UnpushedWork(repoPath)
-	return commits, err
-}
-
 // UnpushedWork returns both the unique flat commit list and branch/worktree
 // attribution. It requires at least one known remote-tracking ref for the same
-// reason as UnpushedCommits: without one, the whole repository history would
+// reason as the commit list: without one, the whole repository history would
 // be indistinguishable from unpublished work.
 func UnpushedWork(repoPath string) ([]string, []UnpushedBranch, error) {
 	return unpushedWork(repoPath, true)

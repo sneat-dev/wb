@@ -8,6 +8,7 @@ import (
 )
 
 func TestSmCovConfigUnconfiguredErrorNamesPath(t *testing.T) {
+	t.Parallel()
 	message := (&UnconfiguredError{Path: "/home/ai/.config/wb/wb.yaml"}).Error()
 	if !strings.Contains(message, "/home/ai/.config/wb/wb.yaml") || !strings.Contains(message, "session_move.targets") {
 		t.Fatalf("UnconfiguredError message = %q, want the exact path and the session_move.targets hint", message)
@@ -15,7 +16,9 @@ func TestSmCovConfigUnconfiguredErrorNamesPath(t *testing.T) {
 }
 
 func TestSmCovConfigLoadReportsAbsentAndMalformedFiles(t *testing.T) {
+	t.Parallel()
 	t.Run("absent file", func(t *testing.T) {
+		t.Parallel()
 		missing := filepath.Join(t.TempDir(), "absent.yaml")
 		_, err := LoadConfig(missing)
 		var unconfigured *UnconfiguredError
@@ -25,18 +28,21 @@ func TestSmCovConfigLoadReportsAbsentAndMalformedFiles(t *testing.T) {
 	})
 
 	t.Run("unreadable path", func(t *testing.T) {
+		t.Parallel()
 		if _, err := LoadConfig(t.TempDir()); err == nil || !strings.Contains(err.Error(), "read config") {
 			t.Fatalf("LoadConfig(directory) error = %v, want read error", err)
 		}
 	})
 
 	t.Run("malformed yaml", func(t *testing.T) {
+		t.Parallel()
 		if _, err := LoadConfig(writeConfig(t, "session_move: [")); err == nil || !strings.Contains(err.Error(), "parse config") {
 			t.Fatalf("LoadConfig(malformed) error = %v, want parse error", err)
 		}
 	})
 
 	t.Run("no session_move section", func(t *testing.T) {
+		t.Parallel()
 		_, err := LoadConfig(writeConfig(t, "remote:\n  repo: sneat-dev/wb-state\n"))
 		var unconfigured *UnconfiguredError
 		if !errors.As(err, &unconfigured) {
@@ -45,12 +51,14 @@ func TestSmCovConfigLoadReportsAbsentAndMalformedFiles(t *testing.T) {
 	})
 
 	t.Run("no targets", func(t *testing.T) {
+		t.Parallel()
 		if _, err := LoadConfig(writeConfig(t, "session_move:\n  targets: {}\n")); err == nil || !strings.Contains(err.Error(), "at least one target") {
 			t.Fatalf("LoadConfig(no targets) error = %v, want target requirement", err)
 		}
 	})
 
 	t.Run("invalid machine name", func(t *testing.T) {
+		t.Parallel()
 		body := "session_move:\n  targets:\n    \"-vm\":\n      default_courier: ssh\n      ssh:\n        host: vm\n"
 		if _, err := LoadConfig(writeConfig(t, body)); err == nil || !strings.Contains(err.Error(), "target machine") {
 			t.Fatalf("LoadConfig(invalid machine) error = %v, want machine id error", err)
@@ -59,6 +67,7 @@ func TestSmCovConfigLoadReportsAbsentAndMalformedFiles(t *testing.T) {
 }
 
 func TestSmCovConfigValidateTargetCourierSections(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		target TargetConfig
@@ -79,6 +88,7 @@ func TestSmCovConfigValidateTargetCourierSections(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			err := validateTarget(test.target)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("validateTarget error = %v, want substring %q", err, test.want)
@@ -88,6 +98,7 @@ func TestSmCovConfigValidateTargetCourierSections(t *testing.T) {
 }
 
 func TestSmCovConfigSSHUserIsValidatedWithExplicitWBPath(t *testing.T) {
+	t.Parallel()
 	valid := SSHConfig{Host: "vm", User: "ai_1", WBPath: "/opt/wb"}
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("valid ssh config with explicit wb_path: %v", err)

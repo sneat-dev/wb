@@ -1,0 +1,21 @@
+--- FAIL: TestBoom (0.00s)
+panic: runtime error: index out of range [3] with length 0 [recovered, repanicked]
+
+goroutine 6 [running]:
+testing.tRunner.func1.2({0x6c9900, 0x38af965da168})
+	/home/ai/.local/go/src/testing/testing.go:2123 +0x232
+testing.tRunner.func1()
+	/home/ai/.local/go/src/testing/testing.go:2126 +0x329
+panic({0x6c9900?, 0x38af965da168?})
+	/home/ai/.local/go/src/runtime/panic.go:859 +0x125
+panicdemo.TestBoom.func1()
+	/tmp/tmp.QqaMXOYIOO/p_test.go:8 +0x25
+panic({0x6c9900?, 0x38af965da168?})
+	/home/ai/.local/go/src/runtime/panic.go:859 +0x125
+panicdemo.TestBoom(0x38af9667a248?)
+	/tmp/tmp.QqaMXOYIOO/p_test.go:12 +0x30
+testing.tRunner(0x38af9667a248, 0x6d5038)
+	/home/ai/.local/go/src/testing/testing.go:2193 +0xea
+created by testing.(*T).Run in goroutine 1
+	/home/ai/.local/go/src/testing/testing.go:2258 +0x4d4
+FAIL	panicdemo	0.006s

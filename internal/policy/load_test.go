@@ -69,6 +69,7 @@ func loadSample(t *testing.T) Policy {
 }
 
 func TestLoadPreservesGroupOrder(t *testing.T) {
+	t.Parallel()
 	loaded := loadSample(t)
 	want := []string{"own-repo", "extension-contract", "host", "extension-implementation", "dalgo-adapter", "dalgo-core", "third-party"}
 	got := loaded.GroupNames()
@@ -78,6 +79,7 @@ func TestLoadPreservesGroupOrder(t *testing.T) {
 }
 
 func TestLoadReadsScopesAndLayers(t *testing.T) {
+	t.Parallel()
 	loaded := loadSample(t)
 	repoType, ok := loaded.Type("extension-implementation")
 	if !ok {
@@ -98,6 +100,7 @@ func TestLoadReadsScopesAndLayers(t *testing.T) {
 }
 
 func TestScopeDefaultsToSourceWhenTestsAbsent(t *testing.T) {
+	t.Parallel()
 	loaded := loadSample(t)
 	contract, _ := loaded.Type("extension-contract")
 	if _, ok := contract.Scopes[ScopeTests]; !ok {
@@ -112,6 +115,7 @@ const groupsBlock = "groups:\n  - {name: g, match: [\"...\"]}\n"
 const typesBlock = "types:\n  - name: t\n    detect: [\"x/y\"]\n    scopes: {source: {allow: [g]}}\n"
 
 func TestLoadRejects(t *testing.T) {
+	t.Parallel()
 	cases := map[string]string{
 		"no groups":                "types:\n  - name: a\n    detect: [\"x/y\"]\n    scopes: {source: {allow: []}}\n",
 		"no types":                 "groups:\n  - {name: g, match: [\"...\"]}\n",
@@ -126,6 +130,7 @@ func TestLoadRejects(t *testing.T) {
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			if _, err := Load(writePolicy(t, body)); err == nil {
 				t.Fatal("Load succeeded, want error")
 			}
@@ -134,6 +139,7 @@ func TestLoadRejects(t *testing.T) {
 }
 
 func TestValidateReportsShadowedPatternAndUnusedRole(t *testing.T) {
+	t.Parallel()
 	body := `
 groups:
   - {name: broad,  match: ["github.com/acme/*/..."]}

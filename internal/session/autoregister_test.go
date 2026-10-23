@@ -232,6 +232,7 @@ func TestRuntimeForProcessEvidenceKeepsCodexRoleExact(t *testing.T) {
 }
 
 func TestLookupByWBSessionIDIgnoresParkedAndUnknownSessions(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "sessions")
 	if _, err := Register(dir, Record{PID: os.Getpid(), WBSessionID: "wbs-live", Runtime: "codex"}); err != nil {
 		t.Fatal(err)

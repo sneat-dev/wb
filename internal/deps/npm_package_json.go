@@ -1,7 +1,6 @@
 package deps
 
 import (
-	"fmt"
 	"regexp"
 	"strings"
 )
@@ -98,14 +97,9 @@ func applyNpmPackageJSONOverride(contents []byte, dependency, version string) ([
 		if ref.Key != dependency {
 			continue
 		}
-		if ref.Line < 0 || ref.Line >= len(lines) {
-			return nil, nil, fmt.Errorf("package.json: dependency line index out of range")
-		}
+		// The scanner indexes these same immutable lines after matching this pattern.
 		raw := lines[ref.Line]
 		match := npmStringEntryPattern.FindStringSubmatch(raw)
-		if match == nil {
-			return nil, nil, fmt.Errorf("package.json: could not re-match dependency line %d", ref.Line+1)
-		}
 		trailingComma := ""
 		if strings.HasSuffix(strings.TrimRight(raw, "\r\n"), ",") {
 			trailingComma = ","

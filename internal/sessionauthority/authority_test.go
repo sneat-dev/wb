@@ -54,6 +54,7 @@ func sdCovPrivateLaunch() Launch {
 }
 
 func TestSdCovValidIDAcceptsOnlyOneFixedSafeID(t *testing.T) {
+	t.Parallel()
 	valid := []string{"a", "A0", "agg-0001", "wbs.successor_1", "a" + strings.Repeat("b", 200)}
 	for _, value := range valid {
 		if !ValidID(value) {
@@ -69,6 +70,7 @@ func TestSdCovValidIDAcceptsOnlyOneFixedSafeID(t *testing.T) {
 }
 
 func TestSdCovValidateMemberKey(t *testing.T) {
+	t.Parallel()
 	if err := ValidateMemberKey("member-1"); err != nil {
 		t.Fatalf("ValidateMemberKey(member-1) = %v, want nil", err)
 	}
@@ -85,6 +87,7 @@ func TestSdCovValidateMemberKey(t *testing.T) {
 }
 
 func TestSdCovLaunchValidateAcceptsAdmittedAuthority(t *testing.T) {
+	t.Parallel()
 	if err := sdCovTrackedLaunch().Validate(); err != nil {
 		t.Fatalf("tracked pinned-clean launch rejected: %v", err)
 	}
@@ -108,6 +111,7 @@ func TestSdCovLaunchValidateAcceptsAdmittedAuthority(t *testing.T) {
 }
 
 func TestSdCovLaunchValidateRejectsUnadmittedAuthority(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		mutate  func(*Launch)
@@ -275,6 +279,7 @@ func TestSdCovLaunchValidateRejectsUnadmittedAuthority(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			launch := sdCovTrackedLaunch()
 			tc.mutate(&launch)
 			err := launch.Validate()
@@ -295,6 +300,7 @@ func TestSdCovLaunchValidateRejectsUnadmittedAuthority(t *testing.T) {
 }
 
 func TestSdCovLaunchValidateParkedNeutralAuthority(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		mutate  func(*Launch)
@@ -317,6 +323,7 @@ func TestSdCovLaunchValidateParkedNeutralAuthority(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			launch := sdCovPrivateLaunch()
 			tc.mutate(&launch)
 			err := launch.Validate()

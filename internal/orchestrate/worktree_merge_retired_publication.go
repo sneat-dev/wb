@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/filewrite"
+	"github.com/sneat-dev/wb/internal/runner"
 )
 
 const (
@@ -85,11 +87,15 @@ type WorktreeMergeRetiredPublicationAcknowledgementOptions struct {
 // dry-run by default; --apply requires --actor and --reason and writes only
 // the new acknowledgement artifact.
 func AcknowledgeRetiredPublication(ctx context.Context, options WorktreeMergeRetiredPublicationAcknowledgementOptions) (WorktreeMergeRetiredPublicationAcknowledgement, error) {
+	return acknowledgeRetiredPublication(ctx, options, defaultRunner, readWorktreeMergeReceipt, worktreeMergeReceiptSHA256, persistRetiredPublicationAcknowledgement, githubRead)
+}
+
+func acknowledgeRetiredPublication(ctx context.Context, options WorktreeMergeRetiredPublicationAcknowledgementOptions, run runner.Runner, readReceipt func(string) (WorktreeMergeReceipt, error), hash func(string) (string, error), persist func(string, WorktreeMergeRetiredPublicationAcknowledgement) error, readPR func(context.Context, string, ...string) (string, error)) (WorktreeMergeRetiredPublicationAcknowledgement, error) {
 	receiptPath, err := resolveWorktreeMergeReceiptPath(options.ProjectsRoot, options.Receipt)
 	if err != nil {
 		return WorktreeMergeRetiredPublicationAcknowledgement{}, err
 	}
-	receipt, err := readWorktreeMergeReceipt(receiptPath)
+	receipt, err := readReceipt(receiptPath)
 	if err != nil {
 		return WorktreeMergeRetiredPublicationAcknowledgement{}, err
 	}
@@ -100,9 +106,6 @@ func AcknowledgeRetiredPublication(ctx context.Context, options WorktreeMergeRet
 		return WorktreeMergeRetiredPublicationAcknowledgement{}, errors.New("--actor and --reason are required with --apply")
 	}
 	lockID := receipt.Lane
-	if lockID == "" {
-		lockID = worktreeMergeLaneID(receipt.Repository, receipt.Target)
-	}
 	lock, err := AcquireOperationLock(options.ProjectsRoot, lockID, true)
 	if err != nil {
 		return WorktreeMergeRetiredPublicationAcknowledgement{}, err
@@ -112,7 +115,7 @@ func AcknowledgeRetiredPublication(ctx context.Context, options WorktreeMergeRet
 	// Re-read and re-validate beneath the lane lock: every proof below must
 	// run against evidence observed while this acknowledgement exclusively
 	// owns the lane, never against values captured before it.
-	receipt, err = readWorktreeMergeReceipt(receiptPath)
+	receipt, err = readReceipt(receiptPath)
 	if err != nil {
 		return WorktreeMergeRetiredPublicationAcknowledgement{}, err
 	}
@@ -124,18 +127,18 @@ func AcknowledgeRetiredPublication(ctx context.Context, options WorktreeMergeRet
 		return WorktreeMergeRetiredPublicationAcknowledgement{}, fmt.Errorf("candidate worktree %s is required for read-only git object resolution and is missing: %v", receipt.Candidate.Worktree, statErr)
 	}
 
-	view, err := proveRetiredPullRequest(ctx, receipt)
+	view, err := proveRetiredPullRequest(ctx, receipt, readPR)
 	if err != nil {
 		return WorktreeMergeRetiredPublicationAcknowledgement{}, err
 	}
-	remote, _, err := runCommand(ctx, 0, 0, receipt.Candidate.Worktree, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
+	remote, _, err := runCommand(ctx, run, 0, 0, receipt.Candidate.Worktree, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
 	if err != nil {
 		return WorktreeMergeRetiredPublicationAcknowledgement{}, fmt.Errorf("inspect candidate publication state: %w", err)
 	}
 	if strings.TrimSpace(remote) != "" {
 		return WorktreeMergeRetiredPublicationAcknowledgement{}, fmt.Errorf("candidate branch %s still carries a remote ref; this recovery requires it to be gone", receipt.Candidate.Branch)
 	}
-	currentTarget, err := fetchExactMergeTarget(ctx, receipt.Candidate.Worktree, receipt.Target)
+	currentTarget, err := fetchExactMergeTargetWithRunner(ctx, run, receipt.Candidate.Worktree, receipt.Target)
 	if err != nil {
 		return WorktreeMergeRetiredPublicationAcknowledgement{}, err
 	}
@@ -143,7 +146,7 @@ func AcknowledgeRetiredPublication(ctx context.Context, options WorktreeMergeRet
 		if sha == "" {
 			continue
 		}
-		landed, ancestorErr := isMergeAncestor(ctx, receipt.Candidate.Worktree, sha, currentTarget)
+		landed, ancestorErr := isMergeAncestorWithRunner(ctx, run, receipt.Candidate.Worktree, sha, currentTarget)
 		if ancestorErr != nil {
 			return WorktreeMergeRetiredPublicationAcknowledgement{}, fmt.Errorf("verify candidate %s against current target %s: %w", sha, currentTarget, ancestorErr)
 		}
@@ -152,7 +155,7 @@ func AcknowledgeRetiredPublication(ctx context.Context, options WorktreeMergeRet
 		}
 	}
 
-	receiptHash, err := worktreeMergeReceiptSHA256(receiptPath)
+	receiptHash, err := hash(receiptPath)
 	if err != nil {
 		return WorktreeMergeRetiredPublicationAcknowledgement{}, err
 	}
@@ -180,7 +183,7 @@ func AcknowledgeRetiredPublication(ctx context.Context, options WorktreeMergeRet
 	if !options.Apply {
 		return ack, nil
 	}
-	if err := persistRetiredPublicationAcknowledgement(ackPath, ack); err != nil {
+	if err := persist(ackPath, ack); err != nil {
 		return WorktreeMergeRetiredPublicationAcknowledgement{}, err
 	}
 	return ack, nil
@@ -247,8 +250,8 @@ type retiredPullRequestView struct {
 // and proves it was retired: closed without ever merging. A pull request
 // that reports MERGED points the caller at acknowledge-stranded-landing
 // instead; one that is still OPEN, or any other non-CLOSED state, refuses.
-func proveRetiredPullRequest(ctx context.Context, receipt WorktreeMergeReceipt) (retiredPullRequestView, error) {
-	output, err := githubRead(ctx, "", "pr", "view", receipt.PullRequest, "--repo", receipt.Repository,
+func proveRetiredPullRequest(ctx context.Context, receipt WorktreeMergeReceipt, readPR func(context.Context, string, ...string) (string, error)) (retiredPullRequestView, error) {
+	output, err := readPR(ctx, "", "pr", "view", receipt.PullRequest, "--repo", receipt.Repository,
 		"--json", "state,closedAt,mergedAt,mergeCommit,headRefName,headRefOid")
 	if err != nil {
 		return retiredPullRequestView{}, fmt.Errorf("read pull-request retirement state: %w", err)
@@ -312,47 +315,26 @@ func sameRetiredPublicationAcknowledgement(left, right WorktreeMergeRetiredPubli
 }
 
 func persistRetiredPublicationAcknowledgement(path string, ack WorktreeMergeRetiredPublicationAcknowledgement) error {
-	contents, err := json.MarshalIndent(ack, "", "  ")
-	if err != nil {
-		return err
-	}
-	contents = append(contents, '\n')
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".retired-publication-ack-*.tmp")
-	if err != nil {
-		return err
-	}
-	temporaryPath := temporary.Name()
-	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := temporary.Chmod(0o600); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if _, err := temporary.Write(contents); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := temporary.Sync(); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := temporary.Close(); err != nil {
-		return err
-	}
-	return os.Rename(temporaryPath, path)
+	return persistRetiredPublicationAcknowledgementInjected(path, ack, nil)
+}
+
+// persistRetiredPublicationAcknowledgementInjected is
+// persistRetiredPublicationAcknowledgement's test seam (task-9 PR-4): every
+// production call site reaches it only through
+// persistRetiredPublicationAcknowledgement, which always passes a nil
+// *filewrite.Injector, so production behaviour is unchanged; a test passes
+// its own Injector directly to reach a create/chmod/write/sync/close/rename
+// failure branch deterministically.
+func persistRetiredPublicationAcknowledgementInjected(path string, ack WorktreeMergeRetiredPublicationAcknowledgement, inj *filewrite.Injector) error {
+	return persistMergeAcknowledgement(path, ".retired-publication-ack-*.tmp", ack, filewrite.Rename, inj)
 }
 
 func readRetiredPublicationAcknowledgement(path string, receipt WorktreeMergeReceipt) (WorktreeMergeRetiredPublicationAcknowledgement, error) {
-	contents, err := os.ReadFile(path)
-	if err != nil {
+	var ack WorktreeMergeRetiredPublicationAcknowledgement
+	if err := readMergeAcknowledgement(path, "retired-publication acknowledgement", &ack); err != nil {
 		return WorktreeMergeRetiredPublicationAcknowledgement{}, err
 	}
-	var ack WorktreeMergeRetiredPublicationAcknowledgement
-	if err := json.Unmarshal(contents, &ack); err != nil {
-		return WorktreeMergeRetiredPublicationAcknowledgement{}, fmt.Errorf("decode retired-publication acknowledgement %s: %w", path, err)
-	}
+
 	receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
 	if err != nil {
 		return WorktreeMergeRetiredPublicationAcknowledgement{}, err

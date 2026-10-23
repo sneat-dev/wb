@@ -41,20 +41,12 @@ type parkedLocalMember struct {
 }
 
 type ParkedLocalCustody struct {
-	projectsRoot    string
-	bundle          sessionpark.Bundle
-	members         []parkedLocalMember
-	replayAttemptID string
-}
-
-// AttachParkedLocalSuccessor locks every member journal in stable path order,
-// validates the complete Git/claim/latest-owner barrier, and only then appends
-// the same prepared successor to every member. Explicit event IDs make a
-// partial I/O failure repairable by the same launcher attempt.
-func AttachParkedLocalSuccessor(ctx context.Context, options ParkedLocalSuccessorOptions) error {
-	return withParkedLocalResumeCustody(ctx, options.ProjectsRoot, options.Bundle, options.AttemptID, func(custody *ParkedLocalCustody) error {
-		return custody.Attach(ctx, options.Successor, options.AttemptID, options.AttemptIndex)
-	})
+	projectsRoot       string
+	bundle             sessionpark.Bundle
+	members            []parkedLocalMember
+	replayAttemptID    string
+	beforeWorktreeOpen func(string)
+	beforeAttachAppend func(*os.File)
 }
 
 // WithParkedLocalResumeCustody holds every exact worktree descriptor and
@@ -80,10 +72,12 @@ func withParkedLocalResumeCustody(ctx context.Context, projectsRoot string, bund
 	sort.Slice(members, func(i, j int) bool { return members[i].member.WorktreeDir < members[j].member.WorktreeDir })
 	custody := &ParkedLocalCustody{projectsRoot: projectsRoot, bundle: bundle, members: members, replayAttemptID: replayAttemptID}
 	defer custody.close()
-	for index := range custody.members {
-		if index > 0 && custody.members[index-1].member.WorktreeDir == custody.members[index].member.WorktreeDir {
+	for index := 1; index < len(custody.members); index++ {
+		if custody.members[index-1].member.WorktreeDir == custody.members[index].member.WorktreeDir {
 			return fmt.Errorf("parked local member path is duplicated")
 		}
+	}
+	for index := range custody.members {
 		if err := custody.acquire(ctx, index); err != nil {
 			return fmt.Errorf("retain parked local member %s: %w", custody.members[index].member.WorktreeDir, err)
 		}
@@ -165,6 +159,9 @@ func (custody *ParkedLocalCustody) acquire(ctx context.Context, index int) error
 			return fmt.Errorf("managed worktree identity changed since park: %s", reason)
 		}
 	}
+	if custody.beforeWorktreeOpen != nil {
+		custody.beforeWorktreeOpen(guard.Path)
+	}
 	worktree, err := openAdoptedCleanupWorktree(guard.Path)
 	if err != nil {
 		return err
@@ -222,18 +219,32 @@ func resolveParkedMemberWorktreeDir(projectsRoot string, member sessionpark.Work
 	if err != nil {
 		return "", err
 	}
-	for _, home := range resolvedClaimHomes(resolution) {
-		claim, claimErr := readWorkLogClaimByReference(home, reference)
+	if worktree := relocatedParkedMemberWorktree(
+		resolvedClaimHomes(resolution), reference, readWorkLogClaimByReference, resolveRelocationChain,
+	); worktree != "" {
+		return worktree, nil
+	}
+	return "", fmt.Errorf("recorded worktree %s is missing or no longer this member's checkout, and no relocation receipt resolves its Work Log reference %s", member.WorktreeDir, member.WorkLogReference)
+}
+
+func relocatedParkedMemberWorktree(
+	homes []string,
+	reference sessionmove.WorkLogReference,
+	readClaim func(string, sessionmove.WorkLogReference) (workLogClaim, error),
+	resolveRelocation func(string, workLogClaim) (workLogRelocationResolution, error),
+) string {
+	for _, home := range homes {
+		claim, claimErr := readClaim(home, reference)
 		if claimErr != nil {
 			continue
 		}
-		chain, chainErr := resolveRelocationChain(home, claim)
+		chain, chainErr := resolveRelocation(home, claim)
 		if chainErr != nil || chain.worktree == "" {
 			continue
 		}
-		return chain.worktree, nil
+		return chain.worktree
 	}
-	return "", fmt.Errorf("recorded worktree %s is missing or no longer this member's checkout, and no relocation receipt resolves its Work Log reference %s", member.WorktreeDir, member.WorkLogReference)
+	return ""
 }
 
 // corroborateProjectionAcrossHomes corroborates projection against the
@@ -259,9 +270,8 @@ func corroborateProjectionAcrossHomes(projectsRoot, worktree string, projection 
 			lastErr = err
 		}
 	}
-	if lastErr == nil {
-		lastErr = fmt.Errorf("no resolved home could corroborate the parked member's Work Log claim")
-	}
+	// Resolve always supplies its nonempty write home; a failed native
+	// corroboration therefore always sets lastErr before reaching here.
 	return lastErr
 }
 
@@ -291,16 +301,7 @@ func readWorkLogClaimByReference(home string, reference sessionmove.WorkLogRefer
 		return workLogClaim{}, err
 	}
 	defer func() { _ = runDir.Close() }()
-	claims, err := openPrivateChild(runDir, "claims", false)
-	if err != nil {
-		return workLogClaim{}, err
-	}
-	defer func() { _ = claims.Close() }()
-	var claim workLogClaim
-	if err := readJSONAt(claims, reference.ClaimID+".json", &claim); err != nil {
-		return workLogClaim{}, err
-	}
-	return claim, nil
+	return readWorkLogClaimAt(runDir, reference.ClaimID)
 }
 
 // verifyParkedMemberOriginRemote reports a non-empty reason unless the
@@ -374,6 +375,9 @@ func (custody *ParkedLocalCustody) Attach(ctx context.Context, successor session
 				"source_owner_event_id": member.OwnerEventID, "successor_wb_session_id": options.Successor.WBSessionID,
 				"attempt_id": options.AttemptID, "attempt_index": options.AttemptIndex,
 			},
+		}
+		if custody.beforeAttachAppend != nil {
+			custody.beforeAttachAppend(custody.members[index].directory)
 		}
 		if _, _, err := appendLocalEventUnderLock(resolvedWorktreeDir, custody.members[index].directory, event); err != nil {
 			return fmt.Errorf("attach local parked successor to %s: %w", resolvedWorktreeDir, err)

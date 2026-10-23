@@ -12,6 +12,7 @@ import (
 // REQ: every-verb-appends-a-structured-event — every append is versioned and
 // concurrent appenders interleave records rather than corrupt one.
 func TestEventLogAppendsConcurrentlyWithoutLosingRecords(t *testing.T) {
+	t.Parallel()
 	log := &FileEventLog{Path: filepath.Join(t.TempDir(), "events.jsonl")}
 	var group sync.WaitGroup
 	const appenders = 16
@@ -40,9 +41,38 @@ func TestEventLogAppendsConcurrentlyWithoutLosingRecords(t *testing.T) {
 	}
 }
 
+// TestEventLogStampsProvenanceFromEnv is wb#631's fleet-event half of the
+// acceptance test: every appended event carries the declared harness
+// identity plus wb_version.
+func TestEventLogStampsProvenanceFromEnv(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "sess-stream-1")
+	t.Setenv("AI_AGENT", "claude-code")
+	t.Setenv("CLAUDE_EFFORT", "medium")
+	t.Setenv("WB_SUBAGENT_ID", "agent-7")
+	t.Setenv("WB_SUBAGENT_TOOL_USE_ID", "toolu_9")
+
+	log := &FileEventLog{Path: filepath.Join(t.TempDir(), "events.jsonl")}
+	if err := log.Append(Event{Stream: "s", Verb: "stream start", Outcome: "success"}); err != nil {
+		t.Fatal(err)
+	}
+	events, err := ReadEvents(log.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
+	}
+	event := events[0]
+	if event.HarnessSessionID != "sess-stream-1" || event.Harness != "claude-code" || event.EffortLevel != "medium" ||
+		event.AgentID != "agent-7" || event.ToolUseID != "toolu_9" || event.WBVersion == "" {
+		t.Fatalf("event did not carry every provenance field: %+v", event)
+	}
+}
+
 // REQ: redaction-runs-before-any-bytes-leave-the-process — a credential never
 // reaches the log file, not merely never reaches an export.
 func TestEventLogRedactsBeforeWriting(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "events.jsonl")
 	log := &FileEventLog{Path: path, Now: func() time.Time { return time.Unix(0, 0).UTC() }}
 	secret := "ghp_0123456789abcdefghijklmnopqrstuvwx"
@@ -66,6 +96,7 @@ func TestEventLogRedactsBeforeWriting(t *testing.T) {
 }
 
 func TestReadEventsRefusesANewerSchema(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "events.jsonl")
 	if err := os.WriteFile(path, []byte(`{"schema_version":99,"verb":"x"}`+"\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -76,6 +107,7 @@ func TestReadEventsRefusesANewerSchema(t *testing.T) {
 }
 
 func TestReadEventsOnAMissingLogIsEmptyNotAnError(t *testing.T) {
+	t.Parallel()
 	events, err := ReadEvents(filepath.Join(t.TempDir(), "absent.jsonl"))
 	if err != nil || len(events) != 0 {
 		t.Fatalf("events = %v, err = %v; want an empty log", events, err)
@@ -83,6 +115,7 @@ func TestReadEventsOnAMissingLogIsEmptyNotAnError(t *testing.T) {
 }
 
 func TestRedactStringCoversTheDocumentedCredentialShapes(t *testing.T) {
+	t.Parallel()
 	for _, secret := range []string{
 		"ghp_0123456789abcdefghijklmnopqrstuvwx",
 		"github_pat_11ABCDEFG0abcdefghijkl_0123456789",
@@ -99,6 +132,7 @@ func TestRedactStringCoversTheDocumentedCredentialShapes(t *testing.T) {
 }
 
 func TestDiscardEventsAcceptsEverything(t *testing.T) {
+	t.Parallel()
 	if err := (DiscardEvents{}).Append(Event{}); err != nil {
 		t.Fatal(err)
 	}
