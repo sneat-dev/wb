@@ -117,6 +117,8 @@ resolution committed without the trailers) the rerun refuses
 ### REQ: integration-merge-local-check-push
 
 `wb integration merge` MUST perform `wb pr batch add` for any pins given,
+then refuse `batch-unrecorded-merge` when any local first-parent merge not
+yet on `origin/<integration>` lacks trailers naming its own second parent,
 then run the repository's local-check recipe (default every configured
 check; `--checks lint,test,build,spec` selects) on the resulting HEAD, and
 push exactly the checked commit to `refs/heads/<integration>` without force
