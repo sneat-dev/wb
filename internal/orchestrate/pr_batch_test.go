@@ -396,17 +396,25 @@ func TestSyncBatchHeadFastForwardsOnlyWhenBehind(t *testing.T) {
 	}
 }
 
-func TestAttributeReportsAFailedRefreshRead(t *testing.T) {
+func TestAttributeReportsAFailedCheckRead(t *testing.T) {
 	t.Parallel()
-	refresh := strings.Repeat("r", 40)
-	state := BatchState{Base: strings.Repeat("a", 40), Steps: []BatchStep{{Kind: BatchStepRefresh, Head: refresh}}}
-	checksAt := func(sha string) ([]githubchecks.RemoteCheck, error) {
-		if sha == refresh {
-			return nil, errors.New("rate limited")
-		}
-		return []githubchecks.RemoteCheck{{Name: "test", Bucket: "pass"}}, nil
-	}
-	if _, err := attribute("test", state, checksAt); err == nil {
-		t.Fatal("a failed refresh check read was swallowed")
+	refresh, source := strings.Repeat("r", 40), strings.Repeat("s", 40)
+	for name, steps := range map[string][]BatchStep{
+		"refresh": {{Kind: BatchStepRefresh, Head: refresh}},
+		"source":  {{Kind: BatchStepSource, PullRequest: 501, Head: source, State: BatchStateMerged}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			state := BatchState{Base: strings.Repeat("a", 40), Steps: steps}
+			checksAt := func(sha string) ([]githubchecks.RemoteCheck, error) {
+				if sha == refresh || sha == source {
+					return nil, errors.New("rate limited")
+				}
+				return []githubchecks.RemoteCheck{{Name: "test", Bucket: "pass"}}, nil
+			}
+			if _, err := attribute("test", state, checksAt); err == nil {
+				t.Fatal("a failed check read was swallowed")
+			}
+		})
 	}
 }
