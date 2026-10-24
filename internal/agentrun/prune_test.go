@@ -127,7 +127,7 @@ func TestPruneNeverRemovesARunWhoseWorktreeIsStillLeased(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AcquireLease: %v", err)
 	}
-	defer func() { _ = lease.Release() }()
+	t.Cleanup(func() { _ = lease.Release() })
 	plan, err := fixture.service().Prune(context.Background(), PruneRequest{ProjectsRoot: fixture.root, OlderThan: 24 * time.Hour})
 	if err != nil {
 		t.Fatalf("Prune: %v", err)
