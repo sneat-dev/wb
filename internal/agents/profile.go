@@ -22,10 +22,20 @@ import (
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
-// Harness names a coding-agent environment and tool loop. The MVP supports
-// exactly one; the field exists so provider and model are not collapsed into
-// the harness name.
-const HarnessCodex = "codex"
+// Harness names a coding-agent environment and tool loop. Each name is an
+// adapter in this package; the field exists so provider and model are not
+// collapsed into the harness name.
+const (
+	HarnessCodex    = "codex"
+	HarnessOpenCode = "opencode"
+	HarnessDSH      = "dsh"
+)
+
+// supportedHarnesses is the closed set this build can launch. A new harness is
+// a new adapter, never a configuration value.
+func supportedHarnesses() []string {
+	return []string{HarnessCodex, HarnessOpenCode, HarnessDSH}
+}
 
 // Wire protocols the Codex harness can speak. The set is closed because it is
 // the harness's own contract, not a user extension point.
@@ -59,27 +69,82 @@ type Provider struct {
 const ProviderCredentialEnv = "WB_AGENT_PROVIDER_CREDENTIAL"
 
 // Profile is a named agent execution configuration. It is intentionally this
-// small: harness + provider + model + optional reasoning, and nothing else.
+// small: harness + provider + model + optional effort and timeout, and nothing
+// else. Nothing here names a model WB ships: the operator's configuration is
+// the only place a model identifier exists.
 type Profile struct {
-	Harness   string `yaml:"harness" json:"harness"`
-	Provider  string `yaml:"provider" json:"provider"`
-	Model     string `yaml:"model" json:"model"`
+	Harness  string `yaml:"harness" json:"harness"`
+	Provider string `yaml:"provider,omitempty" json:"provider,omitempty"`
+	Model    string `yaml:"model" json:"model"`
+	// Variant is an OpenCode model variant, appended as "#variant" when the
+	// argv is built. It is a separate field because "#" is not a legal
+	// execution identifier and because a variant name is model-specific.
+	Variant string `yaml:"variant,omitempty" json:"variant,omitempty"`
+	// EffortVariants maps a WB effort level to the harness's own variant name.
+	// An effort with no mapping is not applied to OpenCode.
+	EffortVariants map[string]string `yaml:"effort_variants,omitempty" json:"effort_variants,omitempty"`
+	// Effort is the profile's default reasoning effort. Reasoning is the
+	// legacy spelling of the same thing; naming both is an error.
+	Effort    string `yaml:"effort,omitempty" json:"effort,omitempty"`
 	Reasoning string `yaml:"reasoning,omitempty" json:"reasoning,omitempty"`
+	// Timeout is a Go duration string bounding one run with this profile.
+	Timeout string `yaml:"timeout,omitempty" json:"timeout,omitempty"`
 }
 
-// Config is the resolved user agent configuration.
+// Config is the resolved user agent configuration: providers, profiles, task
+// types, named validation suites, defaults and the ordered fallback list.
 type Config struct {
 	Providers map[string]Provider
 	Profiles  map[string]Profile
+	TaskTypes map[string]TaskType
+	// ConfiguredTaskTypes records which task types came from the operator, so
+	// discovery can tell an override from a built-in.
+	ConfiguredTaskTypes map[string]bool
+	Validations         map[string][]ValidationStep
+	Defaults            Defaults
+	Fallback            []string
+}
+
+// Defaults are the values a request inherits when it names neither a task type
+// nor a profile. They exist so an operator can make one command the default
+// without editing every task type.
+type Defaults struct {
+	TaskType string `yaml:"task_type,omitempty" json:"task_type,omitempty"`
+	Profile  string `yaml:"profile,omitempty" json:"profile,omitempty"`
+}
+
+// ValidationStep is one objective check a task type may require. Argv is a
+// literal argument list, never a shell string, so a validation cannot smuggle
+// quoting or piping into the worker's environment.
+type ValidationStep struct {
+	Name    string   `yaml:"name" json:"name"`
+	Argv    []string `yaml:"argv" json:"argv"`
+	Timeout string   `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+}
+
+// TaskType is a named execution policy. It names no model: it points at
+// profiles the operator configured.
+type TaskType struct {
+	Profile    string            `yaml:"profile,omitempty" json:"profile,omitempty"`
+	Complexity map[string]string `yaml:"complexity,omitempty" json:"complexity,omitempty"`
+	Effort     string            `yaml:"effort,omitempty" json:"effort,omitempty"`
+	Worktree   string            `yaml:"worktree,omitempty" json:"worktree,omitempty"`
+	Timeout    string            `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+	Validate   []string          `yaml:"validate,omitempty" json:"validate,omitempty"`
+	Acceptance string            `yaml:"acceptance,omitempty" json:"acceptance,omitempty"`
 }
 
 // fileConfig is the on-disk shape, nested under the shared wb.yaml "agents"
-// mapping so profiles live in WB's existing configuration file rather than a
-// second configuration hierarchy.
+// mapping so agent configuration lives in WB's existing configuration file
+// rather than a second configuration hierarchy.
 type fileConfig struct {
 	Agents struct {
-		Providers map[string]Provider `yaml:"providers"`
-		Profiles  map[string]Profile  `yaml:"profiles"`
+		Providers   map[string]Provider         `yaml:"providers"`
+		Profiles    map[string]Profile          `yaml:"profiles"`
+		TaskTypes   map[string]TaskType         `yaml:"task_types"`
+		Validations map[string][]ValidationStep `yaml:"validations"`
+		Defaults    Defaults                    `yaml:"defaults"`
+		Fallback    []string                    `yaml:"fallback"`
 	} `yaml:"agents"`
 }
 
@@ -107,7 +172,12 @@ func builtinProviders() map[string]Provider {
 // no profiles, so "no such profile" stays the actionable message rather than
 // "no such file".
 func LoadConfigFile(path string) (Config, error) {
-	config := Config{Providers: builtinProviders(), Profiles: map[string]Profile{}}
+	config := Config{
+		Providers:   builtinProviders(),
+		Profiles:    map[string]Profile{},
+		TaskTypes:   builtinTaskTypes(),
+		Validations: map[string][]ValidationStep{},
+	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -154,23 +224,135 @@ func LoadConfigFile(path string) (Config, error) {
 	for name, profile := range document.Agents.Profiles {
 		config.Profiles[name] = profile
 	}
-	// Built-ins are fixed valid providers; every user override was validated
-	// before entering the registry above. Profiles do not mutate providers.
+	for name, steps := range document.Agents.Validations {
+		config.Validations[name] = steps
+	}
+	config.ConfiguredTaskTypes = make(map[string]bool, len(document.Agents.TaskTypes))
+	for name, taskType := range document.Agents.TaskTypes {
+		config.TaskTypes[name] = taskType
+		config.ConfiguredTaskTypes[name] = true
+	}
+	config.Defaults = document.Agents.Defaults
+	config.Fallback = document.Agents.Fallback
+	// Everything a request can name is validated once, here, so a typo fails
+	// before a worktree exists rather than halfway through a comparison.
+	if err := config.validate(); err != nil {
+		return Config{}, fmt.Errorf("agent configuration %s: %w", path, err)
+	}
 	return config, nil
+}
+
+// validate cross-checks every reference the configuration makes. It runs after
+// the whole document is merged, because a task type may name a profile declared
+// later in the same file.
+func (config Config) validate() error {
+	for name := range config.Validations {
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("validation suite name must not be empty")
+		}
+	}
+	for suite, steps := range config.Validations {
+		if len(steps) == 0 {
+			return fmt.Errorf("validation suite %q has no steps", suite)
+		}
+		for index, step := range steps {
+			if strings.TrimSpace(step.Name) == "" {
+				return fmt.Errorf("validation suite %q step %d requires a name", suite, index+1)
+			}
+			if len(step.Argv) == 0 {
+				return fmt.Errorf("validation suite %q step %q requires argv", suite, step.Name)
+			}
+			if _, err := parseStepTimeout(step.Timeout); err != nil {
+				return fmt.Errorf("validation suite %q step %q: %w", suite, step.Name, err)
+			}
+		}
+	}
+	for name, taskType := range config.TaskTypes {
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("task type name must not be empty")
+		}
+		if err := config.validateTaskType(name, taskType); err != nil {
+			return err
+		}
+	}
+	if config.Defaults.TaskType != "" {
+		if _, ok := config.TaskTypes[config.Defaults.TaskType]; !ok {
+			return fmt.Errorf("agents.defaults.task_type %q is not a configured task type", config.Defaults.TaskType)
+		}
+	}
+	if config.Defaults.Profile != "" {
+		if _, ok := config.Profiles[config.Defaults.Profile]; !ok {
+			return fmt.Errorf("agents.defaults.profile %q is not a configured profile", config.Defaults.Profile)
+		}
+	}
+	for _, name := range config.Fallback {
+		if _, err := config.Resolve(name); err != nil {
+			return fmt.Errorf("agents.fallback profile %q is not usable: %w", name, err)
+		}
+	}
+	// Profiles themselves are resolved on demand: `wb agent profiles` must be
+	// able to list a configuration it reports as unusable, and `run` fails on the
+	// exact profile it was asked for rather than on an unrelated one.
+	return nil
+}
+
+func (config Config) validateTaskType(name string, taskType TaskType) error {
+	if strings.TrimSpace(taskType.Profile) != "" {
+		if _, ok := config.Profiles[taskType.Profile]; !ok {
+			return fmt.Errorf("task type %q names unknown profile %q; configured profiles: %s", name, taskType.Profile, config.profileNames())
+		}
+	}
+	for level, profile := range taskType.Complexity {
+		if !validComplexity(level) {
+			return fmt.Errorf("task type %q complexity %q is not one of %s", name, level, complexityLevels())
+		}
+		if _, ok := config.Profiles[profile]; !ok {
+			return fmt.Errorf("task type %q complexity %q names unknown profile %q; configured profiles: %s", name, level, profile, config.profileNames())
+		}
+	}
+	if strings.TrimSpace(taskType.Effort) != "" && !validEffort(taskType.Effort) {
+		return fmt.Errorf("task type %q effort %q is not one of %s", name, taskType.Effort, effortLevels())
+	}
+	if mode := strings.TrimSpace(taskType.Worktree); mode != "" && mode != ModeAuto && mode != ModeCurrent {
+		return fmt.Errorf("task type %q worktree %q must be %q or %q", name, mode, ModeAuto, ModeCurrent)
+	}
+	if _, err := parseStepTimeout(taskType.Timeout); err != nil {
+		return fmt.Errorf("task type %q: %w", name, err)
+	}
+	for _, suite := range taskType.Validate {
+		if _, ok := config.Validations[suite]; !ok {
+			return fmt.Errorf("task type %q names unknown validation suite %q", name, suite)
+		}
+	}
+	if acceptance := strings.TrimSpace(taskType.Acceptance); acceptance != "" && acceptance != AcceptanceRequired && acceptance != AcceptanceOptional {
+		return fmt.Errorf("task type %q acceptance %q must be %q or %q", name, acceptance, AcceptanceRequired, AcceptanceOptional)
+	}
+	return nil
 }
 
 // Resolved is one profile after resolution: the requested name plus what will
 // actually execute, snapshotted so a later edit to the profile cannot rewrite
 // what a finished run did.
 type Resolved struct {
-	Profile   string `json:"profile"`
-	Harness   string `json:"harness"`
-	Provider  string `json:"provider"`
-	Model     string `json:"model"`
-	Reasoning string `json:"reasoning,omitempty"`
-	// Routing is the provider registry entry the harness will be configured
-	// with. It carries no credential, only the name of the variable holding it.
-	Routing Provider `json:"routing"`
+	Profile  string `json:"profile"`
+	Harness  string `json:"harness"`
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model"`
+	// Variant is the OpenCode model variant exactly as configured; it is never
+	// folded into Model, so Model stays a valid execution identifier.
+	Variant string `json:"variant,omitempty"`
+	// Effort is the profile's own default. The effort a run actually requested
+	// and whether it was applied are recorded separately from this snapshot.
+	Effort string `json:"effort,omitempty"`
+	// EffortVariants snapshots the profile's effort→variant map, so a plan can
+	// still resolve an effort after the configuration file changes.
+	EffortVariants map[string]string `json:"effort_variants,omitempty"`
+	// Routing is the provider registry entry a Codex run will be configured
+	// with. It carries no credential, only the name of the variable holding it,
+	// and is absent for harnesses that use their own auth store.
+	Routing Provider `json:"routing,omitempty"`
+	// TimeoutMS is the profile's own bound, when configured.
+	TimeoutMS int64 `json:"timeout_ms,omitempty"`
 }
 
 // Resolve turns a requested profile name into an executable configuration,
@@ -184,27 +366,96 @@ func (config Config) Resolve(name string) (Resolved, error) {
 	if !ok {
 		return Resolved{}, requestErrorf("unknown agent profile %q; configured profiles: %s", requested, config.profileNames())
 	}
+	return config.resolveProfile(requested, profile)
+}
+
+func (config Config) resolveProfile(requested string, profile Profile) (Resolved, error) {
 	harness := strings.TrimSpace(profile.Harness)
-	if harness != HarnessCodex {
-		return Resolved{}, requestErrorf("agent profile %q requests harness %q; this WB build supports %q", requested, profile.Harness, HarnessCodex)
-	}
-	providerName := strings.TrimSpace(profile.Provider)
-	routing, ok := config.Providers[providerName]
-	if !ok {
-		return Resolved{}, requestErrorf("agent profile %q requests unknown provider %q; configured providers: %s", requested, profile.Provider, config.providerNames())
+	if !supportedHarness(harness) {
+		return Resolved{}, requestErrorf("agent profile %q requests harness %q; this WB build supports %s", requested, profile.Harness, strings.Join(supportedHarnesses(), ", "))
 	}
 	model := strings.TrimSpace(profile.Model)
 	if err := validateExecutionValue("model", model, true); err != nil {
 		return Resolved{}, requestErrorf("agent profile %q: %v", requested, err)
 	}
+	effort := strings.TrimSpace(profile.Effort)
 	reasoning := strings.TrimSpace(profile.Reasoning)
-	if err := validateExecutionValue("reasoning", reasoning, false); err != nil {
+	if effort != "" && reasoning != "" {
+		return Resolved{}, requestErrorf("agent profile %q sets both effort and the legacy reasoning; keep one", requested)
+	}
+	if effort == "" {
+		effort = reasoning
+	}
+	if effort != "" && !validEffort(effort) {
+		return Resolved{}, requestErrorf("agent profile %q effort %q is not one of %s", requested, effort, effortLevels())
+	}
+	variant := strings.TrimSpace(profile.Variant)
+	if variant != "" {
+		if harness != HarnessOpenCode {
+			return Resolved{}, requestErrorf("agent profile %q sets variant, which only the %q harness supports", requested, HarnessOpenCode)
+		}
+		if err := validateExecutionValue("variant", variant, true); err != nil {
+			return Resolved{}, requestErrorf("agent profile %q: %v", requested, err)
+		}
+	}
+	for level, mapped := range profile.EffortVariants {
+		if !validEffort(level) {
+			return Resolved{}, requestErrorf("agent profile %q effort_variants key %q is not one of %s", requested, level, effortLevels())
+		}
+		if strings.TrimSpace(mapped) == "" {
+			return Resolved{}, requestErrorf("agent profile %q effort_variants %q is empty", requested, level)
+		}
+		if err := validateExecutionValue("variant", mapped, true); err != nil {
+			return Resolved{}, requestErrorf("agent profile %q effort_variants %q: %v", requested, level, err)
+		}
+		if harness != HarnessOpenCode {
+			return Resolved{}, requestErrorf("agent profile %q sets effort_variants, which only the %q harness supports", requested, HarnessOpenCode)
+		}
+	}
+	timeout, err := parseStepTimeout(profile.Timeout)
+	if err != nil {
 		return Resolved{}, requestErrorf("agent profile %q: %v", requested, err)
 	}
-	return Resolved{
-		Profile: requested, Harness: harness, Provider: providerName,
-		Model: model, Reasoning: reasoning, Routing: routing,
-	}, nil
+	resolved := Resolved{Profile: requested, Harness: harness, Model: model, Variant: variant, Effort: effort}
+	if len(profile.EffortVariants) > 0 {
+		resolved.EffortVariants = make(map[string]string, len(profile.EffortVariants))
+		for level, mapped := range profile.EffortVariants {
+			resolved.EffortVariants[level] = mapped
+		}
+	}
+	if timeout > 0 {
+		resolved.TimeoutMS = timeout.Milliseconds()
+	}
+	switch harness {
+	case HarnessCodex:
+		providerName := strings.TrimSpace(profile.Provider)
+		routing, ok := config.Providers[providerName]
+		if !ok {
+			return Resolved{}, requestErrorf("agent profile %q requests unknown provider %q; configured providers: %s", requested, profile.Provider, config.providerNames())
+		}
+		resolved.Provider = providerName
+		resolved.Routing = routing
+	case HarnessOpenCode:
+		// OpenCode resolves its own provider from "provider/model", so the
+		// provider is metadata derived from the model. Naming a different one
+		// would put two incompatible answers in the same record.
+		prefix, _, found := strings.Cut(model, "/")
+		if !found || strings.TrimSpace(prefix) == "" {
+			return Resolved{}, requestErrorf("agent profile %q model %q must be an OpenCode \"provider/model\" identifier", requested, model)
+		}
+		if named := strings.TrimSpace(profile.Provider); named != "" && named != prefix {
+			return Resolved{}, requestErrorf("agent profile %q names provider %q but its model %q belongs to provider %q", requested, named, model, prefix)
+		}
+		resolved.Provider = prefix
+	case HarnessDSH:
+		// dsh reads its own credentials and its default inference provider; the
+		// only provider WB can prove is the one its compose tree names.
+		if named := strings.TrimSpace(profile.Provider); named != "" && named != ProviderDshDefault {
+			return Resolved{}, requestErrorf("agent profile %q names provider %q; the %q harness supports only %q in this build", requested, named, HarnessDSH, ProviderDshDefault)
+		}
+		resolved.Provider = ProviderDshDefault
+	}
+	return resolved, nil
 }
 
 func (config Config) profileNames() string {

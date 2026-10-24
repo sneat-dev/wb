@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -21,6 +22,20 @@ import (
 // for internal child processes: the dispatching process re-invokes its own
 // executable with this argument rather than depending on a daemon.
 const OwnerArgument = "--wb-internal-agent-run"
+
+// inheritedLeaseFD is the descriptor number the dispatcher hands the owner. The
+// owner forwards it to the harness and to every validation step, so the kernel
+// keeps the worktree claim while any of them is alive.
+const inheritedLeaseFD = 3
+
+// leaseEnvMarker tells the owner that fd 3 really is the dispatcher's lease. A
+// process that merely happens to have fd 3 open (a test binary, for example)
+// must never adopt it.
+const leaseEnvMarker = "WB_AGENT_LEASE_FD"
+
+// cancelRequestedFileName marks a run whose stop was requested, so the owner can
+// tell a deliberate termination from a crash.
+const cancelRequestedFileName = "cancel-requested"
 
 // maxLogBytes bounds the captured harness stream so a long, chatty worker
 // cannot fill the disk. Beyond the bound the log is truncated and the run
@@ -58,14 +73,40 @@ type OwnerDeps struct {
 	// populates every field, so StopRun trusts deps as given.
 	StopGrace        time.Duration
 	StopPollInterval time.Duration
+	// Lease is the inherited worktree claim. Production reads the descriptor the
+	// dispatcher passed; a test supplies a file it already holds a lock on.
+	Lease *os.File
+	// Validation runs the snapshotted objective checks. It is a seam so a test
+	// can assert the environment and the inherited lease without spawning a
+	// process tree.
+	Validation func(context.Context, ValidationOptions) ValidationRecord
 }
 
-// DefaultOwnerDeps returns the production seams.
+// DefaultOwnerDeps returns the production seams. Lease is deliberately not set
+// here: only OwnerCLI, the detached entry point, may adopt an inherited
+// descriptor, because a test process's fd 3 is not a lease.
 func DefaultOwnerDeps() OwnerDeps {
 	return OwnerDeps{
 		LookPath: exec.LookPath, Now: time.Now, Sleep: time.Sleep,
 		StopGrace: defaultStopGrace, StopPollInterval: defaultStopPollInterval,
+		Validation: RunValidation,
 	}
+}
+
+// inheritedLease returns the lease descriptor the dispatcher passed, or nil when
+// this owner was started without one.
+func inheritedLease() *os.File {
+	if strings.TrimSpace(os.Getenv(leaseEnvMarker)) == "" {
+		return nil
+	}
+	file := os.NewFile(uintptr(inheritedLeaseFD), "wb-agent-lease")
+	if file == nil {
+		return nil
+	}
+	if _, err := file.Stat(); err != nil {
+		return nil
+	}
+	return file
 }
 
 // RunOwner executes one dispatched run to completion and records its terminal
@@ -82,6 +123,9 @@ func runOwnerWithSave(ctx context.Context, store Store, agentID string, deps Own
 	if deps.Now == nil {
 		deps.Now = time.Now
 	}
+	if deps.Validation == nil {
+		deps.Validation = RunValidation
+	}
 	record, err := store.Load(agentID)
 	if err != nil {
 		return err
@@ -95,13 +139,18 @@ func runOwnerWithSave(ctx context.Context, store Store, agentID string, deps Own
 		defer cancel()
 	}
 	record.OwnerPID = os.Getpid()
+	record.ExecutionStatus = StatusRunning
 	if err := save(record); err != nil {
 		return err
 	}
 
-	finish := func(state State, failure string) error {
+	finish := func(state State, failure, category string) error {
 		record.State = state
+		if !record.ExecutionStatus.Terminal() {
+			record.ExecutionStatus = executionStatusFromState(state)
+		}
 		record.Failure = failure
+		record.FailureCategory = category
 		record.FinishedAt = deps.Now().UTC()
 		if !record.StartedAt.IsZero() {
 			record.DurationMS = record.FinishedAt.Sub(record.StartedAt).Milliseconds()
@@ -109,53 +158,79 @@ func runOwnerWithSave(ctx context.Context, store Store, agentID string, deps Own
 		return save(record)
 	}
 
-	credential, err := ResolveCredential(record.Resolved.Routing)
+	adapter, err := HarnessFor(record.Resolved.Harness)
 	if err != nil {
-		return finish(StateFailed, err.Error())
+		return finish(StateFailed, err.Error(), FailureConfig)
+	}
+	credential := Credential{}
+	if adapter.Capabilities().Credential == CredentialWBInjected {
+		credential, err = ResolveCredential(record.Resolved.Routing)
+		if err != nil {
+			return finish(StateFailed, err.Error(), FailureCredential)
+		}
 	}
 	executable, err := deps.LookPath(record.Resolved.Harness)
 	if err != nil {
-		return finish(StateFailed, fmt.Sprintf("harness executable %q not found on PATH: %v", record.Resolved.Harness, err))
+		return finish(StateFailed, fmt.Sprintf("harness executable %q not found on PATH: %v", record.Resolved.Harness, err), FailureHarnessMiss)
 	}
 	harnessHome := store.HarnessHomePath(agentID)
 	if err := os.MkdirAll(harnessHome, 0o700); err != nil {
-		return finish(StateFailed, fmt.Sprintf("create private harness home: %v", err))
+		return finish(StateFailed, fmt.Sprintf("create private harness home: %v", err), FailureInternal)
 	}
 	// The harness is told the resolved variable *name*, whichever source the
 	// credential came from, so file-sourced credentials use the same
 	// per-process mechanism as environment-sourced ones.
 	routing := record.Resolved.Routing
-	routing.CredentialEnv = credential.EnvName
+	if credential.EnvName != "" {
+		routing.CredentialEnv = credential.EnvName
+	}
 	routing.CredentialFile = ""
-	argv, err := CodexArgv(HarnessOptions{
+	launch, err := adapter.Prepare(Launch{
+		RunDir:          store.Dir(agentID),
 		WorktreeDir:     record.WorktreeDir,
 		Model:           record.Resolved.Model,
-		Reasoning:       record.Resolved.Reasoning,
+		Variant:         effortVariant(record),
+		Effort:          record.EffortEffective,
 		ProviderName:    record.Resolved.Provider,
 		Provider:        routing,
 		LastMessagePath: store.LastMessagePath(agentID),
+		Task:            record.Task,
 	})
 	if err != nil {
-		return finish(StateFailed, err.Error())
+		return finish(StateFailed, err.Error(), FailureConfig)
 	}
 
 	logFile, err := os.OpenFile(store.LogPath(agentID), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
-		return finish(StateFailed, fmt.Sprintf("open run log: %v", err))
+		return finish(StateFailed, fmt.Sprintf("open run log: %v", err), FailureInternal)
 	}
 	defer func() { _ = logFile.Close() }()
 	log := &boundedLog{writer: logFile, remaining: logLimit}
+	firstOutput := &firstWriteClock{now: deps.Now, started: record.StartedAt, record: &record}
+	redactor := newRedactingWriter(log, credential.Value)
+	var sink io.Writer = log
+	if redactor != nil {
+		sink = redactor
+	}
+	sink = &timedWriter{inner: sink, clock: firstOutput}
 
-	// The harness reads the task from stdin, so task text never appears in the
-	// process table, and the command line stays free of it in every log.
-	command := process.CommandContext(ctx, executable, argv...)
+	// The harness reads the task from stdin where it can, so task text never
+	// appears in the process table. An adapter that must use argv says so in its
+	// capabilities and the record keeps that fact.
+	command := process.CommandContext(ctx, executable, launch.Argv...)
 	command.Dir = record.WorktreeDir
-	command.Env = append(WorkerEnvironment(credential), "CODEX_HOME="+harnessHome)
-	command.Stdin = strings.NewReader(record.Task)
-	command.Stdout = log
-	command.Stderr = log
+	command.Env = append(WorkerEnvironment(credential), launch.Env...)
+	if record.Resolved.Harness == HarnessCodex {
+		command.Env = append(command.Env, "CODEX_HOME="+harnessHome)
+	}
+	if launch.Stdin != "" {
+		command.Stdin = strings.NewReader(launch.Stdin)
+	}
+	command.Stdout = sink
+	command.Stderr = sink
+	command.ExtraFiles = leaseFiles(deps.Lease, 0)
 	if err := command.Start(); err != nil {
-		return finish(StateFailed, fmt.Sprintf("start %s: %v", record.Resolved.Harness, err))
+		return finish(StateFailed, fmt.Sprintf("start %s: %v", record.Resolved.Harness, err), FailureHarness)
 	}
 	record.WorkerPID = command.Process.Pid
 	if err := save(record); err != nil {
@@ -167,53 +242,164 @@ func runOwnerWithSave(ctx context.Context, store Store, agentID string, deps Own
 	}
 
 	waitErr := command.Wait()
-	summary := summarizeLog(store.LogPath(agentID))
-	record.Usage = summary.Usage
+	if redactor != nil {
+		_ = redactor.Flush()
+	}
+	summary := summarizeLogFile(store.LogPath(agentID), adapter)
+	record.Usage = legacyUsage(summary.Tokens)
 	record.ToolCalls = summary.ToolCalls
-	record.HarnessEvents = summary.Diagnostics
+	record.HarnessEvents = append(record.HarnessEvents, summary.Diagnostics...)
 	if log.truncated() {
 		record.HarnessEvents = append(record.HarnessEvents,
-			fmt.Sprintf("run log truncated at %d bytes", maxLogBytes))
+			fmt.Sprintf("run log truncated at %d bytes", logLimit))
 	}
-	if message, readErr := os.ReadFile(store.LastMessagePath(agentID)); readErr == nil {
-		record.Result = BoundResult(string(message))
-		// The harness writes this file itself, so WB tightens its mode after
-		// reading it rather than assuming the harness's umask.
-		_ = os.Chmod(store.LastMessagePath(agentID), 0o600)
+	record.Telemetry = buildTelemetry(record.Resolved.Harness, summary)
+	record.Cost = buildCost(record.Resolved.Harness, summary, deps.Now())
+	if message := finalMessage(summary, store.LastMessagePath(agentID)); message != "" {
+		redacted, count := RedactText(message, credential.Value)
+		record.Result = BoundResult(redacted)
+		if count > 0 {
+			record.HarnessEvents = append(record.HarnessEvents, "the final message contained the provider credential and was redacted")
+		}
 	}
-	record.Changes = SummarizeChanges(context.WithoutCancel(ctx), record.WorktreeDir, record.BaseSHA)
+	record.Changes = SummarizeChangesWith(context.WithoutCancel(ctx), record.WorktreeDir, record.BaseSHA, record.DirtyFiles)
+	if path, err := store.WriteDiff(context.WithoutCancel(ctx), agentID, record.WorktreeDir, record.BaseSHA, DefaultTargetDeps()); err == nil {
+		record.DiffPath = path
+	}
 
+	cancelled := cancelRequested(store, agentID)
 	switch {
+	case cancelled:
+		record.Validation = ValidationRecord{Status: ValidationSkipped, Reason: "the execution was cancelled"}
+		record.ExecutionStatus = StatusCancelled
+		return finish(StateFailed, "the execution was cancelled by an operator", FailureCancelled)
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		// The context owns the whole process group, so expiry has already
 		// terminated the worker tree; the distinct state is what tells a
 		// supervisor this was a bound, not a failure of the work.
-		return finish(StateTimeout, "run exceeded its timeout and its process group was terminated")
+		record.Validation = ValidationRecord{Status: ValidationSkipped, Reason: "the execution exceeded its timeout"}
+		record.ExecutionStatus = StatusTimedOut
+		return finish(StateTimeout, "run exceeded its timeout and its process group was terminated", FailureTimeout)
 	case waitErr != nil:
 		code := exitCodeOf(command)
 		record.ExitCode = code
-		failure := fmt.Sprintf("harness exited with %v", waitErr)
-		if summary.TurnFailed {
-			failure = "harness reported a failed turn"
-		}
-		return finish(StateFailed, failure)
+		record.Validation = ValidationRecord{Status: ValidationSkipped, Reason: "the harness did not complete"}
+		return finish(StateFailed, failureMessage(summary, waitErr), classifyFailure(summary))
 	case summary.TurnFailed:
 		code := 0
 		record.ExitCode = &code
-		return finish(StateFailed, "harness exited zero but reported a failed turn")
+		record.Validation = ValidationRecord{Status: ValidationSkipped, Reason: "the harness reported a failed turn"}
+		return finish(StateFailed, "harness exited zero but reported a failed turn", classifyFailure(summary))
 	case summary.MalformedLines > 0:
 		code := exitCodeOf(command)
 		record.ExitCode = code
-		return finish(StateFailed, fmt.Sprintf("harness produced no terminal turn event and %d unparsable event line(s); the run is not a success", summary.MalformedLines))
+		record.Validation = ValidationRecord{Status: ValidationSkipped, Reason: "the harness stream was unparsable"}
+		return finish(StateFailed, fmt.Sprintf("harness produced no terminal turn event and %d unparsable event line(s); the run is not a success", summary.MalformedLines), FailureHarness)
 	case !summary.TurnCompleted:
 		code := exitCodeOf(command)
 		record.ExitCode = code
-		return finish(StateFailed, "harness produced no terminal turn event; the run is not a success")
+		record.Validation = ValidationRecord{Status: ValidationSkipped, Reason: "the harness produced no completion evidence"}
+		return finish(StateFailed, "harness produced no terminal turn event; the run is not a success", FailureHarness)
 	default:
 		code := exitCodeOf(command)
 		record.ExitCode = code
-		return finish(StateCompleted, "")
+		record.Validation = runValidation(ctx, store, agentID, record, deps)
+		return finish(StateCompleted, "", "")
 	}
+}
+
+// runValidation records the running state before the first step, so a long
+// validation is visible instead of appearing as a stuck completed run.
+func runValidation(ctx context.Context, store Store, agentID string, record Record, deps OwnerDeps) ValidationRecord {
+	steps := validationStepsFromRecord(record)
+	if len(steps) == 0 {
+		return ValidationRecord{Status: ValidationSkipped, Reason: "no validation steps were configured"}
+	}
+	record.Validation = ValidationRecord{Status: ValidationRunning, StartedAt: deps.Now().UTC()}
+	_ = store.Save(record)
+	validation := deps.Validation(context.WithoutCancel(ctx), ValidationOptions{
+		WorktreeDir: record.WorktreeDir,
+		RunDir:      store.Dir(agentID),
+		Steps:       steps,
+		Lease:       deps.Lease,
+		Now:         deps.Now,
+	})
+	return validation
+}
+
+func validationStepsFromRecord(record Record) []ValidationStep {
+	steps := make([]ValidationStep, 0, len(record.Validation.Steps))
+	for _, step := range record.Validation.Steps {
+		steps = append(steps, ValidationStep{Name: step.Name, Argv: step.Argv, Timeout: step.Timeout})
+	}
+	return steps
+}
+
+func effortVariant(record Record) string {
+	if record.EffortApplied && record.EffortEffective != "" {
+		return record.Resolved.EffortVariants[record.EffortEffective]
+	}
+	return record.Resolved.Variant
+}
+
+func leaseFiles(lease *os.File, index int) []*os.File {
+	if lease == nil {
+		return nil
+	}
+	files := make([]*os.File, index+1)
+	files[index] = lease
+	return files
+}
+
+func finalMessage(summary HarnessSummary, lastMessagePath string) string {
+	if strings.TrimSpace(summary.FinalMessage) != "" {
+		return summary.FinalMessage
+	}
+	if strings.TrimSpace(lastMessagePath) == "" {
+		return ""
+	}
+	message, err := os.ReadFile(lastMessagePath)
+	if err != nil {
+		return ""
+	}
+	// The harness writes this file itself with its own umask, so WB tightens
+	// the mode after reading it.
+	_ = os.Chmod(lastMessagePath, 0o600)
+	return string(message)
+}
+
+func failureMessage(summary HarnessSummary, waitErr error) string {
+	if summary.TurnFailed {
+		return "harness reported a failed turn"
+	}
+	return fmt.Sprintf("harness exited with %v", waitErr)
+}
+
+// classifyFailure turns the harness's own diagnostics into a category an
+// orchestrator can branch on without parsing prose.
+func classifyFailure(summary HarnessSummary) string {
+	for _, diagnostic := range summary.Diagnostics {
+		lowered := strings.ToLower(diagnostic)
+		switch {
+		case strings.Contains(lowered, "provider."), strings.Contains(lowered, "rate limit"), strings.Contains(lowered, "unauthorized"):
+			return FailureProvider
+		case strings.Contains(lowered, "credential"), strings.Contains(lowered, "api key"), strings.Contains(lowered, "authentication"):
+			return FailureCredential
+		}
+	}
+	return FailureHarness
+}
+
+func cancelRequested(store Store, agentID string) bool {
+	_, err := os.Stat(filepath.Join(store.Dir(agentID), cancelRequestedFileName))
+	return err == nil
+}
+
+// requestCancel writes the sentinel StopRun uses to distinguish a deliberate
+// stop from a crash.
+func requestCancel(store Store, agentID string, now func() time.Time) error {
+	path := filepath.Join(store.Dir(agentID), cancelRequestedFileName)
+	return os.WriteFile(path, []byte(now().UTC().Format(time.RFC3339)+"\n"), 0o600)
 }
 
 func exitCodeOf(command *exec.Cmd) *int {
@@ -224,16 +410,46 @@ func exitCodeOf(command *exec.Cmd) *int {
 	return &code
 }
 
-// summarizeLog reads the harness event stream back. A log that cannot be read
-// yields an empty summary rather than failing the run: the exit status and the
-// log path are still true and still useful.
-func summarizeLog(path string) HarnessSummary {
+// summarizeLogFile reads the harness event stream back. A log that cannot be
+// read yields an empty summary rather than failing the run: the exit status and
+// the log path are still true and still useful.
+func summarizeLogFile(path string, adapter Harness) HarnessSummary {
 	file, err := os.Open(path)
 	if err != nil {
 		return HarnessSummary{}
 	}
 	defer func() { _ = file.Close() }()
-	return SummarizeEvents(io.LimitReader(file, maxLogBytes))
+	return adapter.Summarize(io.LimitReader(file, maxLogBytes))
+}
+
+// firstWriteClock records how long the harness ran before its first output.
+type firstWriteClock struct {
+	mutex   sync.Mutex
+	now     func() time.Time
+	started time.Time
+	record  *Record
+}
+
+func (clock *firstWriteClock) mark() {
+	clock.mutex.Lock()
+	defer clock.mutex.Unlock()
+	if clock.record.TimeToFirstOutputMS != 0 || clock.started.IsZero() {
+		return
+	}
+	clock.record.TimeToFirstOutputMS = clock.now().Sub(clock.started).Milliseconds()
+}
+
+// timedWriter marks the first byte written through it.
+type timedWriter struct {
+	inner io.Writer
+	clock *firstWriteClock
+}
+
+func (writer *timedWriter) Write(data []byte) (int, error) {
+	if len(data) > 0 {
+		writer.clock.mark()
+	}
+	return writer.inner.Write(data)
 }
 
 // boundedLog caps the captured harness stream and records that it did.
@@ -291,6 +507,11 @@ func OwnerCLI(arguments []string, deps OwnerDeps) int {
 	clean := filepath.Clean(runDir)
 	agentID := filepath.Base(clean)
 	store := Store{Root: filepath.Dir(clean)}
+	// This is the one place an inherited lease descriptor may be adopted: the
+	// dispatcher passed it, and no other process has this owner's fd 3 meaning.
+	if deps.Lease == nil {
+		deps.Lease = inheritedLease()
+	}
 	if err := RunOwner(context.Background(), store, agentID, deps); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, "wb agent owner:", err)
 		return 1
@@ -302,17 +523,23 @@ func OwnerCLI(arguments []string, deps OwnerDeps) int {
 // without waiting for it. The owner is this same WB executable re-invoked with
 // the private owner argument, so a dispatched run needs no daemon and survives
 // the dispatching CLI exiting.
-func SpawnOwner(runDir string, executable func() (string, error)) (int, error) {
-	return spawnOwnerWithNull(runDir, executable, func() (*os.File, error) { return os.OpenFile(os.DevNull, os.O_RDWR, 0) })
+func SpawnOwner(runDir string, executable func() (string, error), extraFiles []*os.File) (int, error) {
+	return spawnOwnerWithNull(runDir, executable, extraFiles, func() (*os.File, error) { return os.OpenFile(os.DevNull, os.O_RDWR, 0) })
 }
 
-func spawnOwnerWithNull(runDir string, executable func() (string, error), openNull func() (*os.File, error)) (int, error) {
+func spawnOwnerWithNull(runDir string, executable func() (string, error), extraFiles []*os.File, openNull func() (*os.File, error)) (int, error) {
 	path, err := executable()
 	if err != nil {
 		return 0, fmt.Errorf("locate the wb executable for the run owner: %w", err)
 	}
 	command := exec.Command(path, OwnerArgument, "--run-dir", runDir) //nolint:gosec // current wb executable and fixed arguments
 	command.Env = os.Environ()
+	command.ExtraFiles = extraFiles
+	if len(extraFiles) > 0 {
+		// The marker is what lets the owner distinguish a real lease descriptor
+		// from a stray fd 3 it happened to inherit.
+		command.Env = append(command.Env, leaseEnvMarker+"="+strconv.Itoa(inheritedLeaseFD))
+	}
 	process.ConfigureDetached(command)
 	null, err := openNull()
 	if err != nil {
@@ -351,6 +578,11 @@ func stopRunWithSignal(store Store, agentID string, deps OwnerDeps, terminate fu
 	}
 	if !processAlive(record.WorkerPID) {
 		return record, fmt.Errorf("agent run %s worker process %d is already gone", agentID, record.WorkerPID)
+	}
+	// The sentinel is written before the signal so a run that exits instantly
+	// still records a deliberate cancellation rather than a crash.
+	if err := requestCancel(store, agentID, deps.Now); err != nil {
+		return record, fmt.Errorf("record cancellation request for %s: %w", agentID, err)
 	}
 	// Graceful first, then hard: a worker that ignores SIGTERM must still be
 	// stopped, because stop's contract is "terminate the worker and everything

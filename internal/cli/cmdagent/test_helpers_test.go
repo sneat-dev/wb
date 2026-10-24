@@ -86,7 +86,7 @@ func runFakeWithStdin(t *testing.T, deps Dependencies, args []string, in io.Read
 	return 1
 }
 func presentationRecord(mutate func(*agents.Record)) agents.Record {
-	record := agents.Record{AgentID: "agt-00000000000000000000000000000001", State: agents.StateRunning, RequestedProfile: "cheap", Resolved: agents.Resolved{Profile: "cheap", Harness: agents.HarnessCodex, Provider: "deepseek", Model: "deepseek-flash", Reasoning: "high"}, Task: "the private bounded task", TaskSummary: "the private bounded task", Repository: "acme/app", WorktreeMode: agents.ModeNew, Worktree: "task-one", WorktreeDir: "/fleet/.worktrees/task-one", Branch: "task-one", Base: "main", BaseSHA: "abc123", StartedAt: time.Unix(100, 0).UTC(), LogPath: "/private/run/events.jsonl"}
+	record := agents.Record{AgentID: "agt-00000000000000000000000000000001", State: agents.StateRunning, RequestedProfile: "cheap", Resolved: agents.Resolved{Profile: "cheap", Harness: agents.HarnessCodex, Provider: "deepseek", Model: "deepseek-flash", Effort: "high"}, Task: "the private bounded task", TaskSummary: "the private bounded task", Repository: "acme/app", WorktreeMode: agents.ModeNew, Worktree: "task-one", WorktreeDir: "/fleet/.worktrees/task-one", Branch: "task-one", Base: "main", BaseSHA: "abc123", StartedAt: time.Unix(100, 0).UTC(), LogPath: "/private/run/events.jsonl"}
 	mutate(&record)
 	return record
 }

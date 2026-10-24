@@ -105,7 +105,7 @@ func ownedRun(t *testing.T, task string, timeout time.Duration) (Store, Record, 
 		AgentID: id, State: StateRunning, RequestedProfile: "cheap",
 		Resolved: Resolved{
 			Profile: "cheap", Harness: HarnessCodex, Provider: "deepseek",
-			Model: "deepseek-flash", Reasoning: "high",
+			Model: "deepseek-flash", Effort: "high",
 			Routing: Provider{BaseURL: "https://api.deepseek.com", CredentialEnv: "DEEPSEEK_API_KEY", WireAPI: WireAPIResponses},
 		},
 		Task: task, Worktree: "task-one", WorktreeDir: worktree,
@@ -479,7 +479,7 @@ func TestExitCodeOfToleratesAProcessThatNeverStarted(t *testing.T) {
 
 func TestSummarizeLogToleratesAMissingLog(t *testing.T) {
 	t.Parallel()
-	if summary := summarizeLog(filepath.Join(t.TempDir(), "absent.jsonl")); summary.TurnCompleted || summary.Usage != nil {
+	if summary := summarizeLogFile(filepath.Join(t.TempDir(), "absent.jsonl"), codexHarness{}); summary.TurnCompleted || summary.Tokens != nil {
 		t.Fatalf("a missing log must yield an empty summary: %#v", summary)
 	}
 }
@@ -741,7 +741,7 @@ func TestSpawnOwnerStartsADetachedProcessAndReportsItsPID(t *testing.T) {
 	// Spawn this test binary in a mode that exits immediately, which is enough
 	// to prove the owner is started, released, and reported.
 	runDir := t.TempDir()
-	pid, err := SpawnOwner(runDir, func() (string, error) { return "/bin/sleep", nil })
+	pid, err := SpawnOwner(runDir, func() (string, error) { return "/bin/sleep", nil }, nil)
 	if err != nil {
 		t.Fatalf("SpawnOwner: %v", err)
 	}
@@ -755,10 +755,10 @@ func TestSpawnOwnerStartsADetachedProcessAndReportsItsPID(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	if _, err := SpawnOwner(runDir, func() (string, error) { return "", os.ErrNotExist }); err == nil {
+	if _, err := SpawnOwner(runDir, func() (string, error) { return "", os.ErrNotExist }, nil); err == nil {
 		t.Fatal("an unresolvable executable must be reported")
 	}
-	if _, err := SpawnOwner(runDir, func() (string, error) { return "/nonexistent/wb", nil }); err == nil {
+	if _, err := SpawnOwner(runDir, func() (string, error) { return "/nonexistent/wb", nil }, nil); err == nil {
 		t.Fatal("a failed exec must be reported")
 	}
 }

@@ -1,0 +1,4 @@
+interface:
+  display_name: "WB agent"
+  short_description: "Delegate, monitor and verify a bounded coding task through WB"
+  default_prompt: "Use $wb-agent to delegate this task through `wb agent run` (or compare profiles with `wb agent compare`), watch it with `wb agent await`, and verify `wb agent diff` plus the recorded validation before accepting with `wb agent review`."

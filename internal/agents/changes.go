@@ -16,11 +16,49 @@ import (
 // A failure to read Git state yields no summary rather than a failed run: the
 // worktree is the artefact and a missing diff stat must not hide it.
 func SummarizeChanges(ctx context.Context, worktreeDir, baseSHA string) *ChangeSummary {
+	return SummarizeChangesWith(ctx, worktreeDir, baseSHA, nil)
+}
+
+// SummarizeChangesWith is SummarizeChanges with the paths that were already
+// dirty before the worker started. When a base commit is known the changed files
+// come from `git diff --name-only`, which includes the worker's commits and
+// excludes pre-existing uncommitted work; otherwise Git status is the only
+// evidence available.
+func SummarizeChangesWith(ctx context.Context, worktreeDir, baseSHA string, preexisting []string) *ChangeSummary {
 	if strings.TrimSpace(worktreeDir) == "" {
 		return nil
 	}
 	summary := &ChangeSummary{}
-	if status, err := gitOutput(ctx, worktreeDir, "status", "--porcelain"); err == nil {
+	status, statusErr := gitOutput(ctx, worktreeDir, "status", "--porcelain")
+	untracked := []string{}
+	if statusErr == nil {
+		untracked = subtractPaths(untrackedFromStatus(status), preexisting)
+		summary.Untracked = untracked
+		if len(summary.Untracked) > maxUntrackedList {
+			summary.Untracked = summary.Untracked[:maxUntrackedList]
+		}
+	}
+	if strings.TrimSpace(baseSHA) != "" {
+		// One numstat call carries the paths and the line counts together, so a
+		// summary costs the same number of Git invocations it always did.
+		if numstat, err := gitOutput(ctx, worktreeDir, "diff", "--numstat", baseSHA, "--"); err == nil {
+			files, insertions, deletions := parseNumstat(numstat)
+			summary.Insertions, summary.Deletions = insertions, deletions
+			for _, name := range files {
+				summary.FilesChanged++
+				if len(summary.Files) < maxChangedFiles {
+					summary.Files = append(summary.Files, name)
+				} else {
+					summary.Truncated = true
+				}
+			}
+		}
+		if count, err := gitOutput(ctx, worktreeDir, "rev-list", "--count", baseSHA+"..HEAD"); err == nil {
+			if commits, convErr := strconv.Atoi(strings.TrimSpace(count)); convErr == nil {
+				summary.Commits = commits
+			}
+		}
+	} else if statusErr == nil {
 		for _, line := range strings.Split(status, "\n") {
 			line = strings.TrimRight(line, "\r")
 			if len(line) < 4 {
@@ -34,43 +72,71 @@ func SummarizeChanges(ctx context.Context, worktreeDir, baseSHA string) *ChangeS
 			}
 		}
 	}
-	if strings.TrimSpace(baseSHA) != "" {
-		if shortstat, err := gitOutput(ctx, worktreeDir, "diff", "--shortstat", baseSHA); err == nil {
-			insertions, deletions := parseShortstat(shortstat)
-			summary.Insertions, summary.Deletions = insertions, deletions
+	// Untracked files are not in a diff, so they are appended explicitly: a
+	// change summary that silently omitted new files would understate the work.
+	// A file that is both listed by the diff and still untracked (an intent-to-add
+	// entry) is counted once.
+	for _, path := range untracked {
+		if containsString(summary.Files, path) {
+			continue
 		}
-		if count, err := gitOutput(ctx, worktreeDir, "rev-list", "--count", baseSHA+"..HEAD"); err == nil {
-			if commits, convErr := strconv.Atoi(strings.TrimSpace(count)); convErr == nil {
-				summary.Commits = commits
-			}
+		summary.FilesChanged++
+		if len(summary.Files) < maxChangedFiles {
+			summary.Files = append(summary.Files, path)
+		} else {
+			summary.Truncated = true
 		}
 	}
-	if summary.FilesChanged == 0 && summary.Insertions == 0 && summary.Deletions == 0 && summary.Commits == 0 {
+	if summary.FilesChanged == 0 && summary.Insertions == 0 && summary.Deletions == 0 && summary.Commits == 0 && len(summary.Untracked) == 0 {
 		return summary
 	}
 	return summary
 }
 
-// parseShortstat reads Git's "N files changed, X insertions(+), Y deletions(-)"
-// line. Absent clauses mean zero rather than an error.
-func parseShortstat(output string) (insertions, deletions int) {
-	for _, clause := range strings.Split(output, ",") {
-		fields := strings.Fields(clause)
-		if len(fields) < 2 {
-			continue
-		}
-		value, err := strconv.Atoi(fields[0])
-		if err != nil {
-			continue
-		}
-		switch {
-		case strings.HasPrefix(fields[1], "insertion"):
-			insertions = value
-		case strings.HasPrefix(fields[1], "deletion"):
-			deletions = value
+func containsString(values []string, value string) bool {
+	for _, candidate := range values {
+		if candidate == value {
+			return true
 		}
 	}
-	return insertions, deletions
+	return false
+}
+
+// subtractPaths removes paths that were already dirty when the run started.
+func subtractPaths(paths, preexisting []string) []string {
+	if len(preexisting) == 0 {
+		return paths
+	}
+	known := make(map[string]bool, len(preexisting))
+	for _, path := range preexisting {
+		known[path] = true
+	}
+	remaining := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if !known[path] {
+			remaining = append(remaining, path)
+		}
+	}
+	return remaining
+}
+
+// parseNumstat reads Git's "added removed path" lines. A binary change reports
+// "-" for both counts: the path still belongs in the list, the counts are zero.
+func parseNumstat(output string) (files []string, insertions, deletions int) {
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Split(strings.TrimRight(line, "\r"), "\t")
+		if len(fields) != 3 {
+			continue
+		}
+		files = append(files, fields[2])
+		if added, err := strconv.Atoi(fields[0]); err == nil {
+			insertions += added
+		}
+		if removed, err := strconv.Atoi(fields[1]); err == nil {
+			deletions += removed
+		}
+	}
+	return files, insertions, deletions
 }
 
 func gitOutput(ctx context.Context, dir string, arguments ...string) (string, error) {

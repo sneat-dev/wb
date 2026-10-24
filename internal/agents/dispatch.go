@@ -2,7 +2,10 @@ package agents
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -25,6 +28,9 @@ type DispatchRequest struct {
 	Mode     string
 	Worktree string
 
+	// Plan is the resolved execution plan. When it is nil the request is the
+	// legacy `dispatch` shape and Profile is resolved on its own.
+	Plan    *Plan
 	Profile string
 	Task    string
 
@@ -36,7 +42,16 @@ type DispatchRequest struct {
 	Branch string
 	Base   string
 
-	Timeout time.Duration
+	Timeout        time.Duration
+	AllowCanonical bool
+	AllowDirty     bool
+
+	// AgentID lets a caller pre-allocate the identity, which an experiment must
+	// do before it records its plan. Empty mints a fresh one.
+	AgentID string
+	// ExperimentID and RepeatIndex place this execution in a comparison.
+	ExperimentID string
+	RepeatIndex  int
 }
 
 // DispatchDeps are the seams dispatch needs from the command layer. Only the
@@ -62,18 +77,42 @@ type DispatchDeps struct {
 	ListWorktrees  func(context.Context, worktrees.ListOptions) ([]worktrees.ListResult, error)
 	OriginSlug     func(context.Context, string) (string, error)
 	// SpawnOwner starts the detached run owner for a persisted run and returns
-	// its process ID. The PID is returned rather than left to the owner to
-	// record, so a record a later process reads always names the process that
-	// owns it — which is what makes "the owner is gone" conclusive evidence
-	// instead of a guess about a run that has not started yet.
-	SpawnOwner func(agentID string) (int, error)
-	Now        func() time.Time
+	// its process ID. extraFiles carry the inherited writer lease, so the claim
+	// lives exactly as long as the owner or anything it starts.
+	SpawnOwner func(agentID string, extraFiles []*os.File) (int, error)
+	// Preflight proves the resolved profile can start before a worktree exists.
+	Preflight func(context.Context, Resolved) error
+	// DetectVersion reads the installed harness version, best effort.
+	DetectVersion func(context.Context, string) string
+	Now           func() time.Time
+}
+
+// PreparedRun is an admitted execution: resolved, recorded, leased and waiting
+// for its owner. Splitting preparation from start is what lets a comparison
+// create every worktree — and therefore pin every base — before any worker runs.
+type PreparedRun struct {
+	Record Record
+	Lease  *Lease
+	// Store is the run store the record lives in, so an aborted preparation can
+	// still be recorded as a terminal failure.
+	Store Store
 }
 
 // Dispatch admits one run, creates or resolves its worktree, persists the run,
 // and starts the detached owner. It returns as soon as the owner is started:
 // the caller is never attached to the worker's stdout and never waits for it.
 func Dispatch(ctx context.Context, request DispatchRequest, deps DispatchDeps) (Record, error) {
+	prepared, err := PrepareRun(ctx, request, deps)
+	if err != nil {
+		return Record{}, err
+	}
+	return StartRun(prepared, deps)
+}
+
+// PrepareRun resolves the plan, proves it can start, resolves or creates the
+// worktree, takes the writer lease, and persists the run record. It starts no
+// process, so a caller can prepare several attempts and start them later.
+func PrepareRun(ctx context.Context, request DispatchRequest, deps DispatchDeps) (*PreparedRun, error) {
 	if deps.Now == nil {
 		deps.Now = time.Now
 	}
@@ -87,90 +126,290 @@ func Dispatch(ctx context.Context, request DispatchRequest, deps DispatchDeps) (
 		deps.OriginSlug = worktrees.OriginSlug
 	}
 	if err := validateDispatchRequest(request); err != nil {
-		return Record{}, err
+		return nil, err
 	}
 	if deps.LoadConfig == nil {
-		return Record{}, fmt.Errorf("agent dispatch requires a configuration loader")
+		return nil, fmt.Errorf("agent dispatch requires a configuration loader")
 	}
 	config, err := deps.LoadConfig()
 	if err != nil {
-		return Record{}, err
+		return nil, err
 	}
-	resolved, err := config.Resolve(request.Profile)
+	plan, err := resolvePlan(config, request)
 	if err != nil {
-		return Record{}, err
+		return nil, err
 	}
-	// Resolve the credential before creating a worktree: a dispatch that cannot
-	// authenticate must fail without leaving an unused checkout behind, and the
-	// message must name the exact source rather than surfacing later as an
-	// opaque provider rejection.
-	if _, err := ResolveCredential(resolved.Routing); err != nil {
-		return Record{}, fmt.Errorf("provider %q: %w", resolved.Provider, err)
+	// A Codex run authenticates with a credential WB injects; refuse a dispatch
+	// that cannot authenticate before a worktree exists. This check is
+	// independent of the injected preflight seam so a direct caller cannot skip
+	// it.
+	if plan.Profile.Harness == HarnessCodex {
+		if _, err := ResolveCredential(plan.Profile.Routing); err != nil {
+			// A missing credential is an environment problem, not a malformed
+			// invocation: it stays a finding, as it was before this feature.
+			return nil, fmt.Errorf("provider %q: %w", plan.Profile.Provider, err)
+		}
+	}
+	// Prove the harness can start before creating a worktree: a dispatch that
+	// cannot authenticate must fail without leaving an unused checkout behind.
+	if deps.Preflight != nil && !(request.Plan != nil && request.Plan.probed) {
+		if err := deps.Preflight(ctx, plan.Profile); err != nil {
+			return nil, err
+		}
+	}
+	adapter, err := HarnessFor(plan.Profile.Harness)
+	if err != nil {
+		return nil, requestErrorf("%v", err)
 	}
 
 	store := NewStore(deps.Home)
-	record := Record{
-		State:            StateRunning,
-		RequestedProfile: resolved.Profile,
-		Resolved:         resolved,
-		Task:             request.Task,
-		TaskSummary:      SummaryLine(request.Task),
-		WorktreeMode:     request.Mode,
-		Worktree:         request.Worktree,
-		TimeoutMS:        request.Timeout.Milliseconds(),
-		StartedAt:        deps.Now().UTC(),
+	request.AgentID = strings.TrimSpace(request.AgentID)
+	if request.AgentID == "" {
+		// NewID uses crypto/rand.Read's fill-or-terminate contract.
+		request.AgentID, _ = NewID()
+	}
+	if err := validateAgentID(request.AgentID); err != nil {
+		return nil, requestErrorf("%v", err)
+	}
+	operation := strings.TrimSpace(request.Worktree)
+	if operation == "" && (request.Mode == ModeAuto || request.Mode == ModeNew) {
+		operation = autoOperationName(plan.TaskType, request.Task, request.AgentID)
 	}
 
-	var worktree worktreeResolution
+	var target worktreeResolution
 	switch request.Mode {
-	case ModeNew:
-		worktree, err = createWorktree(ctx, request, resolved, deps)
+	case ModeNew, ModeAuto:
+		target, err = createWorktree(ctx, request, operation, plan.Profile, deps)
 	case ModeExisting:
-		worktree, err = resolveWorktree(ctx, request, deps)
+		target, err = resolveWorktree(ctx, request, operation, deps)
+	case ModeCurrent, ModePath:
+		target, err = resolveExistingTarget(ctx, request, deps)
 	default:
-		return Record{}, fmt.Errorf("unsupported worktree mode %q", request.Mode)
+		return nil, requestErrorf("unsupported worktree mode %q", request.Mode)
 	}
 	if err != nil {
-		return Record{}, err
+		return nil, err
 	}
-	record.Repository = worktree.Repository
-	record.WorktreeDir = worktree.Dir
-	record.Branch = worktree.Branch
-	record.Base = worktree.Base
-	record.BaseSHA = worktree.BaseSHA
-	record.WorkLogClaimPath = worktree.ClaimPath
-	record.WorkLogRunID = worktree.ClaimRunID
 
-	// NewID uses crypto/rand.Read's fill-or-terminate contract.
-	agentID, _ := NewID()
-	record.AgentID = agentID
-	record.LogPath = store.LogPath(agentID)
-	if err := store.Create(record); err != nil {
-		return Record{}, err
+	lease, leaseErr := acquireWriterLease(store, request, target, deps)
+	if leaseErr != nil {
+		return nil, leaseErr
 	}
-	ownerPID, err := deps.SpawnOwner(agentID)
+
+	capabilities := adapter.Capabilities()
+	if deps.DetectVersion != nil {
+		capabilities.Version = deps.DetectVersion(ctx, plan.Profile.Harness)
+	}
+	taskDigest, taskBytes := TaskIdentity(request.Task)
+	record := Record{
+		State:                StateRunning,
+		ExecutionStatus:      StatusQueued,
+		RequestedProfile:     plan.Profile.Profile,
+		Resolved:             plan.Profile,
+		TaskType:             plan.TaskType,
+		TaskTypeSource:       plan.TaskTypeSource,
+		ProfileSource:        plan.ProfileSource,
+		RoutingReason:        routingReason(plan),
+		Complexity:           plan.Complexity,
+		ComplexitySource:     plan.ComplexitySource,
+		ComplexityOverridden: plan.ComplexityOverridden,
+		EffortRequested:      plan.EffortRequested,
+		EffortSource:         plan.EffortSource,
+		EffortEffective:      plan.EffortEffective,
+		EffortApplied:        plan.EffortApplied,
+		EffortNote:           plan.EffortNote,
+		WorktreeSource:       plan.WorktreeSource,
+		TimeoutSource:        plan.TimeoutSource,
+		HarnessCapabilities:  capabilities,
+		Task:                 request.Task,
+		TaskSummary:          SummaryLine(request.Task),
+		TaskSHA256:           taskDigest,
+		TaskBytes:            taskBytes,
+		TaskVisibility:       capabilities.TaskDelivery,
+		TaskNormalized:       capabilities.TaskDelivery == TaskDeliveryArgv && dshTaskNormalized(request.Task),
+		Repository:           target.Repository,
+		WorktreeMode:         request.Mode,
+		Worktree:             target.Worktree,
+		WorktreeDir:          target.Dir,
+		Branch:               target.Branch,
+		Base:                 target.Base,
+		BaseSHA:              target.BaseSHA,
+		SourceSHA:            target.SourceSHA,
+		SnapshotSHA:          target.SnapshotSHA,
+		SourceDirty:          target.Dirty,
+		DirtyFiles:           target.DirtyFiles,
+		WorkLogClaimPath:     target.ClaimPath,
+		WorkLogRunID:         target.ClaimRunID,
+		ExperimentID:         request.ExperimentID,
+		RepeatIndex:          request.RepeatIndex,
+		TimeoutMS:            plan.TimeoutMS,
+		StartedAt:            deps.Now().UTC(),
+		Validation:           ValidationRecord{Status: ValidationPending, Steps: pendingValidationSteps(plan.ValidationSteps)},
+		AcceptanceRequired:   plan.AcceptanceRequired,
+	}
+	if lease != nil {
+		record.LeasePath = lease.Path()
+	}
+	record.LogPath = store.LogPath(request.AgentID)
+	record.AgentID = request.AgentID
+	if err := store.Create(record); err != nil {
+		_ = lease.Release()
+		return nil, err
+	}
+	return &PreparedRun{Record: record, Lease: lease, Store: store}, nil
+}
+
+// StartRun starts the detached owner for a prepared run and returns without
+// waiting. The run is already durable, so a launch failure is diagnosable.
+func StartRun(prepared *PreparedRun, deps DispatchDeps) (Record, error) {
+	if prepared == nil {
+		return Record{}, fmt.Errorf("start agent run: nothing was prepared")
+	}
+	if deps.SpawnOwner == nil {
+		_ = prepared.Fail(StateFailed, "start detached run owner: no spawn seam", FailureInternal, deps.Now)
+		return Record{}, fmt.Errorf("agent dispatch requires a run owner spawner")
+	}
+	extraFiles := []*os.File{}
+	if prepared.Lease != nil && prepared.Lease.File() != nil {
+		extraFiles = append(extraFiles, prepared.Lease.File())
+	}
+	ownerPID, err := deps.SpawnOwner(prepared.Record.AgentID, extraFiles)
 	if err != nil {
-		// The run is recorded before it starts precisely so a launch failure
-		// is diagnosable rather than invisible.
-		record.State = StateFailed
-		record.Failure = fmt.Sprintf("start detached run owner: %v", err)
-		record.FinishedAt = deps.Now().UTC()
-		_ = store.Save(record)
-		return record, fmt.Errorf("start detached run owner for %s: %w", agentID, err)
+		_ = prepared.Fail(StateFailed, fmt.Sprintf("start detached run owner: %v", err), FailureInternal, deps.Now)
+		return prepared.Record, fmt.Errorf("start detached run owner for %s: %w", prepared.Record.AgentID, err)
 	}
 	// The owner records its own PID as its first durable act, so the dispatcher
 	// deliberately does not write the record again: a second writer racing the
-	// owner could clobber the worker PID the owner records moments later. The
-	// returned record carries the PID in memory, so this command's own output is
-	// still accurate.
-	record.OwnerPID = ownerPID
-	return record, nil
+	// owner could clobber the worker PID the owner records moments later.
+	prepared.Record.OwnerPID = ownerPID
+	if prepared.Lease != nil {
+		_ = prepared.Lease.SetOwner(ownerPID)
+	}
+	return prepared.Record, nil
+}
+
+// Abort records an attempt that will never start and releases its lease.
+func (prepared *PreparedRun) Abort(state State, failure, category string, now func() time.Time) error {
+	if prepared == nil {
+		return nil
+	}
+	return prepared.Fail(state, failure, category, now)
+}
+
+// Fail records a terminal failure for a run that never started, or whose owner
+// could not be launched.
+func (prepared *PreparedRun) Fail(state State, failure, category string, now func() time.Time) error {
+	if now == nil {
+		now = time.Now
+	}
+	prepared.Record.State = state
+	prepared.Record.ExecutionStatus = executionStatusFromState(state)
+	prepared.Record.Failure = failure
+	prepared.Record.FailureCategory = category
+	prepared.Record.FinishedAt = now().UTC()
+	if err := prepared.Store.Save(prepared.Record); err != nil {
+		return err
+	}
+	return prepared.Lease.Release()
+}
+
+// ReleaseLease drops the writer claim without changing the record, for a
+// prepared run that will never start.
+func (prepared *PreparedRun) ReleaseLease() error {
+	if prepared == nil {
+		return nil
+	}
+	return prepared.Lease.Release()
+}
+
+// autoOperationName is deterministic and collision-free for reruns of the same
+// task: the task hash names the work, and the agent ID's first bytes make a
+// second run of the same work a new checkout rather than a resume.
+func autoOperationName(taskType, task, agentID string) string {
+	digest, _ := TaskIdentity(task)
+	suffix := ""
+	if len(agentID) >= len(IDPrefix)+8 {
+		suffix = agentID[len(IDPrefix) : len(IDPrefix)+8]
+	}
+	name := strings.TrimSpace(taskType) + "-" + digest[:8]
+	if suffix != "" {
+		name += "-" + suffix
+	}
+	return name
+}
+
+func acquireWriterLease(store Store, request DispatchRequest, target worktreeResolution, deps DispatchDeps) (*Lease, error) {
+	lease, err := store.AcquireLease(target.Dir, request.AgentID, request.ExperimentID, target.Repository, deps.Now())
+	if err == nil {
+		return lease, nil
+	}
+	if err == ErrLeaseUnsupported {
+		// A unique checkout cannot be shared by construction, so it stays
+		// available on a platform without an inherited lock. A shared checkout
+		// cannot be protected there, so it is refused.
+		if request.Mode == ModeCurrent || request.Mode == ModePath {
+			return nil, requestErrorf("this platform cannot take an exclusive lease on a shared checkout; use --worktree auto or --new-worktree, which give the run its own worktree")
+		}
+		return nil, nil
+	}
+	var held *LeaseHeldError
+	if errors.As(err, &held) {
+		return nil, requestErrorf("%v", err)
+	}
+	return nil, err
+}
+
+func resolvePlan(config Config, request DispatchRequest) (Plan, error) {
+	if request.Plan != nil {
+		return *request.Plan, nil
+	}
+	planner := Planner{Config: config}
+	plan, err := planner.Plan(RunRequest{
+		Task: request.Task, Profile: request.Profile, TaskType: "coding",
+		Timeout: request.Timeout, TimeoutSet: request.Timeout > 0,
+	})
+	if err != nil {
+		return Plan{}, err
+	}
+	return plan, nil
+}
+
+func pendingValidationSteps(steps []ValidationStep) []ValidationStepResult {
+	if len(steps) == 0 {
+		return nil
+	}
+	pending := make([]ValidationStepResult, 0, len(steps))
+	for _, step := range steps {
+		pending = append(pending, ValidationStepResult{Name: step.Name, Argv: append([]string(nil), step.Argv...), Timeout: step.Timeout, Status: ValidationPending})
+	}
+	return pending
+}
+
+func routingReason(plan Plan) string {
+	parts := []string{"task type " + plan.TaskType + " (" + plan.TaskTypeSource + ")"}
+	if plan.Complexity != "" {
+		parts = append(parts, "complexity "+plan.Complexity+" ("+plan.ComplexitySource+")")
+	}
+	parts = append(parts, "profile "+plan.Profile.Profile+" ("+plan.ProfileSource+")")
+	if plan.FallbackFrom != "" {
+		parts = append(parts, "fallback from "+plan.FallbackFrom)
+	}
+	return strings.Join(parts, "; ")
 }
 
 func validateDispatchRequest(request DispatchRequest) error {
 	name := strings.TrimSpace(request.Worktree)
-	if name == "" {
-		return requestErrorf("exactly one of --new-worktree or --use-worktree is required")
+	switch request.Mode {
+	case ModePath:
+		if name == "" {
+			return requestErrorf("--worktree path requires an absolute path")
+		}
+	case ModeCurrent:
+		// The invoking checkout is the target; no name is needed.
+	default:
+		if name == "" {
+			return requestErrorf("a worktree name is required")
+		}
 	}
 	if strings.TrimSpace(request.Task) == "" {
 		return requestErrorf("--task or --task-file is required")
@@ -185,13 +424,18 @@ func validateDispatchRequest(request DispatchRequest) error {
 }
 
 // worktreeResolution is the subset of a WB worktree that a dispatched run
-// records, gathered from whichever of the two modes supplied it.
+// records, gathered from whichever mode supplied it.
 type worktreeResolution struct {
-	Repository string
-	Dir        string
-	Branch     string
-	Base       string
-	BaseSHA    string
+	Repository  string
+	Dir         string
+	Worktree    string
+	Branch      string
+	Base        string
+	BaseSHA     string
+	SourceSHA   string
+	SnapshotSHA string
+	Dirty       bool
+	DirtyFiles  []string
 	// ClaimPath and ClaimRunID point at the immutable Work Log claim the
 	// worktree service already published for this work, so one dispatch never
 	// produces two unreferenced records of the same task.
@@ -203,7 +447,7 @@ type worktreeResolution struct {
 // service, in process. It deliberately does not reimplement branch, base, or
 // worktree semantics: it supplies what the service needs and records what the
 // service decided.
-func createWorktree(ctx context.Context, request DispatchRequest, resolved Resolved, deps DispatchDeps) (worktreeResolution, error) {
+func createWorktree(ctx context.Context, request DispatchRequest, operation string, resolved Resolved, deps DispatchDeps) (worktreeResolution, error) {
 	repository, err := resolveRepository(ctx, request.Repository, deps.OriginSlug)
 	if err != nil {
 		return worktreeResolution{}, err
@@ -228,13 +472,13 @@ func createWorktree(ctx context.Context, request DispatchRequest, resolved Resol
 	}).WithOriginalPromptFromStdin([]byte(request.Task))
 	// Dispatch's request boundary already rejects blank tasks, the sole failure
 	// of WithOriginalPromptFromStdin. Preserve exact original bytes here.
-	workLog, err = worktrees.PrepareWorkLogOptions(deps.ProjectsRoot, request.Worktree, workLog)
+	workLog, err = worktrees.PrepareWorkLogOptions(deps.ProjectsRoot, operation, workLog)
 	if err != nil {
 		return worktreeResolution{}, err
 	}
 	results, err := deps.CreateWorktree(ctx, repositories, worktrees.CreateOptions{
 		ProjectsRoot: deps.ProjectsRoot,
-		Operation:    request.Worktree,
+		Operation:    operation,
 		Branch:       request.Branch,
 		BranchChosen: request.Branch != "",
 		Base:         request.Base,
@@ -254,6 +498,7 @@ func createWorktree(ctx context.Context, request DispatchRequest, resolved Resol
 	return worktreeResolution{
 		Repository: created.Repository,
 		Dir:        created.WorktreeDir,
+		Worktree:   operation,
 		Branch:     created.Branch,
 		Base:       created.Base,
 		BaseSHA:    created.BaseSHA,
@@ -265,13 +510,13 @@ func createWorktree(ctx context.Context, request DispatchRequest, resolved Resol
 // resolveWorktree resolves an existing WB-managed worktree by name through WB's
 // own inventory. It never creates one, and it refuses an ambiguous name rather
 // than choosing a checkout on the caller's behalf.
-func resolveWorktree(ctx context.Context, request DispatchRequest, deps DispatchDeps) (worktreeResolution, error) {
+func resolveWorktree(ctx context.Context, request DispatchRequest, operation string, deps DispatchDeps) (worktreeResolution, error) {
 	results, err := deps.ListWorktrees(ctx, worktrees.ListOptions{
 		ProjectsRoot: deps.ProjectsRoot,
-		Tasks:        []string{request.Worktree},
+		Tasks:        []string{operation},
 	})
 	if err != nil {
-		return worktreeResolution{}, fmt.Errorf("resolve worktree %q: %w", request.Worktree, err)
+		return worktreeResolution{}, fmt.Errorf("resolve worktree %q: %w", operation, err)
 	}
 	repository := strings.TrimSpace(request.Repository)
 	candidates := make([]worktrees.ListResult, 0, len(results))
@@ -286,21 +531,58 @@ func resolveWorktree(ctx context.Context, request DispatchRequest, deps Dispatch
 	}
 	switch len(candidates) {
 	case 0:
-		return worktreeResolution{}, fmt.Errorf("no WB-managed worktree named %q under projects root %s; create it with `wb worktree create %s` or dispatch with --new-worktree", request.Worktree, deps.ProjectsRoot, request.Worktree)
+		return worktreeResolution{}, fmt.Errorf("no WB-managed worktree named %q under projects root %s; create it with `wb worktree create %s` or dispatch with --new-worktree", operation, deps.ProjectsRoot, operation)
 	case 1:
 	default:
 		descriptions := make([]string, 0, len(candidates))
 		for _, candidate := range candidates {
 			descriptions = append(descriptions, fmt.Sprintf("%s (%s)", candidate.Repository, candidate.WorktreeDir))
 		}
-		return worktreeResolution{}, fmt.Errorf("worktree name %q is ambiguous; it resolves to %d checkouts: %s. Pass --repo to select one", request.Worktree, len(candidates), strings.Join(descriptions, ", "))
+		return worktreeResolution{}, fmt.Errorf("worktree name %q is ambiguous; it resolves to %d checkouts: %s. Pass --repo to select one", operation, len(candidates), strings.Join(descriptions, ", "))
 	}
 	chosen := candidates[0]
 	return worktreeResolution{
 		Repository: chosen.Repository,
 		Dir:        chosen.WorktreeDir,
+		Worktree:   operation,
 		Branch:     chosen.Branch,
 		Base:       chosen.RecordedBase,
+		BaseSHA:    chosen.HeadSHA,
+	}, nil
+}
+
+// resolveExistingTarget turns `current` or an explicit path into the facts a run
+// records. It never creates or cleans anything.
+func resolveExistingTarget(ctx context.Context, request DispatchRequest, deps DispatchDeps) (worktreeResolution, error) {
+	path := request.Worktree
+	if request.Mode == ModeCurrent {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return worktreeResolution{}, requestErrorf("resolve the current directory: %v", err)
+		}
+		path = cwd
+	}
+	target, err := ResolveTarget(ctx, path, request.AllowCanonical, request.AllowDirty, TargetDeps{
+		OriginSlug: deps.OriginSlug,
+	})
+	if err != nil {
+		return worktreeResolution{}, err
+	}
+	name := target.WorktreeName
+	if name == "" {
+		name = filepath.Base(target.Dir)
+	}
+	return worktreeResolution{
+		Repository:  target.Repository,
+		Dir:         target.Dir,
+		Worktree:    name,
+		Branch:      target.Branch,
+		Base:        target.Base,
+		BaseSHA:     target.BaseSHA,
+		SourceSHA:   target.HeadSHA,
+		SnapshotSHA: target.SnapshotSHA,
+		Dirty:       target.Dirty,
+		DirtyFiles:  target.DirtyFiles,
 	}, nil
 }
 

@@ -130,20 +130,17 @@ func TestSummarizeChangesBoundsTheChangedFileList(t *testing.T) {
 	}
 }
 
-func TestParseShortstatReadsGitOutput(t *testing.T) {
+func TestParseNumstatReadsPathsAndCounts(t *testing.T) {
 	t.Parallel()
-	cases := map[string][2]int{
-		" 3 files changed, 12 insertions(+), 4 deletions(-)": {12, 4},
-		" 1 file changed, 2 insertions(+)":                   {2, 0},
-		" 1 file changed, 1 deletion(-)":                     {0, 1},
-		"":                                                   {0, 0},
-		" nonsense, 4 deletions(-)":                          {0, 4},
+	files, insertions, deletions := parseNumstat("12\t4\ta.go\n2\t0\tb.go\n-\t-\tbinary.png\nnot a numstat line\n")
+	if len(files) != 3 || files[0] != "a.go" || files[2] != "binary.png" {
+		t.Fatalf("files = %#v", files)
 	}
-	for input, want := range cases {
-		insertions, deletions := parseShortstat(input)
-		if insertions != want[0] || deletions != want[1] {
-			t.Errorf("parseShortstat(%q) = %d/%d, want %d/%d", input, insertions, deletions, want[0], want[1])
-		}
+	if insertions != 14 || deletions != 4 {
+		t.Fatalf("counts = %d/%d", insertions, deletions)
+	}
+	if files, insertions, deletions := parseNumstat(""); len(files) != 0 || insertions != 0 || deletions != 0 {
+		t.Fatalf("empty numstat = %#v %d/%d", files, insertions, deletions)
 	}
 }
 

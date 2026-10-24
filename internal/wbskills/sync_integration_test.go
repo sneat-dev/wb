@@ -365,3 +365,37 @@ func TestEmbeddedSkillsHarnessJourneys(t *testing.T) {
 		t.Logf("operation including isolated target setup: %s", time.Since(start))
 	})
 }
+
+// TestEmbeddedAgentSkillInstallsForClaudeAndCodex is the acceptance check for the
+// execution skill: one canonical source, installed by the existing bundle for
+// both orchestrator harnesses without a harness-specific copy.
+func TestEmbeddedAgentSkillInstallsForClaudeAndCodex(t *testing.T) {
+	//nolint:paralleltest // the assertions rely on process-wide HOME overrides
+	cfg, err := wbskills.Config(ai.SkillsFS, buildinfo.Snapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("CODEX_HOME", "")
+	command := newSkillsSyncCmd(testRuntime(), testSyncDependencies(cfg, home))
+	command.SetArgs([]string{"--harness", "claude,codex"})
+	var out bytes.Buffer
+	command.SetOut(&out)
+	if err := command.Execute(); err != nil {
+		t.Fatalf("sync: %v\n%s", err, out.String())
+	}
+	for _, path := range []string{
+		filepath.Join(home, ".claude", "skills", "wb-agent", "SKILL.md"),
+		filepath.Join(home, ".claude", "skills", "wb-agent", "references", "compare.md"),
+		filepath.Join(home, ".codex", "skills", "wb-agent", "SKILL.md"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("the agent skill was not installed at %s: %v", path, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(home, ".claude", "skills", "wb-agents")); !os.IsNotExist(err) {
+		t.Fatalf("the retired skill must not be installed: %v", err)
+	}
+}

@@ -112,6 +112,13 @@ wb install [name...]         # list/install sibling fleet CLIs relevant to wb
 wb upgrade [name...]         # upgrade installed fleet CLIs, including wb itself
 wb skills sync [flags]       # install/update WB's Agent Skills in a harness skills dir
 wb skills hook print|install # print or merge a Claude Code SessionStart hook
+wb agent run [flags]         # resolve a task type and profile, then run one harness in a worktree
+wb agent compare [flags]     # run one task across several profiles from one pinned base commit
+wb agent experiment <id>     # re-read a durable comparison
+wb agent profiles|task-types # discover configured profiles and task-type policy as JSON
+wb agent diff|review <id>    # inspect a worker's change, then record the acceptance decision
+wb agent prune [flags]       # plan or apply retention for private run artefacts
+wb agent dispatch|status|await|logs|stop # low-level dispatch and run inspection
 ```
 
 ### Persistent flags
@@ -121,6 +128,100 @@ wb skills hook print|install # print or merge a Claude Code SessionStart hook
 | `--projects-root P` | `~/projects` | Root dir holding `{host}/{org}/{repo}` clones (the first level is the literal forge hostname). |
 | `--filter S` | — | Only process repos whose `org/name` contains `S`. |
 | `--org O` | — | Query an additional GitHub owner (repeatable); before `sync`, it has the same restricting selection as command-local `sync --org`. |
+
+### `wb agent` — delegated execution and model comparison
+
+`wb agent` runs one bounded coding task in an isolated worktree through a
+configured harness and reports execution, validation and review as three
+independent statuses. It ships three adapters — Codex, OpenCode and the DeepSeek
+harness (`dsh`) — and never judges whether a worker's change is correct; that is
+the caller's decision.
+
+A **task type** is policy and a **profile** is execution. Both live in the
+existing `agents` section of `wb.yaml`:
+
+```yaml
+agents:
+  profiles:
+    opencode-flash:
+      harness: opencode
+      model: opencode-go/deepseek-v4.1-flash
+    dsh-flash:
+      harness: dsh
+      model: deepseek-v4-flash
+    cheap-codex:
+      harness: codex
+      provider: deepseek
+      model: deepseek-v4.1-flash
+      effort: medium
+  task_types:
+    coding:
+      profile: opencode-flash
+      complexity: { trivial: cheap-codex, high: dsh-flash }
+      validate: [go]
+      acceptance: required
+  validations:
+    go:
+      - { name: vet,  argv: [go, vet, ./...],  timeout: 5m }
+      - { name: test, argv: [go, test, ./...], timeout: 20m }
+  defaults:
+    task_type: coding
+```
+
+```sh
+# Resolve the coding policy, create an isolated worktree, start the worker
+wb agent run --task-type coding --task-file task.md
+
+# Harder work routes deterministically; effort asks the model to think harder
+wb agent run --task-type coding --task-complexity high --effort high --task-file task.md
+
+# Print the fully resolved plan and start nothing
+wb agent run --task-type coding --dry-run --task-file task.md
+
+# Run in the checkout you are in, explicitly allowing existing work
+wb agent run --task-type debugging --worktree current --allow-dirty --task-file bug.md
+
+# Compare two profiles on the identical task and base commit
+wb agent compare --profiles opencode-flash,dsh-flash --repeat 2 --task-file task.md
+
+# Discover configuration instead of hardcoding a model
+wb agent profiles --format json
+wb agent task-types --format json
+
+# Verify before accepting
+wb agent diff <agent-id> --patch
+wb agent review <agent-id> --status accepted --note tests-and-review-pass
+```
+
+Routing precedence is explicit: `--profile` (or `--harness` with `--model`), then
+the task type's complexity entry, then its default profile, then
+`agents.defaults.profile`. WB ships no model identifier; built-in task types are
+policy only and name no profile. Every resolved value records where it came
+from, and `--dry-run` prints all of it.
+
+`--task-complexity` (`trivial|low|medium|high|extreme`) describes the work and
+chooses what runs. `--effort` (`low|medium|high|xhigh`) asks the selected model
+to think harder; a harness that cannot apply it refuses an explicit `--effort`
+and records an inherited one as not applied.
+
+Worktree modes are `--worktree auto` (a new isolated checkout, the default),
+`--worktree current` (this checkout), and `--worktree /absolute/path`. A
+canonical clone is refused without `--allow-canonical`, and a dirty checkout is
+refused without `--allow-dirty`; WB never cleans or resets either. Every
+writable execution holds an inherited `flock` on the worktree, so two workers
+can never write into one checkout, and the lock outlives a killed owner while
+its worker is still running.
+
+`wb agent compare` creates every worktree before starting any worker, pins the
+first created base commit, and never starts an attempt whose base moved. It
+reports completion, wall time, tokens (where the harness reports them), cost
+labelled `api_equivalent`/`harness-estimated`, validation, review, changed files
+and the worktree. `wb agent experiment <id>` re-reads the same durable document.
+Run and compare are local-only; `dispatch`, `status`, `await`, `logs` and `stop`
+also accept `--to <machine>`.
+
+`wb agent prune --older-than 720h` plans retention of private run artefacts and
+never removes a running, leased, accepted or unreviewed required run.
 
 ### `wb worktree` — isolated feature branches
 

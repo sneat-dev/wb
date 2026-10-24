@@ -166,7 +166,7 @@ func seedAgentRun(t *testing.T, home string, mutate func(*agents.Record)) agents
 		AgentID: id, State: agents.StateRunning, RequestedProfile: "cheap",
 		Resolved: agents.Resolved{
 			Profile: "cheap", Harness: agents.HarnessCodex, Provider: "deepseek",
-			Model: "deepseek-flash", Reasoning: "high",
+			Model: "deepseek-flash", Effort: "high",
 			Routing: agents.Provider{BaseURL: "https://api.deepseek.com", CredentialEnv: "DEEPSEEK_API_KEY", WireAPI: agents.WireAPIResponses},
 		},
 		Task: "the private bounded task", TaskSummary: "the private bounded task",

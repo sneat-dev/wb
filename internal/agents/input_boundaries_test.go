@@ -177,7 +177,7 @@ func TestOwnerNullOpenFailureStopsBeforeStartingProcess(t *testing.T) {
 	t.Parallel()
 	failure := errors.New("null device unavailable")
 	opened := 0
-	pid, err := spawnOwnerWithNull(t.TempDir(), os.Executable, func() (*os.File, error) { opened++; return nil, failure })
+	pid, err := spawnOwnerWithNull(t.TempDir(), os.Executable, nil, func() (*os.File, error) { opened++; return nil, failure })
 	if pid != 0 || !errors.Is(err, failure) || opened != 1 {
 		t.Fatalf("pid=%d error=%v opens=%d", pid, err, opened)
 	}
@@ -215,7 +215,7 @@ func TestDispatchRefusesBlankTaskAndUnsupportedModeWithoutLaunching(t *testing.T
 			deps := DispatchDeps{Home: home, ProjectsRoot: t.TempDir(), LoadConfig: func() (Config, error) {
 				loads++
 				return Config{Providers: map[string]Provider{"private": {BaseURL: "https://example.invalid", WireAPI: WireAPIResponses, CredentialFile: credential}}, Profiles: map[string]Profile{"p": {Harness: HarnessCodex, Provider: "private", Model: "m"}}}, nil
-			}, SpawnOwner: func(string) (int, error) { t.Fatal("refused request started owner"); return 0, nil }}
+			}, SpawnOwner: func(string, []*os.File) (int, error) { t.Fatal("refused request started owner"); return 0, nil }}
 			request := DispatchRequest{Mode: "unsupported", Worktree: "boundary", Profile: "p", Task: "exact task", Timeout: time.Second}
 			if phase == "blank task" {
 				request.Task = " \t\n"

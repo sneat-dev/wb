@@ -52,21 +52,6 @@ func TestValidateProvider_RejectsBothCredentialSources(t *testing.T) {
 	}
 }
 
-// TestParseShortstat_SkipsUnparsableInsertionCount drives the strconv.Atoi
-// error branch: a clause whose count is not a plain integer is skipped
-// instead of poisoning the result.
-func TestParseShortstat_SkipsUnparsableInsertionCount(t *testing.T) {
-	t.Parallel()
-
-	insertions, deletions := parseShortstat("3 files changed, many insertions(+), 2 deletions(-)")
-	if insertions != 0 {
-		t.Errorf("insertions = %d, want 0 (unparsable clause skipped)", insertions)
-	}
-	if deletions != 2 {
-		t.Errorf("deletions = %d, want 2", deletions)
-	}
-}
-
 // TestRunOwner_DefaultsDepsBeforeLoadFailure drives RunOwner's nil-dependency
 // defaulting (LookPath and Now) along the path that returns before starting
 // any process: a store with no persisted record for the agent ID fails at

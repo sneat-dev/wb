@@ -31,7 +31,7 @@ func sampleRecord(t *testing.T) Record {
 		RequestedProfile: "cheap",
 		Resolved: Resolved{
 			Profile: "cheap", Harness: HarnessCodex, Provider: "deepseek",
-			Model: "deepseek-flash", Reasoning: "high",
+			Model: "deepseek-flash", Effort: "high",
 			Routing: Provider{BaseURL: "https://api.deepseek.com", CredentialEnv: "DEEPSEEK_API_KEY", WireAPI: WireAPIResponses},
 		},
 		Task:        "do the bounded thing",

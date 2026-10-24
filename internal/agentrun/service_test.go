@@ -51,7 +51,7 @@ func TestDispatchUsesActualDependencyBuilderAndPreservesRequests(t *testing.T) {
 		}
 	}
 	deps.Executable = func() (string, error) { return "wb-private", nil }
-	deps.SpawnOwner = func(dir string, executable func() (string, error)) (int, error) {
+	deps.SpawnOwner = func(dir string, executable func() (string, error), _ []*os.File) (int, error) {
 		calls = append(calls, "spawn")
 		exe, err := executable()
 		if dir != filepath.Join(physical, ".wb", "agents", "id") || exe != "wb-private" || err != nil {
@@ -72,7 +72,7 @@ func TestDispatchUsesActualDependencyBuilderAndPreservesRequests(t *testing.T) {
 			t.Fatal(err)
 		}
 		d.AfterCreate(nil, results)
-		if pid, err := d.SpawnOwner("id"); pid != 42 || err != nil {
+		if pid, err := d.SpawnOwner("id", nil); pid != 42 || err != nil {
 			t.Fatal(pid, err)
 		}
 		return agents.Record{AgentID: "id", State: agents.StateCompleted}, nil

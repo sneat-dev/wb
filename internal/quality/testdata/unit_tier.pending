@@ -7,6 +7,7 @@
 # much; the PR that creates this file is exempt. Remove an entry once
 # its count reaches 0.
 # Reviewed real-Git receipts: the added eight calls construct and rewind isolated remotes to prove cleaned-landing ancestry.
+# Reviewed execution-adapter fixtures: real Git worktrees plus a scripted POSIX harness prove the OpenCode and dsh owners, cancellation, redaction and validation without the provider.
 # Reviewed real-Git imported-main graph: git subprocess, isolated PATH fixture, and executable helper remain exercised in the default tier.
 # These four helper calls use an injected fake runner; the static detector cannot follow context values.
 # Reviewed clone migration fixtures require a real checkout to prove destination safety.
@@ -69,7 +70,9 @@ internal/agentguard/autotags_test.go	1	task-15
 internal/agentguard/hooks_integration_test.go	7	task-22
 internal/agents/changes_test.go	10	task-15
 internal/agents/env_test.go	6	task-15
+internal/agents/owner_harnesses_test.go	7	task-24
 internal/agents/owner_test.go	6	task-15
+internal/agents/validation_test.go	5	task-24
 internal/archiveprune/archiveprune_test.go	7	task-15
 internal/archiveprune/rp_coverage_test.go	6	task-15
 internal/browser/contract_test.go	1	task-24
