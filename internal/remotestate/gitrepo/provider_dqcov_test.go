@@ -194,18 +194,16 @@ func TestDQCovPublishReportsReadmeWriteFailure(t *testing.T) {
 	}
 }
 
-// TestDQCovPublishReportsAddCommitFailure proves Publish reports a git staging
-// failure (a stale index.lock) instead of reporting a successful publish.
-func TestDQCovPublishReportsAddCommitFailure(t *testing.T) {
+// TestPublishReportsCommitFailure proves Publish reports a failed commit (a
+// stale branch ref lock) instead of reporting a successful publish.
+func TestPublishReportsCommitFailure(t *testing.T) {
 	origin := dqCovEmptyBareOrigin(t)
 	p := machine(t, origin)
 	dqCovPreClone(t, origin, p.opts.ClonePath)
-	if err := os.WriteFile(filepath.Join(p.opts.ClonePath, ".git", "index.lock"), []byte("locked"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	lockBranchRef(t, p.opts.ClonePath)
 
 	if _, err := p.Publish(context.Background(), snap("alice", "laptop", time.Now().UTC())); err == nil {
-		t.Fatal("Publish with a stale index.lock succeeded, want an error")
+		t.Fatal("Publish with a locked branch ref succeeded, want an error")
 	}
 }
 

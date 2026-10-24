@@ -248,6 +248,14 @@ type GuardOptions struct {
 	// commit I am on actually on the remote? Like CheckFreshness it needs the
 	// network, so it stays opt-in and no hook depends on it.
 	CheckPublication bool
+
+	// RemoteStoreClone is the configured `wb remote` git store clone, if any
+	// (sneat-dev/wb#899). It sits at a canonical-clone path, but it is WB's
+	// own machine-state checkout that WB itself writes and commits, not a
+	// source clone anyone develops in, so the canonical-clean rule does not
+	// apply: WB's commit there briefly has the claim it is committing as a
+	// "local change". Empty means no exemption.
+	RemoteStoreClone string
 }
 
 // GuardResult describes a checkout that satisfies the worktree policy.
@@ -262,6 +270,9 @@ type GuardResult struct {
 	// detached HEAD. It is empty whenever Transient is false.
 	TransientOperation string     `json:"transient_operation,omitempty"`
 	Admission          *Admission `json:"admission,omitempty"`
+	// RemoteStore marks the configured remote-store clone, admitted without
+	// the canonical-clean check (see GuardOptions.RemoteStoreClone).
+	RemoteStore bool `json:"remote_store,omitempty"`
 	// External marks a worktree `wb worktree adopt` registered without
 	// relocating it under a WB worktrees root — see ListResult.External. Its
 	// task was resolved from its own Work Log claim, not from its path.
@@ -1074,6 +1085,18 @@ func ValidateRepositories(repositories []string) ([]string, error) {
 	return normalized, nil
 }
 
+// isRemoteStoreClone reports whether root is the configured remote-store
+// clone, comparing physical paths so a symlinked projects root still matches.
+func isRemoteStoreClone(root, remoteStoreClone string) bool {
+	if remoteStoreClone == "" {
+		return false
+	}
+	if resolved, err := filepath.EvalSymlinks(remoteStoreClone); err == nil {
+		remoteStoreClone = resolved
+	}
+	return filepath.Clean(root) == filepath.Clean(remoteStoreClone)
+}
+
 // Guard verifies that path is either a clean canonical checkout (on any named
 // branch) or a non-base linked worktree in WB's central worktree hierarchy.
 func Guard(ctx context.Context, path string, options GuardOptions) (GuardResult, error) {
@@ -1118,6 +1141,10 @@ func Guard(ctx context.Context, path string, options GuardOptions) (GuardResult,
 		// different branch checked out, and nothing WB does (landing, cleanup,
 		// worktree creation) needs the clone on the base branch. What the
 		// guard protects here is data: uncommitted work, below.
+		if isRemoteStoreClone(root, options.RemoteStoreClone) {
+			result.RemoteStore = true
+			return result, nil
+		}
 		clean, err := cleanWorktree(ctx, root)
 		if err != nil {
 			return GuardResult{}, err

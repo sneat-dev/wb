@@ -192,20 +192,21 @@ func TestDQCovPublishSyncReportReportsWriteFailure(t *testing.T) {
 	}
 }
 
-func TestDQCovPublishSyncReportReportsAddCommitFailure(t *testing.T) {
+func TestPublishSyncReportRollsBackAFailedCommit(t *testing.T) {
 	origin := bareOrigin(t)
 	p := machine(t, origin)
 	dqCovPreClone(t, origin, p.opts.ClonePath)
-	dqCovInstallFailingCommitHook(t, p.opts.ClonePath)
+	lockBranchRef(t, p.opts.ClonePath)
 
 	_, err := p.PublishSyncReport(context.Background(), syncReportFixture(t), dqCovNoopValidate)
 	if err == nil {
-		t.Fatal("PublishSyncReport with a refusing commit hook succeeded, want an error")
+		t.Fatal("PublishSyncReport with a locked branch ref succeeded, want an error")
 	}
-	// The rollback removes the files it wrote from the working tree. (It does
-	// not unstage them: AddCommit's `git add` already succeeded, so the index
-	// keeps the staged entries — that is existing behaviour, asserted here as
-	// the working-tree removal it does perform.)
+	// The rollback removes the files it wrote from the working tree, and the
+	// failed commit never staged them in the shared index (wb#899).
+	if status := gitIn(t, p.opts.ClonePath, "status", "--porcelain"); status != "" {
+		t.Fatalf("clone status after a failed commit = %q, want clean", status)
+	}
 	for _, relative := range []string{syncreport.SettingsPath, syncreport.RootCollectionsPath, syncreport.DefinitionPath} {
 		if _, statErr := os.Stat(filepath.Join(p.opts.ClonePath, filepath.FromSlash(relative))); !os.IsNotExist(statErr) {
 			t.Fatalf("rollback left %s in the working tree: stat err = %v", relative, statErr)

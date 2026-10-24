@@ -113,7 +113,7 @@ func (p *Provider) PublishSyncReport(ctx context.Context, report syncreport.Repo
 		return SyncReportPublishResult{}, err
 	}
 	message := fmt.Sprintf("wb: publish sync report %s (%d repositories)", report.ID, len(report.Records))
-	committed, err := gitops.AddCommit(p.opts.ClonePath, message, paths...)
+	committed, err := gitops.CommitPaths(p.opts.ClonePath, message, paths...)
 	if err != nil {
 		rollback()
 		return SyncReportPublishResult{}, err

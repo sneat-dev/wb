@@ -296,48 +296,6 @@ exit 0
 	})
 }
 
-// AddCommit returns an error when it cannot tell whether anything was staged,
-// and when the commit itself fails, instead of reporting an idempotent no-op.
-func TestLgCovAddCommitSurfacesGitFailures(t *testing.T) {
-	t.Run("staged diff fails", func(t *testing.T) {
-		lgCovFakeGit(t, `
-case "$1" in
-  add) exit 0;;
-  diff) exit 128;;
-esac
-exit 0
-`)
-		committed, err := AddCommit(t.TempDir(), "msg", "file.txt")
-		if err == nil {
-			t.Fatal("want an error when git diff --cached --quiet fails unexpectedly")
-		}
-		if committed {
-			t.Fatal("committed = true on error, want false")
-		}
-		if !strings.Contains(err.Error(), "inspect staged changes") {
-			t.Fatalf("error = %q, want it to name the staged-change inspection", err.Error())
-		}
-	})
-
-	t.Run("commit fails", func(t *testing.T) {
-		lgCovFakeGit(t, `
-case "$1" in
-  add) exit 0;;
-  diff) exit 1;;
-  commit) exit 1;;
-esac
-exit 0
-`)
-		committed, err := AddCommit(t.TempDir(), "msg", "file.txt")
-		if err == nil {
-			t.Fatal("want an error when git commit fails")
-		}
-		if committed {
-			t.Fatal("committed = true after a failed commit, want false")
-		}
-	})
-}
-
 // LocalState reaches its second git call only when the working tree is clean;
 // a failure there must be reported, not read as "no unpushed commits".
 func TestLgCovLocalStateSurfacesLogFailure(t *testing.T) {

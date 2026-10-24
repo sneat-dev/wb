@@ -210,17 +210,3 @@ func dqCovShellQuote(s string) string {
 	}
 	return out + "'"
 }
-
-// dqCovInstallFailingCommitHook installs a client-side pre-commit hook in
-// clonePath that always fails, so gitops.AddCommit's staging succeeds but the
-// commit does not.
-func dqCovInstallFailingCommitHook(t *testing.T, clonePath string) {
-	t.Helper()
-	hooksDir := filepath.Join(clonePath, ".git", "hooks")
-	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := testenv.WriteExecutableFile(filepath.Join(hooksDir, "pre-commit"), []byte("#!/bin/sh\necho 'dqCov: commit refused' >&2\nexit 1\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-}

@@ -26,9 +26,15 @@ import (
 // with prompting disabled so a missing credential or an unknown host key fails
 // with a message instead of blocking on a terminal nobody is watching.
 func run(dir, name string, args ...string) (string, error) {
+	return runEnv(dir, nil, name, args...)
+}
+
+// runEnv is run with extra "KEY=value" entries appended to the child's
+// environment, e.g. GIT_INDEX_FILE for a commit built off the shared index.
+func runEnv(dir string, extra []string, name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
-	cmd.Env = console.Env()
+	cmd.Env = append(console.Env(), extra...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return string(out), fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
@@ -843,29 +849,6 @@ func Push(repoPath string) error {
 func RebaseAbort(repoPath string) error {
 	_, err := run(repoPath, "git", "rebase", "--abort")
 	return err
-}
-
-// AddCommit stages paths and commits them. It reports false without
-// committing when the stage is empty, so callers can publish idempotently.
-func AddCommit(repoPath, message string, paths ...string) (bool, error) {
-	args := append([]string{"add", "--all", "--"}, paths...)
-	if _, err := run(repoPath, "git", args...); err != nil {
-		return false, err
-	}
-	_, err := run(repoPath, "git", "diff", "--cached", "--quiet")
-	if err == nil {
-		return false, nil
-	}
-	switch exitCode(err) {
-	case 1:
-		// staged changes exist
-	default:
-		return false, fmt.Errorf("inspect staged changes: %w", err)
-	}
-	if _, err := run(repoPath, "git", "commit", "--quiet", "-m", message); err != nil {
-		return false, err
-	}
-	return true, nil
 }
 
 // HasUpstream reports whether the checked-out branch has a resolvable
