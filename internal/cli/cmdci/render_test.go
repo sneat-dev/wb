@@ -19,7 +19,7 @@ import (
 // refused before any git subprocess runs.
 func TestValidateCIWaitInputsRejectsBadRepository(t *testing.T) {
 	t.Parallel()
-	err := validateCIWaitInputs("not-a-repo-shape", "", "main", strings.Repeat("a", 40), time.Minute, time.Second, func(string) error { return nil })
+	err := validateCIWaitInputs("not-a-repo-shape", "", "main", strings.Repeat("a", 40), time.Minute, time.Second, nil, nil, func(string) error { return nil })
 	if err == nil || !strings.Contains(err.Error(), "--repo must be owner/repository") {
 		t.Fatalf("error = %v; want a --repo shape refusal", err)
 	}
@@ -31,7 +31,7 @@ func TestValidateCIWaitInputsRejectsBadRepository(t *testing.T) {
 func TestValidateCIWaitInputsRejectsBlankTarget(t *testing.T) {
 	t.Parallel()
 	for _, target := range []string{"", "  main", "main  "} {
-		err := validateCIWaitInputs("acme/app", "", target, strings.Repeat("a", 40), time.Minute, time.Second, func(string) error { return nil })
+		err := validateCIWaitInputs("acme/app", "", target, strings.Repeat("a", 40), time.Minute, time.Second, nil, nil, func(string) error { return nil })
 		if err == nil || !strings.Contains(err.Error(), "--target is required") {
 			t.Fatalf("target=%q error = %v; want a --target refusal", target, err)
 		}
@@ -198,6 +198,38 @@ func TestPrintCIAuditRendersEveryBranch(t *testing.T) {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output = %q; want it to contain %q", output, want)
 		}
+	}
+}
+
+func TestPrintCIWaitReportsTheFilterAndAFailedFilterWrite(t *testing.T) {
+	t.Parallel()
+	for _, filter := range []githubchecks.CheckWaitFilter{
+		{Workflows: []string{"Go CI"}, Checks: []string{"build*"}, MatchedChecks: 1, RequiredChecks: 1},
+		{Workflows: []string{"Release"}},
+		{Checks: []string{"deploy"}},
+		{MatchedChecks: 0},
+	} {
+		command := &cobra.Command{}
+		var output bytes.Buffer
+		command.SetOut(&output)
+		err := printCIWait(command, WaitOutput{PullRequestWaitResult: githubchecks.PullRequestWaitResult{
+			Status: githubchecks.PullRequestWaitPending, Repository: "acme/app", Target: "main", Head: testHead, Reason: "filtered", Filter: &filter,
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(output.String(), "filter:") || !strings.Contains(output.String(), "matched") {
+			t.Fatalf("filter line missing from %q", output.String())
+		}
+	}
+	command := &cobra.Command{}
+	command.SetOut(&failAfterNWriter{failAt: 2})
+	err := printCIWait(command, WaitOutput{PullRequestWaitResult: githubchecks.PullRequestWaitResult{
+		Status: githubchecks.PullRequestWaitPending, Repository: "acme/app", Target: "main", Head: testHead, Reason: "filtered",
+		Filter: &githubchecks.CheckWaitFilter{Workflows: []string{"Go CI"}},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "write refused") {
+		t.Fatalf("filter write error = %v", err)
 	}
 }
 
