@@ -24,6 +24,7 @@ var flatCanonicalJoinAllowlist = map[string]string{
 	"internal/streams/paths.go|filepath.FromSlash(repository)":                                    "documented fallback for a bare name or an unresolvable/ambiguous coordinate; the resolver is tried first",
 	"internal/worktrees/lifecycle.go|filepath.FromSlash(slug)":                                    "diagnostic-only fallback after CanonicalRepositoryPath already rejected a malformed slug",
 	"internal/worktrees/orphans_residue.go|filepath.Join(projectsRoot, repository)":               "diagnostic-only fallback after CanonicalRepositoryPath already rejected a malformed coordinate",
+	"internal/wbhome/wbhome.go|filepath.Join(root, \".wb\", RemoteStoreDirName, owner, name)":     "not a canonical clone: the remote store's private clone inside <root>/.wb, deliberately outside the {host}/{owner}/{repository} layout (sneat-dev/wb#901)",
 	"internal/layout/layout.go|isCanonicalGitDir(filepath.Join(root, address.Org, address.Repo))": "deliberate legacy-existence probe: the caller has already established that the address carries no host level",
 }
 

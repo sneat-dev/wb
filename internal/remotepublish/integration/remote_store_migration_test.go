@@ -93,3 +93,63 @@ func scanned(repos []discover.Repo, path string) bool {
 	}
 	return false
 }
+
+// A store reader built before the migration — the daemon builds its cockpit
+// fleet reader once at start-up — still sees the machines after the daemon's
+// own publish (or any CLI operation) moved the clone into .wb.
+//
+//nolint:paralleltest // newRemoteFixture sets process-wide environment.
+func TestActiveStoreReaderKeepsReadingAcrossTheMigration(t *testing.T) {
+	f := newRemoteFixture(t, "mac")
+	cfg := remotestate.Config{Provider: "git", Repo: "team/wb-state", Machine: "mac"}
+	legacy := filepath.Join(f.projectsRoot, "team", "wb-state")
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	remoteGit(t, filepath.Dir(legacy), "clone", "-q", f.origin, legacy)
+	remoteGit(t, legacy, "remote", "set-url", "origin", remotepublish.CloneURL(cfg))
+	remoteGit(t, legacy, "config", "url."+f.origin+".insteadOf", remotepublish.CloneURL(cfg))
+	snapshot := filepath.Join(legacy, filepath.FromSlash(gitrepo.SnapshotPath("bob", "desk")))
+	data, err := remotestate.Encode(remotestate.Snapshot{SchemaVersion: remotestate.SchemaVersion, Login: "bob", Machine: "desk", PublishedAt: time.Date(2026, 10, 24, 8, 0, 0, 0, time.UTC), WBVersion: "v0.1.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(snapshot), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(snapshot, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	remoteGit(t, legacy, "add", "machines")
+	remoteGit(t, legacy, "commit", "-q", "-m", "wb: publish bob/desk")
+
+	reader := remotepublish.ActiveStoreReader{ProjectsRoot: f.projectsRoot, Config: cfg}
+	if entries, err := reader.ReadLocal(context.Background()); err != nil || len(entries) != 1 {
+		t.Fatalf("before migration: ReadLocal = (%d entries, %v), want bob/desk", len(entries), err)
+	}
+	provider, err := remotepublish.Open(cfg, f.projectsRoot, testExitFactory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mine := remotestate.Snapshot{SchemaVersion: remotestate.SchemaVersion, Login: "me", Machine: "mac", PublishedAt: time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC), WBVersion: "v0.1.0"}
+	if _, err := provider.Publish(context.Background(), mine); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(legacy); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("fixture: the publish did not migrate the legacy clone: %v", err)
+	}
+	entries, err := reader.ReadLocal(context.Background())
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("after migration: ReadLocal = (%v, %v), want bob/desk and me/mac", entries, err)
+	}
+}
+
+// A reader whose projects root cannot be resolved reports it instead of
+// claiming an empty fleet.
+func TestActiveStoreReaderReportsAnUnresolvableStore(t *testing.T) {
+	t.Parallel()
+	reader := remotepublish.ActiveStoreReader{Config: remotestate.Config{Provider: "git", Repo: "team/wb-state"}}
+	if _, err := reader.ReadLocal(context.Background()); err == nil {
+		t.Fatal("ReadLocal with no projects root succeeded")
+	}
+}

@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/repopath"
 )
 
 // migrationFixture is a projects root with the remote store's new home inside
@@ -88,7 +90,7 @@ func TestFreshRemoteStoreClonesIntoTheStateDirectory(t *testing.T) {
 	if _, err := f.provider().Claims(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if !isCloneDir(f.store) {
+	if !repopath.IsClone(f.store) {
 		t.Fatalf("no clone at %s", f.store)
 	}
 	for _, legacy := range []string{f.hostDir, f.legacy} {
@@ -146,12 +148,15 @@ func TestLegacyRemoteStoreCloneMovesIntoTheStateDirectoryKeepingUnpushedWork(t *
 	}
 }
 
-// A hooksPath that does not point into the legacy clone is the operator's own
-// setting, and the move keeps it.
+// A hooksPath that does not point into the legacy clone and still exists is
+// the operator's own setting, and the move keeps it.
 func TestMovedRemoteStoreKeepsAHooksPathOutsideTheLegacyClone(t *testing.T) {
 	f := newMigrationFixture(t)
 	dqCovPreClone(t, f.origin, f.legacy)
 	own := filepath.Join(f.root, "my-hooks")
+	if err := os.MkdirAll(own, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	gitIn(t, f.legacy, "config", "core.hooksPath", own)
 	if _, err := f.provider().Claims(context.Background()); err != nil {
 		t.Fatal(err)
@@ -202,7 +207,7 @@ func TestMigrationLeavesAnUnrelatedCloneAtTheLegacyPathAlone(t *testing.T) {
 	if _, err := f.provider().Claims(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if !isCloneDir(f.legacy) || !isCloneDir(f.store) {
+	if !repopath.IsClone(f.legacy) || !repopath.IsClone(f.store) {
 		t.Fatalf("want the unrelated clone kept and the store cloned fresh")
 	}
 	if notices := f.notices.all(); len(notices) != 0 {
@@ -222,7 +227,7 @@ func TestLegacyCloneWithLinkedWorktreesIsCopiedAndLeftInPlace(t *testing.T) {
 	if _, err := p.Publish(context.Background(), snap("alice", "laptop", time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC))); err != nil {
 		t.Fatal(err)
 	}
-	if !isCloneDir(f.legacy) {
+	if !repopath.IsClone(f.legacy) {
 		t.Fatal("legacy clone with linked worktrees was not left in place")
 	}
 	if got := gitIn(t, f.store, "config", "--get", "remote.origin.url"); got != f.origin {
@@ -248,7 +253,7 @@ func TestUnmovableUncopyableLegacyCloneFallsBackToAFreshClone(t *testing.T) {
 	if _, err := p.Claims(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if !isCloneDir(f.store) || !isCloneDir(f.legacy) {
+	if !repopath.IsClone(f.store) || !repopath.IsClone(f.legacy) {
 		t.Fatal("want a fresh store clone and the legacy clone left in place")
 	}
 	notices := f.notices.all()
@@ -258,16 +263,42 @@ func TestUnmovableUncopyableLegacyCloneFallsBackToAFreshClone(t *testing.T) {
 }
 
 // A copy that cannot be pointed at the configured origin fails the operation
-// rather than leaving a store that tracks the legacy clone.
-func TestCopiedCloneThatCannotTrackTheOriginFails(t *testing.T) {
+// and is removed, so the next run retries instead of finding a store clone
+// that tracks the legacy path and refusing it forever.
+func TestCopiedCloneThatCannotTrackTheOriginIsRemovedAndRetried(t *testing.T) {
 	f := newMigrationFixture(t)
 	dqCovPreClone(t, f.origin, f.legacy)
 	p := f.provider()
 	p.rename = func(string, string) error { return errors.New("cross-device link") }
-	p.clone = func(string, string) error { return nil } // reports success, creates nothing
+	// A "copy" git cannot even run in (a file, not a directory), so set-url
+	// fails without git searching upward into any enclosing repository.
+	p.clone = func(_, dest string) error { return os.WriteFile(dest, nil, 0o600) }
 	_, err := p.Claims(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "point the copied remote store clone") {
 		t.Fatalf("Claims = %v, want the set-url failure", err)
+	}
+	if _, statErr := os.Stat(f.store); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("half-made copy left at %s: %v", f.store, statErr)
+	}
+	if _, err := f.provider().Claims(context.Background()); err != nil {
+		t.Fatalf("retry after the failed copy = %v, want the migration to succeed", err)
+	}
+	if !repopath.IsClone(f.store) || repopath.IsClone(f.legacy) {
+		t.Fatal("retry did not move the legacy clone into the store")
+	}
+}
+
+// A hooksPath naming a directory that no longer exists (spelled through a
+// symlink or another case, so the lexical legacy check misses it) is dropped.
+func TestMovedRemoteStoreDropsAHooksPathToAMissingDirectory(t *testing.T) {
+	f := newMigrationFixture(t)
+	dqCovPreClone(t, f.origin, f.legacy)
+	gitIn(t, f.legacy, "config", "core.hooksPath", filepath.Join(f.root, "gone", "wb-hooks"))
+	if _, err := f.provider().Claims(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", f.store, "config", "--get", "core.hooksPath").Output(); err == nil {
+		t.Fatalf("core.hooksPath still set to %q", out)
 	}
 }
 
@@ -283,7 +314,7 @@ func TestMigrationFailsWhenTheLegacyCloneLockCannotBeTaken(t *testing.T) {
 	if _, err := f.provider().Claims(context.Background()); err == nil || !strings.Contains(err.Error(), "open wb-state clone lock") {
 		t.Fatalf("Claims = %v, want the legacy lock failure", err)
 	}
-	if !isCloneDir(f.legacy) {
+	if !repopath.IsClone(f.legacy) {
 		t.Fatal("legacy clone moved without its lock")
 	}
 }

@@ -60,7 +60,9 @@ has the store cloned at an earlier release's `<projects-root>/<owner>/<name>`
 its next `wb remote` operation, unpushed claim commits included, and WB prints
 one line saying so. If the clone cannot be moved (it has linked worktrees),
 WB copies it instead, leaves the old clone untouched, and the notice says how
-to retire it once `git -C <old-path> status` shows nothing you need.
+to retire it once `git -C <old-path> status` shows nothing you need. An older
+wb binary still installed on the machine clones the store at the old path
+again, so upgrade every wb on the machine.
 
 ## Task claims
 

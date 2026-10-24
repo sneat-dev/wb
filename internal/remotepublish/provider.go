@@ -1,9 +1,9 @@
 package remotepublish
 
 import (
+	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/remotestate/gitrepo"
@@ -56,11 +56,11 @@ func ActiveClonePath(projectsRoot string, cfg remotestate.Config) (string, error
 		return "", err
 	}
 	legacy, _ := LegacyClonePaths(projectsRoot, cfg)
-	if isClone(clonePath) {
+	if repopath.IsClone(clonePath) {
 		return clonePath, nil
 	}
 	for _, path := range legacy {
-		if isClone(path) {
+		if repopath.IsClone(path) {
 			return path, nil
 		}
 	}
@@ -94,11 +94,6 @@ func storeRoot(projectsRoot string, cfg remotestate.Config) (string, error) {
 	return root, nil
 }
 
-func isClone(path string) bool {
-	info, err := os.Stat(filepath.Join(path, ".git"))
-	return err == nil && info.IsDir()
-}
-
 // openRemote selects the provider named by cfg. It lives here rather than in
 // remotestate to keep the provider packages free of an import cycle.
 func Open(cfg remotestate.Config, projectsRoot string, exitFactory func(int, string) error) (remotestate.Provider, error) {
@@ -129,4 +124,25 @@ func Load(configPath, projectsRoot string, open func(remotestate.Config, string)
 	}
 	provider, err := open(cfg, projectsRoot)
 	return cfg, provider, err
+}
+
+// ActiveStoreReader reads other machines' snapshots from whichever local
+// clone is the store at the moment of each read. A long-lived reader (the
+// daemon's cockpit fleet view) must not pin the path it saw at start-up: on a
+// machine not yet migrated that is the legacy clone, which the first remote
+// operation — the daemon's own publisher included — moves into .wb
+// (sneat-dev/wb#901), after which a pinned reader would silently see nothing.
+type ActiveStoreReader struct {
+	ProjectsRoot string
+	Config       remotestate.Config
+}
+
+// ReadLocal resolves the active clone and reads it without any network,
+// lock or write (see gitrepo.Provider.ReadLocal).
+func (r ActiveStoreReader) ReadLocal(ctx context.Context) ([]remotestate.Entry, error) {
+	clonePath, err := ActiveClonePath(r.ProjectsRoot, r.Config)
+	if err != nil {
+		return nil, err
+	}
+	return gitrepo.New(gitrepo.Options{ClonePath: clonePath, CloneURL: CloneURL(r.Config)}).ReadLocal(ctx)
 }

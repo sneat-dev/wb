@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/sneat-dev/wb/internal/gitops"
+	"github.com/sneat-dev/wb/internal/repopath"
 )
 
 // migrateLegacyClone moves the remote store clone from a legacy location —
@@ -27,11 +28,11 @@ import (
 // untouched with a one-line notice: WB never deletes a directory that may hold
 // someone's work. If even the copy fails, ensureClone clones fresh.
 func (p *Provider) migrateLegacyClone() error {
-	if len(p.opts.LegacyClonePaths) == 0 || isCloneDir(p.opts.ClonePath) {
+	if len(p.opts.LegacyClonePaths) == 0 || repopath.IsClone(p.opts.ClonePath) {
 		return nil
 	}
 	for _, legacy := range p.opts.LegacyClonePaths {
-		if !isCloneDir(legacy) {
+		if !repopath.IsClone(legacy) {
 			continue
 		}
 		if origin, err := gitops.ConfiguredOriginURL(legacy); err != nil || !sameRemote(origin, p.opts.CloneURL) {
@@ -68,30 +69,34 @@ func (p *Provider) moveLegacyClone(legacy string) error {
 		return nil
 	}
 	if _, err := gitops.GitConfig(p.opts.ClonePath, "remote.origin.url", p.opts.CloneURL); err != nil {
+		// A copy still tracking the legacy path would be refused by every later
+		// ensureClone. Remove it — it holds nothing the legacy clone lacks — so
+		// the next run retries the migration from scratch.
+		_ = os.RemoveAll(p.opts.ClonePath)
 		return fmt.Errorf("point the copied remote store clone at %s: %w", p.opts.CloneURL, err)
 	}
-	p.opts.Notify(fmt.Sprintf("wb: copied the remote store clone from %s to %s; %s was left in place because %s and is no longer used: retire it once `git -C %s status` shows nothing you need (sneat-dev/wb#901)", legacy, p.opts.ClonePath, legacy, reason, legacy))
+	p.opts.Notify(fmt.Sprintf("wb: copied the remote store clone from %s to %s; %s was left in place because %s and is no longer used: retire it once `git -C %s status` shows nothing you need. Local-only git config there (user.*, url.*.insteadOf, credential helpers) was not copied (sneat-dev/wb#901)", legacy, p.opts.ClonePath, legacy, reason, legacy))
 	return nil
 }
 
 // afterMove drops what only made sense at the canonical-clone location: the
 // generated .worktree.md (it calls the checkout a canonical clone at the old
-// path), and a core.hooksPath pointing into the old path — the fleet's managed
-// hooks, which wb hooks install put there only because the clone looked like a
-// canonical clone, and which would now name a directory that no longer exists.
+// path), and a core.hooksPath that points into the old path or at a directory
+// that no longer exists — the fleet's managed hooks, which wb hooks install
+// put there only because the clone looked like a canonical clone. A
+// hooksPath spelled through an unresolved symlink or in another case still
+// fails the lexical check, so a missing directory is dropped as well.
 // Both are best effort: neither affects what the store holds.
 func (p *Provider) afterMove(legacy string) {
 	_ = os.Remove(filepath.Join(p.opts.ClonePath, ".worktree.md"))
 	hooks, err := gitops.GitConfig(p.opts.ClonePath, "--get", "core.hooksPath")
-	if err == nil && withinPath(hooks, legacy) {
+	if err == nil && (withinPath(hooks, legacy) || !dirExists(hooks)) {
 		_, _ = gitops.GitConfig(p.opts.ClonePath, "--unset", "core.hooksPath")
 	}
 }
 
-// isCloneDir reports whether path holds an ordinary clone (a .git directory,
-// not a linked worktree's .git file).
-func isCloneDir(path string) bool {
-	info, err := os.Stat(filepath.Join(path, ".git"))
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
 }
 

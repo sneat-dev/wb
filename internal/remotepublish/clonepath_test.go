@@ -117,3 +117,40 @@ func TestRemoteStorePathsRejectInvalidInputs(t *testing.T) {
 		}
 	}
 }
+
+// The reader resolves the active clone on every call: built while only the
+// legacy clone exists, it reads the .wb clone once that appears, and it
+// reports an unresolvable store rather than an empty fleet.
+func TestActiveStoreReaderFollowsTheCloneOnEveryRead(t *testing.T) {
+	t.Parallel()
+	root := resolvedRoot(t)
+	cfg := remotestate.Config{Provider: "git", Repo: "team/wb-state"}
+	plant := func(clone, login string) {
+		t.Helper()
+		makeClone(t, clone)
+		config := "[remote \"origin\"]\n\turl = " + CloneURL(cfg) + "\n"
+		if err := os.WriteFile(filepath.Join(clone, ".git", "config"), []byte(config), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		snapshot := filepath.Join(clone, "machines", login, "box", "snapshot.yaml")
+		if err := os.MkdirAll(filepath.Dir(snapshot), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(snapshot, []byte("schema_version: 1\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reader := ActiveStoreReader{ProjectsRoot: root, Config: cfg}
+	plant(filepath.Join(root, "team", "wb-state"), "legacy")
+	if entries, err := reader.ReadLocal(t.Context()); err != nil || len(entries) != 1 || entries[0].Snapshot.Login != "legacy" {
+		t.Fatalf("before migration: ReadLocal = (%+v, %v), want the legacy clone's machine", entries, err)
+	}
+	plant(filepath.Join(root, ".wb", "remote-store", "team", "wb-state"), "migrated")
+	entries, err := reader.ReadLocal(t.Context())
+	if err != nil || len(entries) != 1 || entries[0].Snapshot.Login != "migrated" {
+		t.Fatalf("ReadLocal = (%+v, %v), want the migrated clone's machine", entries, err)
+	}
+	if _, err := (ActiveStoreReader{Config: cfg}).ReadLocal(t.Context()); err == nil {
+		t.Fatal("ReadLocal with no projects root succeeded")
+	}
+}

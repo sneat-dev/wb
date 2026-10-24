@@ -309,7 +309,7 @@ func claimOwner(projectsRoot, task string) string {
 // clone has not been migrated there yet — the legacy canonical-clone path.
 func stateClonePath(projectsRoot, owner, name string) string {
 	clone := wbhome.RemoteStoreClonePath(projectsRoot, owner, name)
-	if info, err := os.Stat(filepath.Join(clone, ".git")); err == nil && info.IsDir() {
+	if repopath.IsClone(clone) {
 		return clone
 	}
 	return canonicalClonePath(projectsRoot, owner, name)
