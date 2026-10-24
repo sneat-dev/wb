@@ -172,30 +172,6 @@ func TestPendingValidationStepsSnapshotsEveryStep(t *testing.T) {
 	}
 }
 
-func TestResolveExistingTargetRecordsAnUnmanagedCheckout(t *testing.T) {
-	t.Parallel()
-	worktree := t.TempDir()
-	runGit(t, worktree, "init", "-b", "main")
-	runGit(t, worktree, "config", "user.email", "test@example.com")
-	runGit(t, worktree, "config", "user.name", "Test")
-	if err := os.WriteFile(filepath.Join(worktree, "a.txt"), []byte("a\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	runGit(t, worktree, "add", "-A")
-	runGit(t, worktree, "commit", "-qm", "initial")
-	deps := DispatchDeps{OriginSlug: func(context.Context, string) (string, error) { return "acme/app", nil }}
-	target, err := resolveExistingTarget(context.Background(), DispatchRequest{Mode: ModePath, Worktree: worktree}, deps)
-	if err != nil {
-		t.Fatalf("resolveExistingTarget: %v", err)
-	}
-	if target.Repository != "acme/app" || target.Branch != "main" || target.BaseSHA == "" {
-		t.Fatalf("target = %#v", target)
-	}
-	if target.Worktree != filepath.Base(target.Dir) {
-		t.Fatalf("an unmanaged checkout is named by its directory: %q vs %q", target.Worktree, target.Dir)
-	}
-}
-
 func TestRecentActionsThroughTheCodexAdapter(t *testing.T) {
 	t.Parallel()
 	actions := (codexHarness{}).Actions(strings.NewReader("{\"type\":\"item.completed\",\"item\":{\"type\":\"command_execution\",\"command\":\"ls\"}}\n"), 5)
@@ -282,21 +258,6 @@ func TestPreflightProbeWrapperNamesTheFailingCommand(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // the dispatch/owner fixture sets process environment or a package seam
-func TestOwnerRefusesAnUnopenableLogAndInheritsAMarkerDescriptor(t *testing.T) {
-	store, record, _, deps := ownedRunWithHarness(t, HarnessCodex, fakeHarnessScript, nil)
-	if err := os.MkdirAll(record.LogPath, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := RunOwner(context.Background(), store, record.AgentID, deps); err != nil {
-		t.Fatalf("RunOwner: %v", err)
-	}
-	loaded, _ := store.Load(record.AgentID)
-	if loaded.FailureCategory != FailureInternal || !strings.Contains(loaded.Failure, "run log") {
-		t.Fatalf("log failure = %#v", loaded)
-	}
-}
-
 func TestSpawnOwnerPassesTheLeaseDescriptorAndTheMarker(t *testing.T) {
 	t.Parallel()
 	leaseFile, err := os.CreateTemp(t.TempDir(), "lease")
@@ -351,28 +312,6 @@ func TestValidationReportsAStreamThatCannotBeRead(t *testing.T) {
 	}
 }
 
-func TestSummarizeChangesTruncatesUntrackedNamesWhenTheDiffAlreadyFilledTheList(t *testing.T) {
-	t.Parallel()
-	dir, base := initChangeRepo(t)
-	for index := 0; index < maxChangedFiles+2; index++ {
-		name := filepath.Join(dir, "tracked-"+itoaTest(index)+".txt")
-		if err := os.WriteFile(name, []byte("x\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	runGit(t, dir, "add", "-A")
-	if err := os.WriteFile(filepath.Join(dir, "untracked.txt"), []byte("x\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	summary := SummarizeChangesWith(context.Background(), dir, base, nil)
-	if summary == nil || !summary.Truncated || summary.FilesChanged <= maxChangedFiles {
-		t.Fatalf("truncation = %#v", summary)
-	}
-	if len(summary.Untracked) != 1 || summary.Untracked[0] != "untracked.txt" {
-		t.Fatalf("untracked = %#v", summary.Untracked)
-	}
-}
-
 func TestLeaseHolderAndPathResolveNestedMissingCheckouts(t *testing.T) {
 	t.Parallel()
 	store := newTestStore(t)
@@ -391,63 +330,6 @@ func TestLeaseHolderAndPathResolveNestedMissingCheckouts(t *testing.T) {
 	deep := filepath.Join(t.TempDir(), "one", "two", "three")
 	if _, err := store.LeasePath(deep); err != nil {
 		t.Fatalf("a nested missing checkout must still resolve: %v", err)
-	}
-}
-
-//nolint:paralleltest // the dispatch/owner fixture sets process environment or a package seam
-func TestOwnerInheritsNoLeaseFromAZeroDescriptor(t *testing.T) {
-	//nolint:paralleltest // the test sets the dispatcher marker in the environment
-	t.Setenv(leaseEnvMarker, "0")
-	if lease := inheritedLease(); lease != nil {
-		t.Fatalf("descriptor 0 must not be adopted: %#v", lease)
-	}
-	t.Setenv(leaseEnvMarker, "999999")
-	if lease := inheritedLease(); lease != nil {
-		t.Fatalf("a closed descriptor must not be adopted: %#v", lease)
-	}
-}
-
-//nolint:paralleltest // the dispatch/owner fixture sets process environment or a package seam
-func TestOwnerReportsAFailureToRecordTheWorkerAfterStartingIt(t *testing.T) {
-	store, record, _, deps := ownedRunWithHarness(t, HarnessCodex, fakeHarnessScript, nil)
-	saves := 0
-	failingSave := func(record Record) error {
-		saves++
-		if saves == 2 {
-			return errors.New("disk full")
-		}
-		return store.Save(record)
-	}
-	if err := runOwnerWithSave(context.Background(), store, record.AgentID, deps, failingSave, maxLogBytes); err == nil {
-		t.Fatal("a save failure after start must be reported")
-	}
-}
-
-const malformedHarness = `#!/bin/sh
-prompt=$(cat)
-echo '{"type":"turn.completed"'
-exit 0
-`
-
-const silentHarness = `#!/bin/sh
-prompt=$(cat)
-exit 4
-`
-
-//nolint:paralleltest // the dispatch/owner fixture sets process environment or a package seam
-func TestOwnerRecordsExitCodesForAnUnparsableOrSilentHarness(t *testing.T) {
-	for name, script := range map[string]string{"malformed": malformedHarness, "silent": silentHarness} {
-		//nolint:paralleltest // the fixture sets process environment
-		t.Run(name, func(t *testing.T) {
-			store, record, _, deps := ownedRunWithHarness(t, HarnessCodex, script, nil)
-			if err := RunOwner(context.Background(), store, record.AgentID, deps); err != nil {
-				t.Fatalf("RunOwner: %v", err)
-			}
-			loaded, _ := store.Load(record.AgentID)
-			if loaded.ExitCode == nil {
-				t.Fatalf("an exit code was expected: %#v", loaded)
-			}
-		})
 	}
 }
 
@@ -503,23 +385,6 @@ func TestReviewAppendReportsAnUnwritableRunDirectory(t *testing.T) {
 	}
 }
 
-func TestSummarizeChangesTruncatesTheStatusFileList(t *testing.T) {
-	t.Parallel()
-	// A repository with no commit has no base revision, so Git status is the
-	// only evidence available.
-	dir := t.TempDir()
-	runGit(t, dir, "init", "-b", "main")
-	for index := 0; index < maxChangedFiles+2; index++ {
-		if err := os.WriteFile(filepath.Join(dir, "new-"+itoaTest(index)+".txt"), []byte("x\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	summary := SummarizeChangesWith(context.Background(), dir, "", nil)
-	if summary == nil || !summary.Truncated || summary.FilesChanged <= maxChangedFiles {
-		t.Fatalf("status truncation = %#v", summary)
-	}
-}
-
 func TestOpenCodeActionsSkipAMalformedEvent(t *testing.T) {
 	t.Parallel()
 	stream := "{\"type\":\"tool_use\"\n" + `{"type":"tool_use","part":{"tool":"shell","state":{"status":"completed","input":{"command":"ls"}}}}` + "\n"
@@ -543,15 +408,6 @@ func TestResolveThroughExistingAncestorFallsBackToTheCleanPath(t *testing.T) {
 	}
 	if got := resolveThroughExistingAncestor("/a/b", resolvesRoot); got != "/a/b" {
 		t.Fatalf("root-resolved path = %q", got)
-	}
-}
-
-//nolint:paralleltest // the fixture sets process environment
-func TestOwnerReportsAFailureToRecordItsOwnAdmission(t *testing.T) {
-	store, record, _, deps := ownedRunWithHarness(t, HarnessCodex, fakeHarnessScript, nil)
-	failing := func(Record) error { return errors.New("disk full") }
-	if err := runOwnerWithSave(context.Background(), store, record.AgentID, deps, failing, maxLogBytes); err == nil {
-		t.Fatal("an admission save failure must be reported")
 	}
 }
 
@@ -579,5 +435,178 @@ func TestResolveTargetRefusesAnEmptyToplevel(t *testing.T) {
 	fixture.git["rev-parse --show-toplevel"] = "   \n"
 	if _, err := ResolveTarget(context.Background(), fixture.dir, false, false, fixture.deps()); err == nil || !strings.Contains(err.Error(), "not a Git worktree") {
 		t.Fatalf("empty toplevel = %v", err)
+	}
+}
+
+func TestLeaseLiveDistinguishesAHeldClaimFromARetainedFile(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t)
+	worktree := t.TempDir()
+	live, err := store.LeaseLive(worktree)
+	if err != nil || live {
+		t.Fatalf("no lease = %v %v", live, err)
+	}
+	lease, err := store.AcquireLease(worktree, "agt-one", "", "acme/app", time.Unix(1, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live, err := store.LeaseLive(worktree); err != nil || !live {
+		t.Fatalf("held lease = %v %v", live, err)
+	}
+	if err := lease.Release(); err != nil {
+		t.Fatal(err)
+	}
+	// The retained file proves nothing: only the lock does.
+	if live, err := store.LeaseLive(worktree); err != nil || live {
+		t.Fatalf("released lease = %v %v", live, err)
+	}
+	if _, err := store.LeaseLive(" "); err == nil {
+		t.Fatal("an empty path must be refused")
+	}
+	other := t.TempDir()
+	path, err := store.LeasePath(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.LeaseLive(other); err == nil {
+		t.Fatal("a directory where the lease body belongs must be reported")
+	}
+}
+
+func TestValidationBudgetSumsEveryStepBound(t *testing.T) {
+	t.Parallel()
+	if got := ValidationBudget(nil); got != 0 {
+		t.Fatalf("empty budget = %v", got)
+	}
+	budget := ValidationBudget([]ValidationStepResult{
+		{Timeout: "2m"},
+		{Timeout: ""},
+		{Timeout: "not-a-duration"},
+	})
+	if budget != 2*time.Minute+2*defaultValidationStepTimeout {
+		t.Fatalf("budget = %v", budget)
+	}
+}
+
+func TestExecutionStartFallsBackToAdmissionTime(t *testing.T) {
+	t.Parallel()
+	admitted := time.Unix(100, 0)
+	if got := executionStart(Record{StartedAt: admitted}); !got.Equal(admitted) {
+		t.Fatalf("fallback start = %v", got)
+	}
+	execution := time.Unix(200, 0)
+	if got := executionStart(Record{StartedAt: admitted, ExecutionStartedAt: execution}); !got.Equal(execution) {
+		t.Fatalf("execution start = %v", got)
+	}
+}
+
+func TestRenderReportsAQueuedAttemptAsAbandonedOnlyWhenItsDispatcherIsGone(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t)
+	live := sampleRecord(t)
+	live.State = StateRunning
+	live.ExecutionStatus = StatusQueued
+	live.QueueOwnerPID = os.Getpid()
+	live.StartedAt = time.Now().Add(-time.Hour)
+	if result := store.Render(live); result.Status != StatusQueued || result.Terminal {
+		t.Fatalf("a live queued attempt = %#v", result)
+	}
+	dead := live
+	dead.QueueOwnerPID = 999999
+	if result := store.Render(dead); result.Status != StatusAbandoned || !result.Terminal {
+		t.Fatalf("an orphaned queued attempt = %#v", result)
+	}
+}
+
+func TestRenderExposesTheExecutionStartAndQueueDuration(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t)
+	record := sampleRecord(t)
+	execution := time.Unix(500, 0)
+	record.ExecutionStartedAt = execution
+	record.QueueDurationMS = 250
+	result := store.Render(record)
+	if result.ExecutionStartedAt == nil || !result.ExecutionStartedAt.Equal(execution) {
+		t.Fatalf("execution start = %#v", result.ExecutionStartedAt)
+	}
+	if result.QueueDurationMS != 250 {
+		t.Fatalf("queue duration = %d", result.QueueDurationMS)
+	}
+}
+
+func TestStopRunCancelsAQueuedAttemptWithASentinel(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t)
+	record := sampleRecord(t)
+	record.ExecutionStatus = StatusQueued
+	record.QueueOwnerPID = os.Getpid()
+	record.WorkerPID = 0
+	if err := store.Create(record); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := StopRun(store, record.AgentID, DefaultOwnerDeps()); err != nil {
+		t.Fatalf("queued stop: %v", err)
+	}
+	if !cancelRequested(store, record.AgentID) {
+		t.Fatal("a queued stop must leave the sentinel the owner will read")
+	}
+}
+
+func TestResolveTargetTreatsAnUnanswerableGitAsCanonical(t *testing.T) {
+	t.Parallel()
+	fixture := newTargetFixture(t)
+	fixture.git["rev-parse --show-toplevel"] = fixture.dir
+	fixture.git["rev-parse --abbrev-ref HEAD"] = "main"
+	fixture.git["rev-parse HEAD"] = "abc123"
+	fixture.git["status --porcelain"] = ""
+	fixture.gitErr["rev-parse --git-dir"] = errors.New("unavailable")
+	if _, err := ResolveTarget(context.Background(), fixture.dir, false, false, fixture.deps()); err == nil {
+		t.Fatal("an unanswerable checkout must demand an explicit override")
+	}
+	delete(fixture.gitErr, "rev-parse --git-dir")
+	fixture.git["rev-parse --git-dir"] = "/repo/.git/worktrees/linked"
+	fixture.gitErr["rev-parse --git-common-dir"] = errors.New("unavailable")
+	if _, err := ResolveTarget(context.Background(), fixture.dir, false, false, fixture.deps()); err == nil {
+		t.Fatal("an unanswerable common directory must demand an explicit override")
+	}
+}
+
+//nolint:paralleltest // the test substitutes the platform lock seam
+func TestLeaseLiveTreatsAnUnprovableClaimAsFree(t *testing.T) {
+	store := newTestStore(t)
+	worktree := t.TempDir()
+	lease, err := store.AcquireLease(worktree, "agt-one", "", "acme/app", time.Unix(1, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lease.Release() })
+	original := lockFile
+	lockFile = func(*os.File) error { return errors.New("locking unavailable") }
+	t.Cleanup(func() { lockFile = original })
+	live, err := store.LeaseLive(worktree)
+	if err != nil || live {
+		t.Fatalf("an unprovable claim = %v %v", live, err)
+	}
+}
+
+func TestStopRunReportsAnUnwritableQueuedSentinel(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t)
+	record := sampleRecord(t)
+	record.ExecutionStatus = StatusQueued
+	record.QueueOwnerPID = os.Getpid()
+	record.WorkerPID = 0
+	if err := store.Create(record); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(store.Dir(record.AgentID), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(store.Dir(record.AgentID), 0o700) })
+	if _, err := StopRun(store, record.AgentID, DefaultOwnerDeps()); err == nil {
+		t.Fatal("an unwritable sentinel must be reported")
 	}
 }

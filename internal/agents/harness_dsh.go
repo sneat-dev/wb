@@ -84,7 +84,7 @@ func (dshHarness) Prepare(launch Launch) (HarnessLaunch, error) {
 		"--patch", patchPath,
 		task,
 	}
-	return HarnessLaunch{Argv: argv, PrivateFiles: []string{patchPath}}, nil
+	return HarnessLaunch{Argv: argv, PrivateFiles: []string{patchPath}, SplitStderr: true}, nil
 }
 
 // dshTaskArgument returns the one argument the harness receives, refusing a task

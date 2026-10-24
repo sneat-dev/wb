@@ -415,7 +415,10 @@ aborts the experiment.
 
 #### REQ:compare-readback
 An experiment is durably described by `experiment.json` plus its member records
-and can be re-rendered after a restart, including partially completed ones.
+and can be re-rendered after a restart, including partially completed ones. The
+document is immutable from the moment it is written, before any execution
+exists, so the pinned base and each attempt's outcome are recorded on the member
+records and recovered from them when the experiment is read back.
 
 ### Skill
 

@@ -9,7 +9,7 @@ import "time"
 // worktree cannot be shared by construction, so those modes keep working
 // without a lease.
 func acquireLeaseForMode(store Store, request DispatchRequest, target worktreeResolution, now time.Time) (*Lease, error) {
-	if request.Mode == ModeCurrent || request.Mode == ModePath {
+	if request.Mode == ModeCurrent || request.Mode == ModePath || request.Mode == ModeExisting {
 		return nil, requestErrorf("this platform cannot take an exclusive lease on a shared checkout; use --worktree auto or --new-worktree, which give the run its own worktree")
 	}
 	return nil, nil

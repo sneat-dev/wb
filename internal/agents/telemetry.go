@@ -46,26 +46,22 @@ func (writer *redactingWriter) Write(data []byte) (int, error) {
 	}
 	buffer := append(writer.tail, data...)
 	writer.tail = nil
-	keep := len(writer.secret) - 1
-	if len(buffer) <= keep {
-		writer.tail = append(writer.tail, buffer...)
-		return len(data), nil
-	}
-	limit := len(buffer) - keep
-	// A match may start just before the boundary and continue into the held-back
-	// tail. Pull the boundary back to the start of any suffix of the emitted
-	// region that is a prefix of the secret.
-	for overlap := 1; overlap < len(writer.secret); overlap++ {
-		if limit-overlap <= 0 {
-			break
+	// Hold back the longest suffix that is a prefix of the secret: that is the
+	// only part that could still become a match once the next write arrives.
+	// Everything before it either contains complete matches (replaced) or no
+	// match at all, so no occurrence can straddle the boundary.
+	safe := len(buffer)
+	for overlap := len(writer.secret) - 1; overlap >= 1; overlap-- {
+		if overlap > len(buffer) {
+			continue
 		}
-		if bytes.HasPrefix(writer.secret, buffer[limit-overlap:limit]) {
-			limit -= overlap
+		if bytes.HasPrefix(writer.secret, buffer[len(buffer)-overlap:]) {
+			safe = len(buffer) - overlap
 			break
 		}
 	}
-	writer.tail = append(writer.tail, buffer[limit:]...)
-	return len(data), writer.emit(buffer[:limit])
+	writer.tail = append(writer.tail, buffer[safe:]...)
+	return len(data), writer.emit(buffer[:safe])
 }
 
 func (writer *redactingWriter) emit(data []byte) error {
@@ -128,9 +124,10 @@ func buildCost(harness string, summary HarnessSummary, now time.Time) CostRecord
 		return CostRecord{Kind: "api_equivalent", Source: CostUnavailable, Note: note}
 	}
 	value := *summary.CostUSD
+	estimatedAt := now.UTC()
 	return CostRecord{
 		USD: &value, Kind: "api_equivalent", Source: CostHarnessEstimated,
-		PricingVersion: harness + " price catalogue", EstimatedAt: now.UTC(),
+		PricingVersion: harness + " price catalogue", EstimatedAt: &estimatedAt,
 		Note: "estimated by the harness from its own price catalogue; not a billed amount",
 	}
 }

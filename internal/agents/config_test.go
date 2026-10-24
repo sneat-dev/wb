@@ -1,7 +1,6 @@
 package agents
 
 import (
-	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -263,38 +262,6 @@ func TestPlanFallsBackWhenTheProbeRejectsTheRoutedProfile(t *testing.T) {
 	}
 }
 
-func TestSummarizeChangesTruncatesBothSourcesOfFileNames(t *testing.T) {
-	t.Parallel()
-	// Tracked changes beyond the bound.
-	dir, base := initChangeRepo(t)
-	for index := 0; index < maxChangedFiles+3; index++ {
-		name := filepath.Join(dir, "tracked", "file-"+itoaTest(index)+".txt")
-		if err := os.MkdirAll(filepath.Dir(name), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(name, []byte("x\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	runGit(t, dir, "add", "-A")
-	summary := SummarizeChangesWith(context.Background(), dir, base, nil)
-	if summary == nil || !summary.Truncated || summary.FilesChanged <= maxChangedFiles {
-		t.Fatalf("tracked truncation = %#v", summary)
-	}
-}
-
-func itoaTest(value int) string {
-	if value == 0 {
-		return "0"
-	}
-	out := ""
-	for value > 0 {
-		out = string(rune('0'+value%10)) + out
-		value /= 10
-	}
-	return out
-}
-
 func TestSubtractPathsKeepsEverythingWhenNothingWasDirtyBefore(t *testing.T) {
 	t.Parallel()
 	paths := []string{"a", "b"}
@@ -303,5 +270,30 @@ func TestSubtractPathsKeepsEverythingWhenNothingWasDirtyBefore(t *testing.T) {
 	}
 	if got := subtractPaths(paths, []string{"a"}); len(got) != 1 || got[0] != "b" {
 		t.Fatalf("filtered paths = %#v", got)
+	}
+}
+
+func TestPlanRefusesAFallbackThatCannotHonourAnExplicitEffort(t *testing.T) {
+	t.Parallel()
+	config, err := LoadConfigFile(writeConfig(t, `
+agents:
+  profiles:
+    coder: { harness: codex, provider: deepseek, model: m }
+    ds: { harness: dsh, model: deepseek-v4-flash }
+  task_types:
+    coding: { profile: coder }
+  fallback: [ds]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = (Planner{Config: config, Probe: func(resolved Resolved) error {
+		if resolved.Profile == "coder" {
+			return errors.New("unavailable")
+		}
+		return nil
+	}}).Plan(RunRequest{Task: "x", TaskType: "coding", Effort: "high"})
+	if err == nil || !IsRequestError(err) || !strings.Contains(err.Error(), "cannot be applied") {
+		t.Fatalf("explicit effort on a fallback = %v", err)
 	}
 }

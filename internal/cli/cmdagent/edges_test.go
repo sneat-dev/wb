@@ -15,7 +15,7 @@ import (
 
 func timePtr(value time.Time) *time.Time { return &value }
 
-func TestStatusDocumentCoversEveryOptionalLine(t *testing.T) {
+func TestStatusDocumentReportsEveryObservedFact(t *testing.T) {
 	t.Parallel()
 	cost := 0.42
 	result := agents.Result{
@@ -88,7 +88,7 @@ func TestStatusRenderingReportsAWriteFailure(t *testing.T) {
 	}
 }
 
-func TestExperimentTableCoversEveryColumn(t *testing.T) {
+func TestExperimentTableReportsEachAttemptAndSummary(t *testing.T) {
 	t.Parallel()
 	mean := int64(1500)
 	report := agents.ExperimentReport{

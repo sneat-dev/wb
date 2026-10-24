@@ -116,6 +116,10 @@ type HarnessLaunch struct {
 	// PrivateFiles are paths the adapter wrote for this launch, recorded so a
 	// reader can find them; they live under the private run directory.
 	PrivateFiles []string
+	// SplitStderr keeps stderr out of the captured result stream. An adapter
+	// whose stdout *is* the final message needs it: merged diagnostics would
+	// become part of the answer.
+	SplitStderr bool
 }
 
 // Harness is one coding-agent adapter. Three implementations exist; adding a

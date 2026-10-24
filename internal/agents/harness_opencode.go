@@ -92,6 +92,7 @@ type openCodeSummary struct {
 	cacheRead   int
 	cacheWrite  int
 	steps       int
+	tokensSeen  bool
 	costTotal   float64
 	costSeen    bool
 }
@@ -101,7 +102,7 @@ func (openCodeHarness) Summarize(reader io.Reader) HarnessSummary {
 	result := summary.HarnessSummary
 	result.FinalMessage = summary.lastText
 	result.TurnCompleted = summary.sawEvidence && !result.TurnFailed
-	if summary.steps > 0 {
+	if summary.tokensSeen {
 		result.Tokens = &Tokens{
 			Input:      intPointer(summary.input),
 			Output:     intPointer(summary.output),
@@ -150,6 +151,7 @@ func summarizeOpenCode(reader io.Reader) openCodeSummary {
 					summary.costSeen = true
 				}
 				if tokens := event.Part.Tokens; tokens != nil {
+					summary.tokensSeen = true
 					summary.input += tokens.Input
 					summary.output += tokens.Output
 					summary.reasoning += tokens.Reasoning

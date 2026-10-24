@@ -114,8 +114,8 @@ func leasedWorktree(store agents.Store, record agents.Record) bool {
 	if strings.TrimSpace(record.WorktreeDir) == "" {
 		return false
 	}
-	_, held, err := store.LeaseHolder(record.WorktreeDir)
-	return err == nil && held
+	live, err := store.LeaseLive(record.WorktreeDir)
+	return err == nil && live
 }
 
 func defaultTaskType(config agents.Config) string {

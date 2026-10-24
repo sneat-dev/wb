@@ -289,6 +289,7 @@ func TestComparePropagatesAnAwaitFailure(t *testing.T) {
 	fixture.deps.StartRun = func(prepared *agents.PreparedRun, _ agents.DispatchDeps) (agents.Record, error) {
 		record := prepared.Record
 		record.OwnerPID = os.Getpid()
+		record.QueueOwnerPID = os.Getpid()
 		record.StartedAt = time.Now()
 		if err := agents.NewStore(fixture.home).Save(record); err != nil {
 			return record, err

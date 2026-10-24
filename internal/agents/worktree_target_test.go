@@ -138,20 +138,43 @@ func TestResolveTargetRefusesPathsThatAreNotGitWorktrees(t *testing.T) {
 	}
 }
 
-func TestResolveTargetToleratesAnUnmanagedCheckoutAndUnknownOrigin(t *testing.T) {
+func TestResolveTargetTreatsAMarkerlessMainCheckoutAsCanonical(t *testing.T) {
 	t.Parallel()
 	fixture := newTargetFixture(t)
 	fixture.git["rev-parse --show-toplevel"] = fixture.dir
 	fixture.git["rev-parse --abbrev-ref HEAD"] = "main"
 	fixture.git["rev-parse HEAD"] = "abc123"
 	fixture.git["status --porcelain"] = ""
+	fixture.git["rev-parse --git-dir"] = ".git"
+	fixture.git["rev-parse --git-common-dir"] = ".git"
 	fixture.slugErr = errors.New("no origin")
+	if _, err := ResolveTarget(context.Background(), fixture.dir, false, false, fixture.deps()); err == nil || !IsRequestError(err) {
+		t.Fatalf("a markerless main checkout must be refused: %v", err)
+	}
+	target, err := ResolveTarget(context.Background(), fixture.dir, true, false, fixture.deps())
+	if err != nil {
+		t.Fatalf("an explicit override must be honoured: %v", err)
+	}
+	if target.Managed || target.Repository != "" || !target.Canonical {
+		t.Fatalf("target = %#v", target)
+	}
+}
+
+func TestResolveTargetAcceptsAMarkerlessLinkedWorktree(t *testing.T) {
+	t.Parallel()
+	fixture := newTargetFixture(t)
+	fixture.git["rev-parse --show-toplevel"] = fixture.dir
+	fixture.git["rev-parse --abbrev-ref HEAD"] = "main"
+	fixture.git["rev-parse HEAD"] = "abc123"
+	fixture.git["status --porcelain"] = ""
+	fixture.git["rev-parse --git-dir"] = "/repo/.git/worktrees/linked"
+	fixture.git["rev-parse --git-common-dir"] = "/repo/.git"
 	target, err := ResolveTarget(context.Background(), fixture.dir, false, false, fixture.deps())
 	if err != nil {
-		t.Fatalf("ResolveTarget: %v", err)
+		t.Fatalf("a markerless linked worktree is safe: %v", err)
 	}
-	if target.Managed || target.Repository != "" || target.Canonical {
-		t.Fatalf("an unmanaged checkout must be recorded as such: %#v", target)
+	if target.Managed || target.Canonical {
+		t.Fatalf("target = %#v", target)
 	}
 }
 

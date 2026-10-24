@@ -96,6 +96,11 @@ func ResolveTarget(ctx context.Context, path string, allowCanonical, allowDirty 
 		target.Canonical = marker.kind == "canonical" || !marker.writable
 		target.WorktreeName = marker.task
 		target.Base = marker.baseBranch
+	} else {
+		// No marker means "unknown", never "safe". A linked worktree keeps its
+		// git directory outside the common one; a checkout where the two match
+		// is the main worktree of a clone, so it is treated as canonical.
+		target.Canonical = !isLinkedWorktree(ctx, root, deps.Git)
 	}
 	status, statusErr := deps.Git(ctx, root, "status", "--porcelain")
 	if statusErr == nil {
@@ -168,6 +173,21 @@ func readCheckoutMarker(path string, read func(string) ([]byte, error)) (checkou
 		}
 	}
 	return marker, nil
+}
+
+// isLinkedWorktree reports whether root is a linked worktree rather than the
+// main checkout of its clone. It errs on the side of "not linked" when Git
+// cannot answer, because that answer demands an explicit override.
+func isLinkedWorktree(ctx context.Context, root string, git func(context.Context, string, ...string) (string, error)) bool {
+	gitDir, err := git(ctx, root, "rev-parse", "--git-dir")
+	if err != nil {
+		return false
+	}
+	commonDir, err := git(ctx, root, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return false
+	}
+	return filepath.Clean(strings.TrimSpace(gitDir)) != filepath.Clean(strings.TrimSpace(commonDir))
 }
 
 func boundList(values []string, limit int) []string {

@@ -28,6 +28,7 @@ const (
 	recordFileName      = "run.json"
 	logFileName         = "events.jsonl"
 	lastMessageFileName = "last-message.txt"
+	stderrFileName      = "stderr.log"
 	harnessHomeDirName  = "harness-home"
 	schemaVersion       = 1
 	// maxResultBytes bounds the worker's own final message, which is the one
@@ -174,12 +175,12 @@ type Telemetry struct {
 // CostRecord is an API-equivalent estimate, never a billed amount. A nil USD
 // means no per-run price was observed.
 type CostRecord struct {
-	USD            *float64  `json:"usd,omitempty"`
-	Kind           string    `json:"kind"`
-	Source         string    `json:"source"`
-	PricingVersion string    `json:"pricing_version,omitempty"`
-	EstimatedAt    time.Time `json:"estimated_at,omitempty"`
-	Note           string    `json:"note,omitempty"`
+	USD            *float64   `json:"usd,omitempty"`
+	Kind           string     `json:"kind"`
+	Source         string     `json:"source"`
+	PricingVersion string     `json:"pricing_version,omitempty"`
+	EstimatedAt    *time.Time `json:"estimated_at,omitempty"`
+	Note           string     `json:"note,omitempty"`
 }
 
 // ValidationStepResult is one executed objective check.
@@ -198,8 +199,8 @@ type ValidationRecord struct {
 	Status     string                 `json:"status"`
 	Steps      []ValidationStepResult `json:"steps,omitempty"`
 	Reason     string                 `json:"reason,omitempty"`
-	StartedAt  time.Time              `json:"started_at,omitempty"`
-	FinishedAt time.Time              `json:"finished_at,omitempty"`
+	StartedAt  *time.Time             `json:"started_at,omitempty"`
+	FinishedAt *time.Time             `json:"finished_at,omitempty"`
 }
 
 // Record is the durable description of one dispatched run. It is private: it
@@ -287,15 +288,21 @@ type Record struct {
 	// dispatcher, enforces it.
 	TimeoutMS int64 `json:"timeout_ms,omitempty"`
 
-	StartedAt  time.Time `json:"started_at"`
-	FinishedAt time.Time `json:"finished_at,omitempty"`
-	DurationMS int64     `json:"duration_ms,omitempty"`
+	// StartedAt is when the run was admitted. ExecutionStartedAt is when the
+	// harness itself started, so queue time never inflates wall time.
+	StartedAt          time.Time `json:"started_at"`
+	ExecutionStartedAt time.Time `json:"execution_started_at,omitempty"`
+	FinishedAt         time.Time `json:"finished_at,omitempty"`
+	DurationMS         int64     `json:"duration_ms,omitempty"`
 	// QueueDurationMS is how long an execution waited behind a concurrency
 	// bound before its harness started.
 	QueueDurationMS int64 `json:"queue_duration_ms,omitempty"`
 	// TimeToFirstOutputMS is how long the harness ran before its first byte.
 	TimeToFirstOutputMS int64 `json:"time_to_first_output_ms,omitempty"`
 
+	// QueueOwnerPID is the dispatching process while a run is queued behind a
+	// concurrency bound. It is the only liveness evidence a queued run has.
+	QueueOwnerPID int            `json:"queue_owner_pid,omitempty"`
 	OwnerPID      int            `json:"owner_pid,omitempty"`
 	WorkerPID     int            `json:"worker_pid,omitempty"`
 	ExitCode      *int           `json:"exit_code,omitempty"`
@@ -371,10 +378,12 @@ type Result struct {
 	ExperimentID        string              `json:"experiment_id,omitempty"`
 	RepeatIndex         int                 `json:"repeat_index,omitempty"`
 	StartedAt           time.Time           `json:"started_at"`
+	ExecutionStartedAt  *time.Time          `json:"execution_started_at,omitempty"`
 	FinishedAt          *time.Time          `json:"finished_at,omitempty"`
 	DurationMS          int64               `json:"duration_ms,omitempty"`
 	QueueDurationMS     int64               `json:"queue_duration_ms,omitempty"`
 	TimeToFirstOutputMS int64               `json:"time_to_first_output_ms,omitempty"`
+	QueueOwnerPID       int                 `json:"queue_owner_pid,omitempty"`
 	OwnerPID            int                 `json:"owner_pid,omitempty"`
 	WorkerPID           int                 `json:"worker_pid,omitempty"`
 	OwnerAlive          bool                `json:"owner_alive"`
@@ -446,7 +455,16 @@ func (store Store) Render(record Record) Result {
 	}
 	ownerAlive := processAlive(record.OwnerPID)
 	workerAlive := processAlive(record.WorkerPID)
-	if state == StateRunning {
+	switch status {
+	case StatusQueued:
+		// A prepared attempt waits behind a concurrency bound with nothing
+		// running. Its dispatcher is the only thing that can still start it, so
+		// its liveness decides whether the attempt is pending or abandoned.
+		if !processAlive(record.QueueOwnerPID) {
+			state = StateAbandoned
+			status = StatusAbandoned
+		}
+	case StatusRunning:
 		switch {
 		case ownerAlive:
 			// The run is genuinely in progress.
@@ -477,7 +495,8 @@ func (store Store) Render(record Record) Result {
 		ExperimentID: record.ExperimentID, RepeatIndex: record.RepeatIndex,
 		StartedAt: record.StartedAt, DurationMS: record.DurationMS,
 		QueueDurationMS: record.QueueDurationMS, TimeToFirstOutputMS: record.TimeToFirstOutputMS,
-		OwnerPID: record.OwnerPID, WorkerPID: record.WorkerPID,
+		QueueOwnerPID: record.QueueOwnerPID,
+		OwnerPID:      record.OwnerPID, WorkerPID: record.WorkerPID,
 		OwnerAlive: ownerAlive, WorkerAlive: workerAlive,
 		ExitCode: record.ExitCode, Failure: record.Failure, Result: record.Result,
 		ToolCalls: record.ToolCalls, Usage: record.Usage, Changes: record.Changes,
@@ -486,6 +505,10 @@ func (store Store) Render(record Record) Result {
 		AcceptanceRequired: record.AcceptanceRequired, Retries: record.Retries,
 		TaskVisibility: record.TaskVisibility, TaskNormalized: record.TaskNormalized,
 		LogPath: record.LogPath,
+	}
+	if !record.ExecutionStartedAt.IsZero() {
+		started := record.ExecutionStartedAt
+		result.ExecutionStartedAt = &started
 	}
 	if !record.FinishedAt.IsZero() {
 		finished := record.FinishedAt

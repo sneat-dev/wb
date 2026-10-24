@@ -77,8 +77,34 @@ func (store Store) LeasePath(worktreeDir string) (string, error) {
 	return filepath.Join(store.Root, leaseDirName, worktreeKey(resolved)+".lock"), nil
 }
 
+// LeaseLive reports whether some process currently holds the writer claim. The
+// lease file is retained after Release, so its existence alone proves nothing:
+// only a failed non-blocking lock does.
+func (store Store) LeaseLive(worktreeDir string) (bool, error) {
+	path, err := store.LeasePath(worktreeDir)
+	if err != nil {
+		return false, err
+	}
+	file, err := os.OpenFile(path, os.O_RDWR, 0o600)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("open agent lease %s: %w", path, err)
+	}
+	defer func() { _ = file.Close() }()
+	if err := lockFile(file); err != nil {
+		if isLockBusy(err) {
+			return true, nil
+		}
+		// A platform without an inherited lock cannot prove a claim either way.
+		return false, nil
+	}
+	return false, unlockFile(file)
+}
+
 // LeaseHolder reads the current lease body without taking the lock. It is
-// advisory only, for reporting and pruning.
+// advisory only, for reporting.
 func (store Store) LeaseHolder(worktreeDir string) (LeaseInfo, bool, error) {
 	path, err := store.LeasePath(worktreeDir)
 	if err != nil {

@@ -131,6 +131,7 @@ func TestRunResolvesEveryWorktreeSpelling(t *testing.T) {
 		{"two modes", []string{"--worktree", "auto", "--use-worktree", "op"}, "", "", exitUsage},
 	}
 	for _, testCase := range cases {
+		//nolint:paralleltest // the cases share the serial parent's recorder
 		t.Run(testCase.name, func(t *testing.T) {
 			// Each case builds its own recorder: parallel cases must never share
 			// the slice the dependency appends to.

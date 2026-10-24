@@ -297,3 +297,28 @@ func TestRunReportsAFailingHome(t *testing.T) {
 		t.Fatal("a failing home must be reported")
 	}
 }
+
+func TestCompareRecordsARequestRefusalAsAConfigurationFailure(t *testing.T) {
+	t.Parallel()
+	fixture := newCompareFixture(t)
+	fixture.deps.PrepareRun = func(context.Context, agents.DispatchRequest, agents.DispatchDeps) (*agents.PreparedRun, error) {
+		return nil, agents.NewRequestError("worktree name is ambiguous")
+	}
+	report, err := fixture.service().Compare(context.Background(), CompareRequest{
+		ProjectsRoot: fixture.root, Task: "x", Profiles: []string{"cheap"}, Repeat: 1, Concurrency: 1,
+	})
+	if err != nil {
+		t.Fatalf("Compare: %v", err)
+	}
+	if len(report.Attempts) != 1 || report.Attempts[0].Status != agents.AttemptFailed {
+		t.Fatalf("attempts = %#v", report.Attempts)
+	}
+	store := agents.NewStore(fixture.home)
+	record, err := store.Load(report.Attempts[0].AgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.FailureCategory != agents.FailureConfig {
+		t.Fatalf("category = %q", record.FailureCategory)
+	}
+}

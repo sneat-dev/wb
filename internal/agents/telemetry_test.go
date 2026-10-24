@@ -207,3 +207,57 @@ func TestNormalizeStateDerivesTheAdditiveStatus(t *testing.T) {
 		t.Fatalf("running = %#v", running)
 	}
 }
+
+func TestRedactingWriterRemovesASecretAtEverySplitPoint(t *testing.T) {
+	t.Parallel()
+	const secret = "sk-secret-value"
+	const text = "before sk-secret-value after sk-secret-value"
+	for split := 0; split <= len(text); split++ {
+		var sink bytes.Buffer
+		writer := newRedactingWriter(&sink, secret)
+		if writer == nil {
+			t.Fatal("a non-empty secret must produce a writer")
+		}
+		if _, err := writer.Write([]byte(text[:split])); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := writer.Write([]byte(text[split:])); err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.Flush(); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(sink.String(), secret) {
+			t.Fatalf("split %d leaked the secret: %q", split, sink.String())
+		}
+		if strings.Count(sink.String(), redactionMarker) != 2 {
+			t.Fatalf("split %d produced %q", split, sink.String())
+		}
+		if !strings.HasPrefix(sink.String(), "before ") || !strings.HasSuffix(sink.String(), " after [redacted]") {
+			t.Fatalf("split %d changed the surrounding text: %q", split, sink.String())
+		}
+	}
+}
+
+func TestRedactingWriterHandlesASecretAtTheStartOfEveryWrite(t *testing.T) {
+	t.Parallel()
+	const secret = "abc"
+	var sink bytes.Buffer
+	writer := newRedactingWriter(&sink, secret)
+	for _, chunk := range []string{"abc", "abcabc", "xabc", "abcx", "ab", "c"} {
+		if _, err := writer.Write([]byte(chunk)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(sink.String(), secret) {
+		t.Fatalf("sink leaked: %q", sink.String())
+	}
+	// Six complete occurrences across the six writes: "abc", two in "abcabc",
+	// one in "xabc", one in "abcx", and the one completed by the final "c".
+	if strings.Count(sink.String(), redactionMarker) != 6 {
+		t.Fatalf("sink = %q", sink.String())
+	}
+}

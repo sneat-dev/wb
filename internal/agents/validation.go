@@ -44,18 +44,20 @@ func RunValidation(ctx context.Context, options ValidationOptions) ValidationRec
 	if command == nil {
 		command = process.CommandContext
 	}
-	record := ValidationRecord{Status: ValidationRunning, StartedAt: now().UTC()}
+	startedAt := now().UTC()
+	record := ValidationRecord{Status: ValidationRunning, StartedAt: &startedAt}
+	finish := func() { finished := now().UTC(); record.FinishedAt = &finished }
 	if len(options.Steps) == 0 {
 		record.Status = ValidationSkipped
 		record.Reason = "no validation steps configured"
-		record.FinishedAt = now().UTC()
+		finish()
 		return record
 	}
 	logDir := filepath.Join(options.RunDir, validationLogDirName)
 	if err := os.MkdirAll(logDir, 0o700); err != nil {
 		record.Status = ValidationFailed
 		record.Reason = fmt.Sprintf("create validation log directory: %v", err)
-		record.FinishedAt = now().UTC()
+		finish()
 		return record
 	}
 	record.Status = ValidationPassed
@@ -66,7 +68,7 @@ func RunValidation(ctx context.Context, options ValidationOptions) ValidationRec
 			record.Status = ValidationFailed
 		}
 	}
-	record.FinishedAt = now().UTC()
+	finish()
 	return record
 }
 
@@ -128,4 +130,18 @@ func safeStepName(name string) string {
 		return "step"
 	}
 	return cleaned
+}
+
+// ValidationBudget is the worst-case time the snapshotted steps can take, so a
+// caller waiting for a run can bound validation as well as the harness.
+func ValidationBudget(steps []ValidationStepResult) time.Duration {
+	var budget time.Duration
+	for _, step := range steps {
+		timeout, err := parseStepTimeout(step.Timeout)
+		if err != nil || timeout <= 0 {
+			timeout = defaultValidationStepTimeout
+		}
+		budget += timeout
+	}
+	return budget
 }

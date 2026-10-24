@@ -118,25 +118,30 @@ func (s *Service) Compare(ctx context.Context, r CompareRequest) (agents.Experim
 		if timeout <= 0 {
 			timeout = agents.DefaultTimeout
 		}
-		return s.deps.Now().Add(timeout + compareSlack)
+		// Validation runs after the harness, so it belongs to the wait bound.
+		return s.deps.Now().Add(timeout + agents.ValidationBudget(run.Record.Validation.Steps) + compareSlack)
 	}
 	awaiter := Awaiter{Load: store.Load, Render: store.Render, Now: s.deps.Now, Wait: s.deps.Wait}
-	for index := 0; index < len(prepared); index += r.Concurrency {
-		end := index + r.Concurrency
-		if end > len(prepared) {
-			end = len(prepared)
-		}
-		batch := prepared[index:end]
-		for _, run := range batch {
+	// A sliding window: start while there is room, then await the oldest attempt
+	// and fill the freed slot. Fixed batches would leave capacity idle.
+	next, active := 0, make([]*agents.PreparedRun, 0, r.Concurrency)
+	for next < len(prepared) || len(active) > 0 {
+		for next < len(prepared) && len(active) < r.Concurrency {
+			run := prepared[next]
+			next++
 			if _, err := s.deps.StartRun(run, deps); err != nil {
 				// A failed launch is already recorded as a failed execution.
 				continue
 			}
+			active = append(active, run)
 		}
-		for _, run := range batch {
-			if _, err := awaiter.Await(ctx, run.Record.AgentID, deadlineFor(run)); err != nil {
-				return agents.ExperimentReport{}, err
-			}
+		if len(active) == 0 {
+			break
+		}
+		oldest := active[0]
+		active = active[1:]
+		if _, err := awaiter.Await(ctx, oldest.Record.AgentID, deadlineFor(oldest)); err != nil {
+			return agents.ExperimentReport{}, err
 		}
 	}
 	return store.BuildReport(experiment), nil
@@ -146,9 +151,13 @@ func (s *Service) Compare(ctx context.Context, r CompareRequest) (agents.Experim
 // `wb agent experiment` shows every planned comparison.
 func (s *Service) recordFailedAttempt(store agents.Store, experimentID string, attempt agents.Attempt, task string, plan agents.Plan, failure error, now func() time.Time) {
 	digest, size := agents.TaskIdentity(task)
+	category := agents.FailureWorktree
+	if agents.IsRequestError(failure) {
+		category = agents.FailureConfig
+	}
 	record := agents.Record{
 		AgentID: attempt.AgentID, State: agents.StateFailed, ExecutionStatus: agents.StatusFailed,
-		FailureCategory: agents.FailureWorktree, Failure: failure.Error(),
+		FailureCategory: category, Failure: failure.Error(),
 		RequestedProfile: plan.Profile.Profile, Resolved: plan.Profile,
 		TaskType: plan.TaskType, TaskTypeSource: plan.TaskTypeSource,
 		ProfileSource: plan.ProfileSource, WorktreeMode: agents.ModeAuto,

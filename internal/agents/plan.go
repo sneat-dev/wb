@@ -175,9 +175,12 @@ func (planner Planner) Plan(request RunRequest) (Plan, error) {
 			}
 			plan.FallbackFrom = plan.Profile.Profile
 			plan.Profile, plan.ProfileSource = fallback, SourceFallback
-			// Only an explicit effort can be refused, and an explicit profile is
-			// never swapped, so a fallback can only carry an inherited effort.
-			_ = planner.resolveEffort(&plan, request, fallback, taskType)
+			if effortErr := planner.resolveEffort(&plan, request, fallback, taskType); effortErr != nil {
+				// A fallback whose harness cannot honour the requested effort is
+				// not a usable fallback: dropping the effort silently would break
+				// the promise that an explicit effort is never ignored.
+				return Plan{}, effortErr
+			}
 		}
 	}
 	return plan, nil

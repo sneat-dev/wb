@@ -140,8 +140,23 @@ func runOwnerWithSave(ctx context.Context, store Store, agentID string, deps Own
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(record.TimeoutMS)*time.Millisecond)
 		defer cancel()
 	}
+	// A queued attempt can be cancelled before it ever starts; honour the
+	// sentinel without launching anything.
+	if cancelRequested(store, agentID) {
+		record.State = StateFailed
+		record.ExecutionStatus = StatusCancelled
+		record.Failure = "the execution was cancelled before it started"
+		record.FailureCategory = FailureCancelled
+		record.Validation = ValidationRecord{Status: ValidationSkipped, Reason: "the execution was cancelled"}
+		record.FinishedAt = deps.Now().UTC()
+		return save(record)
+	}
 	record.OwnerPID = os.Getpid()
 	record.ExecutionStatus = StatusRunning
+	record.ExecutionStartedAt = deps.Now().UTC()
+	if !record.StartedAt.IsZero() {
+		record.QueueDurationMS = record.ExecutionStartedAt.Sub(record.StartedAt).Milliseconds()
+	}
 	if err := save(record); err != nil {
 		return err
 	}
@@ -154,8 +169,8 @@ func runOwnerWithSave(ctx context.Context, store Store, agentID string, deps Own
 		record.Failure = failure
 		record.FailureCategory = category
 		record.FinishedAt = deps.Now().UTC()
-		if !record.StartedAt.IsZero() {
-			record.DurationMS = record.FinishedAt.Sub(record.StartedAt).Milliseconds()
+		if started := executionStart(record); !started.IsZero() {
+			record.DurationMS = record.FinishedAt.Sub(started).Milliseconds()
 		}
 		return save(record)
 	}
@@ -229,7 +244,16 @@ func runOwnerWithSave(ctx context.Context, store Store, agentID string, deps Own
 		command.Stdin = strings.NewReader(launch.Stdin)
 	}
 	command.Stdout = sink
-	command.Stderr = sink
+	if launch.SplitStderr {
+		stderrFile, stderrErr := os.OpenFile(filepath.Join(store.Dir(agentID), stderrFileName), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		if stderrErr != nil {
+			return finish(StateFailed, fmt.Sprintf("open run stderr log: %v", stderrErr), FailureInternal)
+		}
+		defer func() { _ = stderrFile.Close() }()
+		command.Stderr = stderrFile
+	} else {
+		command.Stderr = sink
+	}
 	command.ExtraFiles = leaseFiles(deps.Lease, 0)
 	if err := command.Start(); err != nil {
 		return finish(StateFailed, fmt.Sprintf("start %s: %v", record.Resolved.Harness, err), FailureHarness)
@@ -317,7 +341,8 @@ func runValidation(ctx context.Context, store Store, agentID string, record Reco
 	if len(steps) == 0 {
 		return ValidationRecord{Status: ValidationSkipped, Reason: "no validation steps were configured"}
 	}
-	record.Validation = ValidationRecord{Status: ValidationRunning, StartedAt: deps.Now().UTC()}
+	startedAt := deps.Now().UTC()
+	record.Validation = ValidationRecord{Status: ValidationRunning, Steps: record.Validation.Steps, StartedAt: &startedAt}
 	_ = store.Save(record)
 	validation := deps.Validation(context.WithoutCancel(ctx), ValidationOptions{
 		WorktreeDir: record.WorktreeDir,
@@ -335,6 +360,15 @@ func validationStepsFromRecord(record Record) []ValidationStep {
 		steps = append(steps, ValidationStep{Name: step.Name, Argv: step.Argv, Timeout: step.Timeout})
 	}
 	return steps
+}
+
+// executionStart is when the harness began, falling back to admission time for
+// a record written before the two were distinguished.
+func executionStart(record Record) time.Time {
+	if !record.ExecutionStartedAt.IsZero() {
+		return record.ExecutionStartedAt
+	}
+	return record.StartedAt
 }
 
 func effortVariant(record Record) string {
@@ -576,6 +610,14 @@ func stopRunWithSignal(store Store, agentID string, deps OwnerDeps, terminate fu
 		return record, fmt.Errorf("agent run %s is already %s", agentID, record.State)
 	}
 	if record.WorkerPID <= 0 {
+		if record.ExecutionStatus == StatusQueued {
+			// Nothing is running yet: the sentinel is the whole cancellation. The
+			// owner records it when it reaches the front of the queue.
+			if err := requestCancel(store, agentID, deps.Now); err != nil {
+				return record, fmt.Errorf("record cancellation request for %s: %w", agentID, err)
+			}
+			return record, nil
+		}
 		return record, fmt.Errorf("agent run %s has no recorded worker process to stop", agentID)
 	}
 	if !processAlive(record.WorkerPID) {

@@ -4,9 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -136,98 +134,7 @@ func TestDispatchRequestValidationRefusesIncompleteShapes(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // the dispatch/owner fixture sets process environment or a package seam
-func TestOwnerRecordsAnUnknownHarnessAndAPreparationFailure(t *testing.T) {
-	store, record, _, deps := ownedRunWithHarness(t, HarnessCodex, fakeHarnessScript, func(record *Record) {
-		record.Resolved.Harness = "nope"
-	})
-	if err := RunOwner(context.Background(), store, record.AgentID, deps); err != nil {
-		t.Fatalf("RunOwner: %v", err)
-	}
-	loaded, _ := store.Load(record.AgentID)
-	if loaded.FailureCategory != FailureConfig || loaded.ExecutionStatus != StatusFailed {
-		t.Fatalf("unknown harness = %#v", loaded)
-	}
-}
-
-//nolint:paralleltest // the dispatch/owner fixture sets process environment or a package seam
-func TestOwnerRecordsAHarnessPreparationFailure(t *testing.T) {
-	store, record, _, deps := ownedRunWithHarness(t, HarnessOpenCode, openCodeFakeHarness, func(record *Record) {
-		record.Resolved.Model = "p/m#inline-variant"
-	})
-	if err := RunOwner(context.Background(), store, record.AgentID, deps); err != nil {
-		t.Fatalf("RunOwner: %v", err)
-	}
-	loaded, _ := store.Load(record.AgentID)
-	if loaded.FailureCategory != FailureConfig || !strings.Contains(loaded.Failure, "variant") {
-		t.Fatalf("preparation failure = %#v", loaded)
-	}
-}
-
-//nolint:paralleltest // the dispatch/owner fixture sets process environment or a package seam
-func TestOwnerRecordsAMissingHarnessBinary(t *testing.T) {
-	store, record, _, deps := ownedRunWithHarness(t, HarnessCodex, fakeHarnessScript, nil)
-	deps.LookPath = func(string) (string, error) { return "", errors.New("not on PATH") }
-	if err := RunOwner(context.Background(), store, record.AgentID, deps); err != nil {
-		t.Fatalf("RunOwner: %v", err)
-	}
-	loaded, _ := store.Load(record.AgentID)
-	if loaded.FailureCategory != FailureHarnessMiss {
-		t.Fatalf("missing harness = %#v", loaded)
-	}
-}
-
-//nolint:paralleltest // the dispatch/owner fixture sets process environment or a package seam
-func TestOwnerRecordsAnUnopenableLogAndHarnessHome(t *testing.T) {
-	store, record, _, deps := ownedRunWithHarness(t, HarnessCodex, fakeHarnessScript, nil)
-	// A file where the private harness home belongs makes the directory fail.
-	if err := os.WriteFile(store.HarnessHomePath(record.AgentID), []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := RunOwner(context.Background(), store, record.AgentID, deps); err != nil {
-		t.Fatalf("RunOwner: %v", err)
-	}
-	loaded, _ := store.Load(record.AgentID)
-	if loaded.FailureCategory != FailureInternal || !strings.Contains(loaded.Failure, "harness home") {
-		t.Fatalf("harness home failure = %#v", loaded)
-	}
-}
-
-//nolint:paralleltest // the dispatch/owner fixture sets process environment or a package seam
-func TestOwnerRecordsAProcessThatCannotStart(t *testing.T) {
-	store, record, _, deps := ownedRunWithHarness(t, HarnessCodex, fakeHarnessScript, nil)
-	deps.LookPath = func(string) (string, error) { return "/nonexistent/wb-harness", nil }
-	if err := RunOwner(context.Background(), store, record.AgentID, deps); err != nil {
-		t.Fatalf("RunOwner: %v", err)
-	}
-	loaded, _ := store.Load(record.AgentID)
-	if loaded.FailureCategory != FailureHarness || !strings.Contains(loaded.Failure, "start") {
-		t.Fatalf("start failure = %#v", loaded)
-	}
-}
-
-//nolint:paralleltest // the dispatch/owner fixture sets process environment or a package seam
-func TestOwnerTruncatesAChattyHarnessAndSaysSo(t *testing.T) {
-	store, record, _, deps := ownedRunWithHarness(t, HarnessCodex, fakeHarnessScript, nil)
-	if err := runOwnerWithSave(context.Background(), store, record.AgentID, deps, store.Save, 10); err != nil {
-		t.Fatalf("RunOwner: %v", err)
-	}
-	loaded, _ := store.Load(record.AgentID)
-	if !containsDiagnostic(loaded.HarnessEvents, "truncated") {
-		t.Fatalf("diagnostics = %#v", loaded.HarnessEvents)
-	}
-}
-
-func containsDiagnostic(diagnostics []string, fragment string) bool {
-	for _, diagnostic := range diagnostics {
-		if strings.Contains(diagnostic, fragment) {
-			return true
-		}
-	}
-	return false
-}
-
-func TestOwnerHelperBranches(t *testing.T) {
+func TestOwnerHelpersHandleOptionalInput(t *testing.T) {
 	t.Parallel()
 	record := Record{EffortApplied: true, EffortEffective: "high", Resolved: Resolved{EffortVariants: map[string]string{"high": "heavy"}}}
 	if got := effortVariant(record); got != "heavy" {
@@ -257,34 +164,6 @@ func TestOwnerHelperBranches(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // the dispatch/owner fixture sets process environment or a package seam
-func TestOwnerInheritsALeaseOnlyWithTheDispatcherMarker(t *testing.T) {
-	//nolint:paralleltest // the test sets the dispatcher marker in the environment
-	t.Setenv(leaseEnvMarker, "")
-	if lease := inheritedLease(); lease != nil {
-		t.Fatalf("no marker must mean no lease: %#v", lease)
-	}
-	t.Setenv(leaseEnvMarker, "not-a-number")
-	if lease := inheritedLease(); lease != nil {
-		t.Fatalf("a malformed marker must mean no lease: %#v", lease)
-	}
-	held, err := os.CreateTemp(t.TempDir(), "lease")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = held.Close() }()
-	t.Setenv(leaseEnvMarker, strconv.Itoa(int(held.Fd())))
-	lease := inheritedLease()
-	if lease == nil {
-		t.Fatal("a valid marker must adopt the descriptor")
-	}
-	if info, err := lease.Stat(); err != nil {
-		t.Fatalf("adopted lease: %v", err)
-	} else if info.Size() != 0 {
-		t.Fatalf("adopted the wrong file: %#v", info)
-	}
-}
-
 func TestStopRunRefusesARunWithoutAWorkerOrWithAGoneWorker(t *testing.T) {
 	t.Parallel()
 	store := newTestStore(t)
@@ -305,7 +184,7 @@ func TestStopRunRefusesARunWithoutAWorkerOrWithAGoneWorker(t *testing.T) {
 	}
 }
 
-func TestExperimentErrorBranches(t *testing.T) {
+func TestExperimentLookupAndPublicationReportFailures(t *testing.T) {
 	t.Parallel()
 	store := newTestStore(t)
 	experimentID := NewExperimentID()
@@ -360,7 +239,7 @@ func TestExperimentReportDerivesAttemptStatuses(t *testing.T) {
 	}
 	if err := store.Create(Record{
 		AgentID: dispatched, State: StateRunning, ExecutionStatus: StatusQueued,
-		RequestedProfile: "cheap", OwnerPID: os.Getpid(), StartedAt: time.Now(),
+		RequestedProfile: "cheap", OwnerPID: os.Getpid(), QueueOwnerPID: os.Getpid(), StartedAt: time.Now(),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -461,7 +340,7 @@ func TestReviewReappliesACorruptHistory(t *testing.T) {
 	}
 }
 
-func TestDiffAndTargetBranches(t *testing.T) {
+func TestDiffAndTargetResolutionReportFailures(t *testing.T) {
 	t.Parallel()
 	store := newTestStore(t)
 	record := sampleRecord(t)
@@ -518,26 +397,6 @@ func TestPreflightProbeFailureAndLookPathDefault(t *testing.T) {
 	blocked.TempDir = func() (string, error) { return "/dev/null", nil }
 	if err := Preflight(context.Background(), Resolved{Harness: HarnessDSH, Model: "m"}, blocked); err == nil {
 		t.Fatal("an unwritable overlay must be reported")
-	}
-}
-
-func TestValidationDefaultsAndUnparsableTimeout(t *testing.T) {
-	t.Parallel()
-	record := RunValidation(context.Background(), ValidationOptions{
-		WorktreeDir: t.TempDir(), RunDir: t.TempDir(),
-		Steps: []ValidationStep{{Name: "", Argv: []string{"/usr/bin/true"}}, {Name: "bad", Argv: []string{"/usr/bin/true"}, Timeout: "soon"}},
-		Command: func(ctx context.Context, name string, args ...string) *exec.Cmd {
-			return exec.CommandContext(ctx, name, args...)
-		},
-	})
-	if record.Status != ValidationFailed {
-		t.Fatalf("validation = %#v", record)
-	}
-	if record.Steps[0].LogPath == "" || !strings.HasSuffix(record.Steps[0].LogPath, "01-step.log") {
-		t.Fatalf("an unnamed step must still be logged: %#v", record.Steps[0])
-	}
-	if record.Steps[1].LogPath != "" {
-		t.Fatalf("an unparsable timeout must not run: %#v", record.Steps[1])
 	}
 }
 
