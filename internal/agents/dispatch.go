@@ -244,8 +244,11 @@ func PrepareRun(ctx context.Context, request DispatchRequest, deps DispatchDeps)
 		RepeatIndex:          request.RepeatIndex,
 		TimeoutMS:            plan.TimeoutMS,
 		StartedAt:            deps.Now().UTC(),
-		Validation:           ValidationRecord{Status: ValidationPending, Steps: pendingValidationSteps(plan.ValidationSteps)},
-		AcceptanceRequired:   plan.AcceptanceRequired,
+		// A prepared attempt may wait behind a concurrency bound before its
+		// owner exists; the dispatching process is its liveness evidence.
+		QueueOwnerPID:      os.Getpid(),
+		Validation:         ValidationRecord{Status: ValidationPending, Steps: pendingValidationSteps(plan.ValidationSteps)},
+		AcceptanceRequired: plan.AcceptanceRequired,
 	}
 	if lease != nil {
 		record.LeasePath = lease.Path()

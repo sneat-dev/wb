@@ -459,8 +459,10 @@ func (store Store) Render(record Record) Result {
 	case StatusQueued:
 		// A prepared attempt waits behind a concurrency bound with nothing
 		// running. Its dispatcher is the only thing that can still start it, so
-		// its liveness decides whether the attempt is pending or abandoned.
-		if !processAlive(record.QueueOwnerPID) {
+		// its liveness decides whether the attempt is pending or abandoned. The
+		// grace window covers a single run whose dispatcher exits just before the
+		// owner records itself.
+		if !processAlive(record.QueueOwnerPID) && time.Since(record.StartedAt) >= admissionGrace {
 			state = StateAbandoned
 			status = StatusAbandoned
 		}

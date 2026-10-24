@@ -261,3 +261,46 @@ func TestRedactingWriterHandlesASecretAtTheStartOfEveryWrite(t *testing.T) {
 		t.Fatalf("sink = %q", sink.String())
 	}
 }
+
+func TestRedactingWriterHandlesASecretThatSharesItsFirstAndLastByte(t *testing.T) {
+	t.Parallel()
+	// "abca" and "abab" are the shapes that used to leak: a complete match can
+	// end with a fragment that is also a prefix of the secret.
+	for _, secret := range []string{"abca", "abab", "aaaa"} {
+		text := "x" + secret + "y" + secret + secret + "z"
+		for split := 0; split <= len(text); split++ {
+			var sink bytes.Buffer
+			writer := newRedactingWriter(&sink, secret)
+			if _, err := writer.Write([]byte(text[:split])); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := writer.Write([]byte(text[split:])); err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.Flush(); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(sink.String(), secret) {
+				t.Fatalf("secret %q split %d leaked: %q", secret, split, sink.String())
+			}
+		}
+	}
+}
+
+func TestRedactingWriterNeverLeaksAnOverlappingSecretAtASplit(t *testing.T) {
+	t.Parallel()
+	// A secret that can overlap itself ("abab" in "ababab") is the shape where a
+	// greedy replacement leaves a fragment that belongs to the next match.
+	const secret = "abab"
+	text := "x" + secret + "y" + secret + secret + "ab"
+	for split := 0; split <= len(text); split++ {
+		var sink bytes.Buffer
+		writer := newRedactingWriter(&sink, secret)
+		_, _ = writer.Write([]byte(text[:split]))
+		_, _ = writer.Write([]byte(text[split:]))
+		_ = writer.Flush()
+		if strings.Contains(sink.String(), secret) {
+			t.Fatalf("split %d leaked: %q", split, sink.String())
+		}
+	}
+}

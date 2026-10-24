@@ -610,3 +610,30 @@ func TestStopRunReportsAnUnwritableQueuedSentinel(t *testing.T) {
 		t.Fatal("an unwritable sentinel must be reported")
 	}
 }
+
+//nolint:paralleltest // the dispatch fixture sets process environment
+func TestPreparedRunIsNotReportedAbandonedWhileItsDispatcherLives(t *testing.T) {
+	fixture := newDispatchFixture(t)
+	prepared, err := PrepareRun(context.Background(), planRequest(t, fixture, ModeAuto, "op"), fixture.deps)
+	if err != nil {
+		t.Fatalf("PrepareRun: %v", err)
+	}
+	t.Cleanup(func() { _ = prepared.Lease.Release() })
+	// The dispatcher (this process) is alive, so a prepared attempt is pending,
+	// not finished — this is the state every compare attempt passes through.
+	if prepared.Record.QueueOwnerPID != os.Getpid() {
+		t.Fatalf("queue owner = %d", prepared.Record.QueueOwnerPID)
+	}
+	result := prepared.Store.Render(prepared.Record)
+	if result.Terminal || result.Status != StatusQueued {
+		t.Fatalf("a prepared attempt must be pending: %#v", result)
+	}
+	// Once the dispatcher is gone and the admission grace has passed, the same
+	// record is honestly abandoned.
+	stale := prepared.Record
+	stale.QueueOwnerPID = 999999
+	stale.StartedAt = time.Now().Add(-2 * admissionGrace)
+	if result := prepared.Store.Render(stale); !result.Terminal || result.Status != StatusAbandoned {
+		t.Fatalf("an orphaned attempt = %#v", result)
+	}
+}

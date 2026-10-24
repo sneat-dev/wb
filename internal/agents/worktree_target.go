@@ -187,7 +187,16 @@ func isLinkedWorktree(ctx context.Context, root string, git func(context.Context
 	if err != nil {
 		return false
 	}
-	return filepath.Clean(strings.TrimSpace(gitDir)) != filepath.Clean(strings.TrimSpace(commonDir))
+	// Git answers with paths relative to the checkout or with absolute ones
+	// depending on how it was created, so compare them in one form.
+	resolve := func(value string) string {
+		cleaned := filepath.Clean(strings.TrimSpace(value))
+		if filepath.IsAbs(cleaned) {
+			return cleaned
+		}
+		return filepath.Join(root, cleaned)
+	}
+	return resolve(gitDir) != resolve(commonDir)
 }
 
 func boundList(values []string, limit int) []string {

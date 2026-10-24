@@ -50,13 +50,30 @@ func (writer *redactingWriter) Write(data []byte) (int, error) {
 	// only part that could still become a match once the next write arrives.
 	// Everything before it either contains complete matches (replaced) or no
 	// match at all, so no occurrence can straddle the boundary.
+	// Never hold back a suffix that begins inside a complete match: the emitted
+	// prefix would then carry only the first half of that match. The floor is
+	// the end of the last non-overlapping match, which is exactly the region
+	// ReplaceAll consumes.
+	floor := 0
+	for search := 0; ; {
+		found := bytes.Index(buffer[search:], writer.secret)
+		if found < 0 {
+			break
+		}
+		floor = search + found + len(writer.secret)
+		search = floor
+	}
 	safe := len(buffer)
 	for overlap := len(writer.secret) - 1; overlap >= 1; overlap-- {
 		if overlap > len(buffer) {
 			continue
 		}
-		if bytes.HasPrefix(writer.secret, buffer[len(buffer)-overlap:]) {
-			safe = len(buffer) - overlap
+		start := len(buffer) - overlap
+		if start < floor {
+			continue
+		}
+		if bytes.HasPrefix(writer.secret, buffer[start:]) {
+			safe = start
 			break
 		}
 	}
