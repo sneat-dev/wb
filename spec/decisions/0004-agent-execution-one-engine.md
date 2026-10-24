@@ -117,3 +117,12 @@ Claude Opus 5.5 at high effort against this decision and
 inheritance, comparison worktree isolation, schema compatibility, review sidecar,
 effort/variant, `dsh` argv, name-collision and spec-conformance findings were
 addressed.
+
+Gate B read the actual diff and returned "changes required" with six blocking
+findings: a redaction boundary that leaked a self-overlapping secret, a retention
+check that treated a retained lease file as a live claim, queued comparison
+attempts that looked abandoned and carried queue time in their wall time, an
+explicit effort silently dropped on fallback, a markerless checkout treated as
+writable, and a unit-tier ledger that would fail the audit. All six were fixed
+and covered by tests, the reviewer's follow-up confirmed the redaction and queue
+fixes after one more round, and the final verdict was "approved to land".

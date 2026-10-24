@@ -22,8 +22,9 @@ func TaskIdentity(task string) (digest string, size int) {
 }
 
 // redactingWriter removes an injected credential from a stream before it reaches
-// disk. It holds back the last len(secret)-1 bytes of every write, because a
-// secret can be split across two writes and must still be found.
+// disk. It replaces every complete occurrence, then holds back only the longest
+// suffix that starts after the last replaced match and is also a prefix of the
+// secret, so a secret split across writes is still found.
 type redactingWriter struct {
 	inner  io.Writer
 	secret []byte
