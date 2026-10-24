@@ -2,10 +2,30 @@ package gitops
 
 import (
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/sneat-dev/wb/internal/console"
 )
+
+// runStdout is runEnv returning stdout alone, for commands whose output is
+// parsed: git reports warnings such as an unreadable directory on stderr, and
+// those must never be read as data. Stderr still goes into the error.
+func runStdout(dir string, extra []string, name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	cmd.Env = append(console.Env(), extra...)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return string(out), fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+	}
+	return string(out), nil
+}
 
 // CommitPaths records the working-tree state of paths (additions,
 // modifications and deletions) as one new commit on the current branch,
@@ -37,7 +57,7 @@ func CommitPaths(repoPath, message string, paths ...string) (bool, error) {
 	// An unborn branch (the first commit into an empty store) has no HEAD:
 	// the private index starts empty, the commit has no parent, and the CAS
 	// below requires the branch to still not exist.
-	parentOut, revErr := run(repoPath, "git", "rev-parse", "--verify", "--quiet", "HEAD^{commit}")
+	parentOut, revErr := runStdout(repoPath, nil, "git", "rev-parse", "--verify", "--quiet", "HEAD^{commit}")
 	parent := strings.TrimSpace(parentOut)
 	commitArgs := []string{"commit-tree", "-m", message}
 	if revErr == nil {
@@ -51,13 +71,13 @@ func CommitPaths(repoPath, message string, paths ...string) (bool, error) {
 	if _, err := runEnv(repoPath, env, "git", append([]string{"add", "--all", "--"}, paths...)...); err != nil {
 		return false, err
 	}
-	treeOut, err := runEnv(repoPath, env, "git", "write-tree")
+	treeOut, err := runStdout(repoPath, env, "git", "write-tree")
 	if err != nil {
 		return false, err
 	}
 	tree := strings.TrimSpace(treeOut)
 	if parent != "" {
-		parentTree, err := run(repoPath, "git", "rev-parse", parent+"^{tree}")
+		parentTree, err := runStdout(repoPath, nil, "git", "rev-parse", parent+"^{tree}")
 		if err != nil {
 			return false, err
 		}
@@ -65,7 +85,7 @@ func CommitPaths(repoPath, message string, paths ...string) (bool, error) {
 			return false, nil
 		}
 	}
-	commitOut, err := run(repoPath, "git", append(commitArgs, tree)...)
+	commitOut, err := runStdout(repoPath, nil, "git", append(commitArgs, tree)...)
 	if err != nil {
 		return false, err
 	}
@@ -91,7 +111,7 @@ func (c ChangedPath) Untracked() bool { return c.Code == "??" }
 // renames are reported as a deletion plus an addition). Ignored files are
 // not listed.
 func ChangedPaths(repoPath string) ([]ChangedPath, error) {
-	out, err := run(repoPath, "git", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames")
+	out, err := runStdout(repoPath, nil, "git", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames")
 	if err != nil {
 		return nil, err
 	}
@@ -113,7 +133,7 @@ func DiscardPaths(repoPath string, paths ...string) error {
 	if _, err := run(repoPath, "git", append([]string{"reset", "-q", "--"}, paths...)...); err != nil {
 		return err
 	}
-	out, err := run(repoPath, "git", append([]string{"ls-files", "-z", "--"}, paths...)...)
+	out, err := runStdout(repoPath, nil, "git", append([]string{"ls-files", "-z", "--"}, paths...)...)
 	if err != nil {
 		return err
 	}

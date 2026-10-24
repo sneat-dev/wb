@@ -219,3 +219,16 @@ func TestDiscardPathsReportsEachStepFailure(t *testing.T) {
 		}
 	})
 }
+
+// Warnings git prints on stderr (an unreadable directory, say) are never
+// parsed as changed paths.
+func TestChangedPathsIgnoresGitWarnings(t *testing.T) {
+	lgCovFakeGit(t, `echo "warning: could not open directory 'machines/': Permission denied" >&2; printf ' M notes.md\0'; exit 0`)
+	changed, err := ChangedPaths(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changed) != 1 || changed[0].Path != "notes.md" {
+		t.Fatalf("ChangedPaths = %+v, want only notes.md", changed)
+	}
+}

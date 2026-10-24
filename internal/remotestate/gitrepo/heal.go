@@ -35,10 +35,10 @@ func ownedPath(path string) bool {
 // left alone and do not block the sync, exactly as before. The caller holds
 // the clone lock.
 func (p *Provider) healClone() error {
-	changed, err := gitops.ChangedPaths(p.opts.ClonePath)
-	if err != nil {
-		return p.syncError(err)
-	}
+	// A clone whose state git cannot even list (a corrupt index, broken refs,
+	// an unreadable directory) is not something healing can fix: list
+	// nothing, and let the sync that follows report the real failure.
+	changed, _ := gitops.ChangedPaths(p.opts.ClonePath)
 	var owned, foreign []string
 	for _, entry := range changed {
 		switch {
