@@ -78,7 +78,8 @@ func installWBStyleGuardHooks(t *testing.T, clonePath string) string {
 
 // The exact wb#899 wedge: a claim publish staged its claim and the
 // machine's snapshot and never committed them. The next claim recovers —
-// it discards that residue, lands its own claim, and leaves the clone clean.
+// it discards that residue and lands its own claim — while an untracked file
+// that is not wb's is left alone.
 func TestClaimRecoversFromAPublishLeftStagedButUncommitted(t *testing.T) {
 	origin := bareOrigin(t)
 	p := storeMachine(t, origin)
@@ -89,6 +90,7 @@ func TestClaimRecoversFromAPublishLeftStagedButUncommitted(t *testing.T) {
 	writeCloneFile(t, p.opts.ClonePath, ClaimPath("stranded"), "task: stranded\n")
 	writeCloneFile(t, p.opts.ClonePath, SnapshotPath("me", "mac"), "half-written\n")
 	gitIn(t, p.opts.ClonePath, "add", "claims", "machines")
+	writeCloneFile(t, p.opts.ClonePath, "scratch-notes.txt", "untracked, not wb's\n")
 
 	outcome, err := p.Claim(context.Background(), mkClaim("me", "mac", "next-task", at.Add(time.Hour)), remotestate.ClaimNormal, "")
 	if err != nil {
@@ -101,8 +103,8 @@ func TestClaimRecoversFromAPublishLeftStagedButUncommitted(t *testing.T) {
 	if !strings.Contains(files, ClaimPath("next-task")) || strings.Contains(files, ClaimPath("stranded")) {
 		t.Fatalf("origin files = %q, want next-task and not the stranded claim", files)
 	}
-	if status := gitIn(t, p.opts.ClonePath, "status", "--porcelain"); status != "" {
-		t.Fatalf("clone status = %q, want clean", status)
+	if status := gitIn(t, p.opts.ClonePath, "status", "--porcelain"); status != "?? scratch-notes.txt" {
+		t.Fatalf("clone status = %q, want only the untouched untracked file", status)
 	}
 	if _, err := os.Stat(filepath.Join(p.opts.ClonePath, filepath.FromSlash(ClaimPath("stranded")))); !os.IsNotExist(err) {
 		t.Fatalf("stranded claim file still on disk: %v", err)
