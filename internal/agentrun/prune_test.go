@@ -109,3 +109,30 @@ func TestPruneReportsARemovalFailureWithoutClaimingSuccess(t *testing.T) {
 		t.Fatalf("entries = %#v", plan.Entries)
 	}
 }
+
+func TestPruneNeverRemovesARunWhoseWorktreeIsStillLeased(t *testing.T) {
+	t.Parallel()
+	fixture := newServiceFixture(t)
+	store := agents.NewStore(fixture.home)
+	worktree := t.TempDir()
+	id, _ := agents.NewID()
+	if err := store.Create(agents.Record{
+		AgentID: id, State: agents.StateCompleted, ExecutionStatus: agents.StatusCompleted,
+		StartedAt: fixture.now.Add(-90 * 24 * time.Hour), FinishedAt: fixture.now.Add(-90 * 24 * time.Hour),
+		WorktreeDir: worktree,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := store.AcquireLease(worktree, "agt-other", "", "acme/app", fixture.now)
+	if err != nil {
+		t.Fatalf("AcquireLease: %v", err)
+	}
+	defer func() { _ = lease.Release() }()
+	plan, err := fixture.service().Prune(context.Background(), PruneRequest{ProjectsRoot: fixture.root, OlderThan: 24 * time.Hour})
+	if err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+	if len(plan.Entries) != 1 || plan.Entries[0].Action != "keep" || !strings.Contains(plan.Entries[0].Reason, "claimed") {
+		t.Fatalf("entries = %#v", plan.Entries)
+	}
+}

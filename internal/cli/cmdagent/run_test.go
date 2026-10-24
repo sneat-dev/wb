@@ -111,9 +111,8 @@ func TestRunDispatchesAndOptionallyWaits(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // each case owns its own command tree and dependency set
 func TestRunResolvesEveryWorktreeSpelling(t *testing.T) {
-	t.Parallel()
-	deps, requests, _ := runFixture(t)
 	absolute := "/tmp/some-worktree"
 	cases := []struct {
 		name  string
@@ -133,8 +132,9 @@ func TestRunResolvesEveryWorktreeSpelling(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
-			*requests = nil
+			// Each case builds its own recorder: parallel cases must never share
+			// the slice the dependency appends to.
+			deps, requests, _ := runFixture(t)
 			args := append([]string{"agent", "run", "--task", "do it"}, testCase.args...)
 			code, _, errout := runFake(t, deps, args...)
 			if code != testCase.code {
@@ -143,7 +143,10 @@ func TestRunResolvesEveryWorktreeSpelling(t *testing.T) {
 			if testCase.code != exitOK {
 				return
 			}
-			last := (*requests)[len(*requests)-1]
+			if len(*requests) != 1 {
+				t.Fatalf("requests = %#v", *requests)
+			}
+			last := (*requests)[0]
 			if last.Request.WorktreeMode != testCase.mode || last.Request.Worktree != testCase.value {
 				t.Fatalf("mode/value = %q/%q, want %q/%q", last.Request.WorktreeMode, last.Request.Worktree, testCase.mode, testCase.value)
 			}
