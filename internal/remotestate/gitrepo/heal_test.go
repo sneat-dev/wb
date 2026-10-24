@@ -38,10 +38,21 @@ func writeCloneFile(t *testing.T, clonePath, relative, content string) {
 	}
 }
 
-// installWBStyleGuardHooks installs hooks that refuse the way WB's managed
-// canonical-clean guard does: pre-commit and pre-push both exit 1 while the
-// clone has any staged or modified tracked file.
-func installWBStyleGuardHooks(t *testing.T, clonePath string) {
+// storeMachine is machine for the configured `wb remote` store, the only
+// provider that self-heals (Options.RemoteStore).
+func storeMachine(t *testing.T, origin string) *Provider {
+	t.Helper()
+	p := machine(t, origin)
+	p.opts.RemoteStore = true
+	return p
+}
+
+// installWBStyleGuardHooks installs core.hooksPath hooks modelled on WB's
+// managed guard in the remote-store clone, and returns a marker path the
+// pre-commit hook touches every time it runs. pre-commit refuses while the
+// shared index holds a staged change (the wb#899 wedge); pre-push refuses
+// while the clone has any staged or modified tracked file.
+func installWBStyleGuardHooks(t *testing.T, clonePath string) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("hook scripts rely on a POSIX shell")
@@ -50,13 +61,19 @@ func installWBStyleGuardHooks(t *testing.T, clonePath string) {
 	if err := os.MkdirAll(hooks, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	script := "#!/bin/sh\nif [ -n \"$(git status --porcelain --untracked-files=no)\" ]; then\n  echo 'error: canonical clone has local changes; canonical clones must remain clean' >&2\n  exit 1\nfi\n"
-	for _, name := range []string{"pre-commit", "pre-push"} {
+	ran := filepath.Join(t.TempDir(), "pre-commit-ran")
+	refuse := "  echo 'error: canonical clone has local changes; canonical clones must remain clean' >&2\n  exit 1\n"
+	scripts := map[string]string{
+		"pre-commit": "#!/bin/sh\ntouch '" + ran + "'\nif ! (unset GIT_INDEX_FILE; git diff --cached --quiet); then\n" + refuse + "fi\n",
+		"pre-push":   "#!/bin/sh\nif [ -n \"$(git status --porcelain --untracked-files=no)\" ]; then\n" + refuse + "fi\n",
+	}
+	for name, script := range scripts {
 		if err := testenv.WriteExecutableFile(filepath.Join(hooks, name), []byte(script), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
 	gitIn(t, clonePath, "config", "core.hooksPath", hooks)
+	return ran
 }
 
 // The exact wb#899 wedge: a claim publish staged its claim and the
@@ -64,7 +81,7 @@ func installWBStyleGuardHooks(t *testing.T, clonePath string) {
 // it discards that residue, lands its own claim, and leaves the clone clean.
 func TestClaimRecoversFromAPublishLeftStagedButUncommitted(t *testing.T) {
 	origin := bareOrigin(t)
-	p := machine(t, origin)
+	p := storeMachine(t, origin)
 	at := time.Date(2026, 10, 21, 7, 2, 0, 0, time.UTC)
 	if _, err := p.Publish(context.Background(), snap("me", "mac", at)); err != nil {
 		t.Fatal(err)
@@ -92,21 +109,24 @@ func TestClaimRecoversFromAPublishLeftStagedButUncommitted(t *testing.T) {
 	}
 }
 
-// The remote-store clone with WB-style guard hooks installed (core.hooksPath,
-// refusing while anything is staged) still publishes claims and releases:
-// the provider's commits never stage the shared index, so the guard always
-// sees a clean clone (wb#899's root cause).
+// The remote-store clone with WB-style guard hooks installed (core.hooksPath)
+// still publishes claims, releases and snapshots: its hooks run for every
+// commit, the provider never stages the shared index, and every push leaves
+// from a clean clone (wb#899's root cause).
 func TestClaimAndReleasePublishWithWBGuardHooksInstalled(t *testing.T) {
 	origin := bareOrigin(t)
-	p := machine(t, origin)
+	p := storeMachine(t, origin)
 	at := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
 	if _, err := p.Publish(context.Background(), snap("me", "mac", at)); err != nil {
 		t.Fatal(err)
 	}
-	installWBStyleGuardHooks(t, p.opts.ClonePath)
+	ran := installWBStyleGuardHooks(t, p.opts.ClonePath)
 
 	if _, err := p.Claim(context.Background(), mkClaim("me", "mac", "hooked", at), remotestate.ClaimNormal, ""); err != nil {
 		t.Fatalf("Claim with guard hooks installed = %v", err)
+	}
+	if _, err := os.Stat(ran); err != nil {
+		t.Fatalf("pre-commit hook did not run for the claim commit: %v", err)
 	}
 	if files := gitIn(t, origin, "ls-tree", "-r", "--name-only", "main"); !strings.Contains(files, ClaimPath("hooked")) {
 		t.Fatalf("origin files = %q, want the claim published", files)
@@ -130,7 +150,7 @@ func TestClaimAndReleasePublishWithWBGuardHooksInstalled(t *testing.T) {
 // is left exactly as it was.
 func TestFetchRefusesAndKeepsChangesOutsideWBOwnedPaths(t *testing.T) {
 	origin := bareOrigin(t)
-	p := machine(t, origin)
+	p := storeMachine(t, origin)
 	if _, err := p.Publish(context.Background(), snap("me", "mac", time.Now().UTC())); err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +184,7 @@ func TestFetchRefusesAndKeepsChangesOutsideWBOwnedPaths(t *testing.T) {
 func TestFetchReportsUnhealableCloneAsSyncError(t *testing.T) {
 	t.Run("unreadable index", func(t *testing.T) {
 		origin := bareOrigin(t)
-		p := machine(t, origin)
+		p := storeMachine(t, origin)
 		if _, err := p.Publish(context.Background(), snap("me", "mac", time.Now().UTC())); err != nil {
 			t.Fatal(err)
 		}
@@ -181,7 +201,7 @@ func TestFetchReportsUnhealableCloneAsSyncError(t *testing.T) {
 			t.Skip("needs POSIX directory permissions enforced")
 		}
 		origin := bareOrigin(t)
-		p := machine(t, origin)
+		p := storeMachine(t, origin)
 		if _, err := p.Publish(context.Background(), snap("me", "mac", time.Now().UTC())); err != nil {
 			t.Fatal(err)
 		}
@@ -203,7 +223,7 @@ func TestFetchReportsUnhealableCloneAsSyncError(t *testing.T) {
 // A pull that keeps failing is a SyncError naming the clone and the remedy.
 func TestFetchReportsPersistentPullFailureAsSyncError(t *testing.T) {
 	origin := bareOrigin(t)
-	p := machine(t, origin)
+	p := storeMachine(t, origin)
 	if _, err := p.Publish(context.Background(), snap("me", "mac", time.Now().UTC())); err != nil {
 		t.Fatal(err)
 	}
@@ -224,8 +244,8 @@ func TestOwnedPathCoversOnlyWhatTheProviderWrites(t *testing.T) {
 		"claims/a.yaml":                 true,
 		"machines/me/mac/snapshot.yaml": true,
 		"README.md":                     true,
-		".ingitdb/settings.yaml":        true,
-		"sync-reports/$records/x.md":    true,
+		".ingitdb/settings.yaml":        false,
+		"sync-reports/$records/x.md":    false,
 		"README.md.bak":                 false,
 		"claimsx/a.yaml":                false,
 		"notes.md":                      false,
@@ -234,5 +254,31 @@ func TestOwnedPathCoversOnlyWhatTheProviderWrites(t *testing.T) {
 		if got := ownedPath(path); got != want {
 			t.Errorf("ownedPath(%q) = %v, want %v", path, got, want)
 		}
+	}
+}
+
+// Healing belongs to the remote store alone. A provider over a user's own
+// repository (`wb sync-report publish` into a workbench clone) leaves their
+// uncommitted README edit and staged .ingitdb file exactly as they were and
+// refuses to sync on top of them, as before wb#899's fix.
+func TestFetchOutsideTheRemoteStoreKeepsUserChanges(t *testing.T) {
+	origin := bareOrigin(t)
+	p := machine(t, origin)
+	if _, err := p.Publish(context.Background(), snap("me", "mac", time.Now().UTC())); err != nil {
+		t.Fatal(err)
+	}
+	writeCloneFile(t, p.opts.ClonePath, "README.md", "# my workbench\nhours of unsaved notes\n")
+	writeCloneFile(t, p.opts.ClonePath, ".ingitdb/settings.yaml", "user: setting\n")
+	gitIn(t, p.opts.ClonePath, "add", ".ingitdb")
+	p.opts.Sleep = func(time.Duration) {}
+
+	if err := p.Fetch(context.Background()); err == nil {
+		t.Fatal("Fetch over uncommitted user changes succeeded, want the refusal")
+	}
+	if data, _ := os.ReadFile(filepath.Join(p.opts.ClonePath, "README.md")); string(data) != "# my workbench\nhours of unsaved notes\n" {
+		t.Fatalf("README.md = %q, want the user's edit kept", data)
+	}
+	if staged := gitIn(t, p.opts.ClonePath, "diff", "--cached", "--name-only"); staged != ".ingitdb/settings.yaml" {
+		t.Fatalf("staged = %q, want the user's staged file kept", staged)
 	}
 }

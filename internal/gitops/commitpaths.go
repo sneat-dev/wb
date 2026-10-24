@@ -27,69 +27,57 @@ func runStdout(dir string, extra []string, name string, args ...string) (string,
 	return string(out), nil
 }
 
-// CommitPaths records the working-tree state of paths (additions,
-// modifications and deletions) as one new commit on the current branch,
-// without ever staging anything in the repository's shared index. It reports
-// false without committing when that state already matches HEAD, so callers
-// can publish idempotently.
+// CommitPaths stages paths (additions, modifications and deletions) and
+// commits them with an ordinary `git commit`, so the repository's hooks run
+// exactly as they would for `git add` + `git commit` — but it stages them in a
+// private copy of the index (GIT_INDEX_FILE), never in the shared one. It
+// reports false without committing when nothing changed, so callers can
+// publish idempotently.
 //
-// It replaces the old `git add` + `git commit` pair for the remote state
-// store (sneat-dev/wb#899). That pair left the files staged in the shared
-// index whenever the commit step did not finish — the process was
-// interrupted, or `git commit` itself refused, as WB's own pre-commit guard
-// does in a canonical clone that has staged changes — and every later
+// It replaces the old `git add` + `git commit` pair (sneat-dev/wb#899). That
+// pair left the files staged in the shared index whenever the commit did not
+// finish — the process was interrupted, or a pre-commit hook refused (WB's own
+// canonical-clean guard did, in the remote-store clone) — and every later
 // `git rebase` then refused with "Your index contains uncommitted changes".
-// Here the tree is built in a private, throwaway index (GIT_INDEX_FILE),
-// turned into a commit with `git commit-tree`, and published with a
-// compare-and-swap `git update-ref`; nothing outside the private index is
-// touched until the branch already points at the new commit. Only then are
-// the shared index entries for paths brought up to date, best effort: a
-// failure there leaves index entries that lag HEAD, which the state store's
-// self-heal repairs on its next sync, never a lost or half-made commit.
+// The private index starts as a copy of the shared one, so git reuses its
+// stat cache instead of re-hashing every tracked file. A failed or refused
+// commit leaves the shared index exactly as it was. Only after the commit has
+// landed are the shared index entries for paths brought up to date, best
+// effort: a failure there leaves entries that lag HEAD, never a lost or
+// half-made commit.
 func CommitPaths(repoPath, message string, paths ...string) (bool, error) {
 	scratch, err := os.MkdirTemp("", "wb-index-")
 	if err != nil {
 		return false, err
 	}
 	defer func() { _ = os.RemoveAll(scratch) }()
-	env := []string{"GIT_INDEX_FILE=" + filepath.Join(scratch, "index")}
+	private := filepath.Join(scratch, "index")
+	env := []string{"GIT_INDEX_FILE=" + private}
 
-	// An unborn branch (the first commit into an empty store) has no HEAD:
-	// the private index starts empty, the commit has no parent, and the CAS
-	// below requires the branch to still not exist.
-	parentOut, revErr := runStdout(repoPath, nil, "git", "rev-parse", "--verify", "--quiet", "HEAD^{commit}")
-	parent := strings.TrimSpace(parentOut)
-	commitArgs := []string{"commit-tree", "-m", message}
-	if revErr == nil {
-		if _, err := runEnv(repoPath, env, "git", "read-tree", parent); err != nil {
-			return false, err
-		}
-		commitArgs = append(commitArgs, "-p", parent)
-	} else {
-		parent = ""
+	sharedOut, err := runStdout(repoPath, nil, "git", "rev-parse", "--path-format=absolute", "--git-path", "index")
+	if err != nil {
+		return false, err
+	}
+	// An unborn branch may have no index yet; the private index then starts
+	// empty, exactly as git's own would.
+	data, err := os.ReadFile(strings.TrimSpace(sharedOut))
+	if err == nil {
+		err = os.WriteFile(private, data, 0o600)
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, err
 	}
 	if _, err := runEnv(repoPath, env, "git", append([]string{"add", "--all", "--"}, paths...)...); err != nil {
 		return false, err
 	}
-	treeOut, err := runStdout(repoPath, env, "git", "write-tree")
-	if err != nil {
-		return false, err
+	_, err = runEnv(repoPath, env, "git", "diff", "--cached", "--quiet")
+	if err == nil {
+		return false, nil
 	}
-	tree := strings.TrimSpace(treeOut)
-	if parent != "" {
-		parentTree, err := runStdout(repoPath, nil, "git", "rev-parse", parent+"^{tree}")
-		if err != nil {
-			return false, err
-		}
-		if strings.TrimSpace(parentTree) == tree {
-			return false, nil
-		}
+	if exitCode(err) != 1 {
+		return false, fmt.Errorf("inspect staged changes: %w", err)
 	}
-	commitOut, err := runStdout(repoPath, nil, "git", append(commitArgs, tree)...)
-	if err != nil {
-		return false, err
-	}
-	if _, err := run(repoPath, "git", "update-ref", "-m", "commit: "+message, "HEAD", strings.TrimSpace(commitOut), parent); err != nil {
+	if _, err := runEnv(repoPath, env, "git", "commit", "--quiet", "-m", message); err != nil {
 		return false, err
 	}
 	_, _ = run(repoPath, "git", append([]string{"reset", "-q", "--"}, paths...)...)

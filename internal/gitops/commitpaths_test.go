@@ -77,10 +77,12 @@ func TestCommitPathsCreatesTheFirstCommitOnAnUnbornBranch(t *testing.T) {
 	}
 }
 
-// A pre-commit hook that refuses — as WB's canonical-clean guard does while
-// a change is staged — cannot strand a staged change: CommitPaths never runs
-// `git commit`, and a failed ref update leaves the shared index untouched.
-func TestCommitPathsNeverLeavesTheSharedIndexStaged(t *testing.T) {
+// CommitPaths runs the repository's pre-commit hook like any `git commit`
+// (secret scanning and the rest keep working for every caller), and a hook
+// that refuses — as WB's canonical-clean guard did in the remote-store clone —
+// or a commit that fails for any other reason leaves nothing staged in the
+// shared index (sneat-dev/wb#899).
+func TestCommitPathsRunsHooksAndNeverLeavesTheSharedIndexStaged(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("hook scripts rely on a POSIX shell")
 	}
@@ -89,36 +91,40 @@ func TestCommitPathsNeverLeavesTheSharedIndexStaged(t *testing.T) {
 	if err := os.MkdirAll(hooks, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := testenv.WriteExecutableFile(filepath.Join(hooks, "pre-commit"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+	ran := filepath.Join(t.TempDir(), "pre-commit-ran")
+	if err := testenv.WriteExecutableFile(filepath.Join(hooks, "pre-commit"), []byte("#!/bin/sh\ntouch '"+ran+"'\n[ ! -f refuse ]\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	writeRepoFile(t, clone, "claims/a.yaml", "a\n")
 	if committed, err := CommitPaths(clone, "with hook", "claims"); err != nil || !committed {
-		t.Fatalf("CommitPaths with a refusing pre-commit hook = (%v, %v), want (true, nil)", committed, err)
+		t.Fatalf("CommitPaths with a passing pre-commit hook = (%v, %v), want (true, nil)", committed, err)
+	}
+	if _, err := os.Stat(ran); err != nil {
+		t.Fatalf("pre-commit hook did not run: %v", err)
 	}
 
-	lock := filepath.Join(clone, ".git", "refs", "heads", "main.lock")
-	if err := os.WriteFile(lock, nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeRepoFile(t, clone, "refuse", "")
 	writeRepoFile(t, clone, "claims/b.yaml", "b\n")
-	if _, err := CommitPaths(clone, "locked", "claims"); err == nil {
-		t.Fatal("CommitPaths with a locked branch ref succeeded, want an error")
+	if _, err := CommitPaths(clone, "refused", "claims"); err == nil {
+		t.Fatal("CommitPaths with a refusing pre-commit hook succeeded, want an error")
 	}
 	if got := gitIn(t, clone, "diff", "--cached", "--name-only"); got != "" {
-		t.Fatalf("staged after a failed commit = %q, want nothing", got)
+		t.Fatalf("staged after a refused commit = %q, want nothing", got)
+	}
+	if got := gitIn(t, clone, "log", "-1", "--format=%s"); got != "with hook" {
+		t.Fatalf("HEAD = %q, want the refused commit absent", got)
 	}
 }
 
 // Every git step's failure is reported, never read as "nothing to commit".
 func TestCommitPathsReportsEachGitStepFailure(t *testing.T) {
+	notAnIndex := t.TempDir() // a directory: reading it as the index fails
 	for name, body := range map[string]string{
-		"read-tree":   `case "$1" in rev-parse) echo parent;; read-tree) exit 1;; esac; exit 0`,
-		"add":         `case "$1" in rev-parse) exit 1;; add) exit 1;; esac; exit 0`,
-		"write-tree":  `case "$1" in rev-parse) exit 1;; write-tree) exit 1;; esac; exit 0`,
-		"parent tree": `case "$*" in *"^{tree}"*) exit 1;; esac; case "$1" in rev-parse) echo parent;; write-tree) echo tree;; esac; exit 0`,
-		"commit-tree": `case "$1" in rev-parse) exit 1;; write-tree) echo tree;; commit-tree) exit 1;; esac; exit 0`,
-		"update-ref":  `case "$1" in rev-parse) exit 1;; write-tree) echo tree;; commit-tree) echo commit;; update-ref) exit 1;; esac; exit 0`,
+		"locate index": `case "$1" in rev-parse) exit 1;; esac; exit 0`,
+		"read index":   `case "$1" in rev-parse) echo '` + notAnIndex + `';; esac; exit 0`,
+		"add":          `case "$1" in rev-parse) echo /nonexistent/index;; add) exit 1;; esac; exit 0`,
+		"inspect":      `case "$1" in rev-parse) echo /nonexistent/index;; diff) exit 128;; esac; exit 0`,
+		"commit":       `case "$1" in rev-parse) echo /nonexistent/index;; diff) exit 1;; commit) exit 1;; esac; exit 0`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			lgCovFakeGit(t, body)

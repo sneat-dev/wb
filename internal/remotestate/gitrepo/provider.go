@@ -23,6 +23,13 @@ type Options struct {
 	ClonePath string
 	// CloneURL is what git clone receives when ClonePath does not exist yet.
 	CloneURL string
+	// RemoteStore marks the clone as the configured `wb remote` store: WB's
+	// private machine-state checkout, every file of which WB writes itself.
+	// Only then does Fetch self-heal uncommitted claims/, machines/ and
+	// README.md residue (sneat-dev/wb#899). A provider over any other
+	// repository — `wb sync-report publish` into a user's workbench — leaves
+	// it off, so nothing of the user's is ever discarded.
+	RemoteStore bool
 	// Now and Sleep are the clock and retry-backoff seam every clone-lock
 	// wait and Fetch retry goes through. Both default to the real functions
 	// in New; a test supplies fakes to exercise a lock timeout or an
@@ -207,8 +214,10 @@ func (p *Provider) Fetch(_ context.Context) error {
 	if err := p.ensureClone(); err != nil {
 		return err
 	}
-	if err := p.healClone(); err != nil {
-		return err
+	if p.opts.RemoteStore {
+		if err := p.healClone(); err != nil {
+			return err
+		}
 	}
 	has, err := gitops.HasUpstream(p.opts.ClonePath)
 	if err != nil {

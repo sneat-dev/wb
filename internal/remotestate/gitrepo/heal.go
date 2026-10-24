@@ -6,16 +6,15 @@ import (
 
 	"github.com/sneat-dev/wb/internal/gitops"
 	"github.com/sneat-dev/wb/internal/remotestate"
-	"github.com/sneat-dev/wb/internal/syncreport"
 )
 
-// ownedPrefixes are the store paths this provider writes itself: claims,
-// machine snapshots, the README it seeds, and the sync-report collection.
-// An uncommitted change under one of them can only be WB's own write that
-// never made it into a commit, so discarding it loses nothing the store
-// cannot re-derive — the next claim/publish (and the local outbox replay)
-// writes it again.
-var ownedPrefixes = []string{"claims/", "machines/", "README.md", ".ingitdb/", syncreport.CollectionPath + "/"}
+// ownedPrefixes are the remote-store paths this provider writes itself:
+// claims, machine snapshots, and the README it seeds. In the remote store an
+// uncommitted change under one of them can only be WB's own write that never
+// made it into a commit, so discarding it loses nothing the store cannot
+// re-derive — the next claim/publish (and the local outbox replay) writes it
+// again. Healing runs only for a provider with Options.RemoteStore set.
+var ownedPrefixes = []string{"claims/", "machines/", "README.md"}
 
 func ownedPath(path string) bool {
 	for _, prefix := range ownedPrefixes {

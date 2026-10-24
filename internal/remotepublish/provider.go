@@ -29,7 +29,7 @@ func Open(cfg remotestate.Config, projectsRoot string, exitFactory func(int, str
 		if err != nil {
 			return nil, err
 		}
-		return gitrepo.New(gitrepo.Options{ClonePath: clonePath, CloneURL: CloneURL(cfg)}), nil
+		return gitrepo.New(gitrepo.Options{ClonePath: clonePath, CloneURL: CloneURL(cfg), RemoteStore: true}), nil
 	case "hub":
 		return hub.New(hub.Options{
 			BaseURL: cfg.URL, Machine: cfg.Machine, TokenFile: cfg.TokenFile,
