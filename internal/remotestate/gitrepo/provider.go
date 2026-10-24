@@ -19,8 +19,17 @@ import (
 
 // Options locate the state repository clone and its origin.
 type Options struct {
-	// ClonePath is <projects-root>/<owner>/<name>; created by cloning when absent.
+	// ClonePath is where the store is cloned — for the `wb remote` store,
+	// <projects-root>/.wb/remote-store/<owner>/<name> (sneat-dev/wb#901);
+	// created by cloning when absent.
 	ClonePath string
+	// LegacyClonePaths are earlier locations of the same clone. When
+	// ClonePath holds no clone yet, the first of them that is a clone of
+	// CloneURL is moved there (see migrateLegacyClone). Empty: no migration.
+	LegacyClonePaths []string
+	// Notify receives one-line operator notices (a migrated clone). It
+	// defaults to printing to stderr.
+	Notify func(string)
 	// CloneURL is what git clone receives when ClonePath does not exist yet.
 	CloneURL string
 	// RemoteStore marks the clone as the configured `wb remote` store: WB's
@@ -45,6 +54,10 @@ type Provider struct {
 	encodeSnapshot func(remotestate.Snapshot) ([]byte, error)
 	encodeClaim    func(remotestate.Claim) ([]byte, error)
 	removeClaim    func(string) error
+	// rename and clone are the filesystem/git seams migrateLegacyClone moves
+	// or copies a legacy clone through (os.Rename and gitops.Clone).
+	rename func(string, string) error
+	clone  func(string, string) error
 }
 
 // New returns a provider; nothing touches disk until Publish/Fetch/List.
@@ -55,7 +68,10 @@ func New(opts Options) *Provider {
 	if opts.Sleep == nil {
 		opts.Sleep = time.Sleep
 	}
-	return &Provider{opts: opts, encodeSnapshot: remotestate.Encode, encodeClaim: remotestate.EncodeClaim, removeClaim: os.Remove}
+	if opts.Notify == nil {
+		opts.Notify = func(message string) { _, _ = fmt.Fprintln(os.Stderr, message) }
+	}
+	return &Provider{opts: opts, encodeSnapshot: remotestate.Encode, encodeClaim: remotestate.EncodeClaim, removeClaim: os.Remove, rename: os.Rename, clone: gitops.Clone}
 }
 
 // SnapshotPath is the store-relative path of one machine's snapshot.
@@ -75,6 +91,9 @@ Do not edit by hand; run wb remote status to read it.
 // already present — otherwise any directory that happens to hold a `.git`
 // would silently be treated as the state repo.
 func (p *Provider) ensureClone() error {
+	if err := p.migrateLegacyClone(); err != nil {
+		return err
+	}
 	if _, err := os.Stat(filepath.Join(p.opts.ClonePath, ".git")); err == nil {
 		got, err := gitops.ConfiguredOriginURL(p.opts.ClonePath)
 		if err != nil {

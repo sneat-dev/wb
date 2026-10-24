@@ -373,3 +373,10 @@ func validPort(port string) bool {
 func isLetter(character rune) bool {
 	return character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z'
 }
+
+// IsClone reports whether path holds an ordinary clone: a .git directory, not
+// a linked worktree's .git file.
+func IsClone(path string) bool {
+	info, err := os.Stat(filepath.Join(path, ".git"))
+	return err == nil && info.IsDir()
+}
