@@ -295,13 +295,11 @@ func TestDQCovMutateStoreReportsMutateError(t *testing.T) {
 	}
 }
 
-func TestDQCovMutateStoreReportsAddCommitError(t *testing.T) {
+func TestMutateStoreReportsCommitError(t *testing.T) {
 	origin := dqCovEmptyBareOrigin(t)
 	p := machine(t, origin)
 	dqCovPreClone(t, origin, p.opts.ClonePath)
-	if err := os.WriteFile(filepath.Join(p.opts.ClonePath, ".git", "index.lock"), []byte("locked"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	lockBranchRef(t, p.opts.ClonePath)
 
 	_, err := p.mutateStore("claims/task-1.yaml", func() (string, bool, []string, error) {
 		abs := filepath.Join(p.opts.ClonePath, filepath.FromSlash(ClaimPath("task-1")))
@@ -314,7 +312,7 @@ func TestDQCovMutateStoreReportsAddCommitError(t *testing.T) {
 		return "wb: test", true, nil, nil
 	}, func() error { return nil })
 	if err == nil {
-		t.Fatal("mutateStore with a stale index.lock succeeded, want an error")
+		t.Fatal("mutateStore with a locked branch ref succeeded, want an error")
 	}
 }
 

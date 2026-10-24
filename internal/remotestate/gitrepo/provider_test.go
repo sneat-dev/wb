@@ -394,8 +394,8 @@ func TestPublishIntoEmptyStoreCreatesMain(t *testing.T) {
 
 // TestFetchReportsRealCauseWhenNoRebaseInProgress proves Fetch does not
 // blame a rebase-abort failure for an ordinary PullRebase failure that never
-// started a rebase at all: a dirty tracked file makes `git pull --rebase`
-// refuse before it creates .git/rebase-merge, so RebaseAbort must not be
+// started a rebase at all: an unreachable origin makes `git pull --rebase`
+// fail before it creates .git/rebase-merge, so RebaseAbort must not be
 // attempted (it would itself fail with an unrelated "no rebase in progress"
 // error, masking the real cause).
 func TestFetchReportsRealCauseWhenNoRebaseInProgress(t *testing.T) {
@@ -415,15 +415,15 @@ func TestFetchReportsRealCauseWhenNoRebaseInProgress(t *testing.T) {
 	gitIn(t, other, "commit", "-q", "-am", "remote readme change")
 	gitIn(t, other, "push", "-q", "origin", "main")
 
-	// Dirty the tracked file locally without committing: `git pull --rebase`
-	// refuses immediately, before ever starting a rebase.
-	if err := os.WriteFile(filepath.Join(p.opts.ClonePath, "README.md"), []byte("dirty, uncommitted\n"), 0o644); err != nil {
+	// Move the origin away: `git pull --rebase` fails at its fetch, before
+	// ever starting a rebase.
+	if err := os.Rename(origin, origin+".away"); err != nil {
 		t.Fatal(err)
 	}
 
 	err := p.Fetch(context.Background())
 	if err == nil {
-		t.Fatal("Fetch should fail: uncommitted local changes block the pull")
+		t.Fatal("Fetch should fail: the origin is unreachable")
 	}
 	if strings.Contains(err.Error(), "rebase abort also failed") {
 		t.Fatalf("Fetch = %v, want the real cause, not a misattributed rebase-abort failure", err)

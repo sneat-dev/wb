@@ -2,6 +2,7 @@ package remoterun
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -35,6 +36,7 @@ func tryAutoClaim(deps Dependencies, projectsRoot, task string, stale time.Durat
 	ctx := context.Background()
 	outcome, err := provider.Claim(ctx, mine, remotestate.ClaimNormal, "")
 	if err != nil {
+		warnSyncFailing(out, err)
 		return skippedAutoClaim(out, task, err.Error())
 	}
 	switch outcome.Kind {
@@ -52,6 +54,7 @@ func tryAutoClaim(deps Dependencies, projectsRoot, task string, stale time.Durat
 func tryAutoTakeOverStale(ctx context.Context, provider remotestate.Provider, deps Dependencies, mine, holder remotestate.Claim, stale time.Duration, out io.Writer) worktreerun.RemoteClaimOutcome {
 	machines, err := provider.List(ctx)
 	if err != nil {
+		warnSyncFailing(out, err)
 		return skippedAutoClaim(out, mine.Task, "read remote store: "+err.Error())
 	}
 	who := HolderDesc(mine, holder)
@@ -61,6 +64,7 @@ func tryAutoTakeOverStale(ctx context.Context, provider remotestate.Provider, de
 	}
 	outcome, err := provider.Claim(ctx, mine, remotestate.ClaimTakeOverStale, holder.Holder())
 	if err != nil {
+		warnSyncFailing(out, err)
 		return skippedAutoClaim(out, mine.Task, err.Error())
 	}
 	if outcome.Kind == remotestate.ClaimHeld {
@@ -97,6 +101,7 @@ func tryAutoRelease(deps Dependencies, projectsRoot, task string, out io.Writer)
 	}
 	outcome, err := provider.Release(context.Background(), task, login, cfg.Machine, false)
 	if err != nil {
+		warnSyncFailing(out, err)
 		return FailedAutoRelease(out, task, err.Error())
 	}
 	switch outcome.Kind {
@@ -113,6 +118,17 @@ func tryAutoRelease(deps Dependencies, projectsRoot, task string, out io.Writer)
 		}
 		mine := remotestate.Claim{Login: login, Machine: cfg.Machine}
 		return SkippedAutoRelease(out, "held by "+HolderDesc(mine, *outcome.Current))
+	}
+}
+
+// warnSyncFailing prints a WARNING line when err says the remote store
+// itself is not syncing, so it is not mistaken for an ordinary one-off
+// advisory: until it is fixed this machine publishes no claims at all
+// (sneat-dev/wb#899). The error text that follows carries the remedy.
+func warnSyncFailing(out io.Writer, err error) {
+	var syncErr *remotestate.SyncError
+	if errors.As(err, &syncErr) {
+		_, _ = fmt.Fprintf(out, "WARNING: remote store sync failing for %s: claims from this machine are not reaching other machines until it is fixed\n", syncErr.Store)
 	}
 }
 

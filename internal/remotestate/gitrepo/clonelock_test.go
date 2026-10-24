@@ -58,14 +58,14 @@ func TestAcquireCloneLockSerializesConcurrentHolders(t *testing.T) {
 }
 
 // TestFetchRetriesTransientFailureThenSucceeds proves Fetch recovers from a
-// dirty working tree that reproduces one of wb#321's two observed failures:
-// `git pull --rebase` refuses because of an uncommitted local change. In
-// production cloneLock is what stops another WB process from causing this
-// in the first place; this test exercises the retry as the remaining
-// defense in depth, for whatever transient condition reaches Fetch anyway.
-// onFetchRetry fires deterministically between the failed first attempt and
-// the retry — restoring the tracked file there, rather than racing a timer
-// against a background goroutine, is what keeps this test non-flaky.
+// transient `git pull --rebase` failure — here the origin is briefly
+// unreachable. (A dirty wb-owned file, wb#321's other observed symptom, no
+// longer reaches the pull at all: healClone repairs it first, wb#899.) In
+// production cloneLock is what stops another WB process from racing this
+// clone; the retry is the remaining defense in depth. onFetchRetry fires
+// deterministically between the failed first attempt and the retry —
+// restoring the origin there, rather than racing a timer against a
+// background goroutine, is what keeps this test non-flaky.
 func TestFetchRetriesTransientFailureThenSucceeds(t *testing.T) {
 	origin := bareOrigin(t)
 	p := machine(t, origin)
@@ -83,15 +83,10 @@ func TestFetchRetriesTransientFailureThenSucceeds(t *testing.T) {
 	gitIn(t, other, "commit", "-q", "-am", "remote readme change")
 	gitIn(t, other, "push", "-q", "origin", "main")
 
-	readmePath := filepath.Join(p.opts.ClonePath, "README.md")
-	original, err := os.ReadFile(readmePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Dirty the tracked file without committing: the first PullRebase
-	// attempt refuses immediately, before starting a rebase (matching
-	// TestFetchReportsRealCauseWhenNoRebaseInProgress).
-	if err := os.WriteFile(readmePath, []byte("dirty, uncommitted\n"), 0o644); err != nil {
+	// Move the origin away: the first PullRebase attempt fails at its fetch,
+	// before starting a rebase.
+	away := origin + ".away"
+	if err := os.Rename(origin, away); err != nil {
 		t.Fatal(err)
 	}
 
@@ -99,8 +94,8 @@ func TestFetchRetriesTransientFailureThenSucceeds(t *testing.T) {
 	restoreHook := onFetchRetry
 	onFetchRetry = func() {
 		fired++
-		if err := os.WriteFile(readmePath, original, 0o644); err != nil {
-			t.Errorf("restore tracked file between retries: %v", err)
+		if err := os.Rename(away, origin); err != nil {
+			t.Errorf("restore origin between retries: %v", err)
 		}
 	}
 	t.Cleanup(func() { onFetchRetry = restoreHook })
@@ -111,7 +106,7 @@ func TestFetchRetriesTransientFailureThenSucceeds(t *testing.T) {
 	p.opts.Sleep = func(d time.Duration) { slept = append(slept, d) }
 
 	if err := p.Fetch(context.Background()); err != nil {
-		t.Fatalf("Fetch did not recover from a transient dirty index: %v", err)
+		t.Fatalf("Fetch did not recover from a transient pull failure: %v", err)
 	}
 	if fired != 1 {
 		t.Fatalf("onFetchRetry fired %d times, want exactly 1 (one failed attempt before the retry that succeeded)", fired)
@@ -122,8 +117,8 @@ func TestFetchRetriesTransientFailureThenSucceeds(t *testing.T) {
 }
 
 // TestFetchExhaustsRetriesOnPersistentFailure proves Fetch does not retry
-// forever: a dirty tracked file that never clears (a genuinely broken
-// clone, not a transient race) must still surface as an error once
+// forever: an origin that stays unreachable (a genuinely broken setup, not
+// a transient race) must still surface as an error once
 // fetchRetryAttempts is spent, and onFetchRetry must fire exactly
 // fetchRetryAttempts-1 times — once before every retry, never after the
 // final, non-retried attempt.
@@ -141,7 +136,7 @@ func TestFetchExhaustsRetriesOnPersistentFailure(t *testing.T) {
 	gitIn(t, other, "commit", "-q", "-am", "remote readme change")
 	gitIn(t, other, "push", "-q", "origin", "main")
 
-	if err := os.WriteFile(filepath.Join(p.opts.ClonePath, "README.md"), []byte("dirty, uncommitted\n"), 0o644); err != nil {
+	if err := os.Rename(origin, origin+".away"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -156,7 +151,7 @@ func TestFetchExhaustsRetriesOnPersistentFailure(t *testing.T) {
 
 	err := p.Fetch(context.Background())
 	if err == nil {
-		t.Fatal("Fetch should fail: the dirty tracked file never clears")
+		t.Fatal("Fetch should fail: the origin never comes back")
 	}
 	if !strings.Contains(err.Error(), "pull --rebase failed") {
 		t.Fatalf("Fetch err = %v, want a 'pull --rebase failed' message", err)

@@ -23,6 +23,13 @@ type Options struct {
 	ClonePath string
 	// CloneURL is what git clone receives when ClonePath does not exist yet.
 	CloneURL string
+	// RemoteStore marks the clone as the configured `wb remote` store: WB's
+	// private machine-state checkout, every file of which WB writes itself.
+	// Only then does Fetch self-heal uncommitted claims/, machines/ and
+	// README.md residue (sneat-dev/wb#899). A provider over any other
+	// repository — `wb sync-report publish` into a user's workbench — leaves
+	// it off, so nothing of the user's is ever discarded.
+	RemoteStore bool
 	// Now and Sleep are the clock and retry-backoff seam every clone-lock
 	// wait and Fetch retry goes through. Both default to the real functions
 	// in New; a test supplies fakes to exercise a lock timeout or an
@@ -207,6 +214,11 @@ func (p *Provider) Fetch(_ context.Context) error {
 	if err := p.ensureClone(); err != nil {
 		return err
 	}
+	if p.opts.RemoteStore {
+		if err := p.healClone(); err != nil {
+			return err
+		}
+	}
 	has, err := gitops.HasUpstream(p.opts.ClonePath)
 	if err != nil {
 		return err
@@ -232,7 +244,7 @@ func (p *Provider) Fetch(_ context.Context) error {
 		}
 		return nil
 	}
-	return lastErr
+	return p.syncError(lastErr)
 }
 
 // push publishes the clone's current branch. A branch with an upstream
@@ -290,7 +302,7 @@ func (p *Provider) Publish(ctx context.Context, snapshot remotestate.Snapshot) (
 		}
 	}
 	message := fmt.Sprintf("wb: publish %s @ %s", snapshot.Key(), snapshot.PublishedAt.UTC().Format("2006-01-02T15:04:05Z07:00"))
-	committed, err := gitops.AddCommit(p.opts.ClonePath, message, rel, "README.md")
+	committed, err := gitops.CommitPaths(p.opts.ClonePath, message, rel, "README.md")
 	if err != nil {
 		return remotestate.PublishResult{}, err
 	}

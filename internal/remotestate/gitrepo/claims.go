@@ -126,11 +126,12 @@ func (p *Provider) mutateStore(claimPath string, mutate func() (message string, 
 	if !changed {
 		return gitops.HeadSHA(p.opts.ClonePath)
 	}
-	// Scoped staging: the claims directory plus exactly the paths mutate
-	// says it touched (the caller's own snapshot stamp). Never "." — with
-	// no inter-process lock on the clone, a bare "." could sweep another
-	// process's half-written files into a claim commit.
-	committed, err := gitops.AddCommit(p.opts.ClonePath, message, append([]string{"claims"}, extraPaths...)...)
+	// Scoped commit: the claims directory plus exactly the paths mutate
+	// says it touched (the caller's own snapshot stamp). Never "." — a bare
+	// "." could sweep unrelated files into a claim commit. CommitPaths builds
+	// the commit off the shared index, so an interrupted or refused commit
+	// never leaves it staged (sneat-dev/wb#899).
+	committed, err := gitops.CommitPaths(p.opts.ClonePath, message, append([]string{"claims"}, extraPaths...)...)
 	if err != nil {
 		return "", err
 	}

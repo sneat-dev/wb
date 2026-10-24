@@ -10,6 +10,9 @@ import (
 	"github.com/sneat-dev/wb/internal/cli/cmdworktree"
 	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/sneat-dev/wb/internal/console"
+	"github.com/sneat-dev/wb/internal/remotepublish"
+	"github.com/sneat-dev/wb/internal/remotestate"
+	"github.com/sneat-dev/wb/internal/wbconfig"
 	"github.com/sneat-dev/wb/internal/worktreerun"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -161,7 +164,34 @@ func newCreateCmd(inv *invocation) *cobra.Command {
 }
 
 func newWorktreeGuardCmd(inv *invocation) *cobra.Command {
-	return cmdworktree.NewGuard(newCLIRuntime(inv), worktrees.Guard, console.IsTerminal)
+	return cmdworktree.NewGuard(newCLIRuntime(inv), guardExemptingRemoteStore(wbconfig.DefaultPath, worktrees.Guard), console.IsTerminal)
+}
+
+// guardExemptingRemoteStore tells guard which checkout is the configured
+// `wb remote` git store clone, so the WB managed hooks installed there do not
+// refuse WB's own claim and snapshot commits as canonical-clone "local
+// changes" (sneat-dev/wb#899). Existing hook installs pick this up with no
+// repair, because every hook calls back into `wb worktree guard`.
+func guardExemptingRemoteStore(configPath func() string, guard func(context.Context, string, worktrees.GuardOptions) (worktrees.GuardResult, error)) func(context.Context, string, worktrees.GuardOptions) (worktrees.GuardResult, error) {
+	return func(ctx context.Context, path string, options worktrees.GuardOptions) (worktrees.GuardResult, error) {
+		options.RemoteStoreClone = remoteStoreClonePath(configPath(), options.ProjectsRoot)
+		return guard(ctx, path, options)
+	}
+}
+
+// remoteStoreClonePath is the git remote store's clone path, or "" when no
+// git remote store is configured (or the config cannot be read, in which case
+// nothing is exempted and the guard keeps its ordinary rule).
+func remoteStoreClonePath(configPath, projectsRoot string) string {
+	cfg, err := remotestate.LoadConfig(configPath)
+	if err != nil || cfg.Provider != "git" {
+		return ""
+	}
+	clone, err := remotepublish.ClonePath(projectsRoot, cfg)
+	if err != nil {
+		return ""
+	}
+	return clone
 }
 
 // newWorktreeSetCmd is the human-facing remedy the admission gate names. It

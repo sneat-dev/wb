@@ -21,7 +21,9 @@ func NewGuard(environment shared.Runtime, inspect func(context.Context, string, 
 
 A canonical clone is valid when it is clean, whatever branch it has checked
 out: a different checked-out branch is a normal state, and no WB verb needs the
-clone on the base branch. Uncommitted work in it is what the guard protects. A
+clone on the base branch. Uncommitted work in it is what the guard protects.
+The configured 'wb remote' git store clone is WB's own machine-state checkout
+and is exempt from the clean check, so WB can commit its claims there. A
 linked checkout is valid only when it uses a non-base branch and either lives
 in the central store at
 <root>/.worktrees/<task>/<host>/<owner>/<repository> (or the legacy

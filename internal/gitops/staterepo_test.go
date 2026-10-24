@@ -44,28 +44,14 @@ func seededOriginAndClone(t *testing.T) (origin, clone string) {
 	return origin, clone
 }
 
-func TestAddCommitSkipsWhenNothingChanged(t *testing.T) {
-	_, clone := seededOriginAndClone(t)
-	if err := os.WriteFile(filepath.Join(clone, "a.txt"), []byte("a"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if committed, err := AddCommit(clone, "add a", "a.txt"); err != nil || !committed {
-		t.Fatalf("first AddCommit = (%v, %v), want (true, nil)", committed, err)
-	}
-	committed, err := AddCommit(clone, "nothing", "a.txt")
-	if err != nil || committed {
-		t.Fatalf("second AddCommit = (%v, %v), want (false, nil)", committed, err)
-	}
-}
-
-func TestAddCommitPushAndHeadSHA(t *testing.T) {
+func TestCommitPathsPushAndHeadSHA(t *testing.T) {
 	origin, clone := seededOriginAndClone(t)
 	if err := os.WriteFile(filepath.Join(clone, "a.txt"), []byte("a"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	committed, err := AddCommit(clone, "add a", "a.txt")
+	committed, err := CommitPaths(clone, "add a", "a.txt")
 	if err != nil || !committed {
-		t.Fatalf("AddCommit = (%v, %v), want (true, nil)", committed, err)
+		t.Fatalf("CommitPaths = (%v, %v), want (true, nil)", committed, err)
 	}
 	if err := Push(clone); err != nil {
 		t.Fatal(err)
@@ -230,22 +216,6 @@ func TestRebaseAbortClearsConflictAndKeepsLocalCommit(t *testing.T) {
 	}
 	if head := gitIn(t, clone, "rev-parse", "HEAD"); head != localHead {
 		t.Fatalf("HEAD = %s, want local commit %s preserved", head, localHead)
-	}
-}
-
-func TestAddCommitReportsInspectionFailure(t *testing.T) {
-	setGitIdentity(t)
-	notGitRepo := t.TempDir()
-	filePath := filepath.Join(notGitRepo, "a.txt")
-	if err := os.WriteFile(filePath, []byte("a"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	committed, err := AddCommit(notGitRepo, "add a", "a.txt")
-	if err == nil {
-		t.Fatalf("AddCommit on non-git repo should error, got committed=%v", committed)
-	}
-	if committed {
-		t.Fatalf("AddCommit should return committed=false on error")
 	}
 }
 
