@@ -31,12 +31,8 @@ func (s *Service) Run(ctx context.Context, r RunRequest) (agents.Result, error) 
 	if err != nil {
 		return agents.Result{}, err
 	}
-	worktree := strings.TrimSpace(r.Request.Worktree)
-	if plan.WorktreeMode == agents.ModeCurrent {
-		worktree = currentDirectory()
-	}
 	prepared, err := s.deps.PrepareRun(ctx, agents.DispatchRequest{
-		Mode: plan.WorktreeMode, Worktree: worktree, Plan: &plan, Task: r.Request.Task,
+		Mode: plan.WorktreeMode, Worktree: strings.TrimSpace(r.Request.Worktree), Plan: &plan, Task: r.Request.Task,
 		Repository: r.Request.Repository, Base: r.Request.Base, Branch: r.Request.Branch,
 		Timeout:        time.Duration(plan.TimeoutMS) * time.Millisecond,
 		AllowCanonical: r.Request.AllowCanonical, AllowDirty: r.Request.AllowDirty,
@@ -50,14 +46,6 @@ func (s *Service) Run(ctx context.Context, r RunRequest) (agents.Result, error) 
 		return store.Render(record), err
 	}
 	return store.Render(record), nil
-}
-
-func currentDirectory() string {
-	directory, err := os.Getwd()
-	if err != nil {
-		return "."
-	}
-	return directory
 }
 
 // Plan resolves a request without starting anything. It never probes a harness,
@@ -82,10 +70,8 @@ func (s *Service) Profiles(_ context.Context, r DiscoveryRequest) (ProfilesCatal
 		DefaultProfile: config.Defaults.Profile,
 	}
 	for _, name := range agents.AllHarnesses() {
-		adapter, err := agents.HarnessFor(name)
-		if err != nil {
-			continue
-		}
+		// Every name in the closed harness list has an adapter.
+		adapter, _ := agents.HarnessFor(name)
 		catalog.Harnesses = append(catalog.Harnesses, adapter.Capabilities())
 	}
 	for _, name := range config.ProfileNames() {
@@ -120,6 +106,16 @@ func (s *Service) TaskTypes(_ context.Context, r DiscoveryRequest) (TaskTypesCat
 		catalog.TaskTypes = append(catalog.TaskTypes, entry)
 	}
 	return catalog, nil
+}
+
+// leasedWorktree reports whether another execution still holds the writer claim
+// on the run's checkout, which makes its artefacts unsafe to remove.
+func leasedWorktree(store agents.Store, record agents.Record) bool {
+	if strings.TrimSpace(record.WorktreeDir) == "" {
+		return false
+	}
+	_, held, err := store.LeaseHolder(record.WorktreeDir)
+	return err == nil && held
 }
 
 func defaultTaskType(config agents.Config) string {
@@ -200,6 +196,8 @@ func (s *Service) Prune(_ context.Context, r PruneRequest) (PrunePlan, error) {
 			entry.Reason = "accepted work is never pruned automatically"
 		case result.AcceptanceRequired && !result.Review.Reviewed():
 			entry.Reason = "acceptance is required and the run has not been reviewed"
+		case leasedWorktree(store, record):
+			entry.Reason = "the worktree is still claimed by a live execution"
 		default:
 			entry.Action = "remove"
 			if r.Apply {

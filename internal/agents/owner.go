@@ -96,13 +96,15 @@ func DefaultOwnerDeps() OwnerDeps {
 // inheritedLease returns the lease descriptor the dispatcher passed, or nil when
 // this owner was started without one.
 func inheritedLease() *os.File {
-	if strings.TrimSpace(os.Getenv(leaseEnvMarker)) == "" {
+	raw := strings.TrimSpace(os.Getenv(leaseEnvMarker))
+	if raw == "" {
 		return nil
 	}
-	file := os.NewFile(uintptr(inheritedLeaseFD), "wb-agent-lease")
-	if file == nil {
+	fd, err := strconv.Atoi(raw)
+	if err != nil || fd <= 0 {
 		return nil
 	}
+	file := os.NewFile(uintptr(fd), "wb-agent-lease")
 	if _, err := file.Stat(); err != nil {
 		return nil
 	}

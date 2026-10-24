@@ -144,7 +144,6 @@ func TestRunResolvesAndStartsOneExecution(t *testing.T) {
 
 //nolint:paralleltest // the test changes the process working directory
 func TestRunUsesTheCurrentDirectoryForCurrentMode(t *testing.T) {
-	//nolint:paralleltest // the test changes the process working directory
 	fixture := newServiceFixture(t)
 	worktree := t.TempDir()
 	original, err := os.Getwd()
@@ -161,12 +160,10 @@ func TestRunUsesTheCurrentDirectoryForCurrentMode(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	resolved, err := filepath.EvalSymlinks(worktree)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fixture.prepare.Worktree != resolved {
-		t.Fatalf("current mode worktree = %q, want %q", fixture.prepare.Worktree, resolved)
+	// An empty current-mode target is the checkout the caller stands in, which
+	// the agent layer resolves; the service passes it through unchanged.
+	if fixture.prepare.Worktree != "" || fixture.prepare.Mode != agents.ModeCurrent {
+		t.Fatalf("current mode request = %#v", fixture.prepare)
 	}
 }
 

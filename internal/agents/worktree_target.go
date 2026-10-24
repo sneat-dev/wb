@@ -59,24 +59,20 @@ func ResolveTarget(ctx context.Context, path string, allowCanonical, allowDirty 
 	if trimmed == "" {
 		return Target{}, requestErrorf("a worktree path is required")
 	}
-	absolute, err := filepath.Abs(trimmed)
+	info, err := os.Stat(trimmed)
 	if err != nil {
-		return Target{}, requestErrorf("resolve worktree path %q: %v", path, err)
-	}
-	info, err := os.Stat(absolute)
-	if err != nil {
-		return Target{}, requestErrorf("worktree path %q does not exist: %v", absolute, err)
+		return Target{}, requestErrorf("worktree path %q does not exist: %v", trimmed, err)
 	}
 	if !info.IsDir() {
-		return Target{}, requestErrorf("worktree path %q is not a directory", absolute)
+		return Target{}, requestErrorf("worktree path %q is not a directory", trimmed)
 	}
-	toplevel, err := deps.Git(ctx, absolute, "rev-parse", "--show-toplevel")
+	toplevel, err := deps.Git(ctx, trimmed, "rev-parse", "--show-toplevel")
 	if err != nil {
-		return Target{}, requestErrorf("%q is not a Git worktree: %v", absolute, err)
+		return Target{}, requestErrorf("%q is not a Git worktree: %v", trimmed, err)
 	}
 	root := strings.TrimSpace(toplevel)
 	if root == "" {
-		return Target{}, requestErrorf("%q is not a Git worktree", absolute)
+		return Target{}, requestErrorf("%q is not a Git worktree", trimmed)
 	}
 	resolved, err := filepath.EvalSymlinks(root)
 	if err == nil {

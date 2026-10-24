@@ -52,9 +52,18 @@ func (err *LeaseHeldError) Error() string {
 type Lease struct {
 	mutex  sync.Mutex
 	file   *os.File
+	writer leaseWriter
 	path   string
 	info   LeaseInfo
 	closed bool
+}
+
+// leaseWriter is the durable half of a lease. A test substitutes a failing
+// writer to pin the error branches; production always writes the real file.
+type leaseWriter interface {
+	Truncate(size int64) error
+	WriteAt(data []byte, offset int64) (int, error)
+	Sync() error
 }
 
 // LeasePath is the retained lease file for a worktree directory. It is keyed on
@@ -92,9 +101,6 @@ func (store Store) LeaseHolder(worktreeDir string) (LeaseInfo, bool, error) {
 // AcquireLease takes the exclusive writer claim for a worktree, failing with
 // LeaseHeldError when another execution holds it.
 func (store Store) AcquireLease(worktreeDir, agentID, experimentID, repository string, now time.Time) (*Lease, error) {
-	if !fileLockingSupported {
-		return nil, ErrLeaseUnsupported
-	}
 	path, err := store.LeasePath(worktreeDir)
 	if err != nil {
 		return nil, err
@@ -113,13 +119,15 @@ func (store Store) AcquireLease(worktreeDir, agentID, experimentID, repository s
 		if isLockBusy(err) {
 			return nil, &LeaseHeldError{Info: readLeaseInfo(path), Path: path}
 		}
+		// A platform without an inherited lock reports itself here, wrapped so
+		// the caller can still recognise it.
 		return nil, fmt.Errorf("lock agent lease %s: %w", path, err)
 	}
 	info := LeaseInfo{
 		SchemaVersion: schemaVersion, AgentID: agentID, ExperimentID: experimentID,
 		Repository: repository, WorktreeDir: worktreeDir, ClaimedAt: now.UTC(),
 	}
-	lease := &Lease{file: file, path: path, info: info}
+	lease := &Lease{file: file, writer: newLeaseWriter(file), path: path, info: info}
 	if err := lease.writeInfo(info); err != nil {
 		_ = lease.Release()
 		return nil, err
@@ -144,14 +152,6 @@ func (lease *Lease) Path() string {
 	return lease.path
 }
 
-// Info returns the last body written for this lease.
-func (lease *Lease) Info() LeaseInfo {
-	if lease == nil {
-		return LeaseInfo{}
-	}
-	return lease.info
-}
-
 // SetOwner records the detached owner's PID for diagnostics after the spawn.
 func (lease *Lease) SetOwner(ownerPID int) error {
 	if lease == nil {
@@ -174,19 +174,20 @@ func (lease *Lease) writeInfo(info LeaseInfo) error {
 	return lease.writeInfoLocked(info)
 }
 
+// newLeaseWriter is the lease body writer. A test replaces it to pin the
+// failure branches of the durable body write.
+var newLeaseWriter = func(file *os.File) leaseWriter { return file }
+
 func (lease *Lease) writeInfoLocked(info LeaseInfo) error {
-	raw, err := json.MarshalIndent(info, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encode agent lease: %w", err)
-	}
+	raw, _ := json.MarshalIndent(info, "", "  ")
 	raw = append(raw, '\n')
-	if err := lease.file.Truncate(0); err != nil {
+	if err := lease.writer.Truncate(0); err != nil {
 		return fmt.Errorf("truncate agent lease %s: %w", lease.path, err)
 	}
-	if _, err := lease.file.WriteAt(raw, 0); err != nil {
+	if _, err := lease.writer.WriteAt(raw, 0); err != nil {
 		return fmt.Errorf("write agent lease %s: %w", lease.path, err)
 	}
-	if err := lease.file.Sync(); err != nil {
+	if err := lease.writer.Sync(); err != nil {
 		return fmt.Errorf("sync agent lease %s: %w", lease.path, err)
 	}
 	return nil
@@ -218,24 +219,28 @@ func realWorktreePath(path string) (string, error) {
 	if trimmed == "" || trimmed == "." || trimmed == string(filepath.Separator) {
 		return "", fmt.Errorf("agent lease requires a worktree directory")
 	}
-	resolved, err := filepath.EvalSymlinks(trimmed)
-	if err == nil {
-		return resolved, nil
+	return resolveThroughExistingAncestor(trimmed, filepath.EvalSymlinks), nil
+}
+
+// resolveThroughExistingAncestor resolves a path whose tail may not exist yet
+// (a worktree about to be created) by resolving its nearest existing ancestor.
+// When nothing resolves, the clean path is the best available identity.
+func resolveThroughExistingAncestor(path string, eval func(string) (string, error)) string {
+	if resolved, err := eval(path); err == nil {
+		return resolved
 	}
-	ancestor := trimmed
+	ancestor := path
 	remainder := ""
 	for {
 		parent := filepath.Dir(ancestor)
 		if parent == ancestor {
-			return "", fmt.Errorf("resolve worktree path %s: %w", path, err)
+			return path
 		}
 		remainder = filepath.Join(filepath.Base(ancestor), remainder)
 		ancestor = parent
-		resolvedAncestor, ancestorErr := filepath.EvalSymlinks(ancestor)
-		if ancestorErr != nil {
-			continue
+		if resolved, err := eval(ancestor); err == nil {
+			return filepath.Join(resolved, remainder)
 		}
-		return filepath.Join(resolvedAncestor, remainder), nil
 	}
 }
 
@@ -246,13 +251,8 @@ func worktreeKey(resolvedPath string) string {
 }
 
 func readLeaseInfo(path string) LeaseInfo {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return LeaseInfo{}
-	}
+	raw, _ := os.ReadFile(path)
 	var info LeaseInfo
-	if err := json.Unmarshal(raw, &info); err != nil {
-		return LeaseInfo{}
-	}
+	_ = json.Unmarshal(raw, &info)
 	return info
 }

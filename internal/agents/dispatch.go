@@ -152,7 +152,7 @@ func PrepareRun(ctx context.Context, request DispatchRequest, deps DispatchDeps)
 	}
 	// Prove the harness can start before creating a worktree: a dispatch that
 	// cannot authenticate must fail without leaving an unused checkout behind.
-	if deps.Preflight != nil && !(request.Plan != nil && request.Plan.probed) {
+	if deps.Preflight != nil && (request.Plan == nil || !request.Plan.probed) {
 		if err := deps.Preflight(ctx, plan.Profile); err != nil {
 			return nil, err
 		}
@@ -288,17 +288,12 @@ func StartRun(prepared *PreparedRun, deps DispatchDeps) (Record, error) {
 	return prepared.Record, nil
 }
 
-// Abort records an attempt that will never start and releases its lease.
-func (prepared *PreparedRun) Abort(state State, failure, category string, now func() time.Time) error {
-	if prepared == nil {
-		return nil
-	}
-	return prepared.Fail(state, failure, category, now)
-}
-
 // Fail records a terminal failure for a run that never started, or whose owner
 // could not be launched.
 func (prepared *PreparedRun) Fail(state State, failure, category string, now func() time.Time) error {
+	if prepared == nil {
+		return nil
+	}
 	if now == nil {
 		now = time.Now
 	}
@@ -309,15 +304,6 @@ func (prepared *PreparedRun) Fail(state State, failure, category string, now fun
 	prepared.Record.FinishedAt = now().UTC()
 	if err := prepared.Store.Save(prepared.Record); err != nil {
 		return err
-	}
-	return prepared.Lease.Release()
-}
-
-// ReleaseLease drops the writer claim without changing the record, for a
-// prepared run that will never start.
-func (prepared *PreparedRun) ReleaseLease() error {
-	if prepared == nil {
-		return nil
 	}
 	return prepared.Lease.Release()
 }
@@ -339,18 +325,9 @@ func autoOperationName(taskType, task, agentID string) string {
 }
 
 func acquireWriterLease(store Store, request DispatchRequest, target worktreeResolution, deps DispatchDeps) (*Lease, error) {
-	lease, err := store.AcquireLease(target.Dir, request.AgentID, request.ExperimentID, target.Repository, deps.Now())
+	lease, err := acquireLeaseForMode(store, request, target, deps.Now())
 	if err == nil {
 		return lease, nil
-	}
-	if err == ErrLeaseUnsupported {
-		// A unique checkout cannot be shared by construction, so it stays
-		// available on a platform without an inherited lock. A shared checkout
-		// cannot be protected there, so it is refused.
-		if request.Mode == ModeCurrent || request.Mode == ModePath {
-			return nil, requestErrorf("this platform cannot take an exclusive lease on a shared checkout; use --worktree auto or --new-worktree, which give the run its own worktree")
-		}
-		return nil, nil
 	}
 	var held *LeaseHeldError
 	if errors.As(err, &held) {
@@ -404,8 +381,8 @@ func validateDispatchRequest(request DispatchRequest) error {
 		if name == "" {
 			return requestErrorf("--worktree path requires an absolute path")
 		}
-	case ModeCurrent:
-		// The invoking checkout is the target; no name is needed.
+	case ModeCurrent, ModeAuto:
+		// The invoking checkout, or a name WB derives, is the target.
 	default:
 		if name == "" {
 			return requestErrorf("a worktree name is required")
@@ -554,13 +531,10 @@ func resolveWorktree(ctx context.Context, request DispatchRequest, operation str
 // resolveExistingTarget turns `current` or an explicit path into the facts a run
 // records. It never creates or cleans anything.
 func resolveExistingTarget(ctx context.Context, request DispatchRequest, deps DispatchDeps) (worktreeResolution, error) {
-	path := request.Worktree
-	if request.Mode == ModeCurrent {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return worktreeResolution{}, requestErrorf("resolve the current directory: %v", err)
-		}
-		path = cwd
+	path := strings.TrimSpace(request.Worktree)
+	if request.Mode == ModeCurrent && path == "" {
+		// An empty target means the checkout the caller is standing in.
+		path = "."
 	}
 	target, err := ResolveTarget(ctx, path, request.AllowCanonical, request.AllowDirty, TargetDeps{
 		OriginSlug: deps.OriginSlug,

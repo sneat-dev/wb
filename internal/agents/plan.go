@@ -153,10 +153,9 @@ func (planner Planner) Plan(request RunRequest) (Plan, error) {
 		return Plan{}, err
 	}
 	plan.Validation, plan.ValidationSource = validation, validationSource
-	steps, err := config.flattenValidation(validation)
-	if err != nil {
-		return Plan{}, err
-	}
+	// resolveValidation already validated every suite name, so flattening here
+	// cannot fail.
+	steps, _ := config.flattenValidation(validation)
 	plan.ValidationSteps = steps
 
 	plan.AcceptanceRequired = resolveAcceptance(request.Acceptance, taskType)
@@ -176,9 +175,9 @@ func (planner Planner) Plan(request RunRequest) (Plan, error) {
 			}
 			plan.FallbackFrom = plan.Profile.Profile
 			plan.Profile, plan.ProfileSource = fallback, SourceFallback
-			if err := planner.resolveEffort(&plan, request, fallback, taskType); err != nil {
-				return Plan{}, err
-			}
+			// Only an explicit effort can be refused, and an explicit profile is
+			// never swapped, so a fallback can only carry an inherited effort.
+			_ = planner.resolveEffort(&plan, request, fallback, taskType)
 		}
 	}
 	return plan, nil

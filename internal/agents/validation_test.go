@@ -2,7 +2,6 @@ package agents
 
 import (
 	"context"
-	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -141,7 +140,7 @@ func TestValidationPassesTheInheritedLeaseToAStep(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = leaseFile.Close() }()
+	t.Cleanup(func() { _ = leaseFile.Close() })
 	var extra int
 	record := RunValidation(context.Background(), ValidationOptions{
 		WorktreeDir: t.TempDir(), RunDir: t.TempDir(),
@@ -211,8 +210,6 @@ func TestCancelSentinelIsWrittenBeforeSignalling(t *testing.T) {
 		t.Fatal("the sentinel must be visible to the owner")
 	}
 }
-
-var errUnused = errors.New("unused")
 
 func TestValidationKeepsTheLeaseDescriptorNumberStable(t *testing.T) {
 	t.Parallel()

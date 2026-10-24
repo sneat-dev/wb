@@ -92,13 +92,12 @@ func (store Store) AppendReview(agentID string, entry ReviewEntry) (ReviewRecord
 		return ReviewRecord{}, err
 	}
 	document := reviewDocument{SchemaVersion: schemaVersion, AgentID: agentID, Entries: append(existing.History, entry)}
-	raw, err := json.MarshalIndent(document, "", "  ")
+	directory, err := os.Open(store.Dir(agentID))
 	if err != nil {
-		return ReviewRecord{}, fmt.Errorf("encode review for %s: %w", agentID, err)
+		return ReviewRecord{}, fmt.Errorf("open review directory for %s: %w", agentID, err)
 	}
-	raw = append(raw, '\n')
-	path := store.ReviewPath(agentID)
-	if err := writePrivateFile(path, raw); err != nil {
+	defer func() { _ = directory.Close() }()
+	if err := filewrite.WriteJSONAtomicAt(directory, reviewFileName, document, 0o600); err != nil {
 		return ReviewRecord{}, fmt.Errorf("write review for %s: %w", agentID, err)
 	}
 	return store.LoadReview(agentID)
@@ -126,31 +125,4 @@ func validateReviewStatus(status string) error {
 	default:
 		return fmt.Errorf("review status %q must be %q, %q or %q", status, ReviewAccepted, ReviewRejected, ReviewNeedsChange)
 	}
-}
-
-// writePrivateFile replaces a private file atomically.
-func writePrivateFile(path string, raw []byte) error {
-	dir := filepath.Dir(path)
-	temporary, err := filewrite.CreateTemp(dir, ".tmp-*", nil)
-	if err != nil {
-		return err
-	}
-	name := temporary.Name()
-	defer func() { _ = os.Remove(name) }()
-	if err := filewrite.ChmodFile(temporary, 0o600, name, nil); err != nil {
-		_ = filewrite.Close(temporary, name, nil)
-		return err
-	}
-	if err := filewrite.Write(temporary, raw, name, nil); err != nil {
-		_ = filewrite.Close(temporary, name, nil)
-		return err
-	}
-	if err := filewrite.Sync(temporary, name, nil); err != nil {
-		_ = filewrite.Close(temporary, name, nil)
-		return err
-	}
-	if err := filewrite.Close(temporary, name, nil); err != nil {
-		return err
-	}
-	return filewrite.Rename(name, path, nil)
 }

@@ -2,7 +2,6 @@ package agents
 
 import (
 	"bytes"
-	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -208,5 +207,3 @@ func TestNormalizeStateDerivesTheAdditiveStatus(t *testing.T) {
 		t.Fatalf("running = %#v", running)
 	}
 }
-
-var errTelemetry = errors.New("telemetry")

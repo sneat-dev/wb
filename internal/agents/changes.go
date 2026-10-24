@@ -15,15 +15,11 @@ import (
 //
 // A failure to read Git state yields no summary rather than a failed run: the
 // worktree is the artefact and a missing diff stat must not hide it.
-func SummarizeChanges(ctx context.Context, worktreeDir, baseSHA string) *ChangeSummary {
-	return SummarizeChangesWith(ctx, worktreeDir, baseSHA, nil)
-}
-
-// SummarizeChangesWith is SummarizeChanges with the paths that were already
-// dirty before the worker started. When a base commit is known the changed files
-// come from `git diff --name-only`, which includes the worker's commits and
-// excludes pre-existing uncommitted work; otherwise Git status is the only
-// evidence available.
+// SummarizeChangesWith describes what a worker left behind. The preexisting
+// paths are the ones that were already dirty before it started: when a base
+// commit is known the changed files come from the diff, which includes the
+// worker's commits and excludes pre-existing uncommitted work; otherwise Git
+// status is the only evidence available.
 func SummarizeChangesWith(ctx context.Context, worktreeDir, baseSHA string, preexisting []string) *ChangeSummary {
 	if strings.TrimSpace(worktreeDir) == "" {
 		return nil

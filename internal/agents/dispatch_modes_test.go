@@ -57,7 +57,7 @@ func TestPrepareRunAdmitsTheRunWithoutStartingAnything(t *testing.T) {
 	if prepared.Lease == nil || prepared.Record.LeasePath == "" {
 		t.Fatal("a writable run must hold a writer lease")
 	}
-	if err := prepared.ReleaseLease(); err != nil {
+	if err := prepared.Lease.Release(); err != nil {
 		t.Fatalf("ReleaseLease: %v", err)
 	}
 }
@@ -75,7 +75,7 @@ func TestStartRunRefusesASecondWriterOnTheSameWorktree(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "already claimed") {
 		t.Fatalf("second writer = %v", err)
 	}
-	_ = first.ReleaseLease()
+	_ = first.Lease.Release()
 }
 
 //nolint:paralleltest // the dispatch fixture sets process environment
@@ -128,7 +128,7 @@ func TestPreparedRunFailAndAbortRecordTerminalState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := prepared.Abort(StateFailed, "base moved", FailureBaseMismatch, fixture.deps.Now); err != nil {
+	if err := prepared.Fail(StateFailed, "base moved", FailureBaseMismatch, fixture.deps.Now); err != nil {
 		t.Fatalf("Abort: %v", err)
 	}
 	loaded, err := NewStore(fixture.home).Load(prepared.Record.AgentID)
@@ -138,10 +138,10 @@ func TestPreparedRunFailAndAbortRecordTerminalState(t *testing.T) {
 	if loaded.ExecutionStatus != StatusFailed || loaded.FailureCategory != FailureBaseMismatch {
 		t.Fatalf("aborted record = %#v", loaded)
 	}
-	if err := (*PreparedRun)(nil).ReleaseLease(); err != nil {
+	if err := (*Lease)(nil).Release(); err != nil {
 		t.Fatalf("a nil prepared run must be safe: %v", err)
 	}
-	if err := (*PreparedRun)(nil).Abort(StateFailed, "", "", nil); err != nil {
+	if err := (*PreparedRun)(nil).Fail(StateFailed, "", "", nil); err != nil {
 		t.Fatalf("a nil prepared run must abort safely: %v", err)
 	}
 }

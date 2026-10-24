@@ -67,16 +67,6 @@ func supportedHarness(name string) bool {
 // AllHarnesses is the ordered list of harness names this build can launch.
 func AllHarnesses() []string { return supportedHarnesses() }
 
-// BuiltinTaskTypeNames reports which task types come from WB rather than from
-// the operator's configuration.
-func BuiltinTaskTypeNames() map[string]bool {
-	names := make(map[string]bool)
-	for name := range builtinTaskTypes() {
-		names[name] = true
-	}
-	return names
-}
-
 // NewRequestError marks an error as a refused invocation (exit 2) rather than a
 // finding, for callers outside this package.
 func NewRequestError(message string) error { return requestErrorf("%s", message) }

@@ -48,7 +48,7 @@ func TestSummarizeChangesCountsTheArtefactAndNotAReview(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	summary := SummarizeChanges(context.Background(), dir, base)
+	summary := SummarizeChangesWith(context.Background(), dir, base, nil)
 	if summary == nil {
 		t.Fatal("a worktree with changes must produce a summary")
 	}
@@ -76,7 +76,7 @@ func TestSummarizeChangesCountsCommitsTheWorkerMade(t *testing.T) {
 	runGit(t, dir, "add", "-A")
 	runGit(t, dir, "commit", "-qm", "worker commit")
 
-	summary := SummarizeChanges(context.Background(), dir, base)
+	summary := SummarizeChangesWith(context.Background(), dir, base, nil)
 	if summary == nil || summary.Commits != 1 {
 		t.Fatalf("summary = %#v, want one commit", summary)
 	}
@@ -86,12 +86,12 @@ func TestSummarizeChangesDegradesInsteadOfFailingARun(t *testing.T) {
 	t.Parallel()
 	// No directory: WB must report no summary rather than fail a run whose
 	// worktree is the actual artefact.
-	if summary := SummarizeChanges(context.Background(), "", "abc"); summary != nil {
+	if summary := SummarizeChangesWith(context.Background(), "", "abc", nil); summary != nil {
 		t.Fatalf("an empty worktree directory must yield no summary: %#v", summary)
 	}
 	// A directory that is not a repository: Git fails, and the run still has a
 	// truthful (empty) summary.
-	summary := SummarizeChanges(context.Background(), t.TempDir(), "")
+	summary := SummarizeChangesWith(context.Background(), t.TempDir(), "", nil)
 	if summary == nil {
 		t.Fatal("a non-repository directory must still yield a summary object")
 	}
@@ -103,7 +103,7 @@ func TestSummarizeChangesDegradesInsteadOfFailingARun(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "extra.txt"), []byte("x\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	summary = SummarizeChanges(context.Background(), dir, "not-a-revision")
+	summary = SummarizeChangesWith(context.Background(), dir, "not-a-revision", nil)
 	if summary == nil || summary.FilesChanged != 1 {
 		t.Fatalf("summary = %#v, want the untracked file still counted", summary)
 	}
@@ -118,7 +118,7 @@ func TestSummarizeChangesBoundsTheChangedFileList(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	summary := SummarizeChanges(context.Background(), dir, base)
+	summary := SummarizeChangesWith(context.Background(), dir, base, nil)
 	if summary == nil {
 		t.Fatal("expected a summary")
 	}

@@ -69,6 +69,9 @@ internal/agentguard/agentguard_test.go	11	task-15
 internal/agentguard/autotags_test.go	1	task-15
 internal/agentguard/hooks_integration_test.go	7	task-22
 internal/agents/changes_test.go	10	task-15
+internal/agents/config_test.go	1	task-24
+internal/agents/edges2_test.go	7	task-24
+internal/agents/edges_test.go	1	task-24
 internal/agents/env_test.go	6	task-15
 internal/agents/owner_harnesses_test.go	7	task-24
 internal/agents/owner_test.go	6	task-15

@@ -82,19 +82,15 @@ func TestPreflightProvesTheDshModelThroughItsComposedConfiguration(t *testing.T)
 
 func TestDshModelPatchIsValidYAMLForTheComposeTree(t *testing.T) {
 	t.Parallel()
-	raw, err := dshModelPatch("deepseek-v4-flash")
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(raw)
+	text := string(dshModelPatch("deepseek-v4-flash"))
 	if !strings.Contains(text, "- id: agent-default-model") || !strings.Contains(text, "model: deepseek-v4-flash") {
 		t.Fatalf("patch = %q", text)
 	}
 	if strings.Contains(text, ": null") {
 		t.Fatalf("the patch must not emit empty keys: %q", text)
 	}
-	if _, err := dshModelPatch(""); err != nil {
-		t.Fatalf("an empty model is caught earlier, but the patch itself must not fail: %v", err)
+	if got := string(dshModelPatch("")); !strings.Contains(got, "model: \"\"") && !strings.Contains(got, "model: ") {
+		t.Fatalf("an empty model is caught earlier, but the patch itself must not fail: %q", got)
 	}
 }
 

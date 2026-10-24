@@ -82,12 +82,8 @@ func proveDshModel(ctx context.Context, executable, model string, deps Preflight
 		return fmt.Errorf("prepare dsh model proof: %w", err)
 	}
 	defer func() { _ = os.RemoveAll(tempDir) }()
-	patch, err := dshModelPatch(model)
-	if err != nil {
-		return err
-	}
 	patchPath := filepath.Join(tempDir, dshModelPatchName)
-	if err := os.WriteFile(patchPath, patch, 0o600); err != nil {
+	if err := os.WriteFile(patchPath, dshModelPatch(model), 0o600); err != nil {
 		return fmt.Errorf("write dsh model proof overlay: %w", err)
 	}
 	output, err := deps.Run(ctx, executable, "--profile", dshProfile, "--patch", patchPath, "--dump-config")

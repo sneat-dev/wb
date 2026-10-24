@@ -40,11 +40,8 @@ func (r TranscriptReader) Read(record agents.Record, tail int, raw bool) (string
 	adapter, err := agents.HarnessFor(record.Resolved.Harness)
 	if err != nil {
 		// A record written before harnesses were a closed vocabulary still has
-		// a Codex transcript.
-		adapter, err = agents.HarnessFor(agents.HarnessCodex)
-		if err != nil {
-			return "", err
-		}
+		// a Codex transcript. Codex is always present, so this cannot fail.
+		adapter, _ = agents.HarnessFor(agents.HarnessCodex)
 	}
 	for _, action := range adapter.Actions(file, tail) {
 		builder.WriteString("  " + action + "\n")

@@ -76,9 +76,6 @@ func (writer *redactingWriter) emit(data []byte) error {
 	}
 	writer.replaced += count
 	redacted := bytes.ReplaceAll(data, writer.secret, []byte(redactionMarker))
-	if len(redacted) == 0 {
-		return nil
-	}
 	_, err := writer.inner.Write(redacted)
 	return err
 }

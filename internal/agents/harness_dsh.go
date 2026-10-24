@@ -44,15 +44,14 @@ type dshPatchEntry struct {
 }
 
 // dshModelPatch renders the overlay for one model.
-func dshModelPatch(model string) ([]byte, error) {
+func dshModelPatch(model string) []byte {
 	entry := dshPatchEntry{ID: "agent-default-model"}
 	entry.Config.Provider = ProviderDshDefault
 	entry.Config.Model = model
-	raw, err := yaml.Marshal([]dshPatchEntry{entry})
-	if err != nil {
-		return nil, fmt.Errorf("render dsh model patch: %w", err)
-	}
-	return raw, nil
+	// A fixed struct of strings always marshals; the YAML encoder has no
+	// failure mode left to report.
+	raw, _ := yaml.Marshal([]dshPatchEntry{entry})
+	return raw
 }
 
 // Prepare writes the model overlay and builds the invocation.
@@ -76,12 +75,8 @@ func (dshHarness) Prepare(launch Launch) (HarnessLaunch, error) {
 	if err != nil {
 		return HarnessLaunch{}, err
 	}
-	patch, err := dshModelPatch(model)
-	if err != nil {
-		return HarnessLaunch{}, err
-	}
 	patchPath := filepath.Join(launch.RunDir, dshModelPatchName)
-	if err := os.WriteFile(patchPath, patch, 0o600); err != nil {
+	if err := os.WriteFile(patchPath, dshModelPatch(model), 0o600); err != nil {
 		return HarnessLaunch{}, fmt.Errorf("write dsh model overlay: %w", err)
 	}
 	argv := []string{

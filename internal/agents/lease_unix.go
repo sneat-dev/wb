@@ -8,11 +8,9 @@ import (
 	unix "github.com/sneat-dev/wb/internal/unixcompat"
 )
 
-// fileLockingSupported reports whether an exclusive advisory lock exists and is
-// inherited by a child process on this platform.
-const fileLockingSupported = true
-
-func lockFile(file *os.File) error {
+// lockFile is the non-blocking exclusive claim. It is a var so a test can pin
+// the non-busy error branch deterministically.
+var lockFile = func(file *os.File) error {
 	return unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB)
 }
 

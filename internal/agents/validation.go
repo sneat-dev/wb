@@ -77,9 +77,9 @@ func runValidationStep(ctx context.Context, options ValidationOptions, command f
 		result.Status = ValidationSkipped
 		return result
 	}
+
 	timeout, err := parseStepTimeout(step.Timeout)
 	if err != nil {
-		result.LogPath = ""
 		return result
 	}
 	if timeout == 0 {
