@@ -87,7 +87,7 @@ func Options(request Request, deps Dependencies) cockpitfleet.Options {
 		}
 		if remoteConfig.Provider != "git" {
 			logf("cockpit fleet: other machines are not read from the %s remote provider", remoteConfig.Provider)
-		} else if clonePath, pathErr := remotepublish.ClonePath(projectsRoot, remoteConfig); pathErr != nil {
+		} else if clonePath, pathErr := remotepublish.ActiveClonePath(projectsRoot, remoteConfig); pathErr != nil {
 			logf("cockpit fleet: the remote state store cannot be located: %v", pathErr)
 		} else {
 			remote = cockpitfleet.LocalStateCollector{Reader: gitrepo.New(gitrepo.Options{ClonePath: clonePath, CloneURL: remotepublish.CloneURL(remoteConfig)})}

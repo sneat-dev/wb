@@ -87,7 +87,7 @@ PreToolUse payload on stdin and carries these policies:
 - **Dispatch into a live claim** (`Agent`/`Task` tool) — refuses a dispatch
   naming a repository another live WB claim already covers, read locally from
   the repository's own `.worktrees/` manifests and the local wb-state mirror
-  (no network). A dispatch from inside the claimed worktree itself is treated
+  (`<projects-root>/.wb/remote-store/<owner>/<name>`; no network). A dispatch from inside the claimed worktree itself is treated
   as that lane continuing its own work, not a second claim.
 - **Land with the WB verb** — refuses every call that `gh` itself would run
   as `pr merge`, naming `wb worktree land`/`wb land` and

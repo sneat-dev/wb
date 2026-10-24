@@ -313,3 +313,17 @@ func resolveAbsWith(path string, abs func(string) (string, error), eval func(str
 	}
 	return filepath.Join(resolvedParent, filepath.Base(absolute)), nil
 }
+
+// RemoteStoreDirName is the directory under the private state directory that
+// holds the `wb remote` git store clones (sneat-dev/wb#901).
+const RemoteStoreDirName = "remote-store"
+
+// RemoteStoreClonePath is where the `wb remote` git store owner/name is cloned:
+// <root>/.wb/remote-store/<owner>/<name>. Inside the dot-named state directory
+// the clone is WB's private machine state by location, so no fleet scan (hooks,
+// sync, cleanup, the agent edit guard) ever mistakes it for a canonical source
+// clone, as one at <root>/<owner>/<name> was (sneat-dev/wb#899). It is a pure
+// join: root must already be resolved, and nothing is created.
+func RemoteStoreClonePath(root, owner, name string) string {
+	return filepath.Join(root, ".wb", RemoteStoreDirName, owner, name)
+}

@@ -1855,6 +1855,10 @@ func normalizeCreateOptions(options CreateOptions) (CreateOptions, error) {
 	return options, nil
 }
 
+// AbsoluteProjectsRoot is the projects root made absolute with symlinks
+// resolved; an empty root is an error.
+func AbsoluteProjectsRoot(root string) (string, error) { return absoluteProjectsRoot(root) }
+
 func absoluteProjectsRoot(root string) (string, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
