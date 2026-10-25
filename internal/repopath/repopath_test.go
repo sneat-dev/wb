@@ -390,3 +390,19 @@ func TestOwnersReportsUnreadableHostDirectoriesInsteadOfFailing(t *testing.T) {
 		t.Fatalf("diagnostic = %q", unreadable[0])
 	}
 }
+
+// IsClone accepts a .git directory and refuses a linked worktree's .git file
+// or a missing path.
+func TestIsCloneRecognisesOnlyAGitDirectory(t *testing.T) {
+	t.Parallel()
+	clone, worktree := t.TempDir(), t.TempDir()
+	if err := os.Mkdir(filepath.Join(clone, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, ".git"), []byte("gitdir: elsewhere\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !IsClone(clone) || IsClone(worktree) || IsClone(filepath.Join(clone, "missing")) {
+		t.Fatal("IsClone misjudged a clone, a linked worktree or a missing path")
+	}
+}

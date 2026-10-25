@@ -756,6 +756,19 @@ Create the store with `gh repo create <owner>/wb-state --private` (no README
 needed; the first publish creates `main`), and SSH access to GitHub is
 required — the clone URL is `git@github.com:<owner>/<name>.git`.
 
+The local clone of the store lives in WB's private state directory, at
+`<projects-root>/.wb/remote-store/<owner>/<name>`, not beside your source
+clones, so fleet tools (`wb hooks install --fleet`, `wb sync`, cleanup scans,
+the agent edit guard) never treat it as a canonical clone. A machine that still
+has the store cloned at an earlier release's `<projects-root>/<owner>/<name>`
+(or `<projects-root>/github.com/<owner>/<name>`) has that clone moved there on
+its next `wb remote` operation, unpushed claim commits included, and WB prints
+one line saying so. If the clone cannot be moved (it has linked worktrees),
+WB copies it instead, leaves the old clone untouched, and the notice says how
+to retire it once `git -C <old-path> status` shows nothing you need. An older
+wb binary still installed on the machine clones the store at the old path
+again, so upgrade every wb on the machine.
+
 The same store reserves fleet-wide task claims at `claims/<task>.yaml` — the
 file's existence is the claim, and release deletes it, so the store's git
 history is the audit trail. `wb remote claim <task> [--note <text>]

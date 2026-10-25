@@ -9,6 +9,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/sneat-dev/wb/internal/repopath"
+	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
 // canonicalClonePath joins trailing path segments onto the canonical clone of
@@ -279,7 +280,7 @@ func claimLive(projectsRoot, task string) bool {
 	if !ok {
 		return false
 	}
-	claimPath := canonicalClonePath(projectsRoot, owner, name, "claims", task+".yaml")
+	claimPath := filepath.Join(stateClonePath(projectsRoot, owner, name), "claims", task+".yaml")
 	info, err := os.Stat(claimPath)
 	return err == nil && !info.IsDir()
 }
@@ -292,7 +293,7 @@ func claimOwner(projectsRoot, task string) string {
 	if !ok {
 		return ""
 	}
-	raw, err := os.ReadFile(canonicalClonePath(projectsRoot, owner, name, "claims", task+".yaml"))
+	raw, err := os.ReadFile(filepath.Join(stateClonePath(projectsRoot, owner, name), "claims", task+".yaml"))
 	if err != nil {
 		return ""
 	}
@@ -301,6 +302,17 @@ func claimOwner(projectsRoot, task string) string {
 		return ""
 	}
 	return claim.Login + "/" + claim.Machine
+}
+
+// stateClonePath is the local clone of the remote-state repository: the one
+// inside WB's state directory (sneat-dev/wb#901), or — on a machine whose
+// clone has not been migrated there yet — the legacy canonical-clone path.
+func stateClonePath(projectsRoot, owner, name string) string {
+	clone := wbhome.RemoteStoreClonePath(projectsRoot, owner, name)
+	if repopath.IsClone(clone) {
+		return clone
+	}
+	return canonicalClonePath(projectsRoot, owner, name)
 }
 
 // wbStateRepository reads the configured remote-state repository from

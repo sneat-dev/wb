@@ -24,8 +24,12 @@ func TestRemoteStoreClonePathResolvesOnlyAConfiguredGitStore(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	git := writeGuardRemoteConfig(t, "remote:\n  repo: team/state\n  machine: box\n")
-	if got, want := remoteStoreClonePath(git, root), filepath.Join(root, "github.com", "team", "state"); got != want && got != filepath.Join(root, "team", "state") {
-		t.Fatalf("git store clone path = %q, want %q (or the legacy owner/name layout)", got, want)
+	physicalRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := remoteStoreClonePath(git, root), filepath.Join(physicalRoot, ".wb", "remote-store", "team", "state"); got != want {
+		t.Fatalf("git store clone path = %q, want %q", got, want)
 	}
 	if got := remoteStoreClonePath(filepath.Join(t.TempDir(), "missing.yaml"), root); got != "" {
 		t.Fatalf("unconfigured clone path = %q, want empty", got)
@@ -58,5 +62,27 @@ func TestWorktreeGuardIsToldWhichCloneIsTheRemoteStore(t *testing.T) {
 	}
 	if seen.ProjectsRoot != root {
 		t.Fatalf("ProjectsRoot = %q, want it passed through", seen.ProjectsRoot)
+	}
+}
+
+// The exemption follows the store: the legacy canonical-path clone while a
+// machine has not migrated (its fleet hooks still call the guard), and the
+// clone inside .wb once it has (sneat-dev/wb#901).
+func TestRemoteStoreGuardExemptionFollowsTheMigratedClone(t *testing.T) {
+	t.Parallel()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := writeGuardRemoteConfig(t, "remote:\n  repo: team/state\n  machine: box\n")
+	legacy := filepath.Join(root, "team", "state")
+	store := filepath.Join(root, ".wb", "remote-store", "team", "state")
+	for _, clone := range []string{legacy, store} {
+		if err := os.MkdirAll(filepath.Join(clone, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if got := remoteStoreClonePath(config, root); got != clone {
+			t.Fatalf("exempted clone = %q, want %q", got, clone)
+		}
 	}
 }

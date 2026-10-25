@@ -181,13 +181,16 @@ func guardExemptingRemoteStore(configPath func() string, guard func(context.Cont
 
 // remoteStoreClonePath is the git remote store's clone path, or "" when no
 // git remote store is configured (or the config cannot be read, in which case
-// nothing is exempted and the guard keeps its ordinary rule).
+// nothing is exempted and the guard keeps its ordinary rule). It is the clone
+// that currently is the store: <root>/.wb/remote-store/<owner>/<name> once
+// migrated (sneat-dev/wb#901), where no fleet hook is installed any more, and
+// the legacy canonical-path clone on a machine not migrated yet.
 func remoteStoreClonePath(configPath, projectsRoot string) string {
 	cfg, err := remotestate.LoadConfig(configPath)
 	if err != nil || cfg.Provider != "git" {
 		return ""
 	}
-	clone, err := remotepublish.ClonePath(projectsRoot, cfg)
+	clone, err := remotepublish.ActiveClonePath(projectsRoot, cfg)
 	if err != nil {
 		return ""
 	}
