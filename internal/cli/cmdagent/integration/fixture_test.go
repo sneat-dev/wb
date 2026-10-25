@@ -68,6 +68,17 @@ func newFixture(t *testing.T) *fixture {
 	deps := agentrun.DefaultDependencies()
 	deps.ConfigPath = func() string { return f.configPath }
 	deps.BeforeCreate = func(string, []string) error { return errors.New("no checkout expected") }
+	// Preflight here proves the credential contract, not which harness binaries
+	// happen to be installed on the machine running the test.
+	deps.Preflight = func(_ context.Context, resolved agents.Resolved) error {
+		if resolved.Harness != agents.HarnessCodex {
+			return nil
+		}
+		if _, err := agents.ResolveCredential(resolved.Routing); err != nil {
+			return fmt.Errorf("provider %q: %w", resolved.Provider, err)
+		}
+		return nil
+	}
 	deps.AfterCreate = func(string, io.Writer, string, []worktrees.CreateResult) {}
 	f.deps = deps
 	f.service = agentrun.New(deps)
