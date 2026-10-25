@@ -1,0 +1,220 @@
+package agents
+
+import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"io"
+	"strings"
+)
+
+// HarnessOptions is everything the Codex harness needs that is not in the
+// process environment. It exists so every harness-specific flag and
+// configuration-key spelling lives in exactly one file: a harness version
+// change is a one-file change.
+type HarnessOptions struct {
+	WorktreeDir string
+	Model       string
+	Reasoning   string
+	// ProviderName keys the provider registry entry, and Provider carries the
+	// routing. The credential itself is never here — only the environment
+	// variable name the harness must read it from.
+	ProviderName string
+	Provider     Provider
+	// LastMessagePath asks the harness to write its final message there, which
+	// is the one bounded, non-transcript result channel.
+	LastMessagePath string
+}
+
+// maxHarnessArgvBytes bounds a task WB hands to a harness on its command line.
+// Linux caps a single argument below 131072 bytes including the terminator, so
+// half of that stays safely clear of the boundary on every supported platform.
+const maxHarnessArgvBytes = 64 * 1024
+
+// CodexArgv builds the exact non-interactive Codex invocation.
+//
+// The task is deliberately absent: it is delivered on stdin (a trailing "-"),
+// so task text never appears in the process table. Values are JSON-encoded
+// because the harness parses each override value as TOML, where a bare word
+// and a quoted string are different things.
+func CodexArgv(options HarnessOptions) ([]string, error) {
+	if strings.TrimSpace(options.WorktreeDir) == "" {
+		return nil, fmt.Errorf("codex launch requires a working directory")
+	}
+	if strings.TrimSpace(options.Model) == "" {
+		return nil, fmt.Errorf("codex launch requires a model")
+	}
+	if options.Provider.WireAPI == "" || options.Provider.CredentialEnv == "" || options.Provider.BaseURL == "" {
+		return nil, fmt.Errorf("codex launch requires a fully resolved provider")
+	}
+	prefix := "model_providers." + options.ProviderName
+	overrides := []struct {
+		key   string
+		value string
+	}{
+		{"model_provider", options.ProviderName},
+		{prefix + ".name", options.ProviderName},
+		{prefix + ".base_url", options.Provider.BaseURL},
+		{prefix + ".wire_api", options.Provider.WireAPI},
+		{prefix + ".env_key", options.Provider.CredentialEnv},
+		// A dispatched worker must never block on an interactive approval
+		// prompt: nothing is attached to answer it.
+		{"approval_policy", "never"},
+		// The harness's own shell tool subprocesses must not inherit the
+		// credential the harness authenticates with, so a worker command
+		// cannot read the key that pays for the run.
+		{"shell_environment_policy.inherit", "core"},
+	}
+	argv := []string{
+		"exec", "--ephemeral", "--json", "--ignore-user-config",
+		"-C", options.WorktreeDir,
+		"-s", "workspace-write",
+		"-m", options.Model,
+	}
+	for _, override := range overrides {
+		encoded := encodeConfigValue(override.value)
+		argv = append(argv, "-c", override.key+"="+encoded)
+	}
+	// A fixed string slice has no unsupported values or custom marshalers.
+	exclude, _ := json.Marshal([]string{"*KEY*", "*TOKEN*", "*SECRET*"})
+	argv = append(argv, "-c", "shell_environment_policy.exclude="+string(exclude))
+	// Reasoning is the model's own vocabulary and drifts per model, so WB
+	// passes the configured value through and lets the model be the authority
+	// on which levels exist. An absent value passes no override at all.
+	if strings.TrimSpace(options.Reasoning) != "" {
+		encoded := encodeConfigValue(strings.TrimSpace(options.Reasoning))
+		argv = append(argv, "-c", "model_reasoning_effort="+encoded)
+	}
+	if strings.TrimSpace(options.LastMessagePath) != "" {
+		argv = append(argv, "-o", options.LastMessagePath)
+	}
+	// The trailing "-" is the harness's documented "read the prompt from
+	// stdin" spelling. Omitting it would make an empty prompt instead.
+	return append(argv, "-"), nil
+}
+
+// codexHarness adapts Codex to the shared contract. Its event vocabulary is the
+// only one WB decodes with a typed struct.
+type codexHarness struct{}
+
+func (codexHarness) Name() string { return HarnessCodex }
+
+func (codexHarness) Capabilities() HarnessCapabilities {
+	return HarnessCapabilities{
+		Harness: HarnessCodex, JSONEvents: true, TaskDelivery: TaskDeliveryStdin,
+		TokenUsage: UsageFromEvents, Cost: CostUnavailable, Effort: EffortConfig,
+		Credential: CredentialWBInjected, Isolation: IsolationPrivateHome,
+	}
+}
+
+func (codexHarness) Prepare(launch Launch) (HarnessLaunch, error) {
+	argv, err := CodexArgv(HarnessOptions{
+		WorktreeDir: launch.WorktreeDir, Model: launch.Model, Reasoning: launch.Effort,
+		ProviderName: launch.ProviderName, Provider: launch.Provider,
+		LastMessagePath: launch.LastMessagePath,
+	})
+	if err != nil {
+		return HarnessLaunch{}, err
+	}
+	return HarnessLaunch{Argv: argv, Stdin: launch.Task}, nil
+}
+
+func (codexHarness) Summarize(reader io.Reader) HarnessSummary {
+	return SummarizeEvents(reader)
+}
+
+func (codexHarness) Actions(reader io.Reader, limit int) []string {
+	return RecentActions(reader, limit)
+}
+
+// harnessEvent is the subset of the harness's JSONL vocabulary WB consumes.
+// One decoder serves every consumer, so a harness field rename is a
+// single-place change.
+type harnessEvent struct {
+	Type string `json:"type"`
+	Item *struct {
+		Type    string `json:"type"`
+		Command string `json:"command"`
+		Status  string `json:"status"`
+		Message string `json:"message"`
+	} `json:"item"`
+	Usage *struct {
+		InputTokens           int `json:"input_tokens"`
+		CachedInputTokens     int `json:"cached_input_tokens"`
+		CacheWriteInputTokens int `json:"cache_write_input_tokens"`
+		OutputTokens          int `json:"output_tokens"`
+		ReasoningOutputTokens int `json:"reasoning_output_tokens"`
+	} `json:"usage"`
+}
+
+// harnessLogLimit bounds how much of a transcript is ever held in memory.
+const harnessLogLimit = 8 * 1024 * 1024
+
+// scanHarnessEvents reads the harness's merged stdout/stderr stream line by
+// line. A line that is not a JSON object at all is the harness's own diagnostic
+// text on stderr and is skipped; a line that begins like an event but does not
+// decode is counted as malformed.
+func scanHarnessEvents(reader io.Reader, handle func(harnessEvent)) int {
+	malformed := 0
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 0, 64*1024), harnessLogLimit)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || !strings.HasPrefix(line, "{") {
+			continue
+		}
+		var event harnessEvent
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			malformed++
+			continue
+		}
+		handle(event)
+	}
+	return malformed
+}
+
+// SummarizeEvents parses the Codex JSONL event stream.
+func SummarizeEvents(reader io.Reader) HarnessSummary {
+	var summary HarnessSummary
+	summary.MalformedLines = scanHarnessEvents(reader, func(event harnessEvent) {
+		switch event.Type {
+		case "turn.completed":
+			summary.TurnCompleted = true
+			if event.Usage != nil {
+				summary.Tokens = &Tokens{
+					Input:      intPointer(event.Usage.InputTokens),
+					Output:     intPointer(event.Usage.OutputTokens),
+					CacheRead:  intPointer(event.Usage.CachedInputTokens),
+					CacheWrite: intPointer(event.Usage.CacheWriteInputTokens),
+					Reasoning:  intPointer(event.Usage.ReasoningOutputTokens),
+				}
+			}
+		case "turn.failed", "error":
+			summary.TurnFailed = true
+		case "item.completed":
+			if event.Item == nil {
+				return
+			}
+			switch event.Item.Type {
+			case "command_execution", "file_change", "mcp_tool_call":
+				summary.ToolCalls++
+			case "error":
+				// The harness reports non-fatal degradations — a missing model
+				// catalogue, a shortened skills budget — as error items. They
+				// belong in the run record as diagnostics, not as failures.
+				if message := strings.TrimSpace(event.Item.Message); message != "" {
+					summary.Diagnostics = append(summary.Diagnostics, message)
+				}
+			}
+		}
+	})
+	return summary
+}
+
+// JSON string encoding is total, including control bytes and invalid UTF-8.
+func encodeConfigValue(value string) string {
+	encoded, _ := json.Marshal(value)
+	return string(encoded)
+}
+
+func intPointer(value int) *int { return &value }

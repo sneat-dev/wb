@@ -97,7 +97,7 @@ func newDispatchFixture(t *testing.T) *dispatchFixture {
 			fixture.afterCalls++
 			fixture.afterResults = results
 		},
-		SpawnOwner: func(agentID string) (int, error) {
+		SpawnOwner: func(agentID string, _ []*os.File) (int, error) {
 			fixture.spawnedAgentID = agentID
 			if fixture.spawnErr != nil {
 				return 0, fixture.spawnErr
@@ -166,7 +166,7 @@ func TestDispatchNewWorktreeRecordsTheResolvedRunAndStartsTheOwner(t *testing.T)
 	if record.State != StateRunning {
 		t.Fatalf("state = %s", record.State)
 	}
-	if record.RequestedProfile != "cheap" || record.Resolved.Model != "deepseek-flash" || record.Resolved.Reasoning != "high" {
+	if record.RequestedProfile != "cheap" || record.Resolved.Model != "deepseek-flash" || record.Resolved.Effort != "high" {
 		t.Fatalf("resolved snapshot = %#v", record.Resolved)
 	}
 	if record.Task != "do the bounded thing" || record.TaskSummary == "" {
@@ -217,7 +217,7 @@ func TestDispatchDoesNotClobberWhatTheOwnerRecordsWhileSpawning(t *testing.T) {
 	fixture := newDispatchFixture(t)
 	store := NewStore(fixture.home)
 	ownerpid := os.Getpid()
-	fixture.deps.SpawnOwner = func(agentID string) (int, error) {
+	fixture.deps.SpawnOwner = func(agentID string, _ []*os.File) (int, error) {
 		fixture.spawnedAgentID = agentID
 		// Simulate an owner that has already raced ahead to record process
 		// identity before Dispatch returns.
@@ -539,7 +539,7 @@ func TestDispatchReportsARunDirectoryItCannotCreate(t *testing.T) {
 	}
 	fixture.deps.Home = blocked
 	_, err := fixture.dispatch(t, newRequest())
-	if err == nil || !strings.Contains(err.Error(), "create agent run directory") {
+	if err == nil || (!strings.Contains(err.Error(), "create agent run directory") && !strings.Contains(err.Error(), "create agent lease directory")) {
 		t.Fatalf("an unwritable run directory must be reported: %v", err)
 	}
 	if fixture.spawnedAgentID != "" {

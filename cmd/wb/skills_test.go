@@ -240,6 +240,83 @@ func TestWorktreeSkillExamplesCaptureMandatoryPrivatePrompt(t *testing.T) {
 	}
 }
 
+func TestWBAgentSkillExamplesResolveToRealCommands(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	skillRoot := filepath.Join(repoRoot, "ai", "skills", "wb-agent")
+	checked := 0
+	err := filepath.WalkDir(skillRoot, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || filepath.Ext(path) != ".md" {
+			return nil
+		}
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		lines := strings.Split(string(contents), "\n")
+		for index := 0; index < len(lines); index++ {
+			example := strings.TrimSpace(lines[index])
+			// An inline example is a whole command when it opens a code span.
+			example = strings.TrimPrefix(example, "1. Read the change: `")
+			example = strings.TrimPrefix(example, "- ")
+			if !strings.HasPrefix(example, "wb ") {
+				continue
+			}
+			if stop := strings.Index(example, "`"); stop >= 0 {
+				example = strings.TrimSpace(example[:stop])
+			}
+			// A trailing comment is documentation for a human reader.
+			if comment := strings.Index(example, " #"); comment >= 0 {
+				example = strings.TrimSpace(example[:comment])
+			}
+			for strings.HasSuffix(example, "\\") && index+1 < len(lines) {
+				example = strings.TrimSpace(strings.TrimSuffix(example, "\\")) + " " + strings.TrimSpace(lines[index+1])
+				index++
+			}
+			// Prose that merely names a command is not an invocation.
+			if !strings.Contains(example, "--") && !strings.Contains(example, " wb ") && !strings.Contains(example, " <") {
+				continue
+			}
+			if err := parseSkillCommandExample(example); err != nil {
+				t.Errorf("%s has an example that does not parse: %q: %v", path, example, err)
+			}
+			checked++
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checked < 10 {
+		t.Fatalf("only %d skill examples were verified; the skill lost its invocations", checked)
+	}
+}
+
+func TestWBAgentSkillIsTheOnlySkillForAgentCommands(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	raw, err := os.ReadFile(filepath.Join(repoRoot, "ai", "skills", "commands.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var coverage struct {
+		Commands map[string][]string `json:"commands"`
+	}
+	if err := json.Unmarshal(raw, &coverage); err != nil {
+		t.Fatal(err)
+	}
+	skills := coverage.Commands["agent"]
+	if len(skills) != 1 || skills[0] != "wb-agent" {
+		t.Fatalf("agent commands must be covered by exactly wb-agent, got %v", skills)
+	}
+	// The retired skill must not linger: two names one letter apart would collide
+	// when a harness chooses which skill applies.
+	if _, err := os.Stat(filepath.Join(repoRoot, "ai", "skills", "wb-agents")); !os.IsNotExist(err) {
+		t.Fatalf("the retired wb-agents skill still exists: %v", err)
+	}
+}
+
 // TestWBMergeSkillIsOnePortableContract prevents a local harness prompt from
 // regressing into the branch-prefix, background-watch, or cleanup debt that
 // this merger role exists to remove. The assertion is deliberately semantic:

@@ -144,7 +144,7 @@ agents:
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if resolved.Harness != HarnessCodex || resolved.Provider != "deepseek" || resolved.Model != "deepseek-flash" || resolved.Reasoning != "high" {
+	if resolved.Harness != HarnessCodex || resolved.Provider != "deepseek" || resolved.Model != "deepseek-flash" || resolved.Effort != "high" {
 		t.Fatalf("resolved = %#v", resolved)
 	}
 	if resolved.Routing.CredentialEnv != "DEEPSEEK_API_KEY" {
@@ -163,7 +163,7 @@ func TestResolveRejectsUnsupportedHarnessProviderAndUnsafeValues(t *testing.T) {
 	}{
 		"unsupported harness": {
 			body:   "agents:\n  profiles:\n    p:\n      harness: claude-code\n      provider: deepseek\n      model: m\n",
-			expect: "supports \"codex\"",
+			expect: "supports codex, opencode, dsh",
 		},
 		"unknown provider": {
 			body:   "agents:\n  profiles:\n    p:\n      harness: codex\n      provider: nope\n      model: m\n",
@@ -179,7 +179,7 @@ func TestResolveRejectsUnsupportedHarnessProviderAndUnsafeValues(t *testing.T) {
 		},
 		"credential-shaped reasoning": {
 			body:   "agents:\n  profiles:\n    p:\n      harness: codex\n      provider: deepseek\n      model: m\n      reasoning: my-token\n",
-			expect: "non-secret execution identifier",
+			expect: "is not one of low, medium, high, xhigh",
 		},
 		"whitespace in model": {
 			body:   "agents:\n  profiles:\n    p:\n      harness: codex\n      provider: deepseek\n      model: \"two words\"\n",

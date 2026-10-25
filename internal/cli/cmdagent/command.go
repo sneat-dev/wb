@@ -59,6 +59,14 @@ than in the remote command line; and a remote run's record and worktree stay on
 the machine that owns them.`,
 	}
 	command.AddCommand(newAgentDispatchCmd(runtime, deps))
+	command.AddCommand(NewRun(runtime, deps))
+	command.AddCommand(NewCompare(runtime, deps))
+	command.AddCommand(NewExperiment(runtime, deps))
+	command.AddCommand(NewProfiles(runtime, deps))
+	command.AddCommand(NewTaskTypes(runtime, deps))
+	command.AddCommand(NewDiff(runtime, deps))
+	command.AddCommand(NewReview(runtime, deps))
+	command.AddCommand(NewPrune(runtime, deps))
 	command.AddCommand(newAgentStatusCmd(runtime, deps))
 	command.AddCommand(NewAwait(runtime, deps))
 	command.AddCommand(newAgentListCmd(runtime, deps))
@@ -347,12 +355,24 @@ func renderResult(command *cobra.Command, jsonOut bool, result agents.Result) er
 func printAgentStatusText(writer io.Writer, result agents.Result) error {
 	lines := []string{
 		"agent:    " + agentReference(result),
-		"state:    " + string(result.State),
+		"state:    " + string(result.State) + " (" + string(result.Status) + ")",
 		"profile:  " + result.RequestedProfile,
 		fmt.Sprintf("resolved: harness=%s provider=%s model=%s", result.Resolved.Harness, result.Resolved.Provider, result.Resolved.Model),
 	}
-	if result.Resolved.Reasoning != "" {
-		lines[3] += " reasoning=" + result.Resolved.Reasoning
+	if result.Resolved.Variant != "" {
+		lines[3] += " variant=" + result.Resolved.Variant
+	}
+	if result.EffortRequested != "" {
+		effort := "requested=" + result.EffortRequested
+		if result.EffortEffective != "" {
+			effort += " effective=" + result.EffortEffective
+		} else {
+			effort += " (not applied)"
+		}
+		lines[3] += " effort:" + effort
+	}
+	if result.TaskType != "" {
+		lines = append(lines, "task:     "+result.TaskType+" (complexity "+emptyWord(result.Complexity, "none")+")")
 	}
 	lines = append(lines,
 		"worktree: "+result.Worktree+" ("+result.WorktreeMode+") "+result.WorktreeDir,
@@ -360,6 +380,12 @@ func printAgentStatusText(writer io.Writer, result agents.Result) error {
 		"base:     "+strings.TrimSpace(result.Base+" "+result.BaseSHA),
 		"started:  "+result.StartedAt.Local().Format(time.RFC3339),
 	)
+	if result.SourceDirty {
+		lines = append(lines, "dirty:    the checkout already had uncommitted work; nothing was cleaned")
+	}
+	if result.ExperimentID != "" {
+		lines = append(lines, fmt.Sprintf("experiment: %s (attempt %d)", result.ExperimentID, result.RepeatIndex+1))
+	}
 	if result.FinishedAt != nil {
 		lines = append(lines, "finished: "+result.FinishedAt.Local().Format(time.RFC3339),
 			fmt.Sprintf("duration: %s", (time.Duration(result.DurationMS)*time.Millisecond).Round(time.Millisecond)))
@@ -371,14 +397,30 @@ func printAgentStatusText(writer io.Writer, result agents.Result) error {
 	if result.Failure != "" {
 		lines = append(lines, "failure:  "+result.Failure)
 	}
+	if result.FailureCategory != "" {
+		lines = append(lines, "category: "+result.FailureCategory)
+	}
+	lines = append(lines, "validation: "+validationWord(result.Validation))
+	lines = append(lines, "review:   "+reviewWord(result.Review))
 	if result.Changes != nil {
 		lines = append(lines, fmt.Sprintf("changes:  %d file(s), +%d/-%d, %d commit(s)",
 			result.Changes.FilesChanged, result.Changes.Insertions, result.Changes.Deletions, result.Changes.Commits))
+		if len(result.Changes.Untracked) > 0 {
+			lines = append(lines, "untracked: "+strings.Join(result.Changes.Untracked, ", "))
+		}
 	}
-	if result.Usage != nil {
-		lines = append(lines, fmt.Sprintf("usage:    in=%d cached=%d out=%d reasoning=%d, %d tool call(s)",
-			result.Usage.InputTokens, result.Usage.CachedInputTokens, result.Usage.OutputTokens,
-			result.Usage.ReasoningOutputTokens, result.ToolCalls))
+	if result.Telemetry.Available && result.Telemetry.Tokens != nil {
+		lines = append(lines, fmt.Sprintf("usage:    in=%s cached=%s out=%s reasoning=%s, %d tool call(s)",
+			numberWord(result.Telemetry.Tokens.Input), numberWord(result.Telemetry.Tokens.CacheRead),
+			numberWord(result.Telemetry.Tokens.Output), numberWord(result.Telemetry.Tokens.Reasoning),
+			result.ToolCalls))
+	} else {
+		lines = append(lines, "usage:    unavailable: "+result.Telemetry.UnavailableReason)
+	}
+	if result.Cost.USD != nil {
+		lines = append(lines, fmt.Sprintf("cost:     $%.4f (api-equivalent, %s)", *result.Cost.USD, result.Cost.Source))
+	} else {
+		lines = append(lines, "cost:     unavailable: "+result.Cost.Note)
 	}
 	if result.LogPath != "" {
 		lines = append(lines, "log:      "+result.LogPath)
@@ -389,6 +431,49 @@ func printAgentStatusText(writer io.Writer, result agents.Result) error {
 		}
 	}
 	return nil
+}
+
+func emptyWord(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
+}
+
+func numberWord(value *int) string {
+	if value == nil {
+		return "?"
+	}
+	return fmt.Sprintf("%d", *value)
+}
+
+func validationWord(validation agents.ValidationRecord) string {
+	if validation.Status == "" {
+		return agents.ValidationPending
+	}
+	if validation.Reason != "" {
+		return validation.Status + " (" + validation.Reason + ")"
+	}
+	if len(validation.Steps) == 0 {
+		return validation.Status
+	}
+	passed := 0
+	for _, step := range validation.Steps {
+		if step.Status == agents.ValidationPassed {
+			passed++
+		}
+	}
+	return fmt.Sprintf("%s (%d/%d steps passed)", validation.Status, passed, len(validation.Steps))
+}
+
+func reviewWord(review agents.ReviewRecord) string {
+	if review.Status == "" {
+		return agents.ReviewPending
+	}
+	if review.Evaluator != "" {
+		return review.Status + " by " + review.Evaluator
+	}
+	return review.Status
 }
 
 func aliveWord(alive bool) string {
@@ -606,8 +691,9 @@ rather than truncated: read it on that machine with ssh and ` + "`--raw`" + `.`,
 func newAgentStopCmd(runtime shared.Runtime, deps Dependencies) *cobra.Command {
 	var to string
 	command := &cobra.Command{
-		Use:   "stop <agent-id>",
-		Short: "Terminate a running worker's process group",
+		Use:     "stop <agent-id>",
+		Aliases: []string{"cancel"},
+		Short:   "Terminate a running worker's process group",
 		Long: `Terminate the worker and everything it started.
 
 The run owner is deliberately left alive so it observes the exit and records a

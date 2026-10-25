@@ -227,7 +227,7 @@ wait "$child"
 
 func TestE2ESpawnOwnerPropagatesNativeStartFailure(t *testing.T) {
 	t.Parallel()
-	pid, err := SpawnOwner(t.TempDir(), func() (string, error) { return filepath.Join(t.TempDir(), "missing-wb"), nil })
+	pid, err := SpawnOwner(t.TempDir(), func() (string, error) { return filepath.Join(t.TempDir(), "missing-wb"), nil }, nil)
 	if err == nil || pid != 0 {
 		t.Fatalf("missing owner executable accepted: %d %v", pid, err)
 	}

@@ -28,6 +28,7 @@ const (
 	recordFileName      = "run.json"
 	logFileName         = "events.jsonl"
 	lastMessageFileName = "last-message.txt"
+	stderrFileName      = "stderr.log"
 	harnessHomeDirName  = "harness-home"
 	schemaVersion       = 1
 	// maxResultBytes bounds the worker's own final message, which is the one
@@ -48,7 +49,10 @@ const (
 // single WB-wide implementation so every platform agrees.
 func processAlive(pid int) bool { return session.ProcessAlive(pid) }
 
-// State is the closed lifecycle vocabulary of one dispatched run.
+// State is the closed lifecycle vocabulary of one dispatched run. It is the
+// legacy spelling kept for records an older WB wrote and read; new records also
+// carry ExecutionStatus, which distinguishes cancellation from failure without
+// adding a value an older build would not recognise as terminal.
 type State string
 
 const (
@@ -59,11 +63,74 @@ const (
 	StateAbandoned State = "abandoned"
 )
 
+// ExecutionStatus is the richer, additive status of one execution. It never
+// replaces State: an older build must still be able to list and await a record
+// this build wrote.
+type ExecutionStatus string
+
+const (
+	StatusQueued    ExecutionStatus = "queued"
+	StatusRunning   ExecutionStatus = "running"
+	StatusCompleted ExecutionStatus = "completed"
+	StatusFailed    ExecutionStatus = "failed"
+	StatusCancelled ExecutionStatus = "cancelled"
+	StatusTimedOut  ExecutionStatus = "timed_out"
+	// StatusAbandoned is derived at read time when the owner process vanished
+	// without recording a terminal status. It is never stored.
+	StatusAbandoned ExecutionStatus = "abandoned"
+)
+
+// Failure categories are a closed vocabulary: an orchestration decision can
+// branch on the category without parsing a message.
+const (
+	FailureUsage        = "usage"
+	FailureConfig       = "config"
+	FailureCredential   = "credential"
+	FailureProvider     = "provider"
+	FailureHarnessMiss  = "harness_missing"
+	FailureHarness      = "harness_failed"
+	FailureValidation   = "validation_failed"
+	FailureTimeout      = "timeout"
+	FailureCancelled    = "cancelled"
+	FailureBaseMismatch = "base_mismatch"
+	FailureWorktree     = "worktree"
+	FailureInternal     = "internal"
+)
+
+// Validation statuses. Validation is its own axis: a process can exit zero and
+// still fail the objective checks.
+const (
+	ValidationPending = "pending"
+	ValidationRunning = "running"
+	ValidationPassed  = "passed"
+	ValidationFailed  = "failed"
+	ValidationSkipped = "skipped"
+)
+
+// Review statuses. Review is the third axis and is written only by an explicit
+// review command.
+const (
+	ReviewPending     = "pending"
+	ReviewAccepted    = "accepted"
+	ReviewRejected    = "rejected"
+	ReviewNeedsChange = "needs_changes"
+)
+
 // Terminal reports whether a state is final. Exactly one state — running — is
 // not terminal, so a caller can never mistake a stalled run for a finished one.
 func (state State) Terminal() bool {
 	switch state {
 	case StateCompleted, StateFailed, StateTimeout, StateAbandoned:
+		return true
+	default:
+		return false
+	}
+}
+
+// Terminal reports whether an execution status is final.
+func (status ExecutionStatus) Terminal() bool {
+	switch status {
+	case StatusCompleted, StatusFailed, StatusCancelled, StatusTimedOut, StatusAbandoned:
 		return true
 	default:
 		return false
@@ -90,6 +157,50 @@ type ChangeSummary struct {
 	Deletions    int      `json:"deletions,omitempty"`
 	Commits      int      `json:"commits,omitempty"`
 	Truncated    bool     `json:"files_truncated,omitempty"`
+	// Untracked lists paths Git does not include in a diff, so a reader knows
+	// the patch is incomplete rather than assuming a small change.
+	Untracked []string `json:"untracked,omitempty"`
+}
+
+// Telemetry is what the harness reported about usage, with its provenance.
+// Available is explicit: a nil Tokens means "not reported", never zero.
+type Telemetry struct {
+	Available         bool            `json:"available"`
+	Source            string          `json:"source"`
+	UnavailableReason string          `json:"unavailable_reason,omitempty"`
+	Tokens            *Tokens         `json:"tokens,omitempty"`
+	Raw               json.RawMessage `json:"raw,omitempty"`
+}
+
+// CostRecord is an API-equivalent estimate, never a billed amount. A nil USD
+// means no per-run price was observed.
+type CostRecord struct {
+	USD            *float64   `json:"usd,omitempty"`
+	Kind           string     `json:"kind"`
+	Source         string     `json:"source"`
+	PricingVersion string     `json:"pricing_version,omitempty"`
+	EstimatedAt    *time.Time `json:"estimated_at,omitempty"`
+	Note           string     `json:"note,omitempty"`
+}
+
+// ValidationStepResult is one executed objective check.
+type ValidationStepResult struct {
+	Name       string   `json:"name"`
+	Argv       []string `json:"argv"`
+	Timeout    string   `json:"timeout,omitempty"`
+	Status     string   `json:"status"`
+	ExitCode   *int     `json:"exit_code,omitempty"`
+	DurationMS int64    `json:"duration_ms,omitempty"`
+	LogPath    string   `json:"log_path,omitempty"`
+}
+
+// ValidationRecord is the objective-validation axis of one execution.
+type ValidationRecord struct {
+	Status     string                 `json:"status"`
+	Steps      []ValidationStepResult `json:"steps,omitempty"`
+	Reason     string                 `json:"reason,omitempty"`
+	StartedAt  *time.Time             `json:"started_at,omitempty"`
+	FinishedAt *time.Time             `json:"finished_at,omitempty"`
 }
 
 // Record is the durable description of one dispatched run. It is private: it
@@ -99,11 +210,37 @@ type Record struct {
 	SchemaVersion int    `json:"schema_version"`
 	AgentID       string `json:"agent_id"`
 	State         State  `json:"state"`
+	// ExecutionStatus is the additive status; empty on a record written before
+	// this field existed, in which case it is derived from State.
+	ExecutionStatus ExecutionStatus `json:"execution_status,omitempty"`
+	FailureCategory string          `json:"failure_category,omitempty"`
 
 	// RequestedProfile is what the caller asked for. Resolved is what actually
 	// ran; keeping both is what makes a later profile edit harmless.
 	RequestedProfile string   `json:"requested_profile"`
 	Resolved         Resolved `json:"resolved"`
+
+	// Routing provenance: every resolved value says where it came from.
+	TaskType       string `json:"task_type,omitempty"`
+	TaskTypeSource string `json:"task_type_source,omitempty"`
+	ProfileSource  string `json:"profile_source,omitempty"`
+	RoutingReason  string `json:"routing_reason,omitempty"`
+
+	Complexity           string `json:"complexity,omitempty"`
+	ComplexitySource     string `json:"complexity_source,omitempty"`
+	ComplexityOverridden bool   `json:"complexity_overridden,omitempty"`
+
+	EffortRequested string `json:"effort_requested,omitempty"`
+	EffortSource    string `json:"effort_source,omitempty"`
+	EffortEffective string `json:"effort_effective,omitempty"`
+	EffortApplied   bool   `json:"effort_applied,omitempty"`
+	EffortNote      string `json:"effort_note,omitempty"`
+
+	WorktreeSource string `json:"worktree_source,omitempty"`
+	TimeoutSource  string `json:"timeout_source,omitempty"`
+
+	HarnessVersion      string              `json:"harness_version,omitempty"`
+	HarnessCapabilities HarnessCapabilities `json:"harness_capabilities"`
 
 	// Task is the exact originating request. It is private: it is never
 	// rendered by status or await, only persisted here.
@@ -112,6 +249,10 @@ type Record struct {
 	// the record. It is derived from the task, so it is private for exactly the
 	// same reason Task is, and is likewise never rendered.
 	TaskSummary string `json:"task_summary,omitempty"`
+	// TaskSHA256 is the identity of the exact task bytes, so two executions can
+	// be proven comparable without republishing the task.
+	TaskSHA256 string `json:"task_sha256,omitempty"`
+	TaskBytes  int    `json:"task_bytes,omitempty"`
 
 	Repository   string `json:"repository"`
 	WorktreeMode string `json:"worktree_mode"`
@@ -121,20 +262,54 @@ type Record struct {
 	Base         string `json:"base,omitempty"`
 	BaseSHA      string `json:"base_sha,omitempty"`
 
+	// SourceSHA is the commit the writable checkout was at when the run
+	// started, and SnapshotSHA the stash commit a dirty checkout produced, so a
+	// later diff separates the worker's change from what was already there.
+	SourceSHA   string   `json:"source_sha,omitempty"`
+	SnapshotSHA string   `json:"snapshot_sha,omitempty"`
+	SourceDirty bool     `json:"source_dirty,omitempty"`
+	DirtyFiles  []string `json:"source_dirty_files,omitempty"`
+
 	// WorkLogClaimPath links this run to the immutable Work Log claim the
 	// worktree service already publishes, so one dispatch never produces two
 	// unreferenced records of the same piece of work.
 	WorkLogClaimPath string `json:"work_log_claim_path,omitempty"`
 	WorkLogRunID     string `json:"work_log_run_id,omitempty"`
 
+	// LeasePath is the retained writer-lease file this run holds, if any.
+	LeasePath string `json:"lease_path,omitempty"`
+
+	// ExperimentID and RepeatIndex place this execution in a comparison. Both
+	// are empty for a standalone run.
+	ExperimentID string `json:"experiment_id,omitempty"`
+	RepeatIndex  int    `json:"repeat_index,omitempty"`
+
+	// RetryOf is the execution this one replaces after an infrastructure
+	// failover, and FallbackFrom/FallbackReason say which profile failed and why.
+	// A retry is a new execution with its own worktree, never a resumed one.
+	RetryOf        string `json:"retry_of,omitempty"`
+	FallbackFrom   string `json:"fallback_from,omitempty"`
+	FallbackReason string `json:"fallback_reason,omitempty"`
+
 	// TimeoutMS bounds the run. It is persisted because the owner, not the
 	// dispatcher, enforces it.
 	TimeoutMS int64 `json:"timeout_ms,omitempty"`
 
-	StartedAt  time.Time `json:"started_at"`
-	FinishedAt time.Time `json:"finished_at,omitempty"`
-	DurationMS int64     `json:"duration_ms,omitempty"`
+	// StartedAt is when the run was admitted. ExecutionStartedAt is when the
+	// harness itself started, so queue time never inflates wall time.
+	StartedAt          time.Time `json:"started_at"`
+	ExecutionStartedAt time.Time `json:"execution_started_at,omitempty"`
+	FinishedAt         time.Time `json:"finished_at,omitempty"`
+	DurationMS         int64     `json:"duration_ms,omitempty"`
+	// QueueDurationMS is how long an execution waited behind a concurrency
+	// bound before its harness started.
+	QueueDurationMS int64 `json:"queue_duration_ms,omitempty"`
+	// TimeToFirstOutputMS is how long the harness ran before its first byte.
+	TimeToFirstOutputMS int64 `json:"time_to_first_output_ms,omitempty"`
 
+	// QueueOwnerPID is the dispatching process while a run is queued behind a
+	// concurrency bound. It is the only liveness evidence a queued run has.
+	QueueOwnerPID int            `json:"queue_owner_pid,omitempty"`
 	OwnerPID      int            `json:"owner_pid,omitempty"`
 	WorkerPID     int            `json:"worker_pid,omitempty"`
 	ExitCode      *int           `json:"exit_code,omitempty"`
@@ -144,6 +319,25 @@ type Record struct {
 	Usage         *Usage         `json:"usage,omitempty"`
 	Changes       *ChangeSummary `json:"changes,omitempty"`
 	HarnessEvents []string       `json:"harness_diagnostics,omitempty"`
+
+	// Telemetry and Cost carry the provenance the legacy Usage cannot express.
+	Telemetry  Telemetry        `json:"telemetry"`
+	Cost       CostRecord       `json:"cost"`
+	Validation ValidationRecord `json:"validation"`
+
+	// DiffPath is the private patch artefact for this run, when one was written.
+	DiffPath string `json:"diff_path,omitempty"`
+
+	// AcceptanceRequired records the task type's policy at dispatch time, so a
+	// later configuration change cannot make an unreviewed run look complete.
+	AcceptanceRequired bool `json:"acceptance_required,omitempty"`
+	// Retries counts automatic retries attempted. This build performs none.
+	Retries int `json:"retries"`
+
+	// TaskVisibility states how the task reached the harness. `stdin` keeps it
+	// off the process table; `argv` does not.
+	TaskVisibility string `json:"task_visibility,omitempty"`
+	TaskNormalized bool   `json:"task_normalized,omitempty"`
 
 	LogPath string `json:"log_path,omitempty"`
 }
@@ -158,33 +352,69 @@ type Result struct {
 	// is empty for a run dispatched by this machine and is stamped by the caller
 	// that asked another machine, so a result always says where its artefact
 	// lives.
-	Machine            string         `json:"machine,omitempty"`
-	State              State          `json:"state"`
-	Terminal           bool           `json:"terminal"`
-	RequestedProfile   string         `json:"profile"`
-	Resolved           Resolved       `json:"resolved"`
-	Repository         string         `json:"repository"`
-	WorktreeMode       string         `json:"worktree_mode"`
-	Worktree           string         `json:"worktree"`
-	WorktreeDir        string         `json:"worktree_dir,omitempty"`
-	Branch             string         `json:"branch,omitempty"`
-	Base               string         `json:"base,omitempty"`
-	BaseSHA            string         `json:"base_sha,omitempty"`
-	StartedAt          time.Time      `json:"started_at"`
-	FinishedAt         *time.Time     `json:"finished_at,omitempty"`
-	DurationMS         int64          `json:"duration_ms,omitempty"`
-	OwnerPID           int            `json:"owner_pid,omitempty"`
-	WorkerPID          int            `json:"worker_pid,omitempty"`
-	OwnerAlive         bool           `json:"owner_alive"`
-	WorkerAlive        bool           `json:"worker_alive"`
-	ExitCode           *int           `json:"exit_code,omitempty"`
-	Failure            string         `json:"failure,omitempty"`
-	Result             string         `json:"result,omitempty"`
-	ToolCalls          int            `json:"tool_calls,omitempty"`
-	Usage              *Usage         `json:"usage,omitempty"`
-	Changes            *ChangeSummary `json:"changes,omitempty"`
-	HarnessDiagnostics []string       `json:"harness_diagnostics,omitempty"`
-	LogPath            string         `json:"log_path,omitempty"`
+	Machine             string              `json:"machine,omitempty"`
+	State               State               `json:"state"`
+	Status              ExecutionStatus     `json:"execution_status"`
+	Terminal            bool                `json:"terminal"`
+	FailureCategory     string              `json:"failure_category,omitempty"`
+	RequestedProfile    string              `json:"profile"`
+	Resolved            Resolved            `json:"resolved"`
+	TaskType            string              `json:"task_type,omitempty"`
+	TaskTypeSource      string              `json:"task_type_source,omitempty"`
+	ProfileSource       string              `json:"profile_source,omitempty"`
+	Complexity          string              `json:"complexity,omitempty"`
+	ComplexitySource    string              `json:"complexity_source,omitempty"`
+	EffortRequested     string              `json:"effort_requested,omitempty"`
+	EffortEffective     string              `json:"effort_effective,omitempty"`
+	EffortApplied       bool                `json:"effort_applied"`
+	EffortNote          string              `json:"effort_note,omitempty"`
+	WorktreeSource      string              `json:"worktree_source,omitempty"`
+	TimeoutSource       string              `json:"timeout_source,omitempty"`
+	HarnessVersion      string              `json:"harness_version,omitempty"`
+	HarnessCapabilities HarnessCapabilities `json:"harness_capabilities"`
+	Repository          string              `json:"repository"`
+	WorktreeMode        string              `json:"worktree_mode"`
+	Worktree            string              `json:"worktree"`
+	WorktreeDir         string              `json:"worktree_dir,omitempty"`
+	Branch              string              `json:"branch,omitempty"`
+	Base                string              `json:"base,omitempty"`
+	BaseSHA             string              `json:"base_sha,omitempty"`
+	SourceSHA           string              `json:"source_sha,omitempty"`
+	SnapshotSHA         string              `json:"snapshot_sha,omitempty"`
+	SourceDirty         bool                `json:"source_dirty,omitempty"`
+	ExperimentID        string              `json:"experiment_id,omitempty"`
+	RepeatIndex         int                 `json:"repeat_index,omitempty"`
+	RetryOf             string              `json:"retry_of,omitempty"`
+	FallbackFrom        string              `json:"fallback_from,omitempty"`
+	FallbackReason      string              `json:"fallback_reason,omitempty"`
+	StartedAt           time.Time           `json:"started_at"`
+	ExecutionStartedAt  *time.Time          `json:"execution_started_at,omitempty"`
+	FinishedAt          *time.Time          `json:"finished_at,omitempty"`
+	DurationMS          int64               `json:"duration_ms,omitempty"`
+	QueueDurationMS     int64               `json:"queue_duration_ms,omitempty"`
+	TimeToFirstOutputMS int64               `json:"time_to_first_output_ms,omitempty"`
+	QueueOwnerPID       int                 `json:"queue_owner_pid,omitempty"`
+	OwnerPID            int                 `json:"owner_pid,omitempty"`
+	WorkerPID           int                 `json:"worker_pid,omitempty"`
+	OwnerAlive          bool                `json:"owner_alive"`
+	WorkerAlive         bool                `json:"worker_alive"`
+	ExitCode            *int                `json:"exit_code,omitempty"`
+	Failure             string              `json:"failure,omitempty"`
+	Result              string              `json:"result,omitempty"`
+	ToolCalls           int                 `json:"tool_calls,omitempty"`
+	Usage               *Usage              `json:"usage,omitempty"`
+	Telemetry           Telemetry           `json:"telemetry"`
+	Cost                CostRecord          `json:"cost"`
+	Validation          ValidationRecord    `json:"validation"`
+	Review              ReviewRecord        `json:"review"`
+	Changes             *ChangeSummary      `json:"changes,omitempty"`
+	HarnessDiagnostics  []string            `json:"harness_diagnostics,omitempty"`
+	DiffPath            string              `json:"diff_path,omitempty"`
+	AcceptanceRequired  bool                `json:"acceptance_required"`
+	Retries             int                 `json:"retries"`
+	TaskVisibility      string              `json:"task_visibility,omitempty"`
+	TaskNormalized      bool                `json:"task_normalized,omitempty"`
+	LogPath             string              `json:"log_path,omitempty"`
 }
 
 // NormalizeState makes this process's closed state vocabulary authoritative for
@@ -196,6 +426,26 @@ func NormalizeState(result *Result) {
 		return
 	}
 	result.Terminal = result.State.Terminal()
+	if result.Status == "" {
+		result.Status = executionStatusFromState(result.State)
+	}
+}
+
+// executionStatusFromState derives the additive status for a record written
+// before ExecutionStatus existed.
+func executionStatusFromState(state State) ExecutionStatus {
+	switch state {
+	case StateCompleted:
+		return StatusCompleted
+	case StateFailed:
+		return StatusFailed
+	case StateTimeout:
+		return StatusTimedOut
+	case StateAbandoned:
+		return StatusAbandoned
+	default:
+		return StatusRunning
+	}
 }
 
 // Render projects a record for output, resolving a run whose owner vanished
@@ -209,9 +459,24 @@ func NormalizeState(result *Result) {
 // caller knows a stray process exists and can stop it.
 func (store Store) Render(record Record) Result {
 	state := record.State
+	status := record.ExecutionStatus
+	if status == "" {
+		status = executionStatusFromState(state)
+	}
 	ownerAlive := processAlive(record.OwnerPID)
 	workerAlive := processAlive(record.WorkerPID)
-	if state == StateRunning {
+	switch status {
+	case StatusQueued:
+		// A prepared attempt waits behind a concurrency bound with nothing
+		// running. Its dispatcher is the only thing that can still start it, so
+		// its liveness decides whether the attempt is pending or abandoned. The
+		// grace window covers a single run whose dispatcher exits just before the
+		// owner records itself.
+		if !processAlive(record.QueueOwnerPID) && time.Since(record.StartedAt) >= admissionGrace {
+			state = StateAbandoned
+			status = StatusAbandoned
+		}
+	case StatusRunning:
 		switch {
 		case ownerAlive:
 			// The run is genuinely in progress.
@@ -220,25 +485,54 @@ func (store Store) Render(record Record) Result {
 			// has not yet recorded itself. This window is milliseconds wide.
 		default:
 			state = StateAbandoned
+			status = StatusAbandoned
 		}
 	}
 	result := Result{
-		AgentID: record.AgentID, State: state, Terminal: state.Terminal(),
+		AgentID: record.AgentID, State: state, Status: status, Terminal: status.Terminal(),
+		FailureCategory:  record.FailureCategory,
 		RequestedProfile: record.RequestedProfile, Resolved: record.Resolved,
+		TaskType: record.TaskType, TaskTypeSource: record.TaskTypeSource,
+		ProfileSource: record.ProfileSource, Complexity: record.Complexity,
+		ComplexitySource: record.ComplexitySource,
+		EffortRequested:  record.EffortRequested, EffortEffective: record.EffortEffective,
+		EffortApplied: record.EffortApplied, EffortNote: record.EffortNote,
+		WorktreeSource: record.WorktreeSource, TimeoutSource: record.TimeoutSource,
+		HarnessVersion: record.HarnessVersion, HarnessCapabilities: record.HarnessCapabilities,
 		Repository:   record.Repository,
 		WorktreeMode: record.WorktreeMode, Worktree: record.Worktree,
 		WorktreeDir: record.WorktreeDir, Branch: record.Branch,
 		Base: record.Base, BaseSHA: record.BaseSHA,
+		SourceSHA: record.SourceSHA, SnapshotSHA: record.SnapshotSHA, SourceDirty: record.SourceDirty,
+		ExperimentID: record.ExperimentID, RepeatIndex: record.RepeatIndex,
+		RetryOf: record.RetryOf, FallbackFrom: record.FallbackFrom, FallbackReason: record.FallbackReason,
 		StartedAt: record.StartedAt, DurationMS: record.DurationMS,
-		OwnerPID: record.OwnerPID, WorkerPID: record.WorkerPID,
+		QueueDurationMS: record.QueueDurationMS, TimeToFirstOutputMS: record.TimeToFirstOutputMS,
+		QueueOwnerPID: record.QueueOwnerPID,
+		OwnerPID:      record.OwnerPID, WorkerPID: record.WorkerPID,
 		OwnerAlive: ownerAlive, WorkerAlive: workerAlive,
 		ExitCode: record.ExitCode, Failure: record.Failure, Result: record.Result,
 		ToolCalls: record.ToolCalls, Usage: record.Usage, Changes: record.Changes,
-		HarnessDiagnostics: record.HarnessEvents, LogPath: record.LogPath,
+		Telemetry: record.Telemetry, Cost: record.Cost, Validation: record.Validation,
+		HarnessDiagnostics: record.HarnessEvents, DiffPath: record.DiffPath,
+		AcceptanceRequired: record.AcceptanceRequired, Retries: record.Retries,
+		TaskVisibility: record.TaskVisibility, TaskNormalized: record.TaskNormalized,
+		LogPath: record.LogPath,
+	}
+	if !record.ExecutionStartedAt.IsZero() {
+		started := record.ExecutionStartedAt
+		result.ExecutionStartedAt = &started
 	}
 	if !record.FinishedAt.IsZero() {
 		finished := record.FinishedAt
 		result.FinishedAt = &finished
+	}
+	// The review sidecar is best-effort: a run whose review cannot be read is
+	// still a truthful execution result. An absent sidecar means "not reviewed".
+	if review, err := store.LoadReview(record.AgentID); err == nil {
+		result.Review = review.Latest()
+	} else {
+		result.Review = ReviewRecord{Status: ReviewPending}
 	}
 	return result
 }

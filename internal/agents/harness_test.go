@@ -197,18 +197,18 @@ func TestSummarizeEventsExtractsFactsOnly(t *testing.T) {
 	if len(summary.Diagnostics) != 1 || !strings.Contains(summary.Diagnostics[0], "Model metadata") {
 		t.Fatalf("diagnostics = %#v", summary.Diagnostics)
 	}
-	if summary.Usage == nil {
+	if summary.Tokens == nil {
 		t.Fatal("usage was not extracted")
 	}
-	if *summary.Usage != (Usage{InputTokens: 100, CachedInputTokens: 80, CacheWriteInputTokens: 5, OutputTokens: 10, ReasoningOutputTokens: 3}) {
-		t.Fatalf("usage = %#v", *summary.Usage)
+	if *summary.Tokens.Input != 100 || *summary.Tokens.CacheRead != 80 || *summary.Tokens.CacheWrite != 5 || *summary.Tokens.Output != 10 || *summary.Tokens.Reasoning != 3 {
+		t.Fatalf("usage = %#v", *summary.Tokens)
 	}
 }
 
 func TestSummarizeEventsReportsFailedTurnsAndMalformedLines(t *testing.T) {
 	t.Parallel()
 	summary := SummarizeEvents(strings.NewReader("{\"type\":\"turn.failed\"}\n"))
-	if !summary.TurnFailed || summary.TurnCompleted || summary.Usage != nil {
+	if !summary.TurnFailed || summary.TurnCompleted || summary.Tokens != nil {
 		t.Fatalf("failed turn = %#v", summary)
 	}
 	summary = SummarizeEvents(strings.NewReader("{\"type\":\"error\"}\n"))
@@ -228,10 +228,10 @@ func TestSummarizeEventsReportsFailedTurnsAndMalformedLines(t *testing.T) {
 	if summary.ToolCalls != 0 || len(summary.Diagnostics) != 0 || !summary.TurnCompleted {
 		t.Fatalf("malformed input handling = %#v", summary)
 	}
-	if summary.Usage == nil || summary.Usage.InputTokens != 5 {
-		t.Fatalf("a valid line after malformed ones must still be parsed: %#v", summary.Usage)
+	if summary.Tokens == nil || *summary.Tokens.Input != 5 {
+		t.Fatalf("a valid line after malformed ones must still be parsed: %#v", summary.Tokens)
 	}
-	if result := SummarizeEvents(strings.NewReader("")); result.TurnCompleted || result.Usage != nil {
+	if result := SummarizeEvents(strings.NewReader("")); result.TurnCompleted || result.Tokens != nil {
 		t.Fatalf("an empty stream must yield an empty summary: %#v", result)
 	}
 }
@@ -246,8 +246,8 @@ func TestSummarizeEventsReadsTheHarnessUsageFieldNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	summary := SummarizeEvents(strings.NewReader(raw))
-	if summary.Usage == nil || summary.Usage.InputTokens != 1 || summary.Usage.ReasoningOutputTokens != 5 {
-		t.Fatalf("usage = %#v", summary.Usage)
+	if summary.Tokens == nil || *summary.Tokens.Input != 1 || *summary.Tokens.Reasoning != 5 {
+		t.Fatalf("usage = %#v", summary.Tokens)
 	}
 }
 
