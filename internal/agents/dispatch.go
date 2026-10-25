@@ -249,8 +249,8 @@ func PrepareRun(ctx context.Context, request DispatchRequest, deps DispatchDeps)
 		ExperimentID:         request.ExperimentID,
 		RepeatIndex:          request.RepeatIndex,
 		RetryOf:              request.RetryOf,
-		FallbackFrom:         request.FallbackFrom,
-		FallbackReason:       request.FallbackReason,
+		FallbackFrom:         firstNonEmpty(request.FallbackFrom, plan.FallbackFrom),
+		FallbackReason:       firstNonEmpty(request.FallbackReason, plan.FallbackReason),
 		TimeoutMS:            plan.TimeoutMS,
 		StartedAt:            deps.Now().UTC(),
 		// A prepared attempt may wait behind a concurrency bound before its
@@ -323,6 +323,16 @@ func (prepared *PreparedRun) Fail(state State, failure, category string, now fun
 // autoOperationName is deterministic and collision-free for reruns of the same
 // task: the task hash names the work, and the agent ID's first bytes make a
 // second run of the same work a new checkout rather than a resume.
+// firstNonEmpty prefers an explicit retry value over a plan-level one.
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func autoOperationName(taskType, task, agentID string) string {
 	digest, _ := TaskIdentity(task)
 	suffix := ""

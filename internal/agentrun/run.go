@@ -29,6 +29,9 @@ func (s *Service) Run(ctx context.Context, r RunRequest) (agents.Result, error) 
 	if err != nil {
 		return agents.Result{}, err
 	}
+	if plan.FallbackFrom != "" {
+		s.logPlanFallback(r, plan)
+	}
 	store, deps, err := s.PrepareDispatch(DispatchRequest{ProjectsRoot: r.ProjectsRoot, Stderr: r.Stderr})
 	if err != nil {
 		return agents.Result{}, err
@@ -150,6 +153,15 @@ func runtimeRetryable(result agents.Result) bool {
 		return false
 	}
 	return true
+}
+
+// logPlanFallback reports a preflight substitution before the worktree exists.
+func (s *Service) logPlanFallback(r RunRequest, plan agents.Plan) {
+	if r.Stderr == nil {
+		return
+	}
+	_, _ = fmt.Fprintf(r.Stderr, "wb agent: profile %s is unavailable (%s); using fallback profile %s\n",
+		plan.FallbackFrom, plan.FallbackReason, plan.Profile.Profile)
 }
 
 func (s *Service) logFallback(r RunRequest, profile string, failed agents.Result, probeErr error) {

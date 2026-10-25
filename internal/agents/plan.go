@@ -93,6 +93,9 @@ type Plan struct {
 	// FallbackFrom names the profile the plan would have used when preflight
 	// substituted a configured fallback. Empty means no substitution happened.
 	FallbackFrom string `json:"fallback_from,omitempty"`
+	// FallbackReason explains a preflight substitution: why the chosen profile
+	// was unusable.
+	FallbackReason string `json:"fallback_reason,omitempty"`
 	// FallbackChain is the remaining ordered profiles a runtime failover may
 	// use, after the chosen one. Empty when the task type declares none.
 	FallbackChain []string `json:"fallback_chain,omitempty"`
@@ -183,6 +186,7 @@ func (planner Planner) Plan(request RunRequest) (Plan, error) {
 				return Plan{}, fmt.Errorf("%v; no configured fallback is usable: %w", probeErr, fallbackErr)
 			}
 			plan.FallbackFrom = plan.Profile.Profile
+			plan.FallbackReason = probeErr.Error()
 			plan.Profile, plan.ProfileSource = fallback, SourceFallback
 			plan.FallbackChain = fallbackChain(fallback.Profile, taskType, config)
 			if effortErr := planner.resolveEffort(&plan, request, fallback, taskType); effortErr != nil {

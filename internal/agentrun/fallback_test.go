@@ -49,7 +49,11 @@ func newFallbackFixture(t *testing.T, outcomes ...string) *fallbackFixture {
 			WorktreeDir: "/fleet/" + request.Worktree, WorktreeMode: request.Mode, BaseSHA: "base",
 			StartedAt: fixture.now, QueueOwnerPID: 1, ExperimentID: request.ExperimentID,
 			RetryOf: request.RetryOf, FallbackFrom: request.FallbackFrom, FallbackReason: request.FallbackReason,
-			TimeoutMS: request.Timeout.Milliseconds(),
+			ProfileSource: request.Plan.ProfileSource,
+			TimeoutMS:     request.Timeout.Milliseconds(),
+		}
+		if record.FallbackFrom == "" {
+			record.FallbackFrom, record.FallbackReason = request.Plan.FallbackFrom, request.Plan.FallbackReason
 		}
 		store := agents.NewStore(fixture.home)
 		if err := store.Create(record); err != nil {
@@ -426,5 +430,59 @@ func TestRunReportsAFallbackProfileThatNoLongerResolves(t *testing.T) {
 		Request: agents.RunRequest{Task: "do it", TaskType: "coding"}, Wait: time.Minute,
 	}); err == nil {
 		t.Fatal("a fallback profile that no longer resolves must surface")
+	}
+}
+
+func TestRunLogsAndRecordsAPreflightFallback(t *testing.T) {
+	t.Parallel()
+	fixture := newFallbackFixture(t, outcomeCompleted)
+	fixture.config = fallbackConfig(t, "preflight")
+	fixture.deps.Preflight = func(_ context.Context, resolved agents.Resolved) error {
+		if resolved.Profile == "oc-go" {
+			return errors.New("opencode is not installed")
+		}
+		return nil
+	}
+	result, err := fixture.service().Run(context.Background(), RunRequest{
+		ProjectsRoot: fixture.root, Stderr: &fixture.stderr,
+		Request: agents.RunRequest{Task: "do it", TaskType: "coding"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.RequestedProfile != "deepseek" || result.FallbackFrom != "oc-go" || !strings.Contains(result.FallbackReason, "not installed") {
+		t.Fatalf("result = %#v", result)
+	}
+	if !strings.Contains(fixture.stderr.String(), "using fallback profile deepseek") {
+		t.Fatalf("preflight fallback was not logged: %q", fixture.stderr.String())
+	}
+}
+
+func TestRunLogsAPreflightFallbackWithoutAStderrStream(t *testing.T) {
+	t.Parallel()
+	fixture := newFallbackFixture(t, outcomeCompleted)
+	fixture.config = fallbackConfig(t, "preflight")
+	fixture.deps.Preflight = func(_ context.Context, resolved agents.Resolved) error {
+		if resolved.Profile == "oc-go" {
+			return errors.New("opencode is not installed")
+		}
+		return nil
+	}
+	if _, err := fixture.service().Run(context.Background(), RunRequest{
+		ProjectsRoot: fixture.root, Request: agents.RunRequest{Task: "do it", TaskType: "coding"},
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+}
+
+func TestRunReportsAFailingStoreWhenItStartsAnExecution(t *testing.T) {
+	t.Parallel()
+	fixture := newFallbackFixture(t, outcomeCompleted)
+	fixture.config = fallbackConfig(t, "")
+	fixture.deps.Root = func(string) (string, error) { return "", errors.New("store unavailable") }
+	if _, err := fixture.service().Run(context.Background(), RunRequest{
+		ProjectsRoot: fixture.root, Request: agents.RunRequest{Task: "do it", TaskType: "coding"},
+	}); err == nil {
+		t.Fatal("a failing store must surface")
 	}
 }
