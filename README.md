@@ -158,6 +158,9 @@ agents:
     coding:
       profile: opencode-flash
       complexity: { trivial: cheap-codex, high: dsh-flash }
+      # Ordered failover, cheapest first: WB never reorders this list.
+      fallback: [dsh-flash, cheap-codex, claude-opus]
+      fallback_on: [preflight, runtime]
       validate: [go]
       acceptance: required
   validations:
@@ -198,6 +201,21 @@ the task type's complexity entry, then its default profile, then
 `agents.defaults.profile`. WB ships no model identifier; built-in task types are
 policy only and name no profile. Every resolved value records where it came
 from, and `--dry-run` prints all of it.
+
+A task type may name an ordered `fallback` list of profiles, so one provider or
+model being down does not stop the work. `fallback_on` selects the triggers:
+`preflight` (the default — a harness binary or credential WB can prove missing
+before a worktree exists) and `runtime` (opt-in — the provider failed the run
+itself). `agents.fallback` is the global tail. The order is the operator's cost
+policy and WB never reorders it: a runtime failover happens only for
+`provider`, `credential` or `harness_missing` failures that left no change on
+disk, it always gets a fresh worktree (so an explicit `--worktree current` or
+`--profile` is never silently swapped), and it logs
+`wb agent: execution … failed (…); falling back to profile …` while recording
+`retry_of`, `fallback_from` and `fallback_reason` on the new execution.
+`run --wait` carries the failover because it is the process that observes the
+failure; an async run and `compare` do not, and `compare` never falls back
+because that would invalidate the experiment.
 
 `--task-complexity` (`trivial|low|medium|high|extreme`) describes the work and
 chooses what runs. `--effort` (`low|medium|high|xhigh`) asks the selected model

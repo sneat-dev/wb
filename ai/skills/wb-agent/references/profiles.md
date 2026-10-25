@@ -63,13 +63,39 @@ stores and run with the real home directory, so their tool subprocesses can read
 those stores. That difference is recorded on every run as
 `harness_capabilities.isolation`.
 
-## Fallback
+## Fallback: an ordered list, not a guess
+
+A task type lists the profiles to try, cheapest first:
 
 ```yaml
-agents:
-  fallback: [cheap-codex, dsh-flash]
+  task_types:
+    coding:
+      profile: oc-go
+      fallback: [deepseek, codex, claude]
+      fallback_on: [preflight, runtime]
 ```
 
-Fallback is consulted only when a preflight probe fails before any worktree
-exists: a missing harness binary or a missing provider credential. An explicit
-`--profile` is never swapped, and `compare` disables fallback entirely.
+`agents.fallback` is the global tail, used after the task type's own list.
+
+Triggers, chosen by `fallback_on` (default `[preflight]`):
+
+| Trigger | When it applies |
+|---|---|
+| `preflight` | a harness binary or credential is missing before a worktree exists |
+| `runtime` | the provider failed the run itself: `provider`, `credential` or `harness_missing` |
+
+Rules that protect the work and the budget:
+
+- The order is the operator's cost policy; WB never reorders or promotes a
+  profile on its own.
+- An explicit `--profile` (or `--harness`/`--model`) is never swapped.
+- A runtime failover needs a fresh worktree, so it applies to `auto`/`--new-worktree`
+  only; `current` and an explicit path are never retried elsewhere.
+- It never retries a validation failure, a cancellation, a timeout, or an
+  attempt that left changes on disk.
+- It needs a waiting caller: `run --wait` performs it; an asynchronous `run`
+  cannot, and `compare` disables fallback because swapping a profile would
+  invalidate the experiment.
+- Each failover is logged (`wb agent: execution … failed (…); falling back to
+  profile …`) and the new execution records `retry_of`, `fallback_from` and
+  `fallback_reason`. A retry is a new execution, not a resumed one.

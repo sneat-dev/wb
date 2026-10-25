@@ -93,6 +93,11 @@ type Plan struct {
 	// FallbackFrom names the profile the plan would have used when preflight
 	// substituted a configured fallback. Empty means no substitution happened.
 	FallbackFrom string `json:"fallback_from,omitempty"`
+	// FallbackChain is the remaining ordered profiles a runtime failover may
+	// use, after the chosen one. Empty when the task type declares none.
+	FallbackChain []string `json:"fallback_chain,omitempty"`
+	// FallbackOn records which triggers are enabled for this plan.
+	FallbackOn []string `json:"fallback_on,omitempty"`
 
 	// probed records that this plan already passed a preflight, so a caller
 	// does not probe the same harness twice. It is never serialized.
@@ -159,6 +164,8 @@ func (planner Planner) Plan(request RunRequest) (Plan, error) {
 	plan.ValidationSteps = steps
 
 	plan.AcceptanceRequired = resolveAcceptance(request.Acceptance, taskType)
+	plan.FallbackOn = resolveFallbackOn(taskType)
+	plan.FallbackChain = fallbackChain(plan.Profile.Profile, taskType, config)
 
 	if planner.Probe != nil {
 		plan.probed = true
@@ -166,15 +173,18 @@ func (planner Planner) Plan(request RunRequest) (Plan, error) {
 			// An explicitly chosen profile is never swapped for another one: the
 			// operator asked for that configuration. Every other route may use
 			// the ordered fallback list, which is itself explicit configuration.
-			if plan.ProfileSource == SourceExplicit || plan.ProfileSource == SourceSynthesized || len(config.Fallback) == 0 {
+			if plan.ProfileSource == SourceExplicit || plan.ProfileSource == SourceSynthesized ||
+				(len(taskType.Fallback) == 0 && len(config.Fallback) == 0) ||
+				!plan.AllowsFallback(FallbackPreflight) {
 				return Plan{}, probeErr
 			}
-			fallback, fallbackErr := planner.firstUsableFallback()
+			fallback, fallbackErr := planner.firstUsableFallback(taskType)
 			if fallbackErr != nil {
 				return Plan{}, fmt.Errorf("%v; no configured fallback is usable: %w", probeErr, fallbackErr)
 			}
 			plan.FallbackFrom = plan.Profile.Profile
 			plan.Profile, plan.ProfileSource = fallback, SourceFallback
+			plan.FallbackChain = fallbackChain(fallback.Profile, taskType, config)
 			if effortErr := planner.resolveEffort(&plan, request, fallback, taskType); effortErr != nil {
 				// A fallback whose harness cannot honour the requested effort is
 				// not a usable fallback: dropping the effort silently would break
@@ -186,9 +196,11 @@ func (planner Planner) Plan(request RunRequest) (Plan, error) {
 	return plan, nil
 }
 
-func (planner Planner) firstUsableFallback() (Resolved, error) {
+// firstUsableFallback walks the task type's own list first, then the global
+// list. The order is configuration, so it is also the operator's cost policy.
+func (planner Planner) firstUsableFallback(taskType TaskType) (Resolved, error) {
 	var failures []string
-	for _, name := range planner.Config.Fallback {
+	for _, name := range append(append([]string(nil), taskType.Fallback...), planner.Config.Fallback...) {
 		resolved, err := planner.Config.Resolve(name)
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("%s: %v", name, err))
@@ -201,6 +213,40 @@ func (planner Planner) firstUsableFallback() (Resolved, error) {
 		return resolved, nil
 	}
 	return Resolved{}, fmt.Errorf("%s", strings.Join(failures, "; "))
+}
+
+// fallbackChain is the ordered, de-duplicated list a runtime failover may use.
+// The profile a plan already chose is never repeated.
+func fallbackChain(chosen string, taskType TaskType, config Config) []string {
+	seen := map[string]bool{chosen: true}
+	chain := make([]string, 0, len(taskType.Fallback)+len(config.Fallback))
+	for _, name := range append(append([]string(nil), taskType.Fallback...), config.Fallback...) {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		chain = append(chain, name)
+	}
+	return chain
+}
+
+// resolveFallbackOn defaults to preflight only: starting a second execution
+// because a provider failed is a cost decision the operator opts into.
+func resolveFallbackOn(taskType TaskType) []string {
+	if len(taskType.FallbackOn) == 0 {
+		return []string{FallbackPreflight}
+	}
+	return append([]string(nil), taskType.FallbackOn...)
+}
+
+// AllowsFallback reports whether a plan permits the given trigger.
+func (plan Plan) AllowsFallback(trigger string) bool {
+	for _, enabled := range plan.FallbackOn {
+		if enabled == trigger {
+			return true
+		}
+	}
+	return false
 }
 
 func (config Config) resolveTaskType(requested string) (TaskType, string, string, error) {

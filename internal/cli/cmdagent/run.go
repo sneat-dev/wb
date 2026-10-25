@@ -93,7 +93,7 @@ wb agent run --task-type debugging --worktree current --allow-dirty --task-file 
 			if err != nil {
 				return err
 			}
-			request := agents.RunRequest{
+			plan := agents.RunRequest{
 				Task: text, TaskType: flags.taskType, Complexity: flags.taskComplexity,
 				Effort: flags.effort, Profile: flags.profile, Harness: flags.harness,
 				Model: flags.model, Provider: flags.provider, Variant: flags.variant,
@@ -105,25 +105,25 @@ wb agent run --task-type debugging --worktree current --allow-dirty --task-file 
 				Repository: flags.repo, Base: flags.base, Branch: flags.branch,
 			}
 			if flags.dryRun {
-				return renderDryRun(runtime, deps, command, flags.jsonOut, request)
+				return renderDryRun(runtime, deps, command, flags.jsonOut, plan)
 			}
-			result, err := deps.Run(command.Context(), agentrun.RunRequest{
-				ProjectsRoot: runtime.Flags().ProjectsRoot, Stderr: command.ErrOrStderr(), Request: request,
-			})
+			request := agentrun.RunRequest{
+				ProjectsRoot: runtime.Flags().ProjectsRoot, Stderr: command.ErrOrStderr(), Request: plan,
+			}
+			if flags.wait {
+				// A waiting run is the only one that can observe an infrastructure
+				// failure and continue down the task type's fallback list.
+				request.Wait = flags.waitTimeout
+			}
+			result, err := deps.Run(command.Context(), request)
 			if err != nil {
 				return agentRequestError(runtime, err)
 			}
 			if flags.wait {
-				awaited, waitErr := deps.Await(command.Context(), agentrun.AwaitRequest{
-					ProjectsRoot: runtime.Flags().ProjectsRoot, AgentID: result.AgentID, WaitTimeout: flags.waitTimeout,
-				})
-				if waitErr != nil {
-					return agentLookupError(runtime, deps, waitErr)
-				}
 				if flags.jsonOut {
-					return writeAgentJSON(command.OutOrStdout(), awaited)
+					return writeAgentJSON(command.OutOrStdout(), result)
 				}
-				return finishAgentAwait(runtime, deps, command, false, awaited)
+				return finishAgentAwait(runtime, deps, command, false, result)
 			}
 			return renderAgentResult(command, flags.jsonOut, result)
 		},

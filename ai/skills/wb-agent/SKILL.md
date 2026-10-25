@@ -54,6 +54,10 @@ model id.
 - A **profile** is execution: harness, model, variant, effort, timeout.
 
 Start with a task type. Name a profile only to override the policy for one run.
+A task type can also list `fallback` profiles (cheapest first) and
+`fallback_on: [preflight, runtime]`, so a provider outage moves to the next
+configured profile instead of failing the work; `run --wait` performs that
+failover and records `retry_of`/`fallback_from`/`fallback_reason`.
 
 ```sh
 wb agent run --task-type coding --task-file task.md

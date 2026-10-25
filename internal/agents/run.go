@@ -284,6 +284,13 @@ type Record struct {
 	ExperimentID string `json:"experiment_id,omitempty"`
 	RepeatIndex  int    `json:"repeat_index,omitempty"`
 
+	// RetryOf is the execution this one replaces after an infrastructure
+	// failover, and FallbackFrom/FallbackReason say which profile failed and why.
+	// A retry is a new execution with its own worktree, never a resumed one.
+	RetryOf        string `json:"retry_of,omitempty"`
+	FallbackFrom   string `json:"fallback_from,omitempty"`
+	FallbackReason string `json:"fallback_reason,omitempty"`
+
 	// TimeoutMS bounds the run. It is persisted because the owner, not the
 	// dispatcher, enforces it.
 	TimeoutMS int64 `json:"timeout_ms,omitempty"`
@@ -377,6 +384,9 @@ type Result struct {
 	SourceDirty         bool                `json:"source_dirty,omitempty"`
 	ExperimentID        string              `json:"experiment_id,omitempty"`
 	RepeatIndex         int                 `json:"repeat_index,omitempty"`
+	RetryOf             string              `json:"retry_of,omitempty"`
+	FallbackFrom        string              `json:"fallback_from,omitempty"`
+	FallbackReason      string              `json:"fallback_reason,omitempty"`
 	StartedAt           time.Time           `json:"started_at"`
 	ExecutionStartedAt  *time.Time          `json:"execution_started_at,omitempty"`
 	FinishedAt          *time.Time          `json:"finished_at,omitempty"`
@@ -495,6 +505,7 @@ func (store Store) Render(record Record) Result {
 		Base: record.Base, BaseSHA: record.BaseSHA,
 		SourceSHA: record.SourceSHA, SnapshotSHA: record.SnapshotSHA, SourceDirty: record.SourceDirty,
 		ExperimentID: record.ExperimentID, RepeatIndex: record.RepeatIndex,
+		RetryOf: record.RetryOf, FallbackFrom: record.FallbackFrom, FallbackReason: record.FallbackReason,
 		StartedAt: record.StartedAt, DurationMS: record.DurationMS,
 		QueueDurationMS: record.QueueDurationMS, TimeToFirstOutputMS: record.TimeToFirstOutputMS,
 		QueueOwnerPID: record.QueueOwnerPID,

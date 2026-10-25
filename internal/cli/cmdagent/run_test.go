@@ -18,12 +18,19 @@ func runFixture(t *testing.T) (Dependencies, *[]agentrun.RunRequest, *[]agentrun
 	compareRequests := &[]agentrun.CompareRequest{}
 	deps.Run = func(_ context.Context, request agentrun.RunRequest) (agents.Result, error) {
 		*runRequests = append(*runRequests, request)
-		return agents.Result{
+		result := agents.Result{
 			AgentID: "agt-00000000000000000000000000000001", State: agents.StateRunning,
 			Status: agents.StatusQueued, RequestedProfile: "cheap",
 			Resolved: agents.Resolved{Profile: "cheap", Harness: agents.HarnessOpenCode, Model: "opencode-go/deepseek-v4.1-flash"},
 			Worktree: "coding-1234-abcd", WorktreeMode: agents.ModeAuto, StartedAt: time.Unix(100, 0).UTC(),
-		}, nil
+		}
+		if request.Wait > 0 {
+			// A waiting caller gets the terminal result; an async one does not.
+			result.State = agents.StateCompleted
+			result.Status = agents.StatusCompleted
+			result.Terminal = true
+		}
+		return result, nil
 	}
 	deps.Await = func(_ context.Context, request agentrun.AwaitRequest) (agents.Result, error) {
 		return agents.Result{
@@ -108,6 +115,9 @@ func TestRunDispatchesAndOptionallyWaits(t *testing.T) {
 	}
 	if !strings.Contains(out, `"execution_status": "completed"`) {
 		t.Fatalf("waited output = %q", out)
+	}
+	if len(*runRequests) != 2 || (*runRequests)[1].Wait != time.Hour {
+		t.Fatalf("a waiting run must carry the wait bound: %#v", (*runRequests)[1])
 	}
 }
 

@@ -33,6 +33,8 @@ Fields:
 |---|---|
 | `profile` | default profile when no complexity match exists |
 | `complexity` | complexity → profile, applied only when `--task-complexity` is given |
+| `fallback` | ordered profiles to try after `profile`, cheapest first |
+| `fallback_on` | `preflight` (default) and/or `runtime` |
 | `effort` | default effort for the task type |
 | `worktree` | `auto` or `current` |
 | `timeout` | default bound for a run of this type |

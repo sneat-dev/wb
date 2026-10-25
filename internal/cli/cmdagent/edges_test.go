@@ -315,27 +315,27 @@ func TestDryRunJSONAndFallbackLine(t *testing.T) {
 	}
 }
 
-func TestWaitReportsANonTerminalRunAndAnAwaitFailure(t *testing.T) {
-	t.Parallel()
+//nolint:paralleltest // the cases share one dependency recorder
+func TestWaitReportsANonTerminalRunAndADispatchFailure(t *testing.T) {
 	deps, _, _ := runFixture(t)
-	deps.Await = func(context.Context, agentrun.AwaitRequest) (agents.Result, error) {
+	deps.Run = func(context.Context, agentrun.RunRequest) (agents.Result, error) {
 		return agents.Result{AgentID: "agt-00000000000000000000000000000001", State: agents.StateRunning, Status: agents.StatusRunning, Resolved: agents.Resolved{}}, nil
 	}
 	code, out, errout := runFake(t, deps, "agent", "run", "--task", "x", "--wait")
 	if code != exitFindings || !strings.Contains(errout, "still running") {
 		t.Fatalf("code = %d out=%q stderr=%s", code, out, errout)
 	}
-	deps.Await = func(context.Context, agentrun.AwaitRequest) (agents.Result, error) {
+	deps.Run = func(context.Context, agentrun.RunRequest) (agents.Result, error) {
 		return agents.Result{}, &agents.UnknownAgentError{AgentID: "agt-1", Root: "/root"}
 	}
 	if code, _, _ := runFake(t, deps, "agent", "run", "--task", "x", "--wait"); code != exitFindings {
-		t.Fatalf("unknown await code = %d", code)
+		t.Fatalf("unknown result code = %d", code)
 	}
-	deps.Await = func(context.Context, agentrun.AwaitRequest) (agents.Result, error) {
+	deps.Run = func(context.Context, agentrun.RunRequest) (agents.Result, error) {
 		return agents.Result{}, errors.New("transport")
 	}
 	if code, _, _ := runFake(t, deps, "agent", "run", "--task", "x", "--wait"); code != exitFindings {
-		t.Fatalf("await failure code = %d", code)
+		t.Fatalf("dispatch failure code = %d", code)
 	}
 }
 

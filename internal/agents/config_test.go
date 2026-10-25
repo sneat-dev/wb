@@ -297,3 +297,132 @@ agents:
 		t.Fatalf("explicit effort on a fallback = %v", err)
 	}
 }
+
+func TestTaskTypeFallbackIsValidatedAndOrdered(t *testing.T) {
+	t.Parallel()
+	cases := map[string]struct {
+		body string
+		want string
+	}{
+		"unknown profile": {
+			body: "agents:\n  profiles:\n    p: { harness: codex, provider: deepseek, model: m }\n  task_types:\n    coding: { profile: p, fallback: [nope] }\n",
+			want: "fallback names unknown profile",
+		},
+		"repeats its own profile": {
+			body: "agents:\n  profiles:\n    p: { harness: codex, provider: deepseek, model: m }\n  task_types:\n    coding: { profile: p, fallback: [p] }\n",
+			want: "repeats its own profile",
+		},
+		"bad trigger": {
+			body: "agents:\n  profiles:\n    p: { harness: codex, provider: deepseek, model: m }\n  task_types:\n    coding: { profile: p, fallback_on: [sometimes] }\n",
+			want: "fallback_on",
+		},
+	}
+	for name, testCase := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := LoadConfigFile(writeConfig(t, testCase.body)); err == nil || !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("error = %v, want %q", err, testCase.want)
+			}
+		})
+	}
+}
+
+func TestPlanBuildsAnOrderedFallbackChainWithProvenance(t *testing.T) {
+	t.Parallel()
+	config, err := LoadConfigFile(writeConfig(t, `
+agents:
+  profiles:
+    oc-go: { harness: opencode, model: opencode-go/deepseek-v4.1-flash }
+    deepseek: { harness: dsh, model: deepseek-v4-flash }
+    codex: { harness: codex, provider: deepseek, model: deepseek-v4.1-flash }
+    claude: { harness: opencode, model: anthropic/claude-opus-5.5 }
+  task_types:
+    coding:
+      profile: oc-go
+      fallback: [deepseek, codex, claude]
+      fallback_on: [preflight, runtime]
+  fallback: [codex]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := (Planner{Config: config}).Plan(RunRequest{Task: "x", TaskType: "coding"})
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	want := []string{"deepseek", "codex", "claude"}
+	if len(plan.FallbackChain) != len(want) {
+		t.Fatalf("chain = %#v", plan.FallbackChain)
+	}
+	for index := range want {
+		if plan.FallbackChain[index] != want[index] {
+			t.Fatalf("chain = %#v, want %#v", plan.FallbackChain, want)
+		}
+	}
+	if !plan.AllowsFallback(FallbackPreflight) || !plan.AllowsFallback(FallbackRuntime) {
+		t.Fatalf("triggers = %#v", plan.FallbackOn)
+	}
+}
+
+func TestPlanDefaultsToPreflightOnlyFallback(t *testing.T) {
+	t.Parallel()
+	config, err := LoadConfigFile(writeConfig(t, `
+agents:
+  profiles:
+    a: { harness: codex, provider: deepseek, model: m }
+    b: { harness: codex, provider: deepseek, model: m }
+  task_types:
+    coding: { profile: a, fallback: [b] }
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := (Planner{Config: config}).Plan(RunRequest{Task: "x", TaskType: "coding"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.AllowsFallback(FallbackRuntime) {
+		t.Fatal("runtime failover must be opt-in")
+	}
+	if !plan.AllowsFallback(FallbackPreflight) {
+		t.Fatal("preflight fallback is the default")
+	}
+}
+
+func TestPlanUsesTheTaskTypeFallbackBeforeTheGlobalOneOnlyWhenPreflightAllowsIt(t *testing.T) {
+	t.Parallel()
+	config, err := LoadConfigFile(writeConfig(t, `
+agents:
+  profiles:
+    a: { harness: codex, provider: deepseek, model: m }
+    b: { harness: codex, provider: deepseek, model: m }
+    c: { harness: codex, provider: deepseek, model: m }
+  task_types:
+    coding: { profile: a, fallback: [b] }
+    runtime-only: { profile: a, fallback: [b], fallback_on: [runtime] }
+  fallback: [c]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe := func(resolved Resolved) error {
+		if resolved.Profile == "a" {
+			return errors.New("a is unavailable")
+		}
+		return nil
+	}
+	plan, err := (Planner{Config: config, Probe: probe}).Plan(RunRequest{Task: "x", TaskType: "coding"})
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan.Profile.Profile != "b" || plan.FallbackFrom != "a" {
+		t.Fatalf("preflight fallback = %#v", plan)
+	}
+	// The chosen profile is not repeated, and the global list follows.
+	if len(plan.FallbackChain) != 1 || plan.FallbackChain[0] != "c" {
+		t.Fatalf("chain = %#v", plan.FallbackChain)
+	}
+	if _, err := (Planner{Config: config, Probe: probe}).Plan(RunRequest{Task: "x", TaskType: "runtime-only"}); err == nil {
+		t.Fatal("a runtime-only task type must not fall back at preflight")
+	}
+}

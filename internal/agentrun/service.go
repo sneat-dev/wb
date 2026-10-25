@@ -38,6 +38,10 @@ type RunRequest struct {
 	Request      agents.RunRequest
 	// AgentID is normally empty; an experiment pre-allocates it.
 	AgentID string
+	// Wait makes the service wait for the attempt and, when the task type
+	// allows it, carry out a runtime failover. Zero returns as soon as the
+	// owner starts.
+	Wait time.Duration
 }
 
 // PlanRequest is one dry-run resolution.

@@ -52,6 +52,12 @@ type DispatchRequest struct {
 	// ExperimentID and RepeatIndex place this execution in a comparison.
 	ExperimentID string
 	RepeatIndex  int
+
+	// RetryOf, FallbackFrom and FallbackReason describe an infrastructure
+	// failover: this execution replaces another one after its provider failed.
+	RetryOf        string
+	FallbackFrom   string
+	FallbackReason string
 }
 
 // DispatchDeps are the seams dispatch needs from the command layer. Only the
@@ -242,6 +248,9 @@ func PrepareRun(ctx context.Context, request DispatchRequest, deps DispatchDeps)
 		WorkLogRunID:         target.ClaimRunID,
 		ExperimentID:         request.ExperimentID,
 		RepeatIndex:          request.RepeatIndex,
+		RetryOf:              request.RetryOf,
+		FallbackFrom:         request.FallbackFrom,
+		FallbackReason:       request.FallbackReason,
 		TimeoutMS:            plan.TimeoutMS,
 		StartedAt:            deps.Now().UTC(),
 		// A prepared attempt may wait behind a concurrency bound before its

@@ -162,6 +162,18 @@ error naming the harness. An **inherited** effort that cannot be honoured is
 recorded `effective: null` with a reason and a warning, and does not fail the
 run.
 
+#### REQ:ordered-fallback
+A task type may name an ordered `fallback` list of profiles, with
+`agents.fallback` as the global tail. `fallback_on` selects the triggers:
+`preflight` (default; a harness binary or credential WB can prove missing) and
+`runtime` (opt-in; the provider failed the run itself). The order is the
+operator's cost policy and WB never reorders it. A runtime failover applies only
+to `provider`, `credential` and `harness_missing` failures that left no change on
+disk, always uses a fresh worktree, never swaps an explicit profile or a shared
+checkout, needs a waiting caller (`run --wait`), is logged, and is recorded on
+the new execution as `retry_of`, `fallback_from` and `fallback_reason`. A retry
+is a new execution, never a resumed one. `compare` never falls back.
+
 #### REQ:dry-run
 `--dry-run` prints the fully resolved plan — profile and source, task type,
 complexity and provenance, requested/effective effort, worktree mode and target,
@@ -480,6 +492,14 @@ Each adapter builds its documented non-interactive argv with `--standalone` for
 OpenCode and one argv element (≤64 KiB, leading newline when needed) for `dsh`,
 normalizes events into one summary, and refuses an explicit effort it cannot
 honour while recording an inherited one as not applied.
+
+### AC: fallback-is-ordered-and-cost-safe (verifies REQ:ordered-fallback, REQ:effort-capability, REQ:config-precedence)
+A task type's fallback list is tried in the configured order; preflight fallback
+applies by default and runtime failover only when enabled; a runtime failover
+happens for an infrastructure failure with no work on disk, in a fresh worktree,
+is logged, and records `retry_of`/`fallback_from`/`fallback_reason`; an explicit
+profile, a shared checkout, a validation failure, a cancellation, a timeout, or
+an attempt that produced changes is never retried elsewhere.
 
 ### AC: telemetry-is-honest (verifies REQ:null-not-zero, REQ:cost-provenance, REQ:redaction, REQ:record-compatibility)
 An unparseable usage payload records `available: false` with a reason and no

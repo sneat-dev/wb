@@ -159,7 +159,7 @@
           "limitation": null
         }
       },
-      "notes": "Compare is one task, one pinned base, N profiles x R repeats, each attempt an isolated execution. It waits for every attempt it started and reports execution, validation and review independently."
+      "notes": "Compare is one task, one pinned base, N profiles x R repeats, each attempt an isolated execution. It waits for every attempt it started and reports execution, validation and review independently. A comparison never fails over between profiles: swapping one would invalidate the experiment."
     },
     {
       "id": "wb.agent.diff",
@@ -810,7 +810,7 @@
           "limitation": null
         }
       },
-      "notes": "Run is the task-type-aware entry point. WB ships no model identifier: the answer always comes from wb.yaml, and a profile that cannot execute fails before a worktree exists."
+      "notes": "Run is the task-type-aware entry point. WB ships no model identifier: the answer always comes from wb.yaml, and a profile that cannot execute fails before a worktree exists. A task type may name an ordered fallback list of profiles (cheapest first) with preflight and optional runtime failover; run --wait carries the failover and records retry_of/fallback_from/fallback_reason."
     },
     {
       "id": "wb.agent.status",

@@ -127,12 +127,28 @@ type ValidationStep struct {
 type TaskType struct {
 	Profile    string            `yaml:"profile,omitempty" json:"profile,omitempty"`
 	Complexity map[string]string `yaml:"complexity,omitempty" json:"complexity,omitempty"`
-	Effort     string            `yaml:"effort,omitempty" json:"effort,omitempty"`
-	Worktree   string            `yaml:"worktree,omitempty" json:"worktree,omitempty"`
-	Timeout    string            `yaml:"timeout,omitempty" json:"timeout,omitempty"`
-	Validate   []string          `yaml:"validate,omitempty" json:"validate,omitempty"`
-	Acceptance string            `yaml:"acceptance,omitempty" json:"acceptance,omitempty"`
+	// Fallback is the ordered list of profiles to try after Profile, so one
+	// provider or model being down does not stop the work. Order is the
+	// operator's cost decision: WB never reorders it.
+	Fallback []string `yaml:"fallback,omitempty" json:"fallback,omitempty"`
+	// FallbackOn selects when fallback applies: "preflight" (a capability WB
+	// can check before starting) and/or "runtime" (the provider failed the run
+	// itself). Preflight is the default; runtime is opt-in because it starts a
+	// second execution.
+	FallbackOn []string `yaml:"fallback_on,omitempty" json:"fallback_on,omitempty"`
+	Effort     string   `yaml:"effort,omitempty" json:"effort,omitempty"`
+	Worktree   string   `yaml:"worktree,omitempty" json:"worktree,omitempty"`
+	Timeout    string   `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+	Validate   []string `yaml:"validate,omitempty" json:"validate,omitempty"`
+	Acceptance string   `yaml:"acceptance,omitempty" json:"acceptance,omitempty"`
 }
+
+// Fallback triggers. Preflight is a capability WB can prove before a worktree
+// exists; runtime is a failure the harness reported after it started.
+const (
+	FallbackPreflight = "preflight"
+	FallbackRuntime   = "runtime"
+)
 
 // fileConfig is the on-disk shape, nested under the shared wb.yaml "agents"
 // mapping so agent configuration lives in WB's existing configuration file
@@ -300,6 +316,19 @@ func (config Config) validateTaskType(name string, taskType TaskType) error {
 	if strings.TrimSpace(taskType.Profile) != "" {
 		if _, ok := config.Profiles[taskType.Profile]; !ok {
 			return fmt.Errorf("task type %q names unknown profile %q; configured profiles: %s", name, taskType.Profile, config.profileNames())
+		}
+	}
+	for _, profile := range taskType.Fallback {
+		if _, ok := config.Profiles[profile]; !ok {
+			return fmt.Errorf("task type %q fallback names unknown profile %q; configured profiles: %s", name, profile, config.profileNames())
+		}
+		if profile == taskType.Profile {
+			return fmt.Errorf("task type %q fallback repeats its own profile %q", name, profile)
+		}
+	}
+	for _, trigger := range taskType.FallbackOn {
+		if trigger != FallbackPreflight && trigger != FallbackRuntime {
+			return fmt.Errorf("task type %q fallback_on %q must be %q or %q", name, trigger, FallbackPreflight, FallbackRuntime)
 		}
 	}
 	for level, profile := range taskType.Complexity {
