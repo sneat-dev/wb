@@ -3,6 +3,7 @@
 package orchestrate
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -413,18 +414,19 @@ func TestE2EAcknowledgeRetiredPublicationPreservesLegacyAcknowledgement(t *testi
 		t.Fatal(err)
 	}
 	legacy := bound
-	legacy.SchemaVersion = worktreeMergeRetiredPublicationAcknowledgementLegacySchemaVersion
-	legacy.RetirementReceiptPath = ""
-	legacy.RetirementReceiptSHA256 = ""
-	legacy.RetirementProofSHA256 = ""
-	legacy.RetirementCanonical = ""
-	legacy.RetirementSourceSHA = ""
-	legacy.RetirementRetiredRef = ""
-	legacy.RetirementArchiveRef = ""
-	legacy.RetirementArchiveSHA = ""
-	legacy.RetirementPhase = ""
-	legacy.ID = retiredPublicationAcknowledgementID(legacy)
+	// Reproduce exactly what the pre-adjunct writer persisted for this same
+	// receipt: the shared schema, the same legacy fields, no retirement key and
+	// the historical digest input. The id is derived from those old bytes rather
+	// than guessed, and the independent reference digest proves the input.
+	clearRetiredPublicationRetirementEvidence(&legacy)
+	legacy.ID = referenceLegacyAcknowledgementID(legacy)
+	if got := retiredPublicationAcknowledgementID(legacy); got != legacy.ID {
+		t.Fatalf("legacy bytes hash to %s, want the historical digest input %s", got, legacy.ID)
+	}
 	legacyBytes := mustMarshalRetiredPublicationAcknowledgement(t, legacy)
+	if bytes.Contains(legacyBytes, []byte("retirement_")) {
+		t.Fatalf("legacy bytes carry a retirement key: %s", legacyBytes)
+	}
 	if err := os.WriteFile(ackPath, legacyBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -533,5 +535,65 @@ func TestE2EAcknowledgeRetiredPublicationRefusesParentSwapBeforePublication(t *t
 	}
 	if _, statErr := os.Stat(filepath.Join(detached, filepath.Base(ackPath))); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("parent swap left a detached acknowledgement: %v", statErr)
+	}
+}
+
+// TestE2EAcknowledgeRetiredPublicationRefusesIntermediateAncestorSymlinkBeforePublication
+// replaces an ancestor of the acknowledgement's parent with a symlink after
+// every proof but before persistence, leaving the final parent directory at its
+// exact inode and the receipt bytes readable through the link. Directory
+// identity alone still matches, so only a no-follow refusal can reject an
+// acknowledgement the supported reader could never reopen. Both fences are
+// covered: the final receipt snapshot, and the namespace authorization that
+// runs immediately before staging.
+//
+//nolint:paralleltest // absentRetiredPublicationFixture changes process-wide WB and Git configuration variables.
+func TestE2EAcknowledgeRetiredPublicationRefusesIntermediateAncestorSymlinkBeforePublication(t *testing.T) {
+	for _, boundary := range []string{"receipt fence", "namespace authorization"} {
+		//nolint:paralleltest // absentRetiredPublicationFixture changes process-wide WB and Git configuration variables; the two rows share that environment and stay sequential.
+		t.Run(boundary, func(t *testing.T) {
+			options, ports, receipt, _ := absentRetiredPublicationFixture(t)
+			ackPath := retiredPublicationAcknowledgementPath(receipt.ReceiptPath)
+			ancestor := filepath.Dir(filepath.Dir(ackPath))
+			detached := ancestor + "-held"
+			heldParent, err := os.Stat(filepath.Dir(ackPath))
+			if err != nil {
+				t.Fatal(err)
+			}
+			swap := func() { linkIntermediateAncestorAsSymlink(t, ancestor) }
+			want := ""
+			switch boundary {
+			case "receipt fence":
+				ports.beforePersist = func() error {
+					swap()
+					return nil
+				}
+				want = "symlink"
+			case "namespace authorization":
+				persist := ports.persist
+				ports.persist = func(namespace *publicationNamespace, path string, ack WorktreeMergeRetiredPublicationAcknowledgement) error {
+					swap()
+					return persist(namespace, path, ack)
+				}
+				want = "no longer holds the admitted directory"
+			}
+			ack, err := acknowledgeRetiredPublication(context.Background(), options, ports)
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("%s ancestor symlink = %+v, %v, want %q", boundary, ack, err, want)
+			}
+			if ack.ID != "" || ack.AcknowledgementPath != "" {
+				t.Fatalf("%s ancestor symlink returned a successful acknowledgement: %+v", boundary, ack)
+			}
+			current, statErr := os.Stat(filepath.Dir(ackPath))
+			if statErr != nil || !os.SameFile(heldParent, current) {
+				t.Fatalf("%s final parent directory was not left at its exact inode: %v", boundary, statErr)
+			}
+			if _, statErr := os.Stat(ackPath); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("%s ancestor symlink published an acknowledgement at its bound path: %v", boundary, statErr)
+			}
+			if _, statErr := os.Stat(filepath.Join(detached, filepath.Base(filepath.Dir(ackPath)), filepath.Base(ackPath))); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("%s ancestor symlink left a detached acknowledgement: %v", boundary, statErr)
+			}
+		})
 	}
 }

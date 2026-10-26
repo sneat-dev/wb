@@ -56,10 +56,36 @@ func (namespace *publicationNamespace) verify() error {
 	if namespace == nil || namespace.directory == nil {
 		return fmt.Errorf("evidence parent namespace is unavailable")
 	}
-	if !worktreesecure.DirectoryStillMatches(namespace.path, namespace.directory) {
+	if !secureLexicalDirectoryStillMatches(namespace.path, namespace.directory) {
 		return fmt.Errorf("evidence parent namespace %s no longer holds the admitted directory", namespace.path)
 	}
 	return nil
+}
+
+// secureLexicalDirectoryStillMatches re-corroborates one lexical directory
+// path against a held descriptor through the same checked no-follow component
+// walk that admitted it. Comparing directory identity alone is not enough:
+// os.Lstat traverses intermediate path components, so an ancestor that became
+// a symlink still resolves to the same final inode and the bound evidence
+// would be undiscoverable through the supported no-follow reader. Re-walking
+// every component without following any of them refuses such an ancestor even
+// when the final directory is byte-for-byte the same held inode.
+//
+// The observation is validation only. It never becomes the authority for a
+// mutation, a sync or a read: the caller keeps publishing and reading through
+// the originally admitted descriptor.
+func secureLexicalDirectoryStillMatches(path string, directory *os.File) bool {
+	if directory == nil {
+		return false
+	}
+	observed, err := worktreesecure.OpenAbsoluteDirectoryNoFollow(path, false)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = observed.Close() }()
+	held, heldErr := directory.Stat()
+	actual, actualErr := observed.Stat()
+	return heldErr == nil && actualErr == nil && os.SameFile(held, actual)
 }
 
 // Close releases the held namespace descriptor.
@@ -94,15 +120,18 @@ func productionSecureEvidenceReadOps() secureEvidenceReadOps {
 		},
 		stat:         (*os.File).Stat,
 		read:         io.ReadAll,
-		stillMatches: worktreesecure.DirectoryStillMatches,
+		stillMatches: secureLexicalDirectoryStillMatches,
 	}
 }
 
 // readSecureBoundedRegularFile reads one regular file through its held parent
 // directory and a no-follow descriptor. Symlinks, non-regular replacements,
 // oversize files and parent-directory swaps refuse instead of being followed:
-// the parent pathname is corroborated both after admission and after the read,
-// so returned bytes can never describe a detached namespace.
+// the parent pathname is corroborated both after admission and after the read
+// by re-walking every one of its components without following any of them, so
+// returned bytes can never describe a detached namespace and an intermediate
+// ancestor that became a symlink refuses even when the final directory is
+// unchanged.
 func readSecureBoundedRegularFile(path string, max int64) ([]byte, error) {
 	return readSecureBoundedRegularFileWith(path, max, productionSecureEvidenceReadOps())
 }

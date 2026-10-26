@@ -21,13 +21,12 @@ import (
 )
 
 const (
-	// SchemaVersion 2 distinguishes a current acknowledgement with no
-	// retirement evidence (a still-present candidate) from a historical
-	// schema-1 record that predates retirement binding and must stay
-	// idempotent without rewriting.
-	worktreeMergeRetiredPublicationAcknowledgementSchemaVersion       = 2
-	worktreeMergeRetiredPublicationAcknowledgementLegacySchemaVersion = 1
-	worktreeMergeRetiredPublicationAcknowledgementSuffix              = ".retired-publication.ack.json"
+	// One persisted schema covers both historical acknowledgements written
+	// before retirement binding existed and current ones: the retirement
+	// adjunct is optional evidence inside the same record, never a schema
+	// version, so an old record keeps its exact bytes, ID and digest input.
+	worktreeMergeRetiredPublicationAcknowledgementSchemaVersion = 1
+	worktreeMergeRetiredPublicationAcknowledgementSuffix        = ".retired-publication.ack.json"
 )
 
 // WorktreeMergeRetiredPublicationAcknowledgement is a separate, append-only
@@ -361,13 +360,24 @@ func acknowledgeRetiredPublication(ctx context.Context, options WorktreeMergeRet
 	return ack, nil
 }
 
-// resolveExistingRetiredPublicationAcknowledgement keeps legacy
-// acknowledgements without retirement evidence idempotent and accepts only
-// byte-identical immutable evidence for the new retirement-bound form.
+// resolveExistingRetiredPublicationAcknowledgement keeps the one persisted
+// schema idempotent. The historical writer recorded the same immutable proof
+// without a retirement adjunct; a current absent-candidate proof carries that
+// adjunct. Compatibility therefore compares a newly proved record with only
+// its own retirement adjunct omitted, and only when the existing bytes carry
+// no adjunct at all. Every older immutable field — receipt, lane, repository,
+// target, candidate, pull request, sources and the current target that the
+// original writer hashed — must still match exactly, so an absent field is
+// never permission for arbitrary changed proof and a still-present candidate
+// record stays bound to its own immutable proof. The new record is compared,
+// never rewritten: the caller still persists or returns the existing bytes.
 func resolveExistingRetiredPublicationAcknowledgement(existing, ack WorktreeMergeRetiredPublicationAcknowledgement, ackPath string) (WorktreeMergeRetiredPublicationAcknowledgement, error) {
-	if retiredPublicationIsLegacyAcknowledgement(existing) {
-		// A schema-1 acknowledgement written before retirement evidence existed
-		// remains valid and idempotent for the same receipt.
+	if !retiredPublicationHasRetirementEvidence(existing) {
+		comparable := ack
+		clearRetiredPublicationRetirementEvidence(&comparable)
+		if !sameRetiredPublicationAcknowledgement(existing, comparable) {
+			return WorktreeMergeRetiredPublicationAcknowledgement{}, fmt.Errorf("retired-publication acknowledgement %s binds different immutable evidence", ackPath)
+		}
 		return existing, nil
 	}
 	if !sameRetiredPublicationAcknowledgement(existing, ack) {
@@ -376,14 +386,21 @@ func resolveExistingRetiredPublicationAcknowledgement(existing, ack WorktreeMerg
 	return existing, nil
 }
 
-// retiredPublicationIsLegacyAcknowledgement limits the compatibility shortcut
-// to schema-1 records that never carried retirement evidence. A current
-// acknowledgement written for a still-present candidate has no retirement
-// fields either, so inferring legacy status from absent fields alone would let
-// changed immutable proof be accepted as idempotent.
-func retiredPublicationIsLegacyAcknowledgement(existing WorktreeMergeRetiredPublicationAcknowledgement) bool {
-	return existing.SchemaVersion == worktreeMergeRetiredPublicationAcknowledgementLegacySchemaVersion &&
-		!retiredPublicationHasRetirementEvidence(existing)
+// clearRetiredPublicationRetirementEvidence blanks only the retirement-bound
+// adjunct on a copy used for comparison. Every older immutable field stays
+// available, and no persisted record is ever stripped of its own proof: a
+// newly written absent-candidate acknowledgement always keeps and hashes the
+// complete adjunct.
+func clearRetiredPublicationRetirementEvidence(ack *WorktreeMergeRetiredPublicationAcknowledgement) {
+	ack.RetirementReceiptPath = ""
+	ack.RetirementReceiptSHA256 = ""
+	ack.RetirementProofSHA256 = ""
+	ack.RetirementCanonical = ""
+	ack.RetirementSourceSHA = ""
+	ack.RetirementRetiredRef = ""
+	ack.RetirementArchiveRef = ""
+	ack.RetirementArchiveSHA = ""
+	ack.RetirementPhase = ""
 }
 
 // retiredPublicationGit runs one Git query either through the held retirement
@@ -742,8 +759,7 @@ func readRetiredPublicationAcknowledgementInNamespace(path string, receipt Workt
 	if err := decodeMergeAcknowledgement(contents, path, "retired-publication acknowledgement", &ack); err != nil {
 		return WorktreeMergeRetiredPublicationAcknowledgement{}, err
 	}
-	if ack.SchemaVersion != worktreeMergeRetiredPublicationAcknowledgementSchemaVersion && ack.SchemaVersion != worktreeMergeRetiredPublicationAcknowledgementLegacySchemaVersion ||
-		ack.Status != "retired_publication_acknowledged" ||
+	if ack.SchemaVersion != worktreeMergeRetiredPublicationAcknowledgementSchemaVersion || ack.Status != "retired_publication_acknowledged" ||
 		ack.AcknowledgementPath != path || ack.ReceiptPath != receipt.ReceiptPath || ack.ReceiptID != receipt.ID || ack.ReceiptSHA256 != receiptHash ||
 		ack.ReceiptPhase != receipt.Phase || ack.ReceiptStatus != receipt.Status || ack.Lane != receipt.Lane || ack.Repository != receipt.Repository || ack.Target != receipt.Target ||
 		ack.ReceiptTargetSHA != receipt.TargetSHA || ack.CandidateTask != receipt.Candidate.Task || ack.CandidateWorktree != receipt.Candidate.Worktree ||
