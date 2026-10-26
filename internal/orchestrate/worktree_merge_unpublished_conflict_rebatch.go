@@ -104,7 +104,9 @@ func proveClosedUnpublishedConflictPredecessor(ctx context.Context, r WorktreeMe
 	if err != nil {
 		return err
 	}
-	if !strings.EqualFold(view.State, "closed") || view.Merged || view.MergedAt != nil || view.MergeCommitSHA != "" {
+	// merge_commit_sha may name GitHub's synthetic merge candidate even on a
+	// closed, unmerged PR. Only the observed merge state/timestamp prove a merge.
+	if !strings.EqualFold(view.State, "closed") || view.Merged || view.MergedAt != nil {
 		return errors.New("superseded predecessor pull request must remain CLOSED and unmerged")
 	}
 	if view.Base.Ref != r.Target || view.Head.Ref != r.Candidate.Branch || view.Head.SHA != r.Candidate.SHA || view.Head.Repo == nil || view.Head.Repo.FullName != repository || view.Base.Repo == nil || view.Base.Repo.FullName != repository {
