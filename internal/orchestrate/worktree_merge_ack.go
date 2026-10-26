@@ -830,6 +830,7 @@ func readPreparedWorktreeMergeRebatch(path string, receipt WorktreeMergeReceipt)
 	recovered := rebatch.RefreshedPublicationTargetSHA != "" && refreshedPublicationRebatchEligible(receipt) && rebatch.RefreshedPublicationTargetSHA == rebatch.CurrentTargetSHA
 	publishedUnlanded := worktreeMergeReceiptPublishedUnlanded(receipt) || recovered
 	if rebatch.SchemaVersion != worktreeMergePreparedRebatchSchemaVersion || rebatch.Status != "prepared_rebatched" ||
+		(recovered && (rebatch.ClosedPullRequest != receipt.PullRequest || replacement.SupersededPullRequest != receipt.PullRequest)) ||
 		rebatch.AcknowledgementPath != path || rebatch.ReceiptPath != receipt.ReceiptPath || rebatch.ReceiptID != receipt.ID ||
 		rebatch.ReceiptSHA256 != receiptHash || (!recovered && !preparedRebatchOriginalEligible(receipt, collisionAcknowledged)) || rebatch.ReceiptStatus != receipt.Status || rebatch.Lane != receipt.Lane ||
 		rebatch.Repository != receipt.Repository || rebatch.Target != receipt.Target || rebatch.ReceiptTargetSHA != receipt.TargetSHA ||

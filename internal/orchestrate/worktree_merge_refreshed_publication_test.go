@@ -224,6 +224,43 @@ esac
 	if ack.ClosedPullRequest != "7" || ack.Sources[0] != current || replacement.RebatchOf != r.ReceiptPath {
 		t.Fatalf("incomplete proof: %+v", ack)
 	}
+
+	ackBytes, err := os.ReadFile(rebatchPath(r.ReceiptPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacementBytes, err := os.ReadFile(replacement.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{"acknowledgement PR", "replacement PR"} {
+		if mode == "acknowledgement PR" {
+			changed := ack
+			changed.ClosedPullRequest = "other-pr"
+			body, err := json.Marshal(changed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(rebatchPath(r.ReceiptPath), body, 0600); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			changed := replacement
+			changed.SupersededPullRequest = "other-pr"
+			if err := persistWorktreeMergeReceipt(changed); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := readPreparedWorktreeMergeRebatch(rebatchPath(r.ReceiptPath), r); err == nil {
+			t.Fatalf("tampered %s accepted", mode)
+		}
+		if err := os.WriteFile(rebatchPath(r.ReceiptPath), ackBytes, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(replacement.ReceiptPath, replacementBytes, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, root := range []string{predecessor, r.Candidate.SHA, r.Sources[0].SHA, current.SHA, r.TargetSHA} {
 		retained, err := isMergeAncestor(t.Context(), replacement.Candidate.Worktree, root, replacement.Candidate.SHA)
 		if err != nil || !retained {
