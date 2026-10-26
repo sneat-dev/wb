@@ -29,7 +29,9 @@ func retireEntryFixture(t *testing.T) (RetireOptions, retireEntryPorts) {
 		inventory: func(context.Context, ListOptions) (ListOutcome, error) {
 			return ListOutcome{Results: []ListResult{entry}}, nil
 		},
-		checkOwner: func(ListResult) error { return nil },
+		checkCustody: func(context.Context, string, string, ListResult) (retireCustodyFence, error) {
+			return retireCustodyFence{mode: "legacy"}, nil
+		},
 		archivePlan: func(context.Context, string, RetiredArchiveInspector) (RetiredArchivePlan, error) {
 			return RetiredArchivePlan{Outcome: "planned", ArchiveRepository: "acme/archive"}, nil
 		},
@@ -75,7 +77,11 @@ func TestRetirementEntryPortsStopAtEachAuthorityBoundary(t *testing.T) {
 		{"inventory", func(_ *RetireOptions, p *retireEntryPorts) {
 			p.inventory = func(context.Context, ListOptions) (ListOutcome, error) { return ListOutcome{}, boom }
 		}, "injected authority failure"},
-		{"owner first", func(_ *RetireOptions, p *retireEntryPorts) { p.checkOwner = func(ListResult) error { return boom } }, "injected authority failure"},
+		{"owner first", func(_ *RetireOptions, p *retireEntryPorts) {
+			p.checkCustody = func(context.Context, string, string, ListResult) (retireCustodyFence, error) {
+				return retireCustodyFence{}, boom
+			}
+		}, "injected authority failure"},
 		{"archive target", func(_ *RetireOptions, p *retireEntryPorts) {
 			p.archivePlan = func(context.Context, string, RetiredArchiveInspector) (RetiredArchivePlan, error) {
 				return RetiredArchivePlan{}, boom
@@ -136,12 +142,12 @@ func TestRetirementEntryPortsStopAtEachAuthorityBoundary(t *testing.T) {
 		}, "injected authority failure"},
 		{"owner after lock", func(_ *RetireOptions, p *retireEntryPorts) {
 			calls := 0
-			p.checkOwner = func(ListResult) error {
+			p.checkCustody = func(context.Context, string, string, ListResult) (retireCustodyFence, error) {
 				calls++
 				if calls == 2 {
-					return boom
+					return retireCustodyFence{}, boom
 				}
-				return nil
+				return retireCustodyFence{mode: "legacy"}, nil
 			}
 		}, "injected authority failure"},
 		{"head changed", func(_ *RetireOptions, p *retireEntryPorts) {
@@ -211,17 +217,20 @@ func TestRetirementEntryPortsStopAtEachAuthorityBoundary(t *testing.T) {
 
 func TestRetirementTransactionAdapterRechecksPRAndRemoteOwner(t *testing.T) {
 	t.Parallel()
+	allowLegacyTestCustody := func(context.Context, string, string, ListResult) (retireCustodyFence, error) {
+		return retireCustodyFence{mode: "legacy"}, nil
+	}
 	entry := ListResult{Task: "task", Repository: "acme/app", Branch: "topic", WorktreeDir: t.TempDir()}
 	prError := errors.New("PR inventory changed")
 	options := RetireOptions{Task: entry.Task, OpenPullRequests: func(context.Context, string, string, string) (bool, error) { return false, prError }, RemoteOwnership: func(context.Context, string) error { return nil }}
-	operation := retireTransactionOperation(options, "", entry, nil, nil)
+	operation := retireTransactionOperation(options, "", "", entry, nil, nil, retireCustodyFence{mode: "legacy"}, allowLegacyTestCustody)
 	if err := operation.Apply.BeforeDeletion(context.Background()); !errors.Is(err, prError) {
 		t.Fatalf("PR refusal = %v", err)
 	}
 	ownerError := errors.New("remote owner changed")
 	options.OpenPullRequests = func(context.Context, string, string, string) (bool, error) { return false, nil }
 	options.RemoteOwnership = func(context.Context, string) error { return ownerError }
-	operation = retireTransactionOperation(options, "", entry, nil, nil)
+	operation = retireTransactionOperation(options, "", "", entry, nil, nil, retireCustodyFence{mode: "legacy"}, allowLegacyTestCustody)
 	if err := operation.Apply.BeforeDeletion(context.Background()); !errors.Is(err, ownerError) {
 		t.Fatalf("owner refusal = %v", err)
 	}
