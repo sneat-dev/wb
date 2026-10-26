@@ -216,8 +216,17 @@ func TestProfilesCatalogReportsCapabilitiesAndUnusableProfiles(t *testing.T) {
 	if len(catalog.Profiles) != 3 {
 		t.Fatalf("profiles = %#v", catalog.Profiles)
 	}
-	if len(catalog.Harnesses) != 3 {
+	if len(catalog.Harnesses) != 4 {
 		t.Fatalf("harnesses = %#v", catalog.Harnesses)
+	}
+	foundAntigravity := false
+	for _, harness := range catalog.Harnesses {
+		if harness.Harness == agents.HarnessAntigravity {
+			foundAntigravity = true
+		}
+	}
+	if !foundAntigravity {
+		t.Fatal("antigravity harness missing from catalog")
 	}
 	var broken *ProfileEntry
 	for index := range catalog.Profiles {

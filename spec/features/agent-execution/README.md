@@ -73,7 +73,7 @@ agents:
     deepseek: { base_url: https://api.deepseek.com, credential_env: DEEPSEEK_API_KEY, wire_api: responses }
   profiles:
     opencode-flash:
-      harness: opencode                       # codex | opencode | dsh
+      harness: opencode                       # codex | opencode | dsh | antigravity
       model: opencode-go/deepseek-v4.1-flash  # harness-native id, passed through
       variant: medium                         # opencode only; appended as #variant in argv
       effort_variants: { low: cheap, high: heavy }   # opencode effort mapping
@@ -201,8 +201,22 @@ Verified CLI facts (2026-10-24, this machine):
 | Error signal | non-zero exit / `turn.failed` | non-zero exit **or** `error` event | non-zero exit |
 
 #### REQ:harness-contract
-Exactly three adapters (`codex`, `opencode`, `dsh`) implement one contract;
+Exactly four adapters (`codex`, `opencode`, `dsh`, `antigravity`) implement one contract;
 `profile.Resolve` and the run owner contain no harness-specific flag spelling.
+
+Antigravity uses executable `agy` (verified CLI 1.1.13, 2026-10-26). WB probes
+required flags, passes a selected model and low/medium/high effort, and runs
+`--mode accept-edits --sandbox --output-format stream-json`. A dedicated private
+brief directory is added to the workspace; the 0600 task body stays off argv.
+The bootstrap names the absolute worktree as the edit target. Authentication
+and provider routing belong to the harness, so a profile omits `provider`.
+This uses the real user home and does not promise filesystem confinement.
+Command permissions remain subject to the operator's scoped agy policy and
+can be soft-denied; this limitation is recorded on the run. WB validation and
+supervisor review remain separate from harness success. Only a `result` with
+`status: SUCCESS` and no error proves completion; tool actions come from unique
+completed tool steps. Usage comes from final cumulative `result.usage` only;
+unreported token fields and per-run cost stay unavailable.
 
 #### REQ:capability-aware-translation
 Each adapter builds only the arguments its CLI documents. Unsupported

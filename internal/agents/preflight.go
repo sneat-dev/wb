@@ -55,7 +55,7 @@ func Preflight(ctx context.Context, resolved Resolved, deps PreflightDeps) error
 	if deps.LookPath == nil || deps.Run == nil {
 		return fmt.Errorf("agent preflight requires executable lookup and a runner")
 	}
-	executable, err := deps.LookPath(resolved.Harness)
+	executable, err := deps.LookPath(harnessExecutable(resolved.Harness))
 	if err != nil {
 		return fmt.Errorf("harness executable %q is not on PATH: %w", resolved.Harness, err)
 	}
@@ -69,6 +69,19 @@ func Preflight(ctx context.Context, resolved Resolved, deps PreflightDeps) error
 	}
 	if resolved.Harness == HarnessDSH {
 		return proveDshModel(ctx, executable, resolved.Model, deps)
+	}
+	if resolved.Harness == HarnessAntigravity {
+		probeCtx, cancel := context.WithTimeout(ctx, preflightTimeout)
+		defer cancel()
+		help, err := deps.Run(probeCtx, executable, "--help")
+		if err != nil {
+			return fmt.Errorf("probe antigravity CLI capabilities: %w", err)
+		}
+		for _, flag := range []string{"--print", "--output-format", "--mode", "--sandbox", "--model", "--effort", "--add-dir", "--print-timeout"} {
+			if !strings.Contains(string(help), flag) {
+				return fmt.Errorf("antigravity CLI is missing required %s capability; update agy", flag)
+			}
+		}
 	}
 	return nil
 }
@@ -107,7 +120,7 @@ func DetectVersion(ctx context.Context, harness string, deps PreflightDeps) stri
 	if lookPath == nil {
 		lookPath = exec.LookPath
 	}
-	executable, err := lookPath(harness)
+	executable, err := lookPath(harnessExecutable(harness))
 	if err != nil {
 		return ""
 	}

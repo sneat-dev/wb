@@ -26,15 +26,16 @@ import (
 // adapter in this package; the field exists so provider and model are not
 // collapsed into the harness name.
 const (
-	HarnessCodex    = "codex"
-	HarnessOpenCode = "opencode"
-	HarnessDSH      = "dsh"
+	HarnessCodex       = "codex"
+	HarnessOpenCode    = "opencode"
+	HarnessDSH         = "dsh"
+	HarnessAntigravity = "antigravity"
 )
 
 // supportedHarnesses is the closed set this build can launch. A new harness is
 // a new adapter, never a configuration value.
 func supportedHarnesses() []string {
-	return []string{HarnessCodex, HarnessOpenCode, HarnessDSH}
+	return []string{HarnessCodex, HarnessOpenCode, HarnessDSH, HarnessAntigravity}
 }
 
 // Wire protocols the Codex harness can speak. The set is closed because it is
@@ -456,6 +457,13 @@ func (config Config) resolveProfile(requested string, profile Profile) (Resolved
 		resolved.TimeoutMS = timeout.Milliseconds()
 	}
 	switch harness {
+	case HarnessAntigravity:
+		if named := strings.TrimSpace(profile.Provider); named != "" {
+			return Resolved{}, requestErrorf("agent profile %q: antigravity manages its own provider; omit provider", requested)
+		}
+		if effort != "" && effort != "low" && effort != "medium" && effort != "high" {
+			return Resolved{}, requestErrorf("agent profile %q: antigravity effort must be low, medium, or high", requested)
+		}
 	case HarnessCodex:
 		providerName := strings.TrimSpace(profile.Provider)
 		routing, ok := config.Providers[providerName]

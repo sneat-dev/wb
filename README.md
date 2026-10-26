@@ -133,8 +133,8 @@ wb agent dispatch|status|await|logs|stop # low-level dispatch and run inspection
 
 `wb agent` runs one bounded coding task in an isolated worktree through a
 configured harness and reports execution, validation and review as three
-independent statuses. It ships three adapters — Codex, OpenCode and the DeepSeek
-harness (`dsh`) — and never judges whether a worker's change is correct; that is
+independent statuses. It ships four adapters — Codex, OpenCode, the DeepSeek
+harness (`dsh`), and Antigravity CLI (`agy`) — and never judges whether a worker's change is correct; that is
 the caller's decision.
 
 A **task type** is policy and a **profile** is execution. Both live in the
