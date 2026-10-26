@@ -309,3 +309,26 @@ func TestMergeConflictReplacementPreservesQuietProgressException(t *testing.T) {
 		t.Fatalf("progress=%q stdout=%q", stderr.String(), stdout.String())
 	}
 }
+
+func TestPrepareRebatchAuditKeepsLandingLaneUntouched(t *testing.T) {
+	t.Parallel()
+	flags := shared.Flags{ProjectsRoot: t.TempDir()}
+	inv := mergeRecordingInvocation(&flags)
+	releases := 0
+	inv.bindings.ReleaseLane = func(string, orchestrate.WorktreeMergeReceipt) { releases++ }
+	inv.operations.PrepareWorktreeMerge = func(_ context.Context, options orchestrate.WorktreeMergePrepareOptions) (orchestrate.WorktreeMergeReceipt, error) {
+		if !options.RebatchAuditOnly || options.RebatchPublishedTargetSHA != "target-sha" || options.RebatchReceipt != "original.json" {
+			t.Fatalf("lost explicit audit options: %+v", options)
+		}
+		return orchestrate.WorktreeMergeReceipt{Status: "rebatch_audited", RebatchAudit: &orchestrate.WorktreeMergePreparedRebatch{CurrentTargetSHA: "target-sha"}}, nil
+	}
+	command := newWorktreeMergePrepareCmd(inv)
+	var output bytes.Buffer
+	command.SetOut(&output)
+	if err := mergeExecute(command, "/owned/source", "--rebatch-receipt", "original.json", "--rebatch-published-target-sha", "target-sha", "--rebatch-audit-only", "--format", "json"); err != nil {
+		t.Fatal(err)
+	}
+	if releases != 0 || !strings.Contains(output.String(), `"rebatch_audit"`) {
+		t.Fatalf("audit changed lane or omitted proof: releases=%d output=%s", releases, output.String())
+	}
+}

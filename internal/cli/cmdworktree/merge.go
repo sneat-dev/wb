@@ -22,6 +22,8 @@ import (
 type worktreeMergeFlags struct {
 	target, route, onFailure, format       string
 	rebatchReceipt                         string
+	rebatchPublishedTargetSHA              string
+	rebatchAuditOnly                       bool
 	model, runtime, agentID, cli, provider string
 	cleanup                                bool
 	allowUnfenced                          bool
@@ -506,7 +508,9 @@ func newWorktreeMergePrepareCmd(inv *mergeInvocation) *cobra.Command {
 			campaign := newWorktreeMergeProgress(inv, command, flags)
 			receipt, err := inv.operations.PrepareWorktreeMerge(command.Context(), prepareMergeOptions(inv, flags, args, campaign.Reporter(), admission, nil))
 			finishWorktreeMergeProgress(campaign, receipt, err)
-			inv.bindings.ReleaseLane(inv.runtime.Flags().ProjectsRoot, receipt)
+			if !flags.rebatchAuditOnly {
+				inv.bindings.ReleaseLane(inv.runtime.Flags().ProjectsRoot, receipt)
+			}
 			if writeErr := writeWorktreeMergeReceipt(command.OutOrStdout(), flags.format, receipt); writeErr != nil && err == nil {
 				return writeErr
 			}
@@ -516,6 +520,8 @@ func newWorktreeMergePrepareCmd(inv *mergeInvocation) *cobra.Command {
 	inv.bindings.Quiet(command)
 	inv.bindings.Landing(command, "worktree")
 	bindWorktreeMergeFlags(command, &flags, true, false, false)
+	command.Flags().BoolVar(&flags.rebatchAuditOnly, "rebatch-audit-only", false, "prove an explicit refreshed-publication rebatch without creating a candidate, changing receipts, or retiring its PR")
+	command.Flags().StringVar(&flags.rebatchPublishedTargetSHA, "rebatch-published-target-sha", "", "exact current target SHA authorizing immutable rebatch of a prepare/conflict refreshed publication; requires --rebatch-receipt and strictly advanced source heads")
 	command.Flags().StringVar(&flags.rebatchReceipt, "rebatch-receipt", "", "immutable unlanded prepared or exact published receipt to replace with an additive source-set rebatch")
 	return command
 }
@@ -1370,7 +1376,7 @@ func prepareMergeOptions(inv *mergeInvocation, flags worktreeMergeFlags, sources
 	return orchestrate.WorktreeMergePrepareOptions{ProjectsRoot: inv.runtime.Flags().ProjectsRoot, Sources: sources, Target: flags.target,
 		Model: flags.model, AgentRuntime: flags.runtime, AgentID: flags.agentID, CLI: flags.cli, Provider: flags.provider,
 		Timeout: flags.timeout, Retry: flags.retry, PrepareTimeout: flags.prepareTimeout, CheckTimeout: flags.checkTimeout, ShardAttemptTimeout: flags.shardAttemptTimeout,
-		Progress: reporter, ProgressRequested: flags.progress, RebatchReceipt: flags.rebatchReceipt, HostLoadAdmission: admission,
+		Progress: reporter, ProgressRequested: flags.progress, RebatchReceipt: flags.rebatchReceipt, RebatchPublishedTargetSHA: flags.rebatchPublishedTargetSHA, RebatchAuditOnly: flags.rebatchAuditOnly, HostLoadAdmission: admission,
 		RequireHostLoadAdmission: requireAdmission,
 		Route:                    orchestrate.WorktreeMergeRoute(flags.route), ValidateLocally: flags.validateLocally, DirectCIPullRequest: flags.directCIPullRequest,
 		Lane: inv.bindings.LaneRequest(inv.runtime.Flags().ProjectsRoot, "wb worktree merge prepare", flags.laneReason, flags.takeOverLane)}

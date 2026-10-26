@@ -1456,6 +1456,12 @@ internal/orchestrate::TestReceiptCollisionAcknowledgementRevalidatesClaimAtRebat
 internal/orchestrate::TestRecordDeferredValidationCheckSkippedFindingReplacesRatherThanAppends	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/orchestrate::TestRecordMergedByGitHubReviewBindingDowngradesAnUnprovenForeignHead	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/orchestrate::TestRecordMergedByGitHubReviewBindingLeavesAProvenHeadAlone	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/orchestrate::TestRefreshedPublicationRebatchPreservesOriginalAndRejectsChangedProof	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
+internal/orchestrate::TestRefreshedPublicationRebatchPreservesOriginalAndRejectsChangedProof/#1	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
+internal/orchestrate::TestRefreshedPublicationRebatchPreservesOriginalAndRejectsChangedProof/advanced source omits captured candidate	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
+internal/orchestrate::TestRefreshedPublicationRebatchPreservesOriginalAndRejectsChangedProof/audit refuses an occupied operation lock	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/orchestrate::TestRefreshedPublicationRebatchPreservesOriginalAndRejectsChangedProof/audit refuses incomplete and changed proof	kept serial because a nested subtest must stay serial: #1
+internal/orchestrate::TestRefreshedPublicationRebatchPreservesOriginalAndRejectsChangedProof/audit refuses incomplete and changed proof/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/orchestrate::TestRequireImmutableHistoricalWorktreeMergeSourcesRefusesSideCommitOutsideFailedCandidate	kept serial because a nested subtest must stay serial: #1
 internal/orchestrate::TestRequireImmutableHistoricalWorktreeMergeSourcesRefusesSideCommitOutsideFailedCandidate/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/orchestrate::TestRequireWorktreeMergePublishedValidationHonorsThisCallsRoute	kept serial because a nested subtest must stay serial: PR-route deferral authorizes publish on the PR route

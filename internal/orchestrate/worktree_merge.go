@@ -300,10 +300,11 @@ type WorktreeMergeReceipt struct {
 	SupersededPullRequest string `json:"superseded_pull_request,omitempty"`
 	// RebatchOf binds this candidate to an immutable prepared receipt whose
 	// source set was safely expanded. The old receipt is never rewritten.
-	RebatchOf           string                   `json:"rebatch_of,omitempty"`
-	RebatchedCandidates []WorktreeMergeCandidate `json:"rebatched_candidates,omitempty"`
-	Failure             string                   `json:"failure,omitempty"`
-	ResumeArgs          []string                 `json:"resume_args,omitempty"`
+	RebatchAudit        *WorktreeMergePreparedRebatch `json:"rebatch_audit,omitempty"`
+	RebatchOf           string                        `json:"rebatch_of,omitempty"`
+	RebatchedCandidates []WorktreeMergeCandidate      `json:"rebatched_candidates,omitempty"`
+	Failure             string                        `json:"failure,omitempty"`
+	ResumeArgs          []string                      `json:"resume_args,omitempty"`
 	// HostLoadAdmission records the most recent host-load admission check
 	// that actually ran for this receipt's lane, so the override is provable
 	// from the receipt rather than only from the caller's own log. Set by
@@ -448,6 +449,9 @@ type WorktreeMergePrepareOptions struct {
 	// RebatchReceipt is an immutable, still-unlanded prepared or exact published
 	// pending/failed-check receipt whose sources are replaced additively.
 	RebatchReceipt string
+	// RebatchPublishedTargetSHA explicitly fences recovery of a refreshed publication.
+	RebatchPublishedTargetSHA string
+	RebatchAuditOnly          bool
 	// HostLoadAdmission is the host-load admission check cmd/wb ran before
 	// calling PrepareWorktreeMerge, if any. It is copied onto the new receipt
 	// so the override is provable from the receipt itself.
@@ -536,6 +540,24 @@ func prepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 	if !validMergeBranch(ctx, canonical, target) {
 		return WorktreeMergeReceipt{}, fmt.Errorf("invalid target branch %q", target)
 	}
+	if options.RebatchPublishedTargetSHA != "" && options.RebatchReceipt == "" {
+		return WorktreeMergeReceipt{}, errors.New("--rebatch-published-target-sha requires --rebatch-receipt")
+	}
+	if options.RebatchAuditOnly {
+		if options.RebatchReceipt == "" || options.RebatchPublishedTargetSHA == "" {
+			return WorktreeMergeReceipt{}, errors.New("--rebatch-audit-only requires --rebatch-receipt and --rebatch-published-target-sha")
+		}
+		lock, err := AcquireOperationLock(projectsRoot, worktreeMergeLaneID(repository, target), true)
+		if err != nil {
+			return WorktreeMergeReceipt{}, err
+		}
+		defer func() { _ = lock.Release() }()
+		proof, err := validatePreparedWorktreeMergeRebatch(ctx, projectsRoot, options.RebatchReceipt, repository, target, sources, options.RebatchPublishedTargetSHA)
+		if err != nil {
+			return WorktreeMergeReceipt{}, err
+		}
+		return WorktreeMergeReceipt{Phase: WorktreeMergePhasePrepare, Status: "rebatch_audited", Repository: repository, Target: target, RebatchAudit: proof}, nil
+	}
 	// The landing-lane guard runs before any receipt is created: a different
 	// live session already driving this (repository, target) lane must be
 	// refused before this call does any work it would otherwise have to
@@ -560,9 +582,10 @@ func prepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 			}
 		}()
 	}
+
 	var rebatch *WorktreeMergePreparedRebatch
 	if strings.TrimSpace(options.RebatchReceipt) != "" {
-		rebatch, err = validatePreparedWorktreeMergeRebatch(ctx, projectsRoot, options.RebatchReceipt, repository, target, sources)
+		rebatch, err = validatePreparedWorktreeMergeRebatch(ctx, projectsRoot, options.RebatchReceipt, repository, target, sources, options.RebatchPublishedTargetSHA)
 		if err != nil {
 			return WorktreeMergeReceipt{}, err
 		}
@@ -665,7 +688,7 @@ func prepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 				if currentErr != nil {
 					return existing, currentErr
 				}
-				rechecked, recheckErr := validatePreparedWorktreeMergeRebatch(ctx, projectsRoot, rebatch.ReceiptPath, repository, target, sources)
+				rechecked, recheckErr := validatePreparedWorktreeMergeRebatch(ctx, projectsRoot, rebatch.ReceiptPath, repository, target, sources, options.RebatchPublishedTargetSHA)
 				if recheckErr != nil {
 					return existing, recheckErr
 				}
@@ -819,7 +842,7 @@ func prepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		// The original target and all source identities are re-read only after
 		// exclusivity is held. A changed candidate, source, or target invalidates
 		// the rebatch rather than silently replacing immutable evidence.
-		rebatch, err = validatePreparedWorktreeMergeRebatch(ctx, projectsRoot, rebatch.ReceiptPath, repository, target, sources)
+		rebatch, err = validatePreparedWorktreeMergeRebatch(ctx, projectsRoot, rebatch.ReceiptPath, repository, target, sources, options.RebatchPublishedTargetSHA)
 		if err != nil {
 			return WorktreeMergeReceipt{}, err
 		}

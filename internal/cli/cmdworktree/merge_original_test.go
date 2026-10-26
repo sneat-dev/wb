@@ -802,7 +802,7 @@ func TestCwWtMergePrepareMergeOptionsAndLandMergeOptions(t *testing.T) {
 		target: "main", route: "pr", onFailure: "revert", format: "json", cleanup: true, allowUnfenced: true,
 		model: "m", runtime: "r", agentID: "a", cli: "c", provider: "p", timeout: time.Minute, retry: 2,
 		prepareTimeout: time.Second, checkTimeout: 2 * time.Second, shardAttemptTimeout: 3 * time.Second,
-		interval: 4 * time.Second, rebatchReceipt: "/tmp/r.json", progress: true, stopBeforeMerge: true,
+		interval: 4 * time.Second, rebatchReceipt: "/tmp/r.json", rebatchPublishedTargetSHA: "target-sha", rebatchAuditOnly: true, progress: true, stopBeforeMerge: true,
 		takeOverLane: true, laneReason: "reason",
 	}
 	prepare := prepareMergeOptions(mergeTestInvocation(shared.Flags{ProjectsRoot: projectsRoot}), flags, []string{"/tmp/wt"}, nil, nil, nil)
@@ -812,7 +812,7 @@ func TestCwWtMergePrepareMergeOptionsAndLandMergeOptions(t *testing.T) {
 	if len(prepare.Sources) != 1 || prepare.Sources[0] != "/tmp/wt" {
 		t.Fatalf("prepareMergeOptions sources = %v, want the source list carried through", prepare.Sources)
 	}
-	if prepare.RebatchReceipt != "/tmp/r.json" || prepare.ProgressRequested != true || prepare.ShardAttemptTimeout != 3*time.Second {
+	if prepare.RebatchReceipt != "/tmp/r.json" || prepare.RebatchPublishedTargetSHA != "target-sha" || !prepare.RebatchAuditOnly || prepare.ProgressRequested != true || prepare.ShardAttemptTimeout != 3*time.Second {
 		t.Fatalf("prepareMergeOptions = %+v, want the prepare-only flags carried through", prepare)
 	}
 	if !prepare.Lane.TakeOver || prepare.Lane.TakeoverReason != "reason" {
