@@ -19,6 +19,9 @@ const legacyRecordPrefix = "WB legacy merge provenance (not review approval)\n"
 const legacyInventoryPrefix = "<!-- wb-legacy-provenance:"
 
 var legacyRepositoryPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$`)
+
+// Portable identity components are bounded ASCII identifiers, never paths or prose.
+var legacyIdentityAtom = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:+-]{0,127}$`)
 var legacySHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
 var legacyAuditAtom = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/@:+-]*$`)
 var legacyRawDigest = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -89,6 +92,10 @@ func legacyInventoryDigest(records []LegacyBinding) string {
 }
 
 func validateLegacyRecord(record LegacyProvenance) error {
+	if !safeLegacyIdentities(record.Adopter, record.OriginalMerger) {
+		return fmt.Errorf("invalid legacy projection identity component")
+	}
+
 	if record.Version != 1 || !legacyRepositoryPattern.MatchString(record.Repository) || !validBranchName(record.Integration) || !validBranchName(record.To) || record.Integration == record.To || record.ReceiptID == "" || !legacyDigest.MatchString(record.ReceiptDigest) || !legacyDigest.MatchString(record.ValidationDigest) || record.WB == "" || !identityComplete(record.Adopter) || !legacySHA.MatchString(record.TargetSHA) || !legacySHA.MatchString(record.CandidateSHA) || len(record.Sources) == 0 || len(record.Sources) != len(record.Merges) {
 		return fmt.Errorf("invalid legacy provenance identity")
 	}
@@ -166,8 +173,15 @@ func AdoptLegacyIntegration(ctx context.Context, options LegacyAdoptOptions) (Le
 		return result, err
 	}
 	actor := options.actor
-	if !identityComplete(actor) {
+	if actor == (ReviewerIdentity{}) {
 		actor = currentSessionIdentity()
+	}
+	originalMerger := ""
+	if receipt.LaneOwner != nil {
+		originalMerger = receipt.LaneOwner.Owner.WBSessionID
+	}
+	if !safeLegacyIdentities(actor, originalMerger) {
+		return result, fmt.Errorf("invalid legacy projection identity component")
 	}
 	if receipt.SchemaVersion != 1 || receipt.Candidate.Task != receipt.ID || !validBranchName(receipt.Candidate.Branch) || !strings.HasPrefix(receipt.Candidate.Branch, "wb/integration/"+receipt.Target+"/") || receipt.Repository != options.Repository || receipt.Target != options.Integration || receipt.Status != WorktreeMergeComplete || receipt.Phase != WorktreeMergePhaseLand || receipt.Route.Route != WorktreeMergeRouteDirect || receipt.PreviousTargetSHA != receipt.TargetSHA || receipt.Candidate.SHA != receipt.LandingSHA || receipt.ValidationIdentity == nil || receipt.ValidationIdentity.CandidateSHA != receipt.Candidate.SHA || receipt.ValidationIdentity.TargetSHA != receipt.TargetSHA || receipt.Validation.Status != quality.StatusPassed || !anyCheckPassed(receipt.Validation) || receipt.Rebase != nil || receipt.RevertOf != nil || receipt.RebatchOf != "" || len(receipt.TargetRefreshes) > 0 || len(receipt.SourceRefreshes) > 0 || len(receipt.ForwardRepairs) > 0 || receipt.ValidationDeferral != nil {
 		return result, fmt.Errorf("unsupported or incomplete legacy WB receipt")
@@ -481,4 +495,23 @@ func (options LegacyAdoptOptions) resolveLegacyArchive() legacyArchive {
 		return options.archive
 	}
 	return newGitHubIntegration()
+}
+
+func safeLegacyIdentities(adopter ReviewerIdentity, originalMerger string) bool {
+	return identityComplete(adopter) && safeLegacyModel(adopter.Model) && legacyIdentityAtom.MatchString(adopter.Harness) && legacyIdentityAtom.MatchString(adopter.Session) && (originalMerger == "" || (!strings.EqualFold(originalMerger, unknownIdentityPart) && legacyIdentityAtom.MatchString(originalMerger)))
+}
+
+// Model identifiers may carry supported provider/model namespaces. These are
+// identifiers, not arbitrary strings: absolute paths, empty/dot segments,
+// controls and oversized names are rejected without rewriting identity.
+func safeLegacyModel(model string) bool {
+	if len(model) > 128 || strings.HasPrefix(model, "/") || (len(model) >= 3 && model[1] == ':' && model[2] == '/') {
+		return false
+	}
+	for _, segment := range strings.Split(model, "/") {
+		if !legacyIdentityAtom.MatchString(segment) {
+			return false
+		}
+	}
+	return true
 }

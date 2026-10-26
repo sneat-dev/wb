@@ -386,3 +386,39 @@ func TestE2ELegacyAdoptionRejectsChangedExistingArchiveBeforeAnyWrite(t *testing
 		}
 	}
 }
+
+func TestE2ELegacyAdoptionRejectsUnsafeIdentitiesBeforeAnyPublication(t *testing.T) {
+	t.Parallel()
+	_, _, original, base := oldMergeFixture(t)
+	archive := base.archive.(*legacyArchiveFixture)
+	for _, field := range []string{"model", "harness", "session", "original", "partial adopter"} {
+		r := original
+		options := base
+		options.Apply = true
+		switch field {
+		case "model":
+			options.actor.Model = "/Users/private/model"
+		case "harness":
+			options.actor.Harness = "native\nprivate"
+		case "session":
+			options.actor.Session = strings.Repeat("a", 129)
+		case "original":
+			r.LaneOwner = &landinglane.Record{Owner: landinglane.Owner{WBSessionID: "/Users/private/receipt\nnot-session"}}
+		case "partial adopter":
+			options.actor = ReviewerIdentity{Model: "gpt-6.1-sol"}
+		}
+		raw, _ := json.Marshal(r)
+		path := filepath.Join(t.TempDir(), "receipt.json")
+		if err := os.WriteFile(path, raw, 0600); err != nil {
+			t.Fatal(err)
+		}
+		options.Receipt = path
+		options.checkout = func(string) (string, error) { t.Fatal("identity rejected too late", field); return "", nil }
+		if _, err := AdoptLegacyIntegration(context.Background(), options); err == nil {
+			t.Fatal("unsafe identity accepted", field)
+		}
+		if archive.creates != 0 {
+			t.Fatal("unsafe identity was published", field)
+		}
+	}
+}

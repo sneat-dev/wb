@@ -233,6 +233,26 @@ Changing the inventory invalidates review. Existing lane review, identity,
 current-target, CI and no-auto-merge gates remain mandatory. No provenance
 record alone authorizes landing; private receipt bytes are never uploaded.
 
+A valid or malformed typed inventory without the promotion marker is refused
+before ordinary approval or landing. If both body markers disappear, complete
+comment inventories on unmarked source merges still detect a durable legacy
+archive and require promotion; an incomplete/unavailable inventory fails closed.
+There is no hidden classification registry: if ALL typed body and remote archive
+evidence is erased, WB cannot prove a past adoption and makes no such guarantee.
+Ordinary PR review/CI rules still apply. Ordinary unadopted merges with a complete
+empty archive inventory retain their existing flow.
+
+Adopter harness/session and optional original merger are bounded 1–128
+character ASCII atoms starting with an alphanumeric character and containing
+only alphanumerics, `.`, `_`, `:`, `+` or `-`. Model names may additionally use
+relative provider/model namespace segments within the same total length bound.
+Absolute paths, empty/dot/dotdot model segments, controls, whitespace, oversized
+and partial identities are rejected before publication and during portable
+validation; identities are never silently rewritten. An arbitrary relative
+model identifier cannot reveal whether its words encode private information;
+WB makes no such content-deduction guarantee.
+
+
 ## Acceptance Criteria
 
 ### AC: bad-pins-refused-together-nothing-changed

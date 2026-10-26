@@ -44,10 +44,11 @@ type IssueComment struct {
 
 // promoteLandingPorts are the GitHub reads promotion landing makes.
 type promoteLandingPorts struct {
-	comment  func(ctx context.Context, repository string, id int64) (IssueComment, error)
-	review   commitCommentReader
-	contains func(ctx context.Context, repository, ancestor, descendant string) (bool, string)
-	operator func() ReviewerIdentity
+	comment        func(ctx context.Context, repository string, id int64) (IssueComment, error)
+	review         commitCommentReader
+	legacyComments func(context.Context, string, string) ([]LegacyBinding, error)
+	contains       func(ctx context.Context, repository, ancestor, descendant string) (bool, string)
+	operator       func() ReviewerIdentity
 	// mergeMethod is the repository's preferred enabled method: a merge
 	// commit when allowed, so the integration branch stays an ancestor of
 	// the target and needs no refresh.
@@ -56,7 +57,7 @@ type promoteLandingPorts struct {
 
 func defaultPromoteLandingPorts() promoteLandingPorts {
 	return promoteLandingPorts{comment: readIssueComment, review: DefaultIntegrationGitHub(), contains: githubchecks.ContainsTarget,
-		operator: currentSessionIdentity, mergeMethod: repositoryPullRequestMergeMethod}
+		operator: currentSessionIdentity, mergeMethod: repositoryPullRequestMergeMethod, legacyComments: newGitHubIntegration().LegacyComments}
 }
 
 func (options PullRequestLandOptions) resolvePromotePorts() promoteLandingPorts {
@@ -119,10 +120,37 @@ func promotionLandingGate(ctx context.Context, options *PullRequestLandOptions, 
 	promote := "wb integration promote " + options.Repository + " " + shellSingleQuote(view.Head.Ref) + " --to " + shellSingleQuote(view.Base.Ref)
 	ports := options.resolvePromotePorts()
 	if !strings.Contains(view.Body, promoteMarker) {
+		if strings.Contains(view.Body, legacyInventoryPrefix) {
+			options.NoUpdateBranch, options.NoAutoMerge = true, true
+			return nil, promoteRefusal(LandRefusalBatchBlockInvalid, "legacy provenance inventory requires the promotion marker", promote), nil
+		}
 		for _, commit := range commits {
 			if carriesLaneTrailer(commit) {
 				return nil, promoteRefusal(LandRefusalBatchBlockInvalid,
 					fmt.Sprintf("commit %s is a WB lane merge but the body lacks the promotion marker", shortMergeRevision(commit.SHA)), promote), nil
+			}
+		}
+		// Removing both body markers cannot downgrade a still-discoverable archive.
+		// Read every complete comment inventory on an unmarked merge. Records are
+		// evidence of required classification, never approval. Missing/deleted ALL
+		// remote evidence is unprovable; no new hidden authority list is invented.
+		if ports.legacyComments != nil {
+			for _, commit := range commits {
+				if len(commit.Parents) < 2 {
+					continue
+				}
+				if !legacyRepositoryPattern.MatchString(options.Repository) || !legacySHA.MatchString(commit.SHA) {
+					return nil, promoteRefusal(LandRefusalBatchBlockInvalid, "invalid legacy classification endpoint", promote), nil
+				}
+				records, err := ports.legacyComments(ctx, options.Repository, commit.SHA)
+				if err != nil {
+					options.NoUpdateBranch, options.NoAutoMerge = true, true
+					return nil, nil, fmt.Errorf("inspect durable legacy provenance: %w", err)
+				}
+				if len(records) > 0 {
+					options.NoUpdateBranch, options.NoAutoMerge = true, true
+					return nil, promoteRefusal(LandRefusalBatchBlockInvalid, "durable legacy provenance requires promotion and its inventory", promote), nil
+				}
 			}
 		}
 		// GitHub lists at most maxListedPullRequestCommits; a longer branch
@@ -203,6 +231,9 @@ func promotionLandingGate(ctx context.Context, options *PullRequestLandOptions, 
 // promotion whose --approved-by is not a comment URL on it.
 func promotionApprovalForm(options PullRequestLandOptions, view githubchecks.PullRequestView, number string) *landRefusal {
 	if !strings.Contains(view.Body, promoteMarker) {
+		if strings.Contains(view.Body, legacyInventoryPrefix) {
+			return promoteRefusal(LandRefusalBatchBlockInvalid, "legacy provenance inventory requires the promotion marker", promotionDeltaCommand(options.Repository, view))
+		}
 		return nil
 	}
 	match := issueCommentURLPattern.FindStringSubmatch(strings.TrimSpace(options.ApprovedBy))

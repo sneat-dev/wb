@@ -492,3 +492,13 @@ legacy merge diffs stay visible beside later fixes. The independent current-head
 review must also bind the exact `Reviewed-Legacy-Provenance:` inventory digest.
 Delta, promote and land revalidate remote evidence; unknown merges and changed
 records fail closed. Existing full CI/current-target/no-auto gates remain.
+
+Removing a promotion marker while retaining any typed inventory is refused.
+Even if both body markers are removed, WB checks complete comment inventories
+on unmarked source merges for durable legacy records before ordinary approval
+side effects. Unknown provider outcomes fail closed. If all typed body AND
+remote archive evidence has been erased, no historical adoption classification
+can be proved; WB does not invent a hidden authority list. Ordinary PR review
+and CI still apply. Harness/session identities are bounded ASCII atoms; models additionally allow
+relative provider/model segments. Absolute paths, controls, empty/dot segments
+and oversized values are rejected before publication without rewriting identity.
