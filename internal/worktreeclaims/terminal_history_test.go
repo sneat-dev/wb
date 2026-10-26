@@ -516,3 +516,26 @@ func TestRemovedHelperHistoryRejectsUnsafeEffortAndMisboundClaim(t *testing.T) {
 		})
 	}
 }
+
+func TestRemovedHistoryAbsenceDistinguishesUnrelatedAndMismatchedTaskEvidence(t *testing.T) {
+	t.Parallel()
+	home, expected, claim := terminalHistoryFixture(t)
+	claim.EffortID = "unrelated"
+	claim.Task = "unrelated"
+	claim.Worktree = filepath.Join(home, "unrelated")
+	claim.ClaimID = WorkLogClaimID(claim.EffortID, CreationResult{Repository: claim.Repository, WorktreeDir: claim.Worktree, Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA})
+	addRemovedHistoryRun(t, home, expected, claim)
+	ports := terminalHistoryTestPorts()
+	if _, err := ports.ReadRemovedTerminalWorkLogClaimBase(home, expected); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing selected namespace must retain typed absence: %v", err)
+	}
+	// A selected task claim under an alias with mismatched immutable binding is
+	// evidence to preserve, not absence eligible for acknowledgement fallback.
+	claim.Task = expected.Task
+	claim.EffortID = "aliased-selected"
+	claim.ClaimID = WorkLogClaimID(claim.EffortID, CreationResult{Repository: claim.Repository, WorktreeDir: claim.Worktree, Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA})
+	addRemovedHistoryRun(t, home, expected, claim)
+	if _, err := ports.ReadRemovedTerminalWorkLogClaimBase(home, expected); err == nil || errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("mismatched selected evidence cannot become absence: %v", err)
+	}
+}

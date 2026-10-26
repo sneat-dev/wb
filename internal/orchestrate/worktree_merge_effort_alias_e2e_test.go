@@ -84,3 +84,25 @@ func TestE2ESharedEffortHelpersResumeAfterPartialTerminalCleanup(t *testing.T) {
 		}
 	}
 }
+
+//nolint:paralleltest // real hosted metadata fixture owns process-wide PATH/environment.
+func TestE2EMissingNamespacesWithUnrelatedEffortRetainAuditedCleanupRecovery(t *testing.T) {
+	f, r := missingCleanupOwnerFixture(t)
+	unrelated := createMergeSource(t, f, "unrelated-history", "feature/unrelated-history", "unrelated.txt", "unrelated\n")
+	for _, task := range sortedUniqueMergeTasks(r) {
+		if err := os.RemoveAll(filepath.Join(f.githubDir, ".wb", "worklogs", task)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err := AcknowledgeMissingWorktreeMergeCleanup(t.Context(), WorktreeMergeMissingCleanupAcknowledgementOptions{ProjectsRoot: f.githubDir, Receipt: r.ReceiptPath, Actor: "reviewer", Reason: "actual missing selected namespaces with separate valid history", Apply: true})
+	if err != nil {
+		t.Fatalf("explicit missing-history acknowledgement: %v", err)
+	}
+	complete, err := recoverAlreadyTerminalizedWorktreeMergeCleanup(t.Context(), f.githubDir, &r, 0, 0)
+	if err != nil || !complete {
+		t.Fatalf("audited namespace recovery: complete=%v err=%v", complete, err)
+	}
+	if _, err := os.Stat(unrelated.WorktreeDir); err != nil {
+		t.Fatalf("unrelated worktree changed: %v", err)
+	}
+}
