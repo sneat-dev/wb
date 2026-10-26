@@ -62,6 +62,7 @@ failover and records `retry_of`/`fallback_from`/`fallback_reason`.
 ```sh
 wb agent run --task-type coding --task-file task.md
 wb agent run --task-type coding --profile opencode-flash --task-file task.md
+wb agent run --task-type coding --profile antigravity-worker --task-file task.md
 ```
 
 ## Complexity is not effort

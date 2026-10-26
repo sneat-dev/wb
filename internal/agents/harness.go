@@ -3,6 +3,7 @@ package agents
 import (
 	"fmt"
 	"io"
+	"time"
 )
 
 // Harness capability vocabulary. A capability is declared by the adapter, not
@@ -13,8 +14,9 @@ const (
 	EffortVariant     = "variant"
 	EffortUnsupported = "unsupported"
 
-	TaskDeliveryStdin = "stdin"
-	TaskDeliveryArgv  = "argv"
+	TaskDeliveryStdin       = "stdin"
+	TaskDeliveryArgv        = "argv"
+	TaskDeliveryPrivateFile = "private-file"
 
 	UsageFromEvents      = "events"
 	UsageUnavailable     = "unavailable"
@@ -48,7 +50,7 @@ type HarnessCapabilities struct {
 // adapter, so configuration validation and planning share one answer.
 func HarnessCapabilityFor(harness string) string {
 	switch harness {
-	case HarnessCodex:
+	case HarnessCodex, HarnessAntigravity:
 		return EffortConfig
 	case HarnessOpenCode:
 		return EffortVariant
@@ -95,6 +97,7 @@ type HarnessSummary struct {
 
 // Launch is everything an adapter needs to build one non-interactive run.
 type Launch struct {
+	Timeout         time.Duration
 	RunDir          string
 	WorktreeDir     string
 	Model           string
@@ -122,8 +125,8 @@ type HarnessLaunch struct {
 	SplitStderr bool
 }
 
-// Harness is one coding-agent adapter. Three implementations exist; adding a
-// fourth is a new file in this package plus a name in supportedHarnesses.
+// Harness is one coding-agent adapter. Each implementation has its own file
+// in this package and a name in supportedHarnesses.
 type Harness interface {
 	Name() string
 	Capabilities() HarnessCapabilities
@@ -135,6 +138,8 @@ type Harness interface {
 // HarnessFor returns the adapter for a harness name.
 func HarnessFor(name string) (Harness, error) {
 	switch name {
+	case HarnessAntigravity:
+		return antigravityHarness{}, nil
 	case HarnessCodex:
 		return codexHarness{}, nil
 	case HarnessOpenCode:
@@ -142,6 +147,14 @@ func HarnessFor(name string) (Harness, error) {
 	case HarnessDSH:
 		return dshHarness{}, nil
 	default:
-		return nil, fmt.Errorf("harness %q is not supported by this WB build; supported harnesses: codex, opencode, dsh", name)
+		return nil, fmt.Errorf("harness %q is not supported by this WB build; supported harnesses: codex, opencode, dsh, antigravity", name)
 	}
+}
+
+// harnessExecutable separates the configured harness identity from its CLI name.
+func harnessExecutable(name string) string {
+	if name == HarnessAntigravity {
+		return "agy"
+	}
+	return name
 }

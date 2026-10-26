@@ -186,7 +186,7 @@ func runOwnerWithSave(ctx context.Context, store Store, agentID string, deps Own
 			return finish(StateFailed, err.Error(), FailureCredential)
 		}
 	}
-	executable, err := deps.LookPath(record.Resolved.Harness)
+	executable, err := deps.LookPath(harnessExecutable(record.Resolved.Harness))
 	if err != nil {
 		return finish(StateFailed, fmt.Sprintf("harness executable %q not found on PATH: %v", record.Resolved.Harness, err), FailureHarnessMiss)
 	}
@@ -203,6 +203,7 @@ func runOwnerWithSave(ctx context.Context, store Store, agentID string, deps Own
 	}
 	routing.CredentialFile = ""
 	launch, err := adapter.Prepare(Launch{
+		Timeout:         time.Duration(record.TimeoutMS) * time.Millisecond,
 		RunDir:          store.Dir(agentID),
 		WorktreeDir:     record.WorktreeDir,
 		Model:           record.Resolved.Model,
