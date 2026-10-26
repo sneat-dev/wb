@@ -3,6 +3,7 @@ package worktreeretire
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -85,5 +86,30 @@ func TestReadReportSnapshotRefusesSymlinkAndOversizeReplacements(t *testing.T) {
 	}
 	if _, err := ReadReportSnapshot(filepath.Join(parentLinked, filepath.Base(receipt.ReportPath))); err == nil {
 		t.Fatal("receipt snapshot followed a symlinked parent directory")
+	}
+}
+
+// TestReadReportSnapshotRejectsGrowthDuringRead proves the receipt bound is
+// enforced on the actual read, not only on the stat: a file admitted as a small
+// regular file that grows past the cap before the bounded read must be refused
+// before JSON decoding, validation or digest acceptance.
+func TestReadReportSnapshotRejectsGrowthDuringRead(t *testing.T) {
+	t.Parallel()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt := snapshotTestReceipt(t, root)
+	ops := reportReadOps{stat: (*os.File).Stat, read: func(io.Reader) ([]byte, error) {
+		return make([]byte, maxReportBytes+1), nil
+	}}
+	if _, err := readReportSnapshotWithOps(receipt.ReportPath, ops); err == nil || !strings.Contains(err.Error(), "invalid retirement receipt file") {
+		t.Fatalf("growth during read = %v, want bounded-read refusal", err)
+	}
+	// The same file and the same stat pass the real bounded reader, proving the
+	// refusal above is the post-stat read bound rather than admission.
+	snapshot, err := ReadReportSnapshot(receipt.ReportPath)
+	if err != nil || snapshot.Transaction.SourceSHA != receipt.SourceSHA {
+		t.Fatalf("unchanged receipt snapshot = %+v, %v", snapshot, err)
 	}
 }

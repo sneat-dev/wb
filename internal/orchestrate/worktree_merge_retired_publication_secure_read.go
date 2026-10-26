@@ -32,13 +32,21 @@ type publicationNamespace struct {
 // symlinks and admits it only while the lexical parent still resolves to that
 // same descriptor.
 func openPublicationNamespace(path string, create bool) (*publicationNamespace, error) {
+	return openPublicationNamespaceWith(path, create, worktreesecure.OpenAbsoluteDirectoryNoFollow)
+}
+
+// openPublicationNamespaceWith is the narrow opener seam for the immediate
+// post-open validation. Production always passes the checked no-follow opener;
+// a test can admit a real descriptor whose lexical parent it replaces before
+// returning, proving the descriptor is closed and the swap refused.
+func openPublicationNamespaceWith(path string, create bool, open func(string, bool) (*os.File, error)) (*publicationNamespace, error) {
 	directoryPath := filepath.Dir(path)
 	if create {
 		if err := os.MkdirAll(directoryPath, 0o700); err != nil {
 			return nil, err
 		}
 	}
-	directory, err := worktreesecure.OpenAbsoluteDirectoryNoFollow(directoryPath, false)
+	directory, err := open(directoryPath, false)
 	if err != nil {
 		return nil, err
 	}

@@ -647,3 +647,136 @@ func proveRetiredCheckoutWith(ctx context.Context, options RetiredCheckoutProofO
 	defer func() { _ = proof.Close() }()
 	return proof.Evidence(), nil
 }
+
+// TestRetiredCheckoutProofRefusesNamespaceAndReceiptChanges keeps the held
+// proof bound to the descriptors and receipt bytes it admitted: a canonical
+// root replaced before Validate, a receipt that cannot be re-read, a remote
+// query whose held Git read fails, and an opener that admits a real repository
+// whose lexical root was replaced before return all refuse, and the refused
+// opener's descriptors are closed.
+func TestRetiredCheckoutProofRefusesNamespaceAndReceiptChanges(t *testing.T) {
+	t.Parallel()
+	proved := func(t *testing.T) (*retiredProofFixture, *RetiredCheckoutProof) {
+		t.Helper()
+		fixture := newRetiredProofFixture(t)
+		proof, err := proveRetiredCheckoutHeldWith(context.Background(), fixture.options, fixture.ports)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = proof.Close() })
+		return fixture, proof
+	}
+
+	t.Run("canonical replaced before validate", func(t *testing.T) {
+		t.Parallel()
+		fixture, proof := proved(t)
+		if err := os.Rename(fixture.canonicalDir, fixture.canonicalDir+"-held"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(fixture.canonicalDir, ".git"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := proof.Validate(); err == nil || !strings.Contains(err.Error(), "canonical repository path changed") {
+			t.Fatalf("validate after canonical replacement = %v", err)
+		}
+	})
+
+	t.Run("receipt reread failure", func(t *testing.T) {
+		t.Parallel()
+		_, proof := proved(t)
+		proof.readSnapshot = func(string) (worktreeretire.ReportSnapshot, error) {
+			return worktreeretire.ReportSnapshot{}, errors.New("receipt unavailable")
+		}
+		if err := proof.Validate(); err == nil || !strings.Contains(err.Error(), "re-read retirement receipt") {
+			t.Fatalf("validate after receipt failure = %v", err)
+		}
+	})
+
+	t.Run("remote query failure", func(t *testing.T) {
+		t.Parallel()
+		_, proof := proved(t)
+		childErr := errors.New("held git failed")
+		proof.git = func(context.Context, *canonicalRepository, ...string) (string, error) {
+			return "", childErr
+		}
+		if _, err := proof.remoteSHA(context.Background(), "origin", "refs/heads/topic"); err == nil ||
+			!strings.Contains(err.Error(), "inspect remote ref") || !errors.Is(err, childErr) {
+			t.Fatalf("remote query failure = %v", err)
+		}
+	})
+
+	t.Run("opener returns a replaced namespace", func(t *testing.T) {
+		t.Parallel()
+		fixture := newRetiredProofFixture(t)
+		var opened *canonicalRepository
+		fixture.ports.openCanonical = func(string) (*canonicalRepository, error) {
+			repository, err := openCanonicalRepository(fixture.canonicalDir)
+			if err != nil {
+				return nil, err
+			}
+			opened = repository
+			if err := os.Rename(fixture.canonicalDir, fixture.canonicalDir+"-held"); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Join(fixture.canonicalDir, ".git"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			return repository, nil
+		}
+		evidence, err := proveRetiredCheckoutWith(context.Background(), fixture.options, fixture.ports)
+		if err == nil || !strings.Contains(err.Error(), "authorize canonical clone") {
+			t.Fatalf("replaced opener = (%+v, %v)", evidence, err)
+		}
+		if evidence != (RetiredCheckoutEvidence{}) {
+			t.Fatalf("replaced opener produced evidence: %+v", evidence)
+		}
+		if opened == nil {
+			t.Fatal("opener never returned a repository")
+		}
+		if _, err := opened.root.Stat(); err == nil {
+			t.Fatal("refused opener left its root descriptor open")
+		}
+	})
+}
+
+// TestRetiredCheckoutProofRefusesPostGitNamespaceSwap keeps the post-Git
+// validation authoritative: a child that fails while the canonical namespace is
+// swapped returns both errors, and a child that reports success cannot turn the
+// same swap into a positive proof.
+func TestRetiredCheckoutProofRefusesPostGitNamespaceSwap(t *testing.T) {
+	t.Parallel()
+	for _, childFails := range []bool{false, true} {
+		t.Run(map[bool]string{false: "child reports success", true: "child fails"}[childFails], func(t *testing.T) {
+			t.Parallel()
+			fixture := newRetiredProofFixture(t)
+			proof, err := proveRetiredCheckoutHeldWith(context.Background(), fixture.options, fixture.ports)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = proof.Close() }()
+			childErr := errors.New("held child failed")
+			proof.git = func(context.Context, *canonicalRepository, ...string) (string, error) {
+				if err := os.Rename(fixture.canonicalDir, fixture.canonicalDir+"-held"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.MkdirAll(filepath.Join(fixture.canonicalDir, ".git"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if childFails {
+					return "", childErr
+				}
+				return "success output", nil
+			}
+			output, err := proof.Git(context.Background(), "status")
+			if err == nil || !strings.Contains(err.Error(), "canonical repository path changed") {
+				t.Fatalf("post-Git swap = (%q, %v)", output, err)
+			}
+			if output != "" {
+				t.Fatalf("post-Git swap returned output as success: %q", output)
+			}
+			if childFails && !errors.Is(err, childErr) {
+				t.Fatalf("post-Git swap dropped the child error: %v", err)
+			}
+		})
+	}
+}
