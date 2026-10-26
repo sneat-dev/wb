@@ -219,8 +219,8 @@ func TestLegacyPromotionLandingRequiresInventoryAndCurrentHeadReview(t *testing.
 			view.Head.Ref = r.Integration
 			view.Body = promoteMarker + "\n" + legacyInventoryPrefix + legacyJSON([]LegacyBinding{binding}) + " -->"
 			ports := world.ports()
-			ports.contains = func(_ context.Context, _, ancestor, _ string) (bool, string) {
-				return ancestor == "main" || ancestor == r.TargetSHA, ""
+			ports.contains = func(_ context.Context, _, ancestor, descendant string) (bool, string) {
+				return ancestor == view.Base.SHA && descendant == view.Head.SHA || ancestor == r.TargetSHA && descendant == view.Base.Ref, ""
 			}
 			ports.review = &legacyCommentStore{comments: map[int64]CommitComment{10: {Body: body, CommitID: r.CandidateSHA}}}
 			commits := []SourceCommit{{SHA: r.CandidateSHA, Parents: []string{r.TargetSHA, r.Sources[0]}}}
@@ -399,8 +399,8 @@ func TestLegacyLandingCanonicalizesTwoPortableReceiptBindings(t *testing.T) {
 	view.Head.Ref = first.Integration
 	view.Body = promoteMarker + legacyInventoryPrefix + legacyJSON(bindings) + " -->"
 	ports := world.ports()
-	ports.contains = func(_ context.Context, _, ancestor, _ string) (bool, string) {
-		return ancestor == "main" || ancestor == first.TargetSHA, ""
+	ports.contains = func(_ context.Context, _, ancestor, descendant string) (bool, string) {
+		return ancestor == view.Base.SHA && descendant == view.Head.SHA || ancestor == first.TargetSHA && descendant == view.Base.Ref, ""
 	}
 	ports.review = &legacyCommentStore{comments: map[int64]CommitComment{10: {Body: body1, CommitID: first.CandidateSHA}, 11: {Body: body2, CommitID: second.CandidateSHA}}}
 	options := PullRequestLandOptions{Repository: first.Repository, ApprovedBy: promoteApproval, promotePorts: ports}
