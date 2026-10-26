@@ -150,7 +150,7 @@ func TestReadOperationsUseAnImmutableTerminalCorpus(t *testing.T) {
 					t.Fatal(result, err)
 				}
 			case "list":
-				results, err := ops.List(t.Context(), ListRequest{root})
+				results, err := ops.List(t.Context(), ListRequest{ProjectsRoot: root})
 				if err != nil || len(results) != 1 || results[0].AgentID != id {
 					t.Fatal(results, err)
 				}
@@ -219,7 +219,7 @@ func TestReadAndStopFailuresPreserveIdentity(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, ".wb", "agents"), nil, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.List(t.Context(), ListRequest{root}); err == nil {
+	if _, err := s.List(t.Context(), ListRequest{ProjectsRoot: root}); err == nil {
 		t.Fatal("expected actual non-directory list error")
 	}
 }

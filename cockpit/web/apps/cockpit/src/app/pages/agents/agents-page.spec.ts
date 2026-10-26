@@ -18,10 +18,11 @@ const idsOf = (root: HTMLElement) => rowsOf(root).map((row) => row.querySelector
 describe('AgentsPage', () => {
   it('scrolls to the usage table from the page shortcut', async () => {
     const { root } = await openPage('/agents', AgentsPage, agentsDocument())
-    const usage = root.querySelector<HTMLElement>('#session-usage') as HTMLElement
+    const usage = root.querySelector<HTMLElement>('#session-usage-heading') as HTMLElement
     usage.scrollIntoView = vi.fn()
     root.querySelector<HTMLButtonElement>('.usage-jump')?.click()
     expect(usage.scrollIntoView).toHaveBeenCalledOnce()
+    expect(document.activeElement).toBe(usage)
   })
 
   it('renders on its own over an empty, warming-up fleet, with placeholder rows', async () => {

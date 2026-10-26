@@ -52,7 +52,9 @@ export class AgentsPage {
   protected readonly repository = (agent: Agent): string | undefined => (agent.repository === undefined ? undefined : this.store.model().repositoryName(agent.repository))
   protected readonly fallback = (agent: Agent): string => agentFallback(agent, this.clock())
   protected scrollToUsage(): void {
-    document.getElementById('session-usage')?.scrollIntoView()
+    const heading = document.getElementById('session-usage-heading')
+    heading?.focus({ preventScroll: true })
+    heading?.scrollIntoView()
   }
   /** A state the agent can still report an activity for: a finished run has no activity to miss. */
   protected readonly reportsActivity = (agent: Agent): boolean => ['running', 'live', 'parked'].includes(agent.state)

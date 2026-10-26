@@ -25,6 +25,7 @@ export interface AgentSessionStatsBucket {
 }
 
 export interface AgentSessionStatsReport {
+  window_days: number
   total: AgentSessionStatsBucket
   by_session_repository: AgentSessionStatsBucket[]
 }
@@ -39,8 +40,8 @@ function statsBucket(value: unknown): value is AgentSessionStatsBucket {
 }
 
 /** Owner-only local usage: the session/repository rows are already grouped by WB. */
-export async function readAgentSessionStats(fetcher: typeof fetch): Promise<AgentSessionStatsReport> {
-  const response = await fetcher(AGENT_SESSION_STATS_PATH, {
+export async function readAgentSessionStats(fetcher: typeof fetch, days: 7 | 30 | 90 = 30): Promise<AgentSessionStatsReport> {
+  const response = await fetcher(`${AGENT_SESSION_STATS_PATH}?days=${days}`, {
     headers: { Accept: 'application/json' },
     credentials: 'same-origin',
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
@@ -49,7 +50,7 @@ export async function readAgentSessionStats(fetcher: typeof fetch): Promise<Agen
   const body: unknown = await response.json().catch(() => null)
   if (typeof body !== 'object' || body === null) throw new Error('Invalid session usage report')
   const report = body as Record<string, unknown>
-  if (!statsBucket(report['total']) || !Array.isArray(report['by_session_repository']) ||
+  if (report['window_days'] !== days || !statsBucket(report['total']) || !Array.isArray(report['by_session_repository']) ||
     !report['by_session_repository'].every(statsBucket)) throw new Error('Invalid session usage report')
   return body as AgentSessionStatsReport
 }

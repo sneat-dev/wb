@@ -47,7 +47,10 @@ type WorktreeMergeStrandedLandingAcknowledgement struct {
 	Target              string              `json:"target"`
 	ReceiptTargetSHA    string              `json:"receipt_target_sha"`
 	CandidateSHA        string              `json:"candidate_sha"`
-	PullRequest         string              `json:"pull_request"`
+	// PublishedPredecessorSHA records the earlier published head when the
+	// preserved candidate advanced before the landing could be confirmed.
+	PublishedPredecessorSHA string `json:"published_predecessor_sha,omitempty"`
+	PullRequest             string `json:"pull_request"`
 	// PullRequestHeadSHA records a strict descendant of CandidateSHA that
 	// GitHub reports as the merged pull request head. It is empty when the PR
 	// head still exactly matches CandidateSHA. A descendant is accepted only
@@ -147,6 +150,9 @@ func acknowledgeStrandedPullRequestLanding(ctx context.Context, options Worktree
 		Sources: append([]WorktreeMergeSource(nil), receipt.Sources...),
 		Actor:   strings.TrimSpace(options.Actor), Reason: strings.TrimSpace(options.Reason), RecordedAt: time.Now().UTC(),
 	}
+	if receipt.PublishedCandidateSHA != receipt.Candidate.SHA {
+		ack.PublishedPredecessorSHA = receipt.PublishedCandidateSHA
+	}
 	ack.ID = strandedLandingAcknowledgementID(ack)
 	if existing, readErr := readStrandedLandingAcknowledgement(ackPath, receipt); readErr == nil {
 		if existing.ProvedLandingSHA != landingSHA || existing.CurrentTargetSHA != currentTarget ||
@@ -190,7 +196,7 @@ func validateStrandedLandingReceipt(receipt WorktreeMergeReceipt, receiptPath st
 	if receipt.Repository == "" || receipt.Target == "" || receipt.TargetSHA == "" || receipt.Candidate.SHA == "" {
 		return fmt.Errorf("receipt %s lacks complete immutable repository, target, or candidate identity", receiptPath)
 	}
-	if receipt.PublishedCandidateSHA == "" || receipt.PublishedCandidateSHA != receipt.Candidate.SHA {
+	if receipt.PublishedCandidateSHA == "" {
 		return fmt.Errorf("receipt %s published candidate %s does not match its exact preserved candidate %s", receiptPath, receipt.PublishedCandidateSHA, receipt.Candidate.SHA)
 	}
 	return nil
@@ -346,6 +352,14 @@ func proveStrandedPullRequestLandingWithRead(ctx context.Context, receipt Worktr
 		}
 		return "", "", "", "", "", errors.New(reason)
 	}
+	if receipt.PublishedCandidateSHA != receipt.Candidate.SHA {
+		if contains, reason := githubchecks.ContainsTarget(ctx, receipt.Repository, receipt.PublishedCandidateSHA, receipt.Candidate.SHA); !contains {
+			if reason == "" {
+				reason = fmt.Sprintf("receipted candidate %s does not contain published predecessor %s", receipt.Candidate.SHA, receipt.PublishedCandidateSHA)
+			}
+			return "", "", "", "", "", errors.New(reason)
+		}
+	}
 	return view.MergeCommit.OID, currentTarget, observedPullRequestHead, proofKind, landingTreeSHA, nil
 }
 
@@ -404,6 +418,12 @@ func strandedLandingAcknowledgementID(ack WorktreeMergeStrandedLandingAcknowledg
 		_, _ = hash.Write([]byte(ack.PullRequestHeadSHA))
 		_, _ = hash.Write([]byte{0})
 	}
+	if ack.PublishedPredecessorSHA != "" {
+		_, _ = hash.Write([]byte("published-predecessor"))
+		_, _ = hash.Write([]byte{0})
+		_, _ = hash.Write([]byte(ack.PublishedPredecessorSHA))
+		_, _ = hash.Write([]byte{0})
+	}
 	for _, source := range ack.Sources {
 		for _, value := range []string{source.Task, source.Worktree, source.Branch, source.SHA} {
 			_, _ = hash.Write([]byte(value))
@@ -446,6 +466,8 @@ func readStrandedLandingAcknowledgement(path string, receipt WorktreeMergeReceip
 		ack.AcknowledgementPath != path || ack.ReceiptPath != receipt.ReceiptPath || ack.ReceiptID != receipt.ID || ack.ReceiptSHA256 != receiptHash ||
 		ack.ReceiptStatus != receipt.Status || ack.Lane != receipt.Lane || ack.Repository != receipt.Repository || ack.Target != receipt.Target ||
 		ack.ReceiptTargetSHA != receipt.TargetSHA || ack.CandidateSHA != receipt.Candidate.SHA || ack.PullRequest != receipt.PullRequest ||
+		((receipt.PublishedCandidateSHA == receipt.Candidate.SHA && ack.PublishedPredecessorSHA != "") ||
+			(receipt.PublishedCandidateSHA != receipt.Candidate.SHA && ack.PublishedPredecessorSHA != receipt.PublishedCandidateSHA)) ||
 		ack.ProvedLandingSHA == "" || ack.CurrentTargetSHA == "" || !sameWorktreeMergeSources(ack.Sources, receipt.Sources) ||
 		ack.PullRequestHeadSHA == ack.CandidateSHA ||
 		(ack.CandidateLanding != "ancestor" && ack.CandidateLanding != "tree-identical") ||

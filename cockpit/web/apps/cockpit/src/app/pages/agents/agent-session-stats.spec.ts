@@ -12,10 +12,10 @@ const bucket = (session_id: string, session_name: string | undefined, repository
 describe('AgentSessionStats', () => {
   it('shows recorded names prominently, keeps IDs visible, and filters session/repository rows', async () => {
     const report = {
-      total: { ...bucket('', undefined, ''), runs: 3 },
+      window_days: 30, total: { ...bucket('', undefined, ''), runs: 3 },
       by_session_repository: [bucket('thread-one', 'builder', 'acme/app'), bucket('thread-two', undefined, 'acme/lib')],
     }
-    const fetcher = vi.fn(async () => new Response(JSON.stringify(report), { status: 200 }))
+    const fetcher = vi.fn(async (url: string) => new Response(JSON.stringify({ ...report, window_days: Number(url.split('days=')[1]) }), { status: 200 }))
     TestBed.configureTestingModule({ providers: [
       { provide: FleetStore, useValue: { session: signal({ principal: 'owner' }), sessionStatus: signal('ready') } },
       { provide: FETCH, useValue: fetcher },
@@ -31,6 +31,29 @@ describe('AgentSessionStats', () => {
     expect(root.querySelector('tbody tr .session code')?.textContent?.trim()).toBe('thread-one')
     expect(root.textContent).toContain('$0.2500')
     expect(root.textContent).toContain('Tokens reported for 1 of 3 runs')
+    expect(root.textContent).toContain('Only WB-dispatched agent runs recorded on this machine')
+    expect(fetcher).toHaveBeenCalledWith('/api/v1/cockpit/agent-session-stats?days=30', expect.anything())
+    const window = root.querySelector<HTMLSelectElement>('#session-usage-window') as HTMLSelectElement
+    window.value = '7'
+    window.dispatchEvent(new Event('change'))
+    await vi.waitFor(() => {
+      fixture.detectChanges()
+      expect(fetcher).toHaveBeenLastCalledWith('/api/v1/cockpit/agent-session-stats?days=7', expect.anything())
+      expect(root.querySelectorAll('tbody tr')).toHaveLength(2)
+    })
+    for (const days of ['30', '90']) {
+      window.value = days
+      window.dispatchEvent(new Event('change'))
+      await vi.waitFor(() => {
+        fixture.detectChanges()
+        expect(fetcher).toHaveBeenLastCalledWith(`/api/v1/cockpit/agent-session-stats?days=${days}`, expect.anything())
+        expect(root.querySelectorAll('tbody tr')).toHaveLength(2)
+      })
+    }
+    const calls = fetcher.mock.calls.length
+    window.value = '5'
+    window.dispatchEvent(new Event('change'))
+    expect(fetcher).toHaveBeenCalledTimes(calls)
     const search = root.querySelector<HTMLInputElement>('input[type=search]') as HTMLInputElement
     search.value = 'acme/lib'
     search.dispatchEvent(new Event('input'))
@@ -56,7 +79,7 @@ describe('AgentSessionStats', () => {
   it('shows missing telemetry distinctly, formats longer durations, and refreshes after an error', async () => {
     const noUsage = { ...bucket('', undefined, 'acme/app'), duration_ms: 90_000, usage_runs: 0, cost_runs: 0 }
     const long = { ...bucket('thread-one', 'builder', 'acme/lib'), duration_ms: 7_200_000, runs: 1 }
-    const report = { total: { ...noUsage, runs: 3 }, by_session_repository: [noUsage, long] }
+    const report = { window_days: 30, total: { ...noUsage, runs: 3 }, by_session_repository: [noUsage, long] }
     const fetcher = vi.fn()
       .mockRejectedValueOnce(new Error('temporary failure'))
       .mockResolvedValueOnce(new Response(JSON.stringify(report), { status: 200 }))
@@ -89,7 +112,7 @@ describe('AgentSessionStats', () => {
     let resolveFirst!: (response: Response) => void
     const first = new Promise<Response>((resolve) => { resolveFirst = resolve })
     const report = {
-      total: { ...bucket('', undefined, ''), runs: 3 },
+      window_days: 30, total: { ...bucket('', undefined, ''), runs: 3 },
       by_session_repository: [bucket('thread-one', 'builder', 'acme/z'), bucket('thread-two', undefined, 'acme/a'), bucket('thread-one', undefined, 'acme/a')],
     }
     const fetcher = vi.fn().mockReturnValueOnce(first).mockResolvedValueOnce(new Response(JSON.stringify(report), { status: 200 }))
@@ -124,8 +147,8 @@ describe('AgentSessionStats', () => {
   it('keeps the newest refresh when an older response arrives later, and clears figures after a failed refresh', async () => {
     let resolveFirst!: (response: Response) => void
     const first = new Promise<Response>((resolve) => { resolveFirst = resolve })
-    const oldReport = { total: { ...bucket('', undefined, ''), runs: 7 }, by_session_repository: [bucket('old', 'old run', 'acme/old')] }
-    const newReport = { total: { ...bucket('', undefined, ''), runs: 1 }, by_session_repository: [bucket('new', 'new run', 'acme/new')] }
+    const oldReport = { window_days: 30, total: { ...bucket('', undefined, ''), runs: 7 }, by_session_repository: [bucket('old', 'old run', 'acme/old')] }
+    const newReport = { window_days: 30, total: { ...bucket('', undefined, ''), runs: 1 }, by_session_repository: [bucket('new', 'new run', 'acme/new')] }
     const fetcher = vi.fn().mockReturnValueOnce(first)
       .mockResolvedValueOnce(new Response(JSON.stringify(newReport), { status: 200 }))
       .mockRejectedValueOnce(new Error('offline'))

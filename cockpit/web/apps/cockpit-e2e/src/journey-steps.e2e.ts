@@ -56,7 +56,8 @@ async function serve(page: Page, metrics: JourneyMetrics & { machine: string }) 
   page.on('request', (request) => requests.push(`${request.method()} ${new URL(request.url()).pathname}`))
   await page.route('**/api/v1/cockpit/fleet', (route) => route.fulfill({ json: { ...fleet, snapshot_at: ago(0) }, headers: { ETag: '"journey"', 'Cache-Control': 'no-cache', ...checkedAt() } }))
   await page.route('**/api/v1/cockpit/session', (route) => route.fulfill({ json: { principal: 'owner', capabilities: ['fleet.read', 'repo.content.read'], code_browser_url: 'https://codegrapher.dev/' } }))
-  await page.route('**/api/v1/cockpit/agent-session-stats', (route) => route.fulfill({ json: {
+  await page.route('**/api/v1/cockpit/agent-session-stats?days=*', (route) => route.fulfill({ json: {
+    window_days: 30,
     total: { session_id: '', repository: '', runs: 0, completed: 0, failed: 0, pending: 0, duration_ms: 0,
       usage_runs: 0, input_tokens: 0, output_tokens: 0, cost_runs: 0, estimated_usd: 0 },
     by_session_repository: [],

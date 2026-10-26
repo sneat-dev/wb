@@ -29,7 +29,8 @@ test('owner sees named sessions with per-repository usage and can find one in th
   await page.route('**/api/v1/cockpit/session', (route) => route.fulfill({ json: {
     principal: 'owner', capabilities: ['fleet.read', 'repo.content.read'], code_browser_url: 'https://codegrapher.dev/',
   } }))
-  await page.route('**/api/v1/cockpit/agent-session-stats', (route) => route.fulfill({ json: {
+  await page.route('**/api/v1/cockpit/agent-session-stats?days=*', (route) => route.fulfill({ json: {
+    window_days: Number(new URL(route.request().url()).searchParams.get('days')),
     total: { session_id: '', repository: '', runs: 2, completed: 1, failed: 1, pending: 0,
       duration_ms: 90_000, usage_runs: 1, input_tokens: 120, output_tokens: 30, cost_runs: 1, estimated_usd: 0.25 },
     by_session_repository: [
@@ -43,6 +44,12 @@ test('owner sees named sessions with per-repository usage and can find one in th
   await page.getByRole('button', { name: 'View session usage' }).click()
   const section = page.getByRole('region', { name: 'Session usage' })
   await expect(section).toBeInViewport()
+  await expect(section.getByRole('heading', { name: 'Session usage' })).toBeFocused()
+  await expect(section).toContainText('Only WB-dispatched agent runs recorded on this machine')
+  await expect(section.getByRole('row')).toHaveCount(3)
+  const weekRequest = page.waitForRequest((request) => request.url().includes('/agent-session-stats?days=7'))
+  await section.getByLabel('Time range').selectOption('7')
+  await weekRequest
   await expect(section.getByRole('row')).toHaveCount(3)
   const named = section.getByRole('row').filter({ hasText: 'builder' })
   await expect(named).toContainText('thread-one')

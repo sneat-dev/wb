@@ -45,6 +45,11 @@ func TestStrandedLandingAcknowledgementIDPreservesExactHeadCompatibility(t *test
 	if got := strandedLandingAcknowledgementID(ack); got == legacyID {
 		t.Fatal("descendant acknowledgement ID must bind the observed pull request head")
 	}
+	ack.PullRequestHeadSHA = ""
+	ack.PublishedPredecessorSHA = "published-predecessor"
+	if got := strandedLandingAcknowledgementID(ack); got == legacyID {
+		t.Fatal("advanced candidate acknowledgement ID must bind its published predecessor")
+	}
 }
 
 // installStrandedLandingGH fakes the exact `gh` invocations
@@ -126,7 +131,7 @@ func TestAcknowledgeStrandedPullRequestLandingProvesRemoteContainmentAndFreesLan
 	receipt.Phase = WorktreeMergePhaseLand
 	receipt.Status = WorktreeMergeConflict
 	receipt.PullRequest = "https://example.test/acme/app/pull/91"
-	receipt.PublishedCandidateSHA = receipt.Candidate.SHA
+	receipt.PublishedCandidateSHA = receipt.TargetSHA
 	receipt.Failure = "read pull-request landing receipt: gh pr view https://example.test/acme/app/pull/91 --repo acme/app --json state,mergedAt,mergeCommit,headRefOid,baseRefName: chdir " + receipt.Candidate.Worktree + ": no such file or directory"
 	if err := persistWorktreeMergeReceipt(receipt); err != nil {
 		t.Fatal(err)
@@ -178,7 +183,7 @@ func TestAcknowledgeStrandedPullRequestLandingProvesRemoteContainmentAndFreesLan
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ack.ID == "" || ack.AcknowledgementPath == "" {
+	if ack.ID == "" || ack.AcknowledgementPath == "" || ack.PublishedPredecessorSHA != receipt.TargetSHA {
 		t.Fatalf("applied acknowledgement lacks identity: %+v", ack)
 	}
 	unchanged, err := os.ReadFile(receipt.ReceiptPath)
@@ -463,7 +468,7 @@ func TestValidateStrandedLandingReceiptRefusesWrongShape(t *testing.T) {
 		{name: "wrong status", mutate: func(r *WorktreeMergeReceipt) { r.Status = WorktreeMergePrepared }, wantErr: "want recoverable land receipt"},
 		{name: "already has a landing SHA", mutate: func(r *WorktreeMergeReceipt) { r.LandingSHA = strings.Repeat("c", 40) }, wantErr: "already recorded a landing SHA"},
 		{name: "no pull request", mutate: func(r *WorktreeMergeReceipt) { r.PullRequest = "" }, wantErr: "no published pull request"},
-		{name: "published candidate mismatch", mutate: func(r *WorktreeMergeReceipt) { r.PublishedCandidateSHA = strings.Repeat("d", 40) }, wantErr: "does not match its exact preserved candidate"},
+		{name: "missing published candidate", mutate: func(r *WorktreeMergeReceipt) { r.PublishedCandidateSHA = "" }, wantErr: "published candidate"},
 		{name: "inconsistent lane", mutate: func(r *WorktreeMergeReceipt) { r.Lane = "some-other-lane" }, wantErr: "inconsistent immutable receipt identity"},
 	}
 	for _, tt := range tests {

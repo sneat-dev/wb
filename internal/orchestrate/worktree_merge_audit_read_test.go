@@ -66,6 +66,45 @@ func remainingAuditReadCase(t *testing.T, kind string) acknowledgementReadCase {
 	}
 }
 
+func TestStrandedLandingReaderAcceptsBoundPublishedPredecessor(t *testing.T) {
+	t.Parallel()
+	receipt := acknowledgementReadReceipt(t)
+	receipt.Phase = WorktreeMergePhaseLand
+	receipt.Status = WorktreeMergeConflict
+	receipt.PullRequest = "https://example.test/acme/app/pull/1"
+	receipt.PublishedCandidateSHA = "published-predecessor"
+	if err := persistWorktreeMergeReceipt(receipt); err != nil {
+		t.Fatal(err)
+	}
+	digest, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := strandedLandingAcknowledgementPath(receipt.ReceiptPath)
+	ack := WorktreeMergeStrandedLandingAcknowledgement{
+		SchemaVersion: worktreeMergeStrandedLandingAcknowledgementSchemaVersion,
+		Status:        "stranded_landing_acknowledged", AcknowledgementPath: path,
+		ReceiptPath: receipt.ReceiptPath, ReceiptID: receipt.ID, ReceiptSHA256: digest,
+		ReceiptStatus: receipt.Status, Lane: receipt.Lane, Repository: receipt.Repository,
+		Target: receipt.Target, ReceiptTargetSHA: receipt.TargetSHA,
+		CandidateSHA: receipt.Candidate.SHA, PublishedPredecessorSHA: receipt.PublishedCandidateSHA,
+		PullRequest: receipt.PullRequest, ProvedLandingSHA: "landed", CurrentTargetSHA: "current",
+		CandidateLanding: "ancestor", Sources: receipt.Sources, Actor: "reviewer", Reason: "remote proof",
+		RecordedAt: receipt.CreatedAt,
+	}
+	ack.ID = strandedLandingAcknowledgementID(ack)
+	if err := persistStrandedLandingAcknowledgement(path, ack); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := readStrandedLandingAcknowledgement(path, receipt); err != nil || got.ID != ack.ID {
+		t.Fatalf("advanced candidate acknowledgement = %+v err=%v", got, err)
+	}
+	receipt.PublishedCandidateSHA = "different-predecessor"
+	if _, err := readStrandedLandingAcknowledgement(path, receipt); err == nil || !strings.Contains(err.Error(), "invalid immutable identity") {
+		t.Fatalf("changed predecessor was accepted: %v", err)
+	}
+}
+
 func TestRemainingAuditReadersPreserveFilesystemDecodeAndResultCustody(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"retired", "stranded", "unpublished", "adoption"} {
