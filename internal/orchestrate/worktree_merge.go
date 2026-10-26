@@ -660,6 +660,13 @@ func prepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 				receiptPath = filepath.Join(reportsDir, operation+".json")
 				continue
 			}
+			if conflictAcknowledged, conflictErr := hasUnpublishedConflictAcknowledgement(existing); conflictErr != nil {
+				return existing, conflictErr
+			} else if conflictAcknowledged {
+				operation = worktreeMergeSupersededOperationID(operation, existing.ReceiptPath)
+				receiptPath = filepath.Join(reportsDir, operation+".json")
+				continue
+			}
 			if unpublishedFailureAcknowledged, acknowledgementErr := hasUnpublishedValidationFailureAcknowledgement(existing); acknowledgementErr != nil {
 				return existing, acknowledgementErr
 			} else if unpublishedFailureAcknowledged {
@@ -1285,6 +1292,7 @@ func RunWorktreeMerge(ctx context.Context, prepare WorktreeMergePrepareOptions, 
 // TestWorktreeMergeReportSidecarSuffixParity guards against a suffix being
 // wired into one scan's skip logic without the other.
 var worktreeMergeReportSidecarSuffixes = []string{
+	worktreeMergeUnpublishedConflictSuffix,
 	worktreeMergeLandedFailureAcknowledgementSuffix,
 	worktreeMergeConflictCandidateAdvanceSuffix,
 	worktreeMergeValidationFailureSupersessionSuffix,

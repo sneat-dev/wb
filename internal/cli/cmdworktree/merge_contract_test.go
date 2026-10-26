@@ -69,7 +69,7 @@ func TestMergeConstructorsBindTheActualAnnotationPolicy(t *testing.T) {
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("construction annotations=%v want%v", calls, want)
 	}
-	if len(cmd.Commands()) != 19 {
+	if len(cmd.Commands()) != 20 {
 		t.Fatalf("child count=%d", len(cmd.Commands()))
 	}
 	calls = nil
@@ -278,7 +278,7 @@ func TestMergeRecoveryContractsKeepAdmissionIdentityAndEachTypedOperation(t *tes
 				if called != 0 || released != 0 {
 					t.Fatalf("premature backend=%d release=%d", called, released)
 				}
-			} else if called != 15 || released != 15 {
+			} else if called != 16 || released != 16 {
 				t.Fatalf("operations=%d release=%d", called, released)
 			}
 		})

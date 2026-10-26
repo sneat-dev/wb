@@ -361,6 +361,27 @@ or revert, the installed WB skill metadata and creation reference route it to
 `wb worktree merge`, `wb worktree create --help` names the paired command, and
 a newly created worktree's ignored `.worktree.md` repeats the completion path.
 
+### Historical unpublished land conflicts
+
+`worktree merge acknowledge-unpublished-conflict` previews an exact
+`land/conflict` receipt with a nonempty candidate SHA, no recorded pull request,
+published SHA or landing SHA, and intact clean sources and candidate. It
+authenticates canonical roots, exact receipted heads and immutable active
+claims, refuses live owners, checks remote candidate absence, and freshly
+fetches a target that contains the historical target but excludes the candidate.
+Application requires the reviewed preview proof ID, actor and reason; it
+rechecks the evidence and writes an immutable sidecar. Historical receipt and
+all assets remain unchanged. The acknowledgement releases only that receipt's
+lane and branch claims, refuses historical replay, and lets an independent
+prepare use a fresh operation and candidate. It grants no cleanup authority.
+The proof includes every rebatched predecessor candidate and hashes the exact
+predecessor receipt and rebatch sidecar chain. Each prior checkout and claim
+must remain intact and exact. A published predecessor needs recorded closed
+supersession, a fresh CLOSED/unmerged exact PR identity snapshot and its exact
+remote ref; an unpublished predecessor needs remote-ref and PR-history absence.
+Receipt identity is pinned before acquiring the lane lock and rechecked beneath
+that same lock, so substituting another valid receipt or lane refuses closed.
+
 ## Open Questions
 
 None at this time.
