@@ -94,6 +94,7 @@ func TestDispatchUsesActualDependencyBuilderAndPreservesRequests(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // Mutates the process-global CODEX_THREAD_ID harness env to prove a local dispatch observes the process caller while a remote dispatch keeps its explicit source caller.
 func TestRemotePrepareDispatchPreservesSourceCallerWithoutTargetInference(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("CODEX_THREAD_ID", "thread-on-target")

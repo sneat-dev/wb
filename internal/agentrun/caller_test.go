@@ -9,6 +9,7 @@ import (
 	"github.com/sneat-dev/wb/internal/session"
 )
 
+//nolint:paralleltest // Mutates the process-global CODEX_THREAD_ID, CODEX_SESSION_ID and CLAUDE_CODE_SESSION_ID harness env to prove a native thread ID outranks a shared process registration.
 func TestCallerSessionUsesNativeThreadOverSharedProcessRegistration(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("CODEX_THREAD_ID", "thread-current")
@@ -38,6 +39,7 @@ func TestCallerSessionUsesNativeThreadOverSharedProcessRegistration(t *testing.T
 	}
 }
 
+//nolint:paralleltest // Clears the process-global CODEX_THREAD_ID, CODEX_SESSION_ID and CLAUDE_CODE_SESSION_ID harness env to prove caller selection falls back to the WB session registry.
 func TestCallerSessionFallsBackToRegisteredSession(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("CODEX_THREAD_ID", "")
@@ -60,6 +62,7 @@ func TestCallerSessionFallsBackToRegisteredSession(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // Clears the process-global CODEX_THREAD_ID, CODEX_SESSION_ID and CLAUDE_CODE_SESSION_ID harness env to prove a WB-only registration supplies the caller ID by WB session ID.
 func TestCallerSessionUsesWBIDWhenRegisteredHarnessHasNoNativeID(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("CODEX_THREAD_ID", "")
@@ -77,6 +80,7 @@ func TestCallerSessionUsesWBIDWhenRegisteredHarnessHasNoNativeID(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // Clears the process-global CODEX_THREAD_ID, CODEX_SESSION_ID and CLAUDE_CODE_SESSION_ID harness env to prove a shared Codex app-server PID stays unattributed without a native thread ID.
 func TestCallerSessionLeavesCodexWithoutNativeIDUnattributed(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("CODEX_THREAD_ID", "")

@@ -1,3 +1,5 @@
+//go:build e2e
+
 package orchestrate
 
 import (
@@ -16,8 +18,9 @@ import (
 // GitHub is the sole external fixture, including the superseded closed PR.
 //
 //nolint:paralleltest // The published Prepare journey installs its private gh fixture through process environment.
-func TestUnpublishedConflictPreservesExactRebatchedCandidateCustody(t *testing.T) {
+func TestE2EUnpublishedConflictPreservesExactRebatchedCandidateCustody(t *testing.T) {
 	for _, published := range []bool{false, true} {
+		//nolint:paralleltest // The published case installs the process-environment gh fixture and calls t.Setenv, so this subtest stays serial in its parent's serial journey.
 		t.Run(fmt.Sprint("published=", published), func(t *testing.T) {
 			f, old, _ := unpublishedConflictFixture(t)
 			old.Phase, old.Status = WorktreeMergePhasePrepare, WorktreeMergePrepared

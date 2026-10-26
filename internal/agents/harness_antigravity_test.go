@@ -183,6 +183,7 @@ func TestAntigravityEffortTranslationRejectsUnsupportedLevels(t *testing.T) {
 }
 
 func TestAntigravityPreflightReadsSuccessfulHelpFromStderr(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("shell fixture requires POSIX sh")
 	}
