@@ -164,3 +164,36 @@ func TestRepositoryTransferProofDoesNotTurnAdoptedExternalPathIntoManagedGeometr
 		t.Fatal("unresolvable project root admitted")
 	}
 }
+
+//nolint:paralleltest // native fixture uses isolated process-wide Git/WB configuration.
+func TestRepositoryTransferRemoteBindingSurvivesLaterLayoutRelocation(t *testing.T) {
+	f := newRepositoryTransferFixture(t)
+	mustWriteBranchConfig(t, filepath.Join(filepath.Dir(f.projectsRoot), "config", "wb", "worktrees.yaml"), "version: 1\nworktrees:\n  store: central\n")
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: f.projectsRoot, Operation: "transfer-then-layout", WorkLog: WorkLogOptions{Model: "unknown"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := created[0].WorktreeDir
+	f.moveRemote(t)
+	if result, err := RelocateRepository(context.Background(), RepositoryRelocateOptions{ProjectsRoot: f.projectsRoot, SourceRepository: "acme/app", DestinationRepository: "newco/renamed", RemoteURL: f.newRemote, DefaultBranch: "main", Apply: true}); err != nil || !result.Applied {
+		t.Fatal(result, err)
+	}
+	moved, err := Relocate(context.Background(), RelocateOptions{ProjectsRoot: f.projectsRoot, Task: "transfer-then-layout", To: "local", Apply: true})
+	if err != nil || len(moved.Results) != 1 || !moved.Results[0].Applied {
+		t.Fatal("layout after transfer", moved, err)
+	}
+	path := moved.Results[0].Destination
+	if path == original {
+		t.Fatal("layout fixture did not move")
+	}
+	if _, _, _, err := activeWorkLogClaim(f.home, path); err != nil {
+		t.Fatal("valid chain rejected", err)
+	}
+	gitTest(t, path, "remote", "set-url", "origin", "https://other.example/newco/renamed.git")
+	if _, _, _, err := activeWorkLogClaim(f.home, path); err == nil {
+		t.Fatal("layout receipt erased full repository remote binding")
+	}
+	if _, err := Guard(context.Background(), path, GuardOptions{ProjectsRoot: f.projectsRoot}); err == nil {
+		t.Fatal("guard admitted a foreign origin after chained moves")
+	}
+}

@@ -2786,8 +2786,8 @@ func corroborateClaimAtPathObserved(home, worktree, finalCommit string, projecti
 					return err
 				}
 			}
-		} else if resolution.repository != claim.Repository || resolution.receipt.To == "repository" {
-			if err := corroborateRepositoryRelocation(context.Background(), worktree, resolution.repository, resolution.receipt.RemoteURL); err != nil {
+		} else if resolution.repository != claim.Repository || resolution.remoteURL != "" {
+			if err := corroborateRepositoryRelocation(context.Background(), worktree, resolution.repository, resolution.remoteURL); err != nil {
 				return err
 			}
 		}

@@ -1210,6 +1210,9 @@ func Guard(ctx context.Context, path string, options GuardOptions) (GuardResult,
 			root, location.Layout.WorktreesRoot, commonDir,
 		)
 	}
+	if err := corroborateRecordedRepositoryTransfer(resolution.Write.Home, root); err != nil {
+		return GuardResult{}, err
+	}
 	if branch == "" {
 		operation := transientHistoryOperation(ctx, root, gitDir)
 		if operation == "" {
