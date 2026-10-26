@@ -813,6 +813,66 @@
       "notes": "Run is the task-type-aware entry point. WB ships no model identifier: the answer always comes from wb.yaml, and a profile that cannot execute fails before a worktree exists. A task type may name an ordered fallback list of profiles (cheapest first) with preflight and optional runtime failover; run --wait carries the failover and records retry_of/fallback_from/fallback_reason."
     },
     {
+      "id": "wb.agent.stats",
+      "feature_refs": [
+        "spec/features/agent-dispatch/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb agent stats",
+              "flags": ["--format", "--json", "--repo", "--session"],
+              "modes": [
+                "Groups durable agent run counts, duration, tool calls, reported tokens and estimated cost by caller session, repository and their pair."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb agent stats --help",
+              "contains": ["--session", "--repo", "--json"]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-agent/SKILL.md",
+              "marker": "# WB agent",
+              "examples": ["wb agent stats --format json"]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/cli/cmdagent/stats_test.go",
+              "name": "TestAgentStatsFiltersBySessionAndRepository",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agents/stats_test.go",
+              "name": "TestSummarizeRunsKeepsUnknownUsageAndCallerSeparate",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Older runs without caller identity stay in an unattributed group. Usage and cost counts distinguish absent harness reports from observed zeroes."
+    },
+    {
       "id": "wb.agent.status",
       "feature_refs": [
         "spec/features/agent-dispatch/README.md"

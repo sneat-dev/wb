@@ -70,6 +70,7 @@ the machine that owns them.`,
 	command.AddCommand(newAgentStatusCmd(runtime, deps))
 	command.AddCommand(NewAwait(runtime, deps))
 	command.AddCommand(newAgentListCmd(runtime, deps))
+	command.AddCommand(NewStats(runtime, deps))
 	command.AddCommand(newAgentLogsCmd(runtime, deps))
 	command.AddCommand(newAgentStopCmd(runtime, deps))
 	return command
@@ -196,6 +197,7 @@ wb agent dispatch --to hetzner-vm1 \
 			}
 			if target.Machine != "" {
 				request := newRemoteRequest(agents.RemoteDispatch)
+				request.Caller = agentrun.CurrentCaller(runtime.Flags().ProjectsRoot)
 				request.Mode, request.Worktree, request.Profile, request.Task = mode, name, profile, text
 				request.Repository, request.Branch, request.Base = repository, branch, base
 				request.TimeoutMS = timeout.Milliseconds()

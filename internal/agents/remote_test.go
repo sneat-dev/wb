@@ -66,16 +66,23 @@ func TestRemoteRequestValidationIsIndependentOfTheFlagParser(t *testing.T) {
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("a well-formed request must validate: %v", err)
 	}
+	valid.Caller = CallerSession{ID: "thread-1", NativeHarnessID: "thread-1", Runtime: "codex", Name: "builder"}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("a source caller must survive the remote protocol: %v", err)
+	}
 	cases := map[string]func(*RemoteRequest){
-		"wrong schema":      func(r *RemoteRequest) { r.SchemaVersion = 99 },
-		"unknown operation": func(r *RemoteRequest) { r.Operation = "delete-everything" },
-		"missing mode":      func(r *RemoteRequest) { r.Mode = "" },
-		"bad mode":          func(r *RemoteRequest) { r.Mode = "sideways" },
-		"missing worktree":  func(r *RemoteRequest) { r.Worktree = "  " },
-		"missing task":      func(r *RemoteRequest) { r.Task = "" },
-		"missing profile":   func(r *RemoteRequest) { r.Profile = "" },
-		"non-positive time": func(r *RemoteRequest) { r.TimeoutMS = 0 },
-		"negative time":     func(r *RemoteRequest) { r.TimeoutMS = -1 },
+		"unsafe caller id":   func(r *RemoteRequest) { r.Caller.ID = "bad\nidentity" },
+		"caller without id":  func(r *RemoteRequest) { r.Caller.ID = "" },
+		"unsafe caller name": func(r *RemoteRequest) { r.Caller.Name = "bad\nname" },
+		"wrong schema":       func(r *RemoteRequest) { r.SchemaVersion = 99 },
+		"unknown operation":  func(r *RemoteRequest) { r.Operation = "delete-everything" },
+		"missing mode":       func(r *RemoteRequest) { r.Mode = "" },
+		"bad mode":           func(r *RemoteRequest) { r.Mode = "sideways" },
+		"missing worktree":   func(r *RemoteRequest) { r.Worktree = "  " },
+		"missing task":       func(r *RemoteRequest) { r.Task = "" },
+		"missing profile":    func(r *RemoteRequest) { r.Profile = "" },
+		"non-positive time":  func(r *RemoteRequest) { r.TimeoutMS = 0 },
+		"negative time":      func(r *RemoteRequest) { r.TimeoutMS = -1 },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {

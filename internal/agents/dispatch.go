@@ -69,6 +69,7 @@ type DispatchDeps struct {
 	LoadConfig   func() (Config, error)
 	ProjectsRoot string
 	Home         string
+	Caller       CallerSession
 	// BeforeCreate refreshes managed hooks in the canonical clones, exactly as
 	// `wb worktree create` does before it creates anything.
 	BeforeCreate func(repositories []string) error
@@ -234,6 +235,7 @@ func PrepareRun(ctx context.Context, request DispatchRequest, deps DispatchDeps)
 		TaskVisibility:       capabilities.TaskDelivery,
 		TaskNormalized:       capabilities.TaskDelivery == TaskDeliveryArgv && dshTaskNormalized(request.Task),
 		Repository:           target.Repository,
+		Caller:               deps.Caller,
 		WorktreeMode:         request.Mode,
 		Worktree:             target.Worktree,
 		WorktreeDir:          target.Dir,
