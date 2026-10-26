@@ -950,7 +950,7 @@ func corroborateRecordedRepositoryTransfer(home, worktree string) error {
 	if err != nil {
 		return err
 	}
-	defer run.Close()
+	defer func() { _ = run.Close() }()
 	claim, err := readWorkLogClaimAt(run, projection.ClaimID)
 	if err != nil {
 		return err
