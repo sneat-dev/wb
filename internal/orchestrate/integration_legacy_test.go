@@ -373,3 +373,40 @@ func TestLegacyValidationProjectionRejectsMissingAndUnprintableEvidence(t *testi
 		t.Fatal("default archive is not configured")
 	}
 }
+
+func TestLegacyLandingCanonicalizesTwoPortableReceiptBindings(t *testing.T) {
+	t.Parallel()
+	first := legacyTestRecord()
+	second := legacyTestRecord()
+	second.ReceiptID = "second"
+	second.TargetSHA = first.CandidateSHA
+	second.CandidateSHA = strings.Repeat("1", 40)
+	second.Sources = []string{strings.Repeat("2", 40)}
+	second.Merges = []LegacyMerge{{second.CandidateSHA, second.TargetSHA, second.Sources[0]}}
+	second.Validation.TargetSHA = second.TargetSHA
+	second.Validation.CandidateSHA = second.CandidateSHA
+	second.Validation.SourceSHAs = second.Sources
+	second.ValidationDigest = legacyHash([]byte(legacyJSON(second.Validation)))
+	b1, body1 := legacyTestBinding(first)
+	b2, body2 := legacyTestBinding(second)
+	b2.URL = strings.Replace(b2.URL, "-10", "-11", 1)
+	bindings := []LegacyBinding{b2, b1}
+	canonical := []LegacyBinding{b2, b1} // second candidate starts1, so this is URL order.
+	world := newPromoteWorld()
+	world.review = "**Review by opus@codex@delta-reviewer**\nReviewed-Head: " + second.CandidateSHA + "\nReviewed-Legacy-Provenance: " + legacyInventoryDigest(canonical)
+	view := promotionView()
+	view.Head.SHA = second.CandidateSHA
+	view.Head.Ref = first.Integration
+	view.Body = promoteMarker + legacyInventoryPrefix + legacyJSON(bindings) + " -->"
+	ports := world.ports()
+	ports.contains = func(_ context.Context, _, ancestor, _ string) (bool, string) {
+		return ancestor == "main" || ancestor == first.TargetSHA, ""
+	}
+	ports.review = &legacyCommentStore{comments: map[int64]CommitComment{10: {Body: body1, CommitID: first.CandidateSHA}, 11: {Body: body2, CommitID: second.CandidateSHA}}}
+	options := PullRequestLandOptions{Repository: first.Repository, ApprovedBy: promoteApproval, promotePorts: ports}
+	commits := []SourceCommit{{SHA: second.CandidateSHA, Parents: []string{second.TargetSHA, second.Sources[0]}}, {SHA: first.CandidateSHA, Parents: []string{first.TargetSHA, first.Sources[0]}}}
+	receipt, refusal, err := promotionLandingGate(context.Background(), &options, view, "7", commits)
+	if err != nil || refusal != nil || receipt == nil || len(receipt.Legacy) != 2 {
+		t.Fatal(receipt, refusal, err)
+	}
+}

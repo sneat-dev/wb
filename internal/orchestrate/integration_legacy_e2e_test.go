@@ -89,6 +89,12 @@ func TestE2ELegacyAdoptionPreservesHistoryAndFullDeltaThroughFinalFix(t *testing
 	if err != nil || again.Binding.URL != adopted.Binding.URL || archive.creates != 1 {
 		t.Fatal(again, err, archive.creates)
 	}
+	nextSession := options
+	nextSession.actor = ReviewerIdentity{Model: "gpt-6.1-sol", Harness: "codex", Session: "different-adopter"}
+	retried, err := AdoptLegacyIntegration(ctx, nextSession)
+	if err != nil || retried.Binding.URL != adopted.Binding.URL || retried.Record.Adopter != adopted.Record.Adopter || archive.creates != 1 {
+		t.Fatal("different session duplicated or rewrote provenance", retried, err)
+	}
 	if igit(t, f.work, "rev-parse", "HEAD") != head {
 		t.Fatal("adoption rewrote history")
 	}
@@ -97,7 +103,23 @@ func TestE2ELegacyAdoptionPreservesHistoryAndFullDeltaThroughFinalFix(t *testing
 	f.advance("public-demo", "old.go", "package a\nconst Fixed = 2\n")
 	promotion := options.PromoteOptions
 	promotion.LegacyRecords = []string{adopted.Binding.URL + "=" + adopted.Binding.Digest}
+	bad := promotion
+	bad.LegacyRecords = []string{"not a binding"}
+	if _, err := DeltaBatch(ctx, bad); err == nil {
+		t.Fatal("delta accepted malformed adoption")
+	}
+	if _, err := PromoteIntegration(ctx, bad); err == nil {
+		t.Fatal("promotion accepted malformed adoption")
+	}
+	bad = promotion
+	bad.LegacyRecords = []string{adopted.Binding.URL + "=" + legacyHash([]byte("edited"))}
+	if _, err := PromoteIntegration(ctx, bad); err == nil {
+		t.Fatal("promotion accepted changed archive")
+	}
 	delta := mustPromote(t, LandSuccess)(DeltaBatch(ctx, promotion))
+	if !strings.Contains(PromoteText(delta), delta.LegacyInventoryDigest) {
+		t.Fatal("reviewer cannot see inventory digest")
+	}
 	if len(delta.Legacy) != 1 || len(delta.Lanes) != 0 || len(delta.Delta) != 3 || delta.LegacyInventoryDigest == "" {
 		t.Fatal(delta)
 	}
@@ -329,5 +351,38 @@ func TestE2ELegacyAdoptionFailsClosedAtEveryGraphProofBoundary(t *testing.T) {
 			t.Fatal("missing graph barrier", kind)
 		}
 		gh.failAt = 0
+	}
+}
+
+func TestE2ELegacyAdoptionRejectsChangedExistingArchiveBeforeAnyWrite(t *testing.T) {
+	t.Parallel()
+	_, _, _, options := oldMergeFixture(t)
+	options.Apply = true
+	adopted, err := AdoptLegacyIntegration(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := options.archive.(*legacyArchiveFixture)
+	original := archive.comments[90]
+	for _, kind := range []string{"foreign URL", "missing comment", "changed comment", "invalid record"} {
+		archive.records = []LegacyBinding{*adopted.Binding}
+		archive.comments[90] = original
+		switch kind {
+		case "foreign URL":
+			archive.records[0].URL = "file:///private/receipt"
+		case "missing comment":
+			delete(archive.comments, 90)
+		case "changed comment":
+			archive.comments[90] = CommitComment{CommitID: original.CommitID, Body: original.Body + "changed"}
+		case "invalid record":
+			archive.comments[90] = CommitComment{CommitID: original.CommitID, Body: "ordinary comment"}
+			archive.records[0].Digest = legacyHash([]byte("ordinary comment"))
+		}
+		if _, err := AdoptLegacyIntegration(context.Background(), options); err == nil {
+			t.Fatal("accepted changed existing record", kind)
+		}
+		if archive.creates != 1 {
+			t.Fatal("mutated archive after failed proof", kind)
+		}
 	}
 }

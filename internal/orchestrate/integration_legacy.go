@@ -242,7 +242,27 @@ func AdoptLegacyIntegration(ctx context.Context, options LegacyAdoptOptions) (Le
 		return result, err
 	}
 	for _, binding := range bindings {
-		if binding.Digest == legacyHash([]byte(body)) {
+		candidate, id, err := legacyBindingID(record.Repository, binding)
+		if err != nil || candidate != record.CandidateSHA {
+			return result, fmt.Errorf("foreign existing legacy binding")
+		}
+		comment, err := archive.CommitComment(ctx, record.Repository, id)
+		if err != nil {
+			return result, err
+		}
+		if comment.CommitID != candidate || legacyHash([]byte(comment.Body)) != binding.Digest {
+			return result, fmt.Errorf("changed existing legacy binding")
+		}
+		archived, err := legacyComment(comment.Body)
+		if err != nil {
+			return result, err
+		}
+		// The original adopter remains recorded across a different session's retry.
+		// Exact receipt and graph identity must match; never rewrite old evidence.
+		comparable := record
+		comparable.Adopter = archived.Adopter
+		if legacyJSON(comparable) == legacyJSON(archived) {
+			result.Record = archived
 			result.Binding = &binding
 			result.Applied = true
 			return result, nil

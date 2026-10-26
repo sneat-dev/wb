@@ -85,3 +85,16 @@ func TestLegacyAdoptionCLIReportsOutputFailures(t *testing.T) {
 		t.Fatal("binding output error lost")
 	}
 }
+
+func TestLegacyRecordFlagsReachBothPromotionAndDelta(t *testing.T) {
+	t.Parallel()
+	var got orchestrate.PromoteOptions
+	deps := IntegrationDependencies{Promote: func(_ context.Context, o orchestrate.PromoteOptions) (orchestrate.PromoteResult, error) {
+		got = o
+		return orchestrate.PromoteResult{Outcome: orchestrate.LandSuccess}, nil
+	}}
+	var out, errOut bytes.Buffer
+	if code := executeTest(NewIntegration(testRuntime(), deps), []string{"promote", "acme/app", "integration", "--legacy-record", "https://record=sha256:digest"}, &out, &errOut); code != 0 || len(got.LegacyRecords) != 1 {
+		t.Fatal(code, got, errOut.String())
+	}
+}
