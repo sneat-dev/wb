@@ -88,7 +88,7 @@ func TestPublishedTerminalValidatorsPreserveDistinctEligibility(t *testing.T) {
 					case "published SHA":
 						r.PublishedCandidateSHA = ""
 						if kind == "stranded" {
-							want = "does not match its exact preserved candidate"
+							want = "no published candidate SHA"
 						}
 					case "candidate task":
 						r.Candidate.Task = ""

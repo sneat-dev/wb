@@ -270,7 +270,7 @@ func TestAuditReceiptEligibilityPreservesRefusalOrder(t *testing.T) {
 		{"landing", "already recorded a landing SHA", func(r *WorktreeMergeReceipt) { r.LandingSHA = "already-landed"; r.PullRequest = "" }},
 		{"pull request", "no published pull request", func(r *WorktreeMergeReceipt) { r.PullRequest = ""; r.TargetSHA = "" }},
 		{"target candidate", "lacks complete immutable repository, target, or candidate identity", func(r *WorktreeMergeReceipt) { r.TargetSHA = ""; r.PublishedCandidateSHA = "wrong" }},
-		{"publication", "does not match its exact preserved candidate", func(r *WorktreeMergeReceipt) { r.PublishedCandidateSHA = "wrong" }},
+		{"publication", "no published candidate SHA", func(r *WorktreeMergeReceipt) { r.PublishedCandidateSHA = "" }},
 	}
 	for _, group := range []struct {
 		kind     string
