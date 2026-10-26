@@ -266,13 +266,13 @@ func TestPersistValidationFailureSupersessionPublishesAt0600(t *testing.T) {
 
 func TestPersistRetiredPublicationAcknowledgementInjectedHonoursInjectedFailures(t *testing.T) {
 	t.Parallel()
-	runPR4CategoryAFailureTests(t, ".retired-publication-ack-*.tmp", func(t *testing.T) (string, func(*filewrite.Injector) error) {
+	runPR4CategoryBFailureTests(t, ".retired-publication-ack-*.tmp", func(t *testing.T) (string, func(*filewrite.Injector) error) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "retired-publication-ack.json")
 		return dir, func(inj *filewrite.Injector) error {
 			return persistRetiredPublicationAcknowledgementInjected(path, WorktreeMergeRetiredPublicationAcknowledgement{}, inj)
 		}
-	})
+	}, true)
 }
 
 func TestPersistRetiredPublicationAcknowledgementPublishesAt0600(t *testing.T) {

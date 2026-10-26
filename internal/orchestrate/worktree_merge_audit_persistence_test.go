@@ -16,7 +16,7 @@ import (
 // Native recovery witnesses remain responsible for Git, claims and custody.
 func remainingMergeAuditCases() []mergeAcknowledgementCase {
 	return []mergeAcknowledgementCase{
-		acknowledgementCase("retired publication", ".retired-publication-ack-*.tmp", true, func(at time.Time) WorktreeMergeRetiredPublicationAcknowledgement {
+		acknowledgementCase("retired publication", ".retired-publication-ack-*.tmp", false, func(at time.Time) WorktreeMergeRetiredPublicationAcknowledgement {
 			return WorktreeMergeRetiredPublicationAcknowledgement{ID: "audit", RecordedAt: at}
 		}, persistRetiredPublicationAcknowledgementInjected),
 		acknowledgementCase("stranded landing", ".stranded-landing-ack-*.tmp", true, func(at time.Time) WorktreeMergeStrandedLandingAcknowledgement {

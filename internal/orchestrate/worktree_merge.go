@@ -2423,6 +2423,13 @@ func readWorktreeMergeReceipt(path string) (WorktreeMergeReceipt, error) {
 	if err != nil {
 		return WorktreeMergeReceipt{}, err
 	}
+	return decodeWorktreeMergeReceipt(path, contents)
+}
+
+// decodeWorktreeMergeReceipt preserves the merge receipt schema and exact-path
+// identity validation for both the ordinary path reader and the retired
+// publication flow's secure byte snapshot.
+func decodeWorktreeMergeReceipt(path string, contents []byte) (WorktreeMergeReceipt, error) {
 	var receipt WorktreeMergeReceipt
 	if err := json.Unmarshal(contents, &receipt); err != nil {
 		return WorktreeMergeReceipt{}, fmt.Errorf("decode merge receipt %s: %w", path, err)
@@ -2431,6 +2438,21 @@ func readWorktreeMergeReceipt(path string) (WorktreeMergeReceipt, error) {
 		return WorktreeMergeReceipt{}, fmt.Errorf("merge receipt %s has invalid identity", path)
 	}
 	return receipt, nil
+}
+
+// readWorktreeMergeReceiptSnapshot decodes, validates and digests one merge
+// receipt from the same securely opened bounded byte snapshot, so evidence can
+// never bind a digest of bytes that were not the ones validated.
+func readWorktreeMergeReceiptSnapshot(path string) (WorktreeMergeReceipt, string, error) {
+	contents, err := readSecureBoundedRegularFile(path, maxRetiredPublicationEvidenceBytes)
+	if err != nil {
+		return WorktreeMergeReceipt{}, "", err
+	}
+	receipt, err := decodeWorktreeMergeReceipt(path, contents)
+	if err != nil {
+		return WorktreeMergeReceipt{}, "", err
+	}
+	return receipt, secureEvidenceSHA256(contents), nil
 }
 
 func failWorktreeMergeReceipt(receipt WorktreeMergeReceipt, status WorktreeMergeStatus, failure error) (WorktreeMergeReceipt, error) {

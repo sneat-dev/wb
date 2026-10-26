@@ -2,6 +2,8 @@ package worktreeretire
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -75,8 +77,28 @@ func DeletionProofRef(result Transaction) string {
 	return "refs/tags/wb-retirement-deleted/" + strings.TrimPrefix(result.RetiredRef, "retired/")
 }
 
+const maxReportBytes = 1 << 20
+
+// ReportSnapshot is one securely read retirement receipt: the decoded
+// transaction, the exact bounded bytes that produced it, and those bytes'
+// SHA-256. Decoding, validation and digesting all observe this one snapshot,
+// so a concurrent replacement can never label one file's digest as proof of
+// bytes that were never decoded or validated.
+type ReportSnapshot struct {
+	Transaction Transaction
+	Bytes       []byte
+	SHA256      string
+}
+
 func ReadReport(path string) (Transaction, error) {
 	return readReportWithOps(path, reportReadOps{stat: (*os.File).Stat, read: io.ReadAll})
+}
+
+// ReadReportSnapshot returns the retirement receipt and the digest of the
+// exact bytes that were decoded and validated. Callers that bind the receipt
+// into durable evidence must use this digest, never a separate path hash.
+func ReadReportSnapshot(path string) (ReportSnapshot, error) {
+	return readReportSnapshotWithOps(path, reportReadOps{stat: (*os.File).Stat, read: io.ReadAll})
 }
 
 type reportReadOps struct {
@@ -85,7 +107,12 @@ type reportReadOps struct {
 }
 
 func readReportWithOps(path string, ops reportReadOps) (Transaction, error) {
-	var result Transaction
+	snapshot, err := readReportSnapshotWithOps(path, ops)
+	return snapshot.Transaction, err
+}
+
+func readReportSnapshotWithOps(path string, ops reportReadOps) (ReportSnapshot, error) {
+	var result ReportSnapshot
 	parent, err := worktreesecure.OpenAbsoluteDirectoryNoFollow(filepath.Dir(path), false)
 	if err != nil {
 		return result, err
@@ -101,43 +128,58 @@ func readReportWithOps(path string, ops reportReadOps) (Transaction, error) {
 	if err != nil {
 		return result, err
 	}
-	if !info.Mode().IsRegular() || info.Size() > 1<<20 {
+	if !info.Mode().IsRegular() || info.Size() > maxReportBytes {
 		return result, fmt.Errorf("invalid retirement receipt file")
 	}
-	body, err := ops.read(file)
+	// The stat bound is advisory: a writer can grow the file after it. Bound
+	// the actual read too, so the decoded bytes are always within the limit.
+	body, err := ops.read(io.LimitReader(file, maxReportBytes+1))
 	if err != nil {
 		return result, err
 	}
-	if err := json.Unmarshal(body, &result); err != nil {
+	if len(body) > maxReportBytes {
+		return result, fmt.Errorf("invalid retirement receipt file")
+	}
+	if err := json.Unmarshal(body, &result.Transaction); err != nil {
 		return result, err
 	}
+	if err := validateReport(&result.Transaction); err != nil {
+		return result, err
+	}
+	digest := sha256.Sum256(body)
+	result.Bytes = body
+	result.SHA256 = hex.EncodeToString(digest[:])
+	return result, nil
+}
+
+func validateReport(result *Transaction) error {
 	if result.Version != 1 || !worktreeproof.IsGitObjectID(result.SourceSHA) || (result.Preserve != "" && result.Preserve != "branch" && result.Preserve != "tag") {
-		return result, fmt.Errorf("invalid retirement receipt")
+		return fmt.Errorf("invalid retirement receipt")
 	}
 	if result.DeleteIntentSHA != "" && (result.DeleteIntentSHA != result.OriginalRemoteSHA || !worktreeproof.IsGitObjectID(result.DeleteIntentSHA)) {
-		return result, fmt.Errorf("invalid retirement original-ref deletion intent")
+		return fmt.Errorf("invalid retirement original-ref deletion intent")
 	}
 	if (result.Phase == "original_deleted" || result.Phase == "complete") && result.OriginalRemoteSHA != "" && result.DeleteIntentSHA != result.OriginalRemoteSHA {
-		return result, fmt.Errorf("retirement deletion receipt has no durable intent")
+		return fmt.Errorf("retirement deletion receipt has no durable intent")
 	}
 	if result.Phase == "commit_intent" {
 		if result.SourceSHA != result.IntentParentSHA || !worktreeproof.IsGitObjectID(result.IntentTreeSHA) || result.IntentMessage == "" || result.IntentAt.IsZero() || result.RetiredRef != "" || result.ArchiveRef != "" || result.DeleteIntentSHA != "" {
-			return result, fmt.Errorf("invalid retirement commit intent")
+			return fmt.Errorf("invalid retirement commit intent")
 		}
-		return result, nil
+		return nil
 	}
-	if !strings.HasPrefix(result.RetiredRef, "retired/") || result.ArchiveRef != ArchiveRef(result) {
-		return result, fmt.Errorf("invalid retirement receipt")
+	if !strings.HasPrefix(result.RetiredRef, "retired/") || result.ArchiveRef != ArchiveRef(*result) {
+		return fmt.Errorf("invalid retirement receipt")
 	}
 	stem := strings.TrimPrefix(result.RetiredRef, "retired/")
 	if len(stem) < 9 {
-		return result, fmt.Errorf("invalid retired ref date")
+		return fmt.Errorf("invalid retired ref date")
 	}
 	date, err := time.Parse("20060102", stem[:8])
 	if err != nil || result.RetiredRef != worktreebranches.RetiredBranchDestination(date, result.Branch, result.SourceSHA) {
-		return result, fmt.Errorf("retirement receipt ref does not bind branch and commit")
+		return fmt.Errorf("retirement receipt ref does not bind branch and commit")
 	}
-	return result, nil
+	return nil
 }
 
 func WriteReport(result Transaction) error { return WriteReportInjected(result, nil) }
