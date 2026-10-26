@@ -1720,7 +1720,18 @@ func listTaskScopedClaimedRegistryWorktrees(
 ) ([]ListResult, []ListDiagnostic) {
 	results := make([]ListResult, 0)
 	diagnostics := make([]ListDiagnostic, 0)
-	for task := range tasks {
+	// Effort namespaces can contain several independently named helper tasks.
+	// Discover their immutable claims, selecting by claim.Task rather than by
+	// the directory name. runInspections still corroborates the live projection.
+	efforts, err := os.ReadDir(filepath.Join(home, "worklogs"))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, []ListDiagnostic{listDiagnostic("", "", filepath.Join(home, "worklogs"), fmt.Sprintf("read Work Log efforts: %v", err))}
+	}
+	for _, effort := range efforts {
+		if !effort.IsDir() || !validSafeSegment(effort.Name()) {
+			continue
+		}
+		task := effort.Name()
 		runs, err := os.ReadDir(filepath.Join(home, "worklogs", task, "runs"))
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
@@ -1758,7 +1769,7 @@ func listTaskScopedClaimedRegistryWorktrees(
 				_ = runDirectory.Close()
 				if readErr != nil ||
 					claim.EffortID != task || claim.RunID != run.Name() || claim.ClaimID != claimID ||
-					claim.Lifecycle != "active" || claim.Task != task || claim.Worktree == "" || known[filepath.Clean(claim.Worktree)] {
+					claim.Lifecycle != "active" || !taskSelectionMatches(tasks, claim.Task) || claim.Worktree == "" || known[filepath.Clean(claim.Worktree)] {
 					continue
 				}
 				layout, err := claimedSharedWorktreeLayoutFromClaim(home, claim.Worktree, claim)
@@ -1772,18 +1783,18 @@ func listTaskScopedClaimedRegistryWorktrees(
 					if hasExistingWorkLogTerminal(home, workLogProjection{EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID}) {
 						continue
 					}
-					diagnostics = append(diagnostics, listDiagnostic(layout.WorktreesRoot, task, claim.Worktree, "Git still registers this active WB-managed worktree but its working tree is missing; preserve the claim and recover or prune it explicitly"))
+					diagnostics = append(diagnostics, listDiagnostic(layout.WorktreesRoot, claim.Task, claim.Worktree, "Git still registers this active WB-managed worktree but its working tree is missing; preserve the claim and recover or prune it explicitly"))
 					continue
 				}
 				if !hasGitMetadata(claim.Worktree) || !isGitRoot(ctx, claim.Worktree) {
 					continue
 				}
-				locked, err := inspectLifecycleTaskLock(home, layout, task)
+				locked, err := inspectLifecycleTaskLock(home, layout, claim.Task)
 				if err != nil {
-					diagnostics = append(diagnostics, listDiagnostic(layout.WorktreesRoot, task, claim.Worktree, fmt.Sprintf("inspect authoritative task lock: %v", err)))
+					diagnostics = append(diagnostics, listDiagnostic(layout.WorktreesRoot, claim.Task, claim.Worktree, fmt.Sprintf("inspect authoritative task lock: %v", err)))
 					continue
 				}
-				inspected, inspectedDiagnostics := runInspections(ctx, []pendingInspect{{task: task, path: claim.Worktree, slug: claim.Repository, locked: locked, commonDir: gitCommonDir(ctx, claim.Worktree)}}, projectsRoot, home, layout, base, filter, absorbedBy, withGitHub, workers, reporter, policy)
+				inspected, inspectedDiagnostics := runInspections(ctx, []pendingInspect{{task: claim.Task, path: claim.Worktree, slug: claim.Repository, locked: locked, commonDir: gitCommonDir(ctx, claim.Worktree)}}, projectsRoot, home, layout, base, filter, absorbedBy, withGitHub, workers, reporter, policy)
 				results = append(results, inspected...)
 				diagnostics = append(diagnostics, inspectedDiagnostics...)
 				known[filepath.Clean(claim.Worktree)] = true
@@ -1795,8 +1806,8 @@ func listTaskScopedClaimedRegistryWorktrees(
 
 // activeWorkLogClaimAtPath finds the immutable active claim for a registered
 // worktree whose directory is already gone, so its editable projection can no
-// longer be read. It is deliberately task-scoped before opening private claim
-// runs: one named cleanup must neither report nor act on another task.
+// longer be read. It selects the exact claim task after resolving effort namespaces: one
+// named cleanup must neither report nor act on another task.
 func activeWorkLogClaimAtPath(home, worktree string, tasks map[string]bool) (*workLogClaim, error) {
 	return activeWorkLogClaimAtPathWithReadNames(home, worktree, tasks,
 		func(directory *os.File) ([]string, error) { return directory.Readdirnames(-1) })
@@ -1818,7 +1829,7 @@ func activeWorkLogClaimAtPathWithReadNames(home, worktree string, tasks map[stri
 	}
 	sort.Strings(efforts)
 	for _, effort := range efforts {
-		if !validSafeSegment(effort) || !taskSelectionMatches(tasks, effort) {
+		if !validSafeSegment(effort) {
 			continue
 		}
 		effortDirectory, openErr := openPrivateChild(worklogs, effort, false)
@@ -1886,7 +1897,7 @@ func activeWorkLogClaimAtPathWithReadNames(home, worktree string, tasks map[stri
 					_ = runs.Close()
 					return nil, readErr
 				}
-				if claim.Lifecycle == "active" && claim.Task == effort && filepath.Clean(claim.Worktree) == filepath.Clean(worktree) {
+				if claim.Lifecycle == "active" && validSafeSegment(claim.Task) && taskSelectionMatches(tasks, claim.Task) && filepath.Clean(claim.Worktree) == filepath.Clean(worktree) {
 					_ = claims.Close()
 					_ = runs.Close()
 					if claim.EffortID != effort || claim.RunID != run || claim.ClaimID != claimID {
