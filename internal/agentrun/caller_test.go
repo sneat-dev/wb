@@ -60,6 +60,23 @@ func TestCallerSessionFallsBackToRegisteredSession(t *testing.T) {
 	}
 }
 
+func TestCallerSessionUsesWBIDWhenRegisteredHarnessHasNoNativeID(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("CODEX_THREAD_ID", "")
+	t.Setenv("CODEX_SESSION_ID", "")
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
+	_, err := session.Register(filepath.Join(root, ".wb", session.DirName), session.Record{
+		PID: os.Getpid(), WBSessionID: "wbs-declared", Runtime: "opencode", TmuxName: "builder",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	caller := CurrentCaller(root)
+	if caller.ID != "wbs-declared" || caller.WBSessionID != "wbs-declared" || caller.NativeHarnessID != "" {
+		t.Fatalf("WB-only registration was lost: %+v", caller)
+	}
+}
+
 func TestCallerSessionLeavesCodexWithoutNativeIDUnattributed(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("CODEX_THREAD_ID", "")

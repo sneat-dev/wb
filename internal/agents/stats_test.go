@@ -26,3 +26,14 @@ func TestSummarizeRunsKeepsUnknownUsageAndCallerSeparate(t *testing.T) {
 		t.Fatalf("grouping lost old records or repository boundaries: %+v", report)
 	}
 }
+
+func TestSummarizeRunsIncludesReportedCacheWriteAndReasoningTokens(t *testing.T) {
+	cacheWrite, reasoning := 13, 5
+	report := SummarizeRuns([]Result{{
+		Repository: "acme/app", Status: StatusCompleted,
+		Telemetry: Telemetry{Tokens: &Tokens{CacheWrite: &cacheWrite, Reasoning: &reasoning}},
+	}})
+	if report.Total.CacheWriteTokens != 13 || report.Total.ReasoningTokens != 5 || report.Total.UsageRuns != 1 {
+		t.Fatalf("reported token categories missing: %+v", report.Total)
+	}
+}

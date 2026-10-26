@@ -3,6 +3,7 @@ package cmdagent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -42,6 +43,48 @@ func TestAgentStatsFiltersBySessionAndRepository(t *testing.T) {
 		!strings.Contains(output, "builder") || !strings.Contains(output, "tool_calls=4") ||
 		!strings.Contains(output, "estimated_usd=0.4000") {
 		t.Fatal(code, output, stderr)
+	}
+}
+
+type failAtStatsWrite struct {
+	writes int
+	failAt int
+	err    error
+}
+
+func (w *failAtStatsWrite) Write(p []byte) (int, error) {
+	w.writes++
+	if w.writes == w.failAt {
+		return 0, w.err
+	}
+	return len(p), nil
+}
+
+func TestAgentStatsPropagatesListFailure(t *testing.T) {
+	deps := fakeDependencies()
+	deps.List = func(context.Context, agentrun.ListRequest) ([]agents.Result, error) {
+		return nil, errors.New("run store unavailable")
+	}
+	code, _, stderr := runFake(t, deps, "agent", "stats", "--format", "json")
+	if code == 0 || !strings.Contains(stderr, "run store unavailable") {
+		t.Fatal(code, stderr)
+	}
+}
+
+func TestAgentStatsPropagatesTextWriterFailure(t *testing.T) {
+	report := agents.SummarizeRuns([]agents.Result{{Repository: "acme/app", Status: agents.StatusCompleted}})
+	for _, failAt := range []int{1, 2, 3, 4} {
+		failure := errors.New("output closed")
+		writer := &failAtStatsWrite{failAt: failAt, err: failure}
+		if err := printAgentStats(writer, report); !errors.Is(err, failure) {
+			t.Fatalf("write %d: got %v, want output error", failAt, err)
+		}
+	}
+	// An empty caller and repository needs an explicit label in text output.
+	unattributed := agents.SummarizeRuns([]agents.Result{{Status: agents.StatusRunning}})
+	var output strings.Builder
+	if err := printAgentStats(&output, unattributed); err != nil || !strings.Contains(output.String(), "(unattributed)") {
+		t.Fatalf("empty caller label missing: %v %q", err, output.String())
 	}
 }
 
