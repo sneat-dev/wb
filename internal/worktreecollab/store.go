@@ -152,6 +152,55 @@ func (store Store) Rebind(ctx context.Context, checkout Checkout, expectedRoot, 
 	})
 }
 
+// requireAbsentPreviousRoot rechecks, without following links, that a retired
+// checkout root does not exist. Inactive-owner recovery calls it before the
+// final observations and again at the publication boundary.
+func requireAbsentPreviousRoot(root string) error {
+	if _, err := os.Lstat(root); err == nil {
+		return fmt.Errorf("expected previous checkout root still exists; refusing inactive owner recovery")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect expected previous checkout root: %w", err)
+	}
+	return nil
+}
+
+// RecoverInactiveOwner publishes the explicit recovery that repairs a stale
+// root and replaces a recorded owner proven inactive. It shares the one
+// per-checkout lock with every other transition, and revalidate runs under that
+// lock immediately before the single atomic write, so a caller must re-corroborate
+// the invoking session, the current checkout's Git identity, the retired root's
+// absence, and the old owner's inactive status after the CAS comparison.
+func (store Store) RecoverInactiveOwner(ctx context.Context, checkout Checkout, recovery InactiveOwnerRecovery, revalidate func() error) (State, error) {
+	if err := recovery.validate(); err != nil {
+		return State{}, err
+	}
+	if err := checkout.Validate(); err != nil {
+		return State{}, err
+	}
+	if revalidate == nil {
+		return State{}, fmt.Errorf("inactive owner recovery requires final revalidation")
+	}
+	beforeWrite := func() error {
+		if err := requireAbsentPreviousRoot(recovery.ExpectedRoot); err != nil {
+			return err
+		}
+		if err := revalidate(); err != nil {
+			return err
+		}
+		// The observations above take time, so the retired path can be recreated
+		// while they all succeed. Recheck its absence at the publication boundary:
+		// a path that reappears during a successful revalidation must refuse rather
+		// than let a recreated root inherit the repaired identity.
+		return requireAbsentPreviousRoot(recovery.ExpectedRoot)
+	}
+	return store.withLocked(ctx, checkout, recovery.ExpectedRoot, beforeWrite, func(state *State, found bool) error {
+		if !found {
+			return fmt.Errorf("coordination is not initialized")
+		}
+		return state.RecoverInactiveOwner(checkout, recovery)
+	})
+}
+
 func (store Store) withLocked(ctx context.Context, checkout Checkout, allowedPreviousRoot string, beforeWrite func() error, change func(*State, bool) error) (result State, returnErr error) {
 	state, err := New(checkout)
 	if err != nil {

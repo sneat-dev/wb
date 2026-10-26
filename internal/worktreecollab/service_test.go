@@ -2,6 +2,7 @@ package worktreecollab
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -345,5 +346,237 @@ func TestServiceOperationSpecificFaults(t *testing.T) {
 	service.Ports.NewMessageID = func() (string, error) { return "", errors.New("ID unavailable") }
 	if _, _, err := service.Send(ctx, "worktree", "key", []string{"owner"}, "text"); err == nil || !strings.Contains(err.Error(), "ID unavailable") {
 		t.Fatalf("message ID failure = %v", err)
+	}
+}
+
+// recoveryService binds one stale snapshot whose recorded owner ("gone") has no
+// live process to a separately registered live caller, so every recovery
+// refusal can be attributed to exactly one changed observation.
+func recoveryService(t *testing.T) (Service, *string, Checkout, Checkout, InactiveOwnerRecovery) {
+	t.Helper()
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldCheckout := testCheckout()
+	oldCheckout.Root = filepath.Join(base, "retired")
+	currentCheckout := oldCheckout
+	currentCheckout.Root = filepath.Join(base, "current")
+	if err := os.Mkdir(currentCheckout.Root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	service, caller, _ := testService(t)
+	*caller = "successor"
+	service.Ports.Resolve = func(context.Context, string) (Checkout, error) { return currentCheckout, nil }
+	if _, err := service.Store.WithLocked(context.Background(), oldCheckout, func(state *State, found bool) error {
+		if found {
+			t.Fatal("unexpected existing coordination state")
+		}
+		return state.Take(TakeRequest{Caller: "gone", ExpectedOwner: NoOwner, At: testNow})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return service, caller, oldCheckout, currentCheckout, InactiveOwnerRecovery{
+		ExpectedRoot: oldCheckout.Root, ExpectedOwner: "gone", ExpectedEpoch: 1, ExpectedRevision: 1,
+		Reason: "recorded owner exited; Git reused the linked registration", At: testNow.Add(time.Minute)}
+}
+
+func recoverySnapshotBytes(t *testing.T, service Service, checkout Checkout) []byte {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(service.Store.Home, directoryName, checkout.ID+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func TestServiceRecoverInactiveOwnerRequiresProvenInactiveOwnerAndFinalRevalidation(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name      string
+		mutate    func(*Service, *string)
+		wantError string
+	}{
+		{"live recorded owner", func(service *Service, _ *string) {
+			service.Ports.OwnerStatus = func(string) (string, error) { return "live", nil }
+		}, "proven inactive"},
+		{"unknown recorded owner", func(service *Service, _ *string) {
+			service.Ports.OwnerStatus = func(string) (string, error) { return "unknown", nil }
+		}, "proven inactive"},
+		{"uncorroborated recorded owner", func(service *Service, _ *string) {
+			service.Ports.OwnerStatus = func(string) (string, error) { return "", nil }
+		}, "proven inactive"},
+		{"owner liveness unavailable", func(service *Service, _ *string) {
+			service.Ports.OwnerStatus = func(string) (string, error) { return "unknown", errors.New("registry unreadable") }
+		}, "registry unreadable"},
+		{"caller is the recorded owner", func(_ *Service, caller *string) { *caller = "gone" }, "other than the live invoking session"},
+		{"caller unavailable", func(service *Service, _ *string) {
+			service.Ports.Caller = func() (string, error) { return "", errors.New("no registered ancestor") }
+		}, "no registered ancestor"},
+		{"current checkout unavailable", func(service *Service, _ *string) {
+			service.Ports.Resolve = func(context.Context, string) (Checkout, error) {
+				return Checkout{}, errors.New("unregistered checkpoint")
+			}
+		}, "unregistered checkpoint"},
+		{"invoking session changed before write", func(service *Service, caller *string) {
+			resolved := *caller
+			calls := 0
+			service.Ports.Caller = func() (string, error) {
+				calls++
+				if calls > 1 {
+					return "other", nil
+				}
+				return resolved, nil
+			}
+		}, "invoking session changed"},
+		{"current checkout identity changed before write", func(service *Service, _ *string) {
+			original := service.Ports.Resolve
+			calls := 0
+			service.Ports.Resolve = func(ctx context.Context, value string) (Checkout, error) {
+				calls++
+				checkout, err := original(ctx, value)
+				if calls > 1 {
+					checkout.GitDir += "-recreated"
+				}
+				return checkout, err
+			}
+		}, "current checkout identity changed"},
+		{"recorded owner became live before write", func(service *Service, _ *string) {
+			calls := 0
+			service.Ports.OwnerStatus = func(string) (string, error) {
+				calls++
+				if calls > 1 {
+					return "live", nil
+				}
+				return "inactive", nil
+			}
+		}, "liveness changed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			service, caller, oldCheckout, _, recovery := recoveryService(t)
+			tc.mutate(&service, caller)
+			before := recoverySnapshotBytes(t, service, oldCheckout)
+			if _, err := service.RecoverInactiveOwner(ctx, "worktree", recovery); err == nil || !strings.Contains(err.Error(), tc.wantError) {
+				t.Fatalf("recovery error = %v, want %q", err, tc.wantError)
+			}
+			if after := recoverySnapshotBytes(t, service, oldCheckout); string(after) != string(before) {
+				t.Fatalf("refused recovery rewrote the snapshot:\nbefore %s\nafter  %s", before, after)
+			}
+		})
+	}
+}
+
+func TestServiceRecoverInactiveOwnerPublishesOneTransitionAndRefusesRetry(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	service, _, oldCheckout, currentCheckout, recovery := recoveryService(t)
+	state, err := service.RecoverInactiveOwner(ctx, "worktree", recovery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Checkout != currentCheckout || state.Owner != "successor" || state.OwnerEpoch != 2 || state.Revision != 2 {
+		t.Fatalf("recovered state = checkout %+v owner %q epoch %d revision %d",
+			state.Checkout, state.Owner, state.OwnerEpoch, state.Revision)
+	}
+	if len(state.CheckoutRebinds) != 1 || state.CheckoutRebinds[0].PreviousRoot != oldCheckout.Root ||
+		state.CheckoutRebinds[0].CurrentRoot != currentCheckout.Root || state.CheckoutRebinds[0].Actor != "successor" {
+		t.Fatalf("rebind audit = %+v", state.CheckoutRebinds)
+	}
+	if len(state.OwnerChanges) != 2 || state.OwnerChanges[1].Previous != "gone" || state.OwnerChanges[1].Current != "successor" ||
+		state.OwnerChanges[1].Actor != "successor" {
+		t.Fatalf("ownership audit = %+v", state.OwnerChanges)
+	}
+	var audited inactiveOwnerRecoveryAudit
+	if err := json.Unmarshal([]byte(state.OwnerChanges[1].Reason), &audited); err != nil {
+		t.Fatalf("ownership audit reason is not reconstructible: %v (%q)", err, state.OwnerChanges[1].Reason)
+	}
+	if audited.Reason != recovery.Reason || audited.Expected.Root != oldCheckout.Root ||
+		audited.Expected.Owner != "gone" || audited.Expected.Epoch != 1 || audited.Expected.Revision != 1 ||
+		audited.Resulting.Root != currentCheckout.Root || audited.Resulting.Owner != "successor" ||
+		audited.Resulting.Epoch != 2 || audited.Resulting.Revision != 2 {
+		t.Fatalf("ownership audit lost the compared binding: %+v", audited)
+	}
+	published := recoverySnapshotBytes(t, service, currentCheckout)
+	if _, err := service.RecoverInactiveOwner(ctx, "worktree", recovery); !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "already completed") {
+		t.Fatalf("repeated recovery = %v", err)
+	}
+	if after := recoverySnapshotBytes(t, service, currentCheckout); string(after) != string(published) {
+		t.Fatalf("repeated recovery rewrote the snapshot:\nbefore %s\nafter  %s", published, after)
+	}
+	view, err := service.Inspect(ctx, "worktree")
+	if err != nil || view.Owner != "successor" || view.OwnerStatus != "live" {
+		t.Fatalf("recovered inspection = %+v, %v", view, err)
+	}
+	if _, err := service.Join(ctx, "worktree"); err != nil {
+		t.Fatalf("recovered checkout refused a join: %v", err)
+	}
+}
+
+// TestServiceRecoverInactiveOwnerRefusesRootRecreatedDuringFinalObservations
+// runs the real service, store, lock and private filesystem while a successful
+// final observation recreates the retired root. Recreating the path during the
+// caller, checkout-resolution or second owner-status observation must refuse at
+// the publication boundary and leave the previously published bytes untouched;
+// a callback that merely returns an error never exercises this interleaving.
+func TestServiceRecoverInactiveOwnerRefusesRootRecreatedDuringFinalObservations(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		recreate func(*Service, string)
+	}{
+		{"caller", func(service *Service, root string) {
+			original := service.Ports.Caller
+			calls := 0
+			service.Ports.Caller = func() (string, error) {
+				calls++
+				if calls == 2 {
+					if err := os.Mkdir(root, 0o755); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return original()
+			}
+		}},
+		{"checkout resolution", func(service *Service, root string) {
+			original := service.Ports.Resolve
+			calls := 0
+			service.Ports.Resolve = func(ctx context.Context, value string) (Checkout, error) {
+				calls++
+				if calls == 2 {
+					if err := os.Mkdir(root, 0o755); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return original(ctx, value)
+			}
+		}},
+		{"second owner status", func(service *Service, root string) {
+			original := service.Ports.OwnerStatus
+			calls := 0
+			service.Ports.OwnerStatus = func(id string) (string, error) {
+				calls++
+				if calls == 2 {
+					if err := os.Mkdir(root, 0o755); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return original(id)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			service, _, oldCheckout, _, recovery := recoveryService(t)
+			tc.recreate(&service, oldCheckout.Root)
+			before := recoverySnapshotBytes(t, service, oldCheckout)
+			if _, err := service.RecoverInactiveOwner(context.Background(), "worktree", recovery); err == nil || !strings.Contains(err.Error(), "still exists") {
+				t.Fatalf("root recreated during %s observation = %v", tc.name, err)
+			}
+			if after := recoverySnapshotBytes(t, service, oldCheckout); string(after) != string(before) {
+				t.Fatalf("recreated root during %s observation rewrote the snapshot:\nbefore %s\nafter  %s", tc.name, before, after)
+			}
+		})
 	}
 }

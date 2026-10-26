@@ -2,10 +2,13 @@ package worktreecollab
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -596,5 +599,293 @@ func TestStoreRebindRequiresInitializedStateAndValidEnvelope(t *testing.T) {
 		if err := validState.ValidateRebind(currentCheckout, expectedRoot); err == nil {
 			t.Fatalf("ValidateRebind accepted unsafe expected root %q", expectedRoot)
 		}
+	}
+}
+
+// recoveryFixture publishes one stale snapshot with real private directories,
+// one member, and a retryable message, so store-level recovery proofs run
+// against the same locked filesystem layout production uses. retiredRoot
+// overrides the absent prior root when a case needs an uninspectable path.
+func recoveryFixture(t *testing.T, retiredRoot func(base string) string) (Store, Checkout, Checkout, InactiveOwnerRecovery) {
+	t.Helper()
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldRoot := filepath.Join(base, "retired")
+	if retiredRoot != nil {
+		oldRoot = retiredRoot(base)
+	}
+	currentRoot := filepath.Join(base, "current")
+	if err := os.Mkdir(currentRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldCheckout := Checkout{ID: "checkout-1", Root: oldRoot,
+		GitDir: filepath.Join(base, "repo", ".git", "worktrees", "checkout1"), CommonDir: filepath.Join(base, "repo", ".git")}
+	currentCheckout := oldCheckout
+	currentCheckout.Root = currentRoot
+	store := NewStore(filepath.Join(base, "private"))
+	if _, err := store.WithLocked(context.Background(), oldCheckout, func(state *State, found bool) error {
+		if found {
+			t.Fatal("unexpected existing coordination state")
+		}
+		if err := state.Take(TakeRequest{Caller: "owner", ExpectedOwner: NoOwner, At: testNow}); err != nil {
+			return err
+		}
+		if err := state.Join("peer", testNow); err != nil {
+			return err
+		}
+		_, _, err := state.Send(SendRequest{Sender: "owner", Recipients: []string{"peer"}, IdempotencyKey: "key",
+			MessageID: "message", Kind: "text", Body: "before recovery", At: testNow})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return store, oldCheckout, currentCheckout, InactiveOwnerRecovery{
+		ExpectedRoot: oldRoot, ExpectedOwner: "owner", ExpectedEpoch: 1, ExpectedRevision: 3, OwnerStatus: "inactive",
+		Actor: "successor", Reason: "retired checkout reused by Git; recorded owner exited", At: testNow.Add(time.Hour)}
+}
+
+func TestStoreRecoverInactiveOwnerPublishesOneCoherentSnapshot(t *testing.T) {
+	t.Parallel()
+	store, oldCheckout, currentCheckout, recovery := recoveryFixture(t, nil)
+	path := filepath.Join(store.Home, directoryName, oldCheckout.ID+".json")
+	revalidations := 0
+	state, err := store.RecoverInactiveOwner(context.Background(), currentCheckout, recovery, func() error {
+		revalidations++
+		// The atomic write has not happened yet: the durable bytes still describe
+		// the stale root and inactive owner while the final checks run.
+		held, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		var observed State
+		if err := json.Unmarshal(held, &observed); err != nil {
+			return err
+		}
+		if observed.Checkout != oldCheckout || observed.Owner != "owner" || observed.OwnerEpoch != 1 || observed.Revision != 3 {
+			return fmt.Errorf("snapshot changed before final revalidation: %+v", observed)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revalidations != 1 {
+		t.Fatalf("final revalidation ran %d times", revalidations)
+	}
+	if state.Checkout != currentCheckout || state.Owner != "successor" || state.OwnerEpoch != 2 || state.Revision != 4 {
+		t.Fatalf("recovered snapshot = checkout %+v owner %q epoch %d revision %d",
+			state.Checkout, state.Owner, state.OwnerEpoch, state.Revision)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var published State
+	if err := json.Unmarshal(raw, &published); err != nil {
+		t.Fatalf("published snapshot is not one coherent document: %v", err)
+	}
+	if published.Checkout.Root != currentCheckout.Root || published.Checkout.GitDir != oldCheckout.GitDir ||
+		published.Owner != "successor" || published.OwnerEpoch != 2 || published.Revision != 4 {
+		t.Fatalf("published root and ownership are not one snapshot: %+v", published)
+	}
+	if len(published.CheckoutRebinds) != 1 || published.CheckoutRebinds[0].PreviousRoot != oldCheckout.Root {
+		t.Fatalf("published rebind audit = %+v", published.CheckoutRebinds)
+	}
+	if len(published.OwnerChanges) != 2 || published.OwnerChanges[1].Previous != "owner" || published.OwnerChanges[1].Current != "successor" {
+		t.Fatalf("published ownership audit = %+v", published.OwnerChanges)
+	}
+	if len(published.Inboxes["peer"]) != 1 || len(published.Requests) != 1 {
+		t.Fatalf("published recovery dropped message history: %+v", published)
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("published snapshot mode = %v, %v", info, err)
+	}
+	if _, found, err := store.Load(currentCheckout); err != nil || !found {
+		t.Fatalf("Load of recovered checkout = %t, %v", found, err)
+	}
+}
+
+func TestStoreRecoverInactiveOwnerRefusalsPreserveExactBytes(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		retired    func(string) string
+		revalidate func() error
+		wantError  string
+	}{
+		{name: "final revalidation refuses", revalidate: func() error { return errors.New("owner became live") }, wantError: "owner became live"},
+		{name: "missing final revalidation", revalidate: nil, wantError: "final revalidation"},
+		{name: "retired root uninspectable", retired: func(base string) string {
+			return base + string(os.PathSeparator) + strings.Repeat("x", 256)
+		}, revalidate: func() error { return nil }, wantError: "inspect expected previous checkout root"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			store, oldCheckout, currentCheckout, recovery := recoveryFixture(t, tc.retired)
+			path := filepath.Join(store.Home, directoryName, oldCheckout.ID+".json")
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = store.RecoverInactiveOwner(context.Background(), currentCheckout, recovery, tc.revalidate)
+			if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+				t.Fatalf("recovery error = %v, want %q", err, tc.wantError)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != string(before) {
+				t.Fatalf("refused recovery rewrote the snapshot:\nbefore %s\nafter  %s", before, after)
+			}
+		})
+	}
+
+	store, oldCheckout, currentCheckout, recovery := recoveryFixture(t, nil)
+	path := filepath.Join(store.Home, directoryName, oldCheckout.ID+".json")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(oldCheckout.Root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RecoverInactiveOwner(context.Background(), currentCheckout, recovery, func() error { return nil }); err == nil || !strings.Contains(err.Error(), "still exists") {
+		t.Fatalf("recreated retired root = %v", err)
+	}
+	if err := os.Remove(oldCheckout.Root); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Dir(oldCheckout.Root), oldCheckout.Root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RecoverInactiveOwner(context.Background(), currentCheckout, recovery, func() error { return nil }); err == nil || !strings.Contains(err.Error(), "still exists") {
+		t.Fatalf("symlinked retired root = %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("recreated or symlinked retired root changed the snapshot: %v", err)
+	}
+}
+
+func TestStoreRecoverInactiveOwnerRejectsFailedPersistenceAndMissingState(t *testing.T) {
+	t.Parallel()
+	store, oldCheckout, currentCheckout, recovery := recoveryFixture(t, nil)
+	path := filepath.Join(store.Home, directoryName, oldCheckout.ID+".json")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failingWrite := store
+	failingWrite.Ports.Write = func(*os.File, string, any, os.FileMode) error { return errors.New("disk full") }
+	if _, err := failingWrite.RecoverInactiveOwner(context.Background(), currentCheckout, recovery, func() error { return nil }); err == nil || !strings.Contains(err.Error(), "publish") {
+		t.Fatalf("write failure = %v", err)
+	}
+	unavailableLock := store
+	unavailableLock.Ports.Lock = func(string) lockFile { return &testLock{} }
+	if _, err := unavailableLock.RecoverInactiveOwner(context.Background(), currentCheckout, recovery, func() error { return nil }); err == nil || !strings.Contains(err.Error(), "not acquired") {
+		t.Fatalf("unavailable lock = %v", err)
+	}
+	empty := NewStore(privateTestHome(t))
+	_, emptyErr := empty.RecoverInactiveOwner(context.Background(), currentCheckout, recovery, func() error { return nil })
+	if emptyErr == nil || !strings.Contains(emptyErr.Error(), "not initialized") {
+		t.Fatalf("uninitialized recovery = %v", emptyErr)
+	}
+	if _, found, err := empty.Load(currentCheckout); err != nil || found {
+		t.Fatalf("uninitialized recovery published state: found=%t err=%v", found, err)
+	}
+	changedIdentity := currentCheckout
+	changedIdentity.GitDir = filepath.Join(filepath.Dir(currentCheckout.GitDir), "checkout2")
+	if _, err := store.RecoverInactiveOwner(context.Background(), changedIdentity, recovery, func() error { return nil }); err == nil || !strings.Contains(err.Error(), "prior and current checkout identities") {
+		t.Fatalf("different Git identity = %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("refused recovery changed the snapshot: %v", err)
+	}
+}
+
+func TestStoreRecoverInactiveOwnerSerializesConcurrentRequests(t *testing.T) {
+	t.Parallel()
+	store, _, currentCheckout, recovery := recoveryFixture(t, nil)
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	var wait sync.WaitGroup
+	for contender := 0; contender < 2; contender++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			<-start
+			_, err := store.RecoverInactiveOwner(context.Background(), currentCheckout, recovery, func() error { return nil })
+			results <- err
+		}()
+	}
+	close(start)
+	wait.Wait()
+	close(results)
+	successes, conflicts := 0, 0
+	for err := range results {
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, ErrConflict):
+			conflicts++
+		default:
+			t.Fatalf("contender error: %v", err)
+		}
+	}
+	if successes != 1 || conflicts != 1 {
+		t.Fatalf("concurrent recoveries: success=%d conflict=%d", successes, conflicts)
+	}
+	state, found, err := store.Load(currentCheckout)
+	if err != nil || !found {
+		t.Fatalf("recovered state = %t, %v", found, err)
+	}
+	if state.OwnerEpoch != 2 || state.Revision != 4 || len(state.OwnerChanges) != 2 || len(state.CheckoutRebinds) != 1 {
+		t.Fatalf("concurrent recovery advanced counters twice: epoch %d revision %d changes %d rebinds %d",
+			state.OwnerEpoch, state.Revision, len(state.OwnerChanges), len(state.CheckoutRebinds))
+	}
+}
+
+// TestStoreRecoverInactiveOwnerAuditKeepsComparedBindingAfterLaterRevision
+// proves the existing immutable audit keeps the exact CAS binding and the
+// operator's supplied reason after another revision-changing operation. The
+// reason deliberately contains JSON punctuation and a newline so a lossy
+// concatenation could not reconstruct it.
+func TestStoreRecoverInactiveOwnerAuditKeepsComparedBindingAfterLaterRevision(t *testing.T) {
+	t.Parallel()
+	store, oldCheckout, currentCheckout, recovery := recoveryFixture(t, nil)
+	recovery.Reason = "retired root reused: \"quoted\", with, commas\nand a second line"
+	if _, err := store.RecoverInactiveOwner(context.Background(), currentCheckout, recovery, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.WithLocked(context.Background(), currentCheckout, func(state *State, found bool) error {
+		if !found {
+			t.Fatalf("recovered state missing before the later transition")
+		}
+		return state.Join("later-peer", testNow.Add(2*time.Hour))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	published, found, err := store.Load(currentCheckout)
+	if err != nil || !found {
+		t.Fatalf("reloaded state = %t, %v", found, err)
+	}
+	if published.Revision != recovery.ExpectedRevision+2 || len(published.OwnerChanges) != 2 {
+		t.Fatalf("later transition did not advance the revision exactly once: revision %d changes %d",
+			published.Revision, len(published.OwnerChanges))
+	}
+	var audited inactiveOwnerRecoveryAudit
+	if err := json.Unmarshal([]byte(published.OwnerChanges[1].Reason), &audited); err != nil {
+		t.Fatalf("audited reason is not reconstructible: %v (%q)", err, published.OwnerChanges[1].Reason)
+	}
+	wantExpected := coordinationBinding{Root: oldCheckout.Root, Owner: "owner", Epoch: 1, Revision: 3}
+	wantResulting := coordinationBinding{Root: currentCheckout.Root, Owner: "successor", Epoch: 2, Revision: 4}
+	if audited.Reason != recovery.Reason || audited.Expected != wantExpected || audited.Resulting != wantResulting {
+		t.Fatalf("audit after a later revision = reason %q expected %+v resulting %+v, want reason %q expected %+v resulting %+v",
+			audited.Reason, audited.Expected, audited.Resulting, recovery.Reason, wantExpected, wantResulting)
 	}
 }

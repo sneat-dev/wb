@@ -6,6 +6,7 @@ package worktreecollab
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -119,6 +120,65 @@ type TakeRequest struct {
 	At            time.Time
 }
 
+// InactiveOwnerRecovery is one explicit, exactly-bound repair of a stale
+// checkout root whose recorded owner is proven inactive. Every field is an
+// observation the caller must state exactly, so nothing is inferred from age,
+// a worker label, or Git's reused registration name. OwnerStatus is the
+// corroborated status of ExpectedOwner: only "inactive" is admitted, and the
+// caller is a separately corroborated live session.
+type InactiveOwnerRecovery struct {
+	ExpectedRoot     string
+	ExpectedOwner    string
+	ExpectedEpoch    uint64
+	ExpectedRevision uint64
+	OwnerStatus      string
+	Actor            string
+	Reason           string
+	At               time.Time
+}
+
+// coordinationBinding is the exact coordination tuple a transition compared or
+// produced. It is encoded inside existing audit text so the binding stays
+// reconstructible without adding a persisted schema.
+type coordinationBinding struct {
+	Root     string `json:"root"`
+	Owner    string `json:"owner"`
+	Epoch    uint64 `json:"epoch"`
+	Revision uint64 `json:"revision"`
+}
+
+// inactiveOwnerRecoveryAudit is the canonical, unambiguous evidence stored in
+// the existing OwnerChange.Reason field for one inactive-owner recovery. JSON
+// keeps the operator's supplied reason byte-exact and separates every field, so
+// no path, owner, epoch or revision can be confused with another by
+// concatenation. Later revision-changing operations cannot rewrite it.
+type inactiveOwnerRecoveryAudit struct {
+	Reason    string              `json:"reason"`
+	Expected  coordinationBinding `json:"expected"`
+	Resulting coordinationBinding `json:"resulting"`
+}
+
+// auditReason encodes the comparison this recovery performed and the transition
+// it published. The resulting tuple is the one the caller's revision and epoch
+// advance to, so an audit reader can rebuild the exact CAS binding later.
+func (recovery InactiveOwnerRecovery) auditReason(checkout Checkout) (string, error) {
+	encoded, err := json.Marshal(inactiveOwnerRecoveryAudit{
+		Reason: strings.TrimSpace(recovery.Reason),
+		Expected: coordinationBinding{
+			Root: recovery.ExpectedRoot, Owner: recovery.ExpectedOwner,
+			Epoch: recovery.ExpectedEpoch, Revision: recovery.ExpectedRevision,
+		},
+		Resulting: coordinationBinding{
+			Root: checkout.Root, Owner: recovery.Actor,
+			Epoch: recovery.ExpectedEpoch + 1, Revision: recovery.ExpectedRevision + 1,
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("encode inactive owner recovery audit: %w", err)
+	}
+	return string(encoded), nil
+}
+
 func validID(value string) bool {
 	if value == "" || len(value) > 128 || strings.TrimSpace(value) != value {
 		return false
@@ -186,6 +246,106 @@ func (state State) ValidateRebind(checkout Checkout, expectedRoot string) error 
 		return fmt.Errorf("coordination rebind does not match the exact prior and current checkout identities")
 	}
 	return nil
+}
+
+// maxCounter is the last value a monotonic coordination counter may hold. A
+// transition that cannot advance one of them refuses instead of wrapping.
+const maxCounter = ^uint64(0)
+
+func (recovery InactiveOwnerRecovery) validate() error {
+	if !validID(recovery.Actor) || recovery.Actor == NoOwner || recovery.At.IsZero() {
+		return fmt.Errorf("inactive owner recovery requires a corroborated caller and timestamp")
+	}
+	if !validID(recovery.ExpectedOwner) || recovery.ExpectedOwner == NoOwner {
+		return fmt.Errorf("inactive owner recovery requires the exact recorded owner; unowned coordination takes ownership instead")
+	}
+	if recovery.ExpectedOwner == recovery.Actor {
+		return fmt.Errorf("inactive owner recovery requires a caller distinct from the inactive owner")
+	}
+	if recovery.ExpectedEpoch == 0 || recovery.ExpectedRevision == 0 {
+		return fmt.Errorf("inactive owner recovery requires the exact recorded owner epoch and coordination revision")
+	}
+	if recovery.OwnerStatus != "inactive" {
+		return fmt.Errorf("inactive owner recovery requires a proven inactive owner; observed %q", recovery.OwnerStatus)
+	}
+	if strings.TrimSpace(recovery.Reason) == "" {
+		return fmt.Errorf("inactive owner recovery requires an audited reason")
+	}
+	return nil
+}
+
+// RecoverInactiveOwner publishes one coherent recovery: the retired root
+// becomes the current root, the recorded inactive owner is replaced by the
+// caller, the owner epoch and coordination revision advance by exactly one, and
+// one root-rebind plus one ownership-change audit record are appended. It never
+// publishes a rebind bound to the old owner, and it refuses a repeated request
+// for the transition it already completed instead of advancing the epoch twice.
+func (state *State) RecoverInactiveOwner(checkout Checkout, recovery InactiveOwnerRecovery) error {
+	if state == nil {
+		return fmt.Errorf("inactive owner recovery requires coordination state")
+	}
+	if err := recovery.validate(); err != nil {
+		return err
+	}
+	if state.completedInactiveOwnerRecovery(checkout, recovery) {
+		return fmt.Errorf("%w: this inactive owner recovery already completed; inspect the current coordination state instead of recovering twice", ErrConflict)
+	}
+	if err := state.ValidateRebind(checkout, recovery.ExpectedRoot); err != nil {
+		return err
+	}
+	if state.Owner != recovery.ExpectedOwner {
+		return fmt.Errorf("%w: expected owner %s, observed %s", ErrConflict, recovery.ExpectedOwner, state.Owner)
+	}
+	if state.OwnerEpoch != recovery.ExpectedEpoch {
+		return fmt.Errorf("%w: expected owner epoch %d, observed %d", ErrConflict, recovery.ExpectedEpoch, state.OwnerEpoch)
+	}
+	if state.Revision != recovery.ExpectedRevision {
+		return fmt.Errorf("%w: expected coordination revision %d, observed %d", ErrConflict, recovery.ExpectedRevision, state.Revision)
+	}
+	if state.OwnerEpoch == maxCounter || state.Revision == maxCounter {
+		return fmt.Errorf("coordination counters are exhausted; refusing to wrap an inactive owner recovery")
+	}
+	if _, joined := state.Members[recovery.Actor]; !joined {
+		state.Members[recovery.Actor] = Member{JoinedAt: recovery.At.UTC()}
+	}
+	reason, err := recovery.auditReason(checkout)
+	if err != nil {
+		return err
+	}
+	state.Checkout = checkout
+	state.Owner = recovery.Actor
+	state.OwnerEpoch++
+	state.Revision++
+	state.CheckoutRebinds = append(state.CheckoutRebinds, CheckoutRebind{
+		PreviousRoot: recovery.ExpectedRoot, CurrentRoot: checkout.Root, Actor: recovery.Actor, At: recovery.At.UTC(),
+	})
+	state.recordChange(OwnerChange{Epoch: state.OwnerEpoch, Previous: recovery.ExpectedOwner, Current: recovery.Actor,
+		Actor: recovery.Actor, Reason: reason, At: recovery.At.UTC()})
+	return nil
+}
+
+// completedInactiveOwnerRecovery recognizes exactly the durable transition this
+// request would publish. Only an identical current owner, root, epoch, revision,
+// rebind record and ownership event qualifies, so a changed request, a later
+// transition, or another owner can never turn a retry into a permissive shortcut.
+func (state State) completedInactiveOwnerRecovery(checkout Checkout, recovery InactiveOwnerRecovery) bool {
+	if recovery.ExpectedEpoch == maxCounter || recovery.ExpectedRevision == maxCounter {
+		return false
+	}
+	if state.Owner != recovery.Actor || state.OwnerEpoch != recovery.ExpectedEpoch+1 ||
+		state.Revision != recovery.ExpectedRevision+1 || state.Checkout != checkout {
+		return false
+	}
+	if len(state.CheckoutRebinds) == 0 || len(state.OwnerChanges) == 0 {
+		return false
+	}
+	rebind := state.CheckoutRebinds[len(state.CheckoutRebinds)-1]
+	if rebind.PreviousRoot != recovery.ExpectedRoot || rebind.CurrentRoot != checkout.Root || rebind.Actor != recovery.Actor {
+		return false
+	}
+	change := state.OwnerChanges[len(state.OwnerChanges)-1]
+	return change.Epoch == state.OwnerEpoch && change.Previous == recovery.ExpectedOwner &&
+		change.Current == recovery.Actor && change.Actor == recovery.Actor
 }
 
 func (state *State) Take(request TakeRequest) error {

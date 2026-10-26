@@ -1,7 +1,10 @@
 package worktreecollab
 
 import (
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -293,5 +296,220 @@ func TestMessageRefusalsPreserveState(t *testing.T) {
 	full.Inboxes["peer"] = make([]Message, MaxPendingPerPeer)
 	if _, _, err := full.Send(good); err == nil || !strings.Contains(err.Error(), "inbox is full") {
 		t.Fatalf("full recipient = %v", err)
+	}
+}
+
+// staleRecoveryState is one initialized snapshot whose recorded root has been
+// retired, with an existing member, message history, and a cursor so a recovery
+// cannot look successful by quietly discarding them.
+func staleRecoveryState(t *testing.T, oldRoot string) State {
+	t.Helper()
+	stale := testCheckout()
+	stale.Root = oldRoot
+	state, err := New(stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := state.Take(TakeRequest{Caller: "owner", ExpectedOwner: NoOwner, At: testNow}); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.Join("peer", testNow.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	receipt, _, err := state.Send(SendRequest{Sender: "owner", Recipients: []string{"peer"}, IdempotencyKey: "stale-key",
+		MessageID: "stale-message", Kind: "text", Body: "before recovery", At: testNow.Add(2 * time.Second)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.Ack("peer", receipt.MessageID, receipt.Digest, testNow.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	return state
+}
+
+func recoveryOf(t *testing.T, stale State, oldRoot string) InactiveOwnerRecovery {
+	t.Helper()
+	return InactiveOwnerRecovery{ExpectedRoot: oldRoot, ExpectedOwner: stale.Owner, ExpectedEpoch: stale.OwnerEpoch,
+		ExpectedRevision: stale.Revision, OwnerStatus: "inactive", Actor: "successor",
+		Reason: "retired checkout reused by Git; recorded owner exited", At: testNow.Add(time.Hour)}
+}
+
+func recoveryCheckout(stale State, currentRoot string) Checkout {
+	current := stale.Checkout
+	current.Root = currentRoot
+	return current
+}
+
+func TestRecoverInactiveOwnerPublishesRootOwnerAndBothAuditRecords(t *testing.T) {
+	t.Parallel()
+	oldRoot := filepath.Join(string(os.PathSeparator), "retired", "checkout")
+	currentRoot := filepath.Join(string(os.PathSeparator), "current", "checkout")
+	stale := staleRecoveryState(t, oldRoot)
+	recovery := recoveryOf(t, stale, oldRoot)
+	priorEpoch, priorRevision := stale.OwnerEpoch, stale.Revision
+	current := recoveryCheckout(stale, currentRoot)
+	if err := stale.RecoverInactiveOwner(current, recovery); err != nil {
+		t.Fatal(err)
+	}
+	if stale.Checkout != current {
+		t.Fatalf("recovered checkout = %+v, want %+v", stale.Checkout, current)
+	}
+	if stale.Owner != "successor" || stale.OwnerEpoch != priorEpoch+1 || stale.Revision != priorRevision+1 {
+		t.Fatalf("recovered ownership = owner %q epoch %d revision %d", stale.Owner, stale.OwnerEpoch, stale.Revision)
+	}
+	if len(stale.OwnerChanges) != 2 || len(stale.CheckoutRebinds) != 1 {
+		t.Fatalf("audit records = %d owner changes, %d rebinds", len(stale.OwnerChanges), len(stale.CheckoutRebinds))
+	}
+	change := stale.OwnerChanges[1]
+	if change.Epoch != priorEpoch+1 || change.Previous != "owner" || change.Current != "successor" ||
+		change.Actor != "successor" || !change.At.Equal(recovery.At) {
+		t.Fatalf("ownership audit = %+v", change)
+	}
+	var audited inactiveOwnerRecoveryAudit
+	if err := json.Unmarshal([]byte(change.Reason), &audited); err != nil {
+		t.Fatalf("ownership audit reason is not reconstructible: %v (%q)", err, change.Reason)
+	}
+	if audited.Reason != recovery.Reason ||
+		audited.Expected != (coordinationBinding{Root: oldRoot, Owner: "owner", Epoch: priorEpoch, Revision: priorRevision}) ||
+		audited.Resulting != (coordinationBinding{Root: currentRoot, Owner: "successor", Epoch: priorEpoch + 1, Revision: priorRevision + 1}) {
+		t.Fatalf("ownership audit lost the compared binding: %+v", audited)
+	}
+	rebind := stale.CheckoutRebinds[0]
+	if rebind.PreviousRoot != oldRoot || rebind.CurrentRoot != currentRoot || rebind.Actor != "successor" || !rebind.At.Equal(recovery.At) {
+		t.Fatalf("rebind audit = %+v", rebind)
+	}
+	if _, joined := stale.Members["owner"]; !joined {
+		t.Fatal("recovery dropped the recorded owner's membership history")
+	}
+	if _, joined := stale.Members["successor"]; !joined {
+		t.Fatal("recovery did not join the new owner")
+	}
+	if len(stale.Inboxes["peer"]) != 1 || stale.Cursors["peer"] != 1 || len(stale.Requests) != 1 {
+		t.Fatalf("recovery dropped message history: inboxes=%v cursors=%v requests=%v", stale.Inboxes, stale.Cursors, stale.Requests)
+	}
+	if stale.Notices["owner"].Current != "successor" || stale.Notices["peer"].Current != "successor" {
+		t.Fatalf("recovery notices = %+v", stale.Notices)
+	}
+	if stale.OwnerChanges[0].Previous != NoOwner || stale.OwnerChanges[0].Epoch != priorEpoch {
+		t.Fatalf("recovery rewrote the earlier ownership audit record: %+v", stale.OwnerChanges[0])
+	}
+}
+
+func TestRecoverInactiveOwnerRefusesUnprovenOrInexactObservations(t *testing.T) {
+	t.Parallel()
+	oldRoot := filepath.Join(string(os.PathSeparator), "retired", "checkout")
+	currentRoot := filepath.Join(string(os.PathSeparator), "current", "checkout")
+	for _, tc := range []struct {
+		name      string
+		mutate    func(*InactiveOwnerRecovery, *Checkout)
+		wantError string
+	}{
+		{"live owner", func(r *InactiveOwnerRecovery, _ *Checkout) { r.OwnerStatus = "live" }, "proven inactive"},
+		{"unknown owner", func(r *InactiveOwnerRecovery, _ *Checkout) { r.OwnerStatus = "unknown" }, "proven inactive"},
+		{"uncorroborated owner", func(r *InactiveOwnerRecovery, _ *Checkout) { r.OwnerStatus = "" }, "proven inactive"},
+		{"no owner recorded", func(r *InactiveOwnerRecovery, _ *Checkout) { r.ExpectedOwner = NoOwner }, "unowned coordination"},
+		{"caller is recorded owner", func(r *InactiveOwnerRecovery, _ *Checkout) { r.Actor = "owner" }, "distinct"},
+		{"missing reason", func(r *InactiveOwnerRecovery, _ *Checkout) { r.Reason = "  " }, "audited reason"},
+		{"zero timestamp", func(r *InactiveOwnerRecovery, _ *Checkout) { r.At = time.Time{} }, "timestamp"},
+		{"invalid actor", func(r *InactiveOwnerRecovery, _ *Checkout) { r.Actor = "bad actor" }, "caller"},
+		{"zero expected epoch", func(r *InactiveOwnerRecovery, _ *Checkout) { r.ExpectedEpoch = 0 }, "owner epoch"},
+		{"zero expected revision", func(r *InactiveOwnerRecovery, _ *Checkout) { r.ExpectedRevision = 0 }, "coordination revision"},
+		{"owner mismatch", func(r *InactiveOwnerRecovery, _ *Checkout) { r.ExpectedOwner = "former" }, "expected owner"},
+		{"epoch mismatch", func(r *InactiveOwnerRecovery, _ *Checkout) { r.ExpectedEpoch = 2 }, "owner epoch"},
+		{"revision mismatch", func(r *InactiveOwnerRecovery, _ *Checkout) { r.ExpectedRevision = 9 }, "revision"},
+		{"root mismatch", func(r *InactiveOwnerRecovery, _ *Checkout) {
+			r.ExpectedRoot = filepath.Join(string(os.PathSeparator), "other")
+		}, "prior and current checkout identities"},
+		{"already current root", func(_ *InactiveOwnerRecovery, c *Checkout) { c.Root = oldRoot }, "prior and current checkout identities"},
+		{"GitDir changed", func(_ *InactiveOwnerRecovery, c *Checkout) {
+			c.GitDir = filepath.Join(string(os.PathSeparator), "repo", ".git", "worktrees", "two")
+		}, "prior and current checkout identities"},
+		{"checkout ID changed", func(_ *InactiveOwnerRecovery, c *Checkout) { c.ID = "checkout-2" }, "prior and current checkout identities"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			stale := staleRecoveryState(t, oldRoot)
+			unsigned, err := json.Marshal(stale)
+			if err != nil {
+				t.Fatal(err)
+			}
+			recovery := recoveryOf(t, stale, oldRoot)
+			current := recoveryCheckout(stale, currentRoot)
+			tc.mutate(&recovery, &current)
+			if err := stale.RecoverInactiveOwner(current, recovery); err == nil || !strings.Contains(err.Error(), tc.wantError) {
+				t.Fatalf("recovery error = %v, want %q", err, tc.wantError)
+			}
+			after, err := json.Marshal(stale)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != string(unsigned) {
+				t.Fatalf("refused recovery changed state:\nbefore %s\nafter  %s", unsigned, after)
+			}
+		})
+	}
+	var zero *State
+	if err := zero.RecoverInactiveOwner(Checkout{}, recoveryOf(t, staleRecoveryState(t, oldRoot), oldRoot)); err == nil {
+		t.Fatal("nil state accepted a recovery")
+	}
+}
+
+func TestRecoverInactiveOwnerRefusesRepeatedTransitionWithoutSecondEpoch(t *testing.T) {
+	t.Parallel()
+	oldRoot := filepath.Join(string(os.PathSeparator), "retired", "checkout")
+	currentRoot := filepath.Join(string(os.PathSeparator), "current", "checkout")
+	stale := staleRecoveryState(t, oldRoot)
+	recovery := recoveryOf(t, stale, oldRoot)
+	priorEpoch, priorRevision := stale.OwnerEpoch, stale.Revision
+	current := recoveryCheckout(stale, currentRoot)
+	if err := stale.RecoverInactiveOwner(current, recovery); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := json.Marshal(stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stale.RecoverInactiveOwner(current, recovery); !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "already completed") {
+		t.Fatalf("repeated recovery = %v", err)
+	}
+	changed := recovery
+	changed.ExpectedOwner = "prior-owner"
+	if err := stale.RecoverInactiveOwner(current, changed); err == nil {
+		t.Fatal("recovery with a different expected owner was accepted")
+	}
+	after, err := json.Marshal(stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(recovered) || stale.OwnerEpoch != priorEpoch+1 || stale.Revision != priorRevision+1 || len(stale.OwnerChanges) != 2 {
+		t.Fatalf("repeated recovery advanced the snapshot: %s", after)
+	}
+}
+
+func TestRecoverInactiveOwnerRefusesCounterExhaustionBeforeIncrement(t *testing.T) {
+	t.Parallel()
+	oldRoot := filepath.Join(string(os.PathSeparator), "retired", "checkout")
+	currentRoot := filepath.Join(string(os.PathSeparator), "current", "checkout")
+	for _, tc := range []struct {
+		name                        string
+		ownerEpoch, coordinationRev uint64
+	}{
+		{"owner epoch at maximum", maxCounter, 3},
+		{"coordination revision at maximum", 1, maxCounter},
+		{"both at maximum", maxCounter, maxCounter},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			stale := staleRecoveryState(t, oldRoot)
+			stale.OwnerEpoch, stale.Revision = tc.ownerEpoch, tc.coordinationRev
+			recovery := recoveryOf(t, stale, oldRoot)
+			current := recoveryCheckout(stale, currentRoot)
+			if err := stale.RecoverInactiveOwner(current, recovery); err == nil || !strings.Contains(err.Error(), "exhausted") {
+				t.Fatalf("exhausted counters = %v", err)
+			}
+			if stale.OwnerEpoch != tc.ownerEpoch || stale.Revision != tc.coordinationRev || stale.Owner != "owner" {
+				t.Fatalf("exhausted recovery wrapped counters: epoch %d revision %d owner %q", stale.OwnerEpoch, stale.Revision, stale.Owner)
+			}
+		})
 	}
 }
