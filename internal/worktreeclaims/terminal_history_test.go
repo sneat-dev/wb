@@ -497,15 +497,16 @@ func TestRemovedHelperHistoryRejectsUnsafeEffortAndMisboundClaim(t *testing.T) {
 			t.Parallel()
 			home, expectation, claim := terminalHistoryFixture(t)
 			addRemovedHistoryRun(t, home, expectation, claim)
-			if problem == "unsafe-effort" {
+			switch problem {
+			case "unsafe-effort":
 				if err := os.Mkdir(filepath.Join(home, "worklogs", ".unsafe"), 0700); err != nil {
 					t.Fatal(err)
 				}
-			} else if problem == "unsafe-run" {
+			case "unsafe-run":
 				if err := os.Mkdir(filepath.Join(home, "worklogs", "task", "runs", ".unsafe"), 0700); err != nil {
 					t.Fatal(err)
 				}
-			} else {
+			default:
 				path := filepath.Join(home, "worklogs", "task", "runs", "run", "claims", claim.ClaimID+".json")
 				claim.EffortID = "different-effort"
 				writeHistoryJSON(t, path, claim)
