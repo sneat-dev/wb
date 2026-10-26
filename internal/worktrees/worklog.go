@@ -2762,11 +2762,11 @@ func corroborateClaimAtPath(home, worktree, finalCommit string, projection workL
 }
 
 func corroborateClaimAtPathObserved(home, worktree, finalCommit string, projection workLogProjection, claim workLogClaim, observe workLogProjectionObservation) error {
-	if filepath.Clean(claim.Worktree) != filepath.Clean(worktree) {
-		resolution, err := latestRelocationResolution(home, claim, worktree)
-		if err != nil {
-			return err
-		}
+	resolution, err := latestRelocationResolution(home, claim, worktree)
+	if err != nil {
+		return err
+	}
+	if filepath.Clean(claim.Worktree) != filepath.Clean(worktree) || resolution.receipt != nil {
 		if observe != nil {
 			observe(workLogClaimRelocationResolved, nil)
 		}
@@ -2786,8 +2786,8 @@ func corroborateClaimAtPathObserved(home, worktree, finalCommit string, projecti
 					return err
 				}
 			}
-		} else if resolution.repository != claim.Repository {
-			if err := corroborateRepositoryRelocation(context.Background(), worktree, resolution.repository); err != nil {
+		} else if resolution.repository != claim.Repository || resolution.receipt.To == "repository" {
+			if err := corroborateRepositoryRelocation(context.Background(), worktree, resolution.repository, resolution.receipt.RemoteURL); err != nil {
 				return err
 			}
 		}

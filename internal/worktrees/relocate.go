@@ -932,7 +932,7 @@ func latestRelocationReceipt(home string, claim workLogClaim, destination string
 	return resolution.receipt, resolution.receiptPath, err
 }
 
-func corroborateRepositoryRelocation(ctx context.Context, worktree, repository string) error {
+func corroborateRepositoryRelocation(ctx context.Context, worktree, repository string, expectedRemote ...string) error {
 	for _, push := range []bool{false, true} {
 		urls, err := exactOriginURLs(ctx, worktree, push)
 		if err != nil || len(urls) != 1 {
@@ -941,6 +941,12 @@ func corroborateRepositoryRelocation(ctx context.Context, worktree, repository s
 		remote, err := gitremote.Parse(urls[0])
 		if err != nil || remote.Identity.Repository != repository {
 			return fmt.Errorf("relocated repository origin does not identify %s", repository)
+		}
+		if len(expectedRemote) != 0 && expectedRemote[0] != "" {
+			expected, err := gitremote.Parse(expectedRemote[0])
+			if err != nil || !remote.Identity.Equal(expected.Identity) {
+				return fmt.Errorf("relocated repository origin does not match its completed transfer evidence")
+			}
 		}
 	}
 	return nil

@@ -868,7 +868,7 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 			claim, _, claimPath, claimErr := ports.activeClaim(home, worktree)
 			switch {
 			case claimErr == nil:
-				if claim.Task != normalized.Operation || claim.Repository != repository || claim.Branch != branch {
+				if claim.Task != normalized.Operation || claim.Branch != branch || !claimMatchesRepository(home, worktree, repository, claim) {
 					canonicalHandle.close()
 					return nil, fmt.Errorf("cannot resume %s: active work-log claim identity does not match task/repository/branch", worktree)
 				}
@@ -1284,7 +1284,7 @@ func locateResumableWorktree(ctx context.Context, canonical *canonicalRepository
 		}
 		claim, _, _, claimErr := activeWorkLogClaim(home, path)
 		if claimErr == nil {
-			if claim.Task != task || claim.Repository != repository {
+			if claim.Task != task || !claimMatchesRepository(home, path, repository, claim) {
 				continue
 			}
 			if matched != "" && matched != path {
@@ -1347,6 +1347,33 @@ func locateCanonicalLocalWorktree(projectsRoot, root, commonDir string) (managed
 	}, true
 }
 
+// A repository transfer moves the canonical clone but preserves central linked
+// paths. Only the original managed geometry and completed private evidence may
+// explain the resulting path/canonical mismatch; an edited origin alone cannot.
+func claimMatchesRepository(home, path, repository string, claim workLogClaim) bool {
+	if claim.Repository == repository {
+		return true
+	}
+	resolved, err := latestRelocationResolution(home, claim, path)
+	return err == nil && resolved.receipt != nil && resolved.repository == repository
+}
+
+func corroboratedPreservedRepositoryTransfer(projectsRoot, root, task, repository string) bool {
+	home, err := wbhome.Root(projectsRoot)
+	if err != nil {
+		return false
+	}
+	claim, _, _, err := activeWorkLogClaimReadOnly(home, root)
+	if err != nil || claim.Task != task || filepath.Clean(claim.Worktree) != filepath.Clean(root) {
+		return false
+	}
+	if _, err := claimedSharedWorktreeLayout(root, claim); err != nil {
+		return false
+	}
+	resolved, err := latestRelocationResolution(home, claim, root)
+	return err == nil && resolved.receipt != nil && resolved.repository == repository && resolved.repository != claim.Repository
+}
+
 func locateManagedWorktree(
 	ctx context.Context,
 	projectsRoot, root string,
@@ -1383,10 +1410,11 @@ func locateManagedWorktree(
 			if !strings.EqualFold(storeHost, parts[1]) {
 				return managedWorktreeLocation{}, fmt.Errorf("worktree %s has path host %q but canonical clone address host %q", root, parts[1], storeHost)
 			}
-			if owner != parts[2] {
+			transferred := (owner != parts[2] || repository != parts[3]) && corroboratedPreservedRepositoryTransfer(projectsRoot, root, parts[0], owner+"/"+repository)
+			if owner != parts[2] && !transferred {
 				return managedWorktreeLocation{}, fmt.Errorf("worktree %s has path owner %q but canonical clone owner %q", root, parts[2], owner)
 			}
-			if !strings.HasPrefix(parts[3], ".") && repository != parts[3] {
+			if !strings.HasPrefix(parts[3], ".") && repository != parts[3] && !transferred {
 				return managedWorktreeLocation{}, &RepositoryRenameMismatchError{
 					Worktree: root, Owner: owner, PathRepository: parts[3], CanonicalRepository: repository,
 				}
@@ -1399,7 +1427,8 @@ func locateManagedWorktree(
 				return managedWorktreeLocation{}, invalidManagedWorktreePath(root, layout.WorktreesRoot)
 			}
 			host, storeHost, owner, repository, coordinatesErr := managedWorktreeCanonicalCoordinates(ctx, projectsRoot, root)
-			if coordinatesErr != nil || (!staging && owner != parts[1]) {
+			transferred := coordinatesErr == nil && !staging && (owner != parts[1] || repository != parts[2]) && corroboratedPreservedRepositoryTransfer(projectsRoot, root, parts[0], owner+"/"+repository)
+			if coordinatesErr != nil || (!staging && owner != parts[1] && !transferred) {
 				return managedWorktreeLocation{}, fmt.Errorf("worktree %s has path owner %q but canonical clone owner %q", root, parts[1], owner)
 			}
 			if staging {
@@ -1416,7 +1445,7 @@ func locateManagedWorktree(
 			// ordinary canonical repository. When it is the canonical repository
 			// name itself (for example acme/.github), the identities naturally
 			// agree. Ordinary names must always match exactly.
-			if !strings.HasPrefix(parts[2], ".") && repository != parts[2] {
+			if !strings.HasPrefix(parts[2], ".") && repository != parts[2] && !transferred {
 				return managedWorktreeLocation{}, &RepositoryRenameMismatchError{
 					Worktree: root, Owner: owner, PathRepository: parts[2], CanonicalRepository: repository,
 				}
@@ -1473,7 +1502,15 @@ func locateGuardedAdoptedWorktree(ctx context.Context, projectsRoot string, writ
 	if err != nil {
 		return managedWorktreeLocation{}, err
 	}
-	return locateAdoptedWorktree(ctx, projectsRoot, root, writeLayout, claim.Task)
+	location, err := locateAdoptedWorktree(ctx, projectsRoot, root, writeLayout, claim.Task)
+	if err != nil {
+		return managedWorktreeLocation{}, err
+	}
+	resolved, err := latestRelocationResolution(writeLayout.Home, claim, root)
+	if err != nil || resolved.repository != location.Owner+"/"+location.Repository {
+		return managedWorktreeLocation{}, fmt.Errorf("active claim does not prove the current repository identity")
+	}
+	return location, nil
 }
 
 func isWorktreeStagingDirectory(name string) bool {
