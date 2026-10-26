@@ -20,7 +20,7 @@ type retiredProofFixture struct {
 	options      RetiredCheckoutProofOptions
 	ports        retiredCheckoutProofPorts
 	tx           worktreeretire.Transaction
-	git          func(context.Context, string, ...string) (string, error)
+	gitQuery     func(context.Context, string, ...string) (string, error)
 	canonicalDir string
 	readSnapshot func(string) (worktreeretire.ReportSnapshot, error)
 }
@@ -61,7 +61,7 @@ func newRetiredProofFixture(t *testing.T) *retiredProofFixture {
 		tx:           tx,
 		canonicalDir: canonicalDir,
 	}
-	fixture.git = func(_ context.Context, _ string, args ...string) (string, error) {
+	fixture.gitQuery = func(_ context.Context, _ string, args ...string) (string, error) {
 		switch {
 		case len(args) == 3 && args[0] == "worktree" && args[1] == "list":
 			return "", nil
@@ -92,7 +92,7 @@ func newRetiredProofFixture(t *testing.T) *retiredProofFixture {
 		},
 		verifyRemoved: func(context.Context, worktreeretire.Operation, worktreeretire.Transaction) error { return nil },
 		git: func(ctx context.Context, _ *canonicalRepository, args ...string) (string, error) {
-			return fixture.git(ctx, canonical, args...)
+			return fixture.gitQuery(ctx, canonical, args...)
 		},
 		lstat: func(string) (os.FileInfo, error) { return nil, os.ErrNotExist },
 	}
@@ -221,7 +221,7 @@ func TestProveRetiredCheckoutRefusesIncompleteOrMismatchedEvidence(t *testing.T)
 			f.ports.verifyRemoved = func(context.Context, worktreeretire.Operation, worktreeretire.Transaction) error { return boom }
 		}, "preserved-source proof"},
 		{"worktree inventory", func(f *retiredProofFixture) {
-			f.git = func(_ context.Context, _ string, args ...string) (string, error) {
+			f.gitQuery = func(_ context.Context, _ string, args ...string) (string, error) {
 				if args[0] == "worktree" {
 					return "", boom
 				}
@@ -229,7 +229,7 @@ func TestProveRetiredCheckoutRefusesIncompleteOrMismatchedEvidence(t *testing.T)
 			}
 		}, "injected retirement proof refusal"},
 		{"checkout still registered", func(f *retiredProofFixture) {
-			f.git = func(_ context.Context, _ string, args ...string) (string, error) {
+			f.gitQuery = func(_ context.Context, _ string, args ...string) (string, error) {
 				if args[0] == "worktree" {
 					return "worktree " + f.options.CandidateWorktree + "\n", nil
 				}
@@ -237,7 +237,7 @@ func TestProveRetiredCheckoutRefusesIncompleteOrMismatchedEvidence(t *testing.T)
 			}
 		}, "still registered"},
 		{"branch enumeration", func(f *retiredProofFixture) {
-			f.git = func(_ context.Context, _ string, args ...string) (string, error) {
+			f.gitQuery = func(_ context.Context, _ string, args ...string) (string, error) {
 				if args[0] == "for-each-ref" {
 					return "", boom
 				}
@@ -245,7 +245,7 @@ func TestProveRetiredCheckoutRefusesIncompleteOrMismatchedEvidence(t *testing.T)
 			}
 		}, "injected retirement proof refusal"},
 		{"local branch survives", func(f *retiredProofFixture) {
-			f.git = func(_ context.Context, _ string, args ...string) (string, error) {
+			f.gitQuery = func(_ context.Context, _ string, args ...string) (string, error) {
 				if args[0] == "for-each-ref" {
 					return strings.Repeat("f", 40), nil
 				}
@@ -253,7 +253,7 @@ func TestProveRetiredCheckoutRefusesIncompleteOrMismatchedEvidence(t *testing.T)
 			}
 		}, "retired local branch"},
 		{"retired source fetch", func(f *retiredProofFixture) {
-			f.git = func(_ context.Context, _ string, args ...string) (string, error) {
+			f.gitQuery = func(_ context.Context, _ string, args ...string) (string, error) {
 				if args[0] == "fetch" {
 					return "", boom
 				}
@@ -261,7 +261,7 @@ func TestProveRetiredCheckoutRefusesIncompleteOrMismatchedEvidence(t *testing.T)
 			}
 		}, "fetch retired source ref"},
 		{"fetched source mismatch", func(f *retiredProofFixture) {
-			f.git = func(_ context.Context, _ string, args ...string) (string, error) {
+			f.gitQuery = func(_ context.Context, _ string, args ...string) (string, error) {
 				if args[0] == "rev-parse" && args[1] == "FETCH_HEAD" {
 					return strings.Repeat("b", 40), nil
 				}
@@ -269,7 +269,7 @@ func TestProveRetiredCheckoutRefusesIncompleteOrMismatchedEvidence(t *testing.T)
 			}
 		}, "does not bind source SHA"},
 		{"preserved source object missing", func(f *retiredProofFixture) {
-			f.git = func(_ context.Context, _ string, args ...string) (string, error) {
+			f.gitQuery = func(_ context.Context, _ string, args ...string) (string, error) {
 				if args[0] == "cat-file" && args[2] == f.tx.SourceSHA {
 					return "", boom
 				}
@@ -277,7 +277,7 @@ func TestProveRetiredCheckoutRefusesIncompleteOrMismatchedEvidence(t *testing.T)
 			}
 		}, "is missing"},
 		{"candidate object missing", func(f *retiredProofFixture) {
-			f.git = func(_ context.Context, _ string, args ...string) (string, error) {
+			f.gitQuery = func(_ context.Context, _ string, args ...string) (string, error) {
 				if args[0] == "cat-file" && args[2] == f.options.CandidateSHA {
 					return "", boom
 				}
@@ -348,7 +348,7 @@ func TestProveRetiredSourceBindsCandidateThroughDurableIntent(t *testing.T) {
 		tx.IntentMessage = "Retire worktree source changes"
 		tx.IntentAt = time.Now().UTC()
 		fixture.tx = tx
-		fixture.git = func(_ context.Context, _ string, args ...string) (string, error) {
+		fixture.gitQuery = func(_ context.Context, _ string, args ...string) (string, error) {
 			switch {
 			case len(args) == 2 && args[0] == "rev-parse" && args[1] == "FETCH_HEAD":
 				return source, nil
@@ -391,8 +391,8 @@ func TestProveRetiredSourceBindsCandidateThroughDurableIntent(t *testing.T) {
 	t.Run("published candidate object missing", func(t *testing.T) {
 		t.Parallel()
 		fixture, _ := base()
-		baseGit := fixture.git
-		fixture.git = func(ctx context.Context, dir string, args ...string) (string, error) {
+		baseGit := fixture.gitQuery
+		fixture.gitQuery = func(ctx context.Context, dir string, args ...string) (string, error) {
 			if len(args) == 3 && args[0] == "cat-file" && args[2] == candidate {
 				return "", errors.New("candidate object missing")
 			}
@@ -410,10 +410,10 @@ func TestProveRetiredSourceBindsCandidateRejectsIntentMismatch(t *testing.T) {
 	source := strings.Repeat("b", 40)
 	tree := strings.Repeat("c", 40)
 	cases := []struct {
-		name   string
-		git    func(args []string) (string, error)
-		mutate func(*worktreeretire.Transaction)
-		want   string
+		name     string
+		gitQuery func(args []string) (string, error)
+		mutate   func(*worktreeretire.Transaction)
+		want     string
 	}{
 		{"parent mismatch", func(args []string) (string, error) {
 			if len(args) == 2 && args[0] == "rev-parse" && args[1] == source+"^" {
@@ -459,11 +459,11 @@ func TestProveRetiredSourceBindsCandidateRejectsIntentMismatch(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			fixture := newRetiredProofFixture(t)
-			fixture.git = func(_ context.Context, _ string, args ...string) (string, error) {
+			fixture.gitQuery = func(_ context.Context, _ string, args ...string) (string, error) {
 				if len(args) == 2 && args[0] == "rev-parse" && args[1] == "FETCH_HEAD" {
 					return source, nil
 				}
-				value, err := tt.git(args)
+				value, err := tt.gitQuery(args)
 				if err != nil && strings.Contains(err.Error(), "unexpected git command") && len(args) == 2 && args[0] == "rev-parse" {
 					switch args[1] {
 					case source + "^":
@@ -634,4 +634,16 @@ func TestRetiredCheckoutProofSessionRefusesWithoutHeldIdentity(t *testing.T) {
 	if err := empty.Close(); err != nil {
 		t.Fatalf("descriptor-less proof close = %v", err)
 	}
+}
+
+// proveRetiredCheckoutWith is the test-only evidence-only wrapper around the
+// production held proof. Production callers must use ProveRetiredCheckoutHeld
+// so the exact canonical session stays open through their later Git reads.
+func proveRetiredCheckoutWith(ctx context.Context, options RetiredCheckoutProofOptions, ports retiredCheckoutProofPorts) (RetiredCheckoutEvidence, error) {
+	proof, err := proveRetiredCheckoutHeldWith(ctx, options, ports)
+	if err != nil {
+		return RetiredCheckoutEvidence{}, err
+	}
+	defer func() { _ = proof.Close() }()
+	return proof.Evidence(), nil
 }

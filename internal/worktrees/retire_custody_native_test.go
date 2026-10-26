@@ -1,3 +1,5 @@
+//go:build e2e
+
 package worktrees
 
 import (
@@ -121,13 +123,13 @@ func custodyLegacyExpected(t *testing.T, fixture *gitFixture, worktree string) s
 	return observed.ID
 }
 
-// TestRetireAcceptsAuditedTakeoverOfLiveLegacyCustody is the former red path:
+// TestE2ERetireAcceptsAuditedTakeoverOfLiveLegacyCustody is the former red path:
 // a historical live PID still vetoes retirement even after an audited current
 // owner exists. Retirement now honors the corroborated current owner and
 // preserves every historical custody record.
 //
 //nolint:paralleltest // newGitFixture sets process-wide WB and Git configuration variables.
-func TestRetireAcceptsAuditedTakeoverOfLiveLegacyCustody(t *testing.T) {
+func TestE2ERetireAcceptsAuditedTakeoverOfLiveLegacyCustody(t *testing.T) {
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot, Operation: "retire-custody", WorkLog: WorkLogOptions{Model: "unknown"},
@@ -198,13 +200,13 @@ func TestRetireAcceptsAuditedTakeoverOfLiveLegacyCustody(t *testing.T) {
 	}
 }
 
-// TestRetireCustodyRefusesChangeBeforeDeletion proves the last custody check
+// TestE2ERetireCustodyRefusesChangeBeforeDeletion proves the last custody check
 // runs immediately before deletion intent: even after the retired source and
 // private archive were published, a changed or unreadable current authority
 // refuses without removing the checkout or deleting the original branch.
 //
 //nolint:paralleltest // newGitFixture sets process-wide WB and Git configuration variables.
-func TestRetireCustodyRefusesChangeBeforeDeletion(t *testing.T) {
+func TestE2ERetireCustodyRefusesChangeBeforeDeletion(t *testing.T) {
 	for _, mode := range []string{"changed", "corrupt"} {
 		//nolint:paralleltest // newGitFixture sets process-wide WB and Git configuration variables.
 		t.Run(mode, func(t *testing.T) {
@@ -267,13 +269,13 @@ func TestRetireCustodyRefusesChangeBeforeDeletion(t *testing.T) {
 	}
 }
 
-// TestRetireCustodyRefusesAuthorityChangesUnderLock proves the fence is
+// TestE2ERetireCustodyRefusesAuthorityChangesUnderLock proves the fence is
 // revalidated beneath the held task/checkout locks: an ownership change or any
 // other coordination revision advance refuses before any source or remote
 // mutation.
 //
 //nolint:paralleltest // newGitFixture sets process-wide WB and Git configuration variables.
-func TestRetireCustodyRefusesAuthorityChangesUnderLock(t *testing.T) {
+func TestE2ERetireCustodyRefusesAuthorityChangesUnderLock(t *testing.T) {
 	for _, change := range []string{"owner", "revision"} {
 		//nolint:paralleltest // newGitFixture sets process-wide WB and Git configuration variables.
 		t.Run(change, func(t *testing.T) {
@@ -358,13 +360,13 @@ func TestRetireCustodyRefusesAuthorityChangesUnderLock(t *testing.T) {
 	}
 }
 
-// TestRetireCustodyRefusesChangeBeforeLocalRemoval proves the fence also
+// TestE2ERetireCustodyRefusesChangeBeforeLocalRemoval proves the fence also
 // guards the last destructive phase: after the original remote branch and its
 // atomic deletion proof exist, an ownership change refuses before the local
 // checkout is removed, leaving the exact checkout for a later resume.
 //
 //nolint:paralleltest // newGitFixture sets process-wide WB and Git configuration variables.
-func TestRetireCustodyRefusesChangeBeforeLocalRemoval(t *testing.T) {
+func TestE2ERetireCustodyRefusesChangeBeforeLocalRemoval(t *testing.T) {
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot, Operation: "retire-custody-local", WorkLog: WorkLogOptions{Model: "unknown"},
@@ -407,12 +409,12 @@ func TestRetireCustodyRefusesChangeBeforeLocalRemoval(t *testing.T) {
 	}
 }
 
-// TestRetireCustodyRefusesUncorroboratedCurrentAuthority covers a current
+// TestE2ERetireCustodyRefusesUncorroboratedCurrentAuthority covers a current
 // owner that is not the invoking registered session, a different live
 // session, and corrupt/ambiguous private authority.
 //
 //nolint:paralleltest // newGitFixture sets process-wide WB and Git configuration variables.
-func TestRetireCustodyRefusesUncorroboratedCurrentAuthority(t *testing.T) {
+func TestE2ERetireCustodyRefusesUncorroboratedCurrentAuthority(t *testing.T) {
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot, Operation: "retire-custody-refuse", WorkLog: WorkLogOptions{Model: "unknown"},
@@ -455,11 +457,11 @@ func TestRetireCustodyRefusesUncorroboratedCurrentAuthority(t *testing.T) {
 	}
 }
 
-// TestRetireCustodyRefusesAmbiguousRegisteredSession proves duplicate session
+// TestE2ERetireCustodyRefusesAmbiguousRegisteredSession proves duplicate session
 // IDs refuse rather than selecting one.
 //
 //nolint:paralleltest // newGitFixture sets process-wide WB and Git configuration variables.
-func TestRetireCustodyRefusesAmbiguousRegisteredSession(t *testing.T) {
+func TestE2ERetireCustodyRefusesAmbiguousRegisteredSession(t *testing.T) {
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot, Operation: "retire-custody-ambiguous", WorkLog: WorkLogOptions{Model: "unknown"},

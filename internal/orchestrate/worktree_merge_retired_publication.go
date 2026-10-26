@@ -18,12 +18,16 @@ import (
 	unix "github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/worktreeproof"
 	"github.com/sneat-dev/wb/internal/worktrees"
-	"github.com/sneat-dev/wb/internal/worktreesecure"
 )
 
 const (
-	worktreeMergeRetiredPublicationAcknowledgementSchemaVersion = 1
-	worktreeMergeRetiredPublicationAcknowledgementSuffix        = ".retired-publication.ack.json"
+	// SchemaVersion 2 distinguishes a current acknowledgement with no
+	// retirement evidence (a still-present candidate) from a historical
+	// schema-1 record that predates retirement binding and must stay
+	// idempotent without rewriting.
+	worktreeMergeRetiredPublicationAcknowledgementSchemaVersion       = 2
+	worktreeMergeRetiredPublicationAcknowledgementLegacySchemaVersion = 1
+	worktreeMergeRetiredPublicationAcknowledgementSuffix              = ".retired-publication.ack.json"
 )
 
 // WorktreeMergeRetiredPublicationAcknowledgement is a separate, append-only
@@ -130,7 +134,7 @@ type heldRetiredCheckout interface {
 type retiredPublicationPorts struct {
 	run             runner.Runner
 	readReceipt     func(string) (WorktreeMergeReceipt, string, error)
-	persist         func(string, WorktreeMergeRetiredPublicationAcknowledgement) error
+	persist         func(*publicationNamespace, string, WorktreeMergeRetiredPublicationAcknowledgement) error
 	readPR          func(context.Context, string, ...string) (string, error)
 	proveRetirement func(context.Context, worktrees.RetiredCheckoutProofOptions) (heldRetiredCheckout, error)
 	archiveRemote   string
@@ -141,7 +145,7 @@ type retiredPublicationPorts struct {
 func productionRetiredPublicationPorts() retiredPublicationPorts {
 	return retiredPublicationPorts{
 		run: defaultRunner, readReceipt: readWorktreeMergeReceiptSnapshot,
-		persist: persistRetiredPublicationAcknowledgement, readPR: githubRead,
+		persist: persistRetiredPublicationAcknowledgementBound, readPR: githubRead,
 		proveRetirement: func(ctx context.Context, options worktrees.RetiredCheckoutProofOptions) (heldRetiredCheckout, error) {
 			return worktrees.ProveRetiredCheckoutHeld(ctx, options)
 		},
@@ -206,6 +210,17 @@ func acknowledgeRetiredPublication(ctx context.Context, options WorktreeMergeRet
 	if err := validateRetiredPublicationReceipt(receipt, receiptPath); err != nil {
 		return WorktreeMergeRetiredPublicationAcknowledgement{}, err
 	}
+	// Admit the acknowledgement's parent namespace once, beneath the lane
+	// lock, and keep that descriptor authoritative through every proof, the
+	// final receipt fence, publication/link/sync and any collision reread.
+	// A parent or ancestor swap after this point refuses instead of being
+	// accepted as a detached success.
+	ackPath := retiredPublicationAcknowledgementPath(receiptPath)
+	namespace, err := openPublicationNamespace(ackPath, false)
+	if err != nil {
+		return WorktreeMergeRetiredPublicationAcknowledgement{}, err
+	}
+	defer func() { _ = namespace.Close() }()
 	candidateState, err := observeCandidateCheckout(receipt.Candidate.Worktree)
 	if err != nil {
 		return WorktreeMergeRetiredPublicationAcknowledgement{}, fmt.Errorf("inspect candidate worktree %s: %w", receipt.Candidate.Worktree, err)
@@ -264,7 +279,6 @@ func acknowledgeRetiredPublication(ctx context.Context, options WorktreeMergeRet
 		}
 	}
 
-	ackPath := retiredPublicationAcknowledgementPath(receiptPath)
 	ack := WorktreeMergeRetiredPublicationAcknowledgement{
 		SchemaVersion: worktreeMergeRetiredPublicationAcknowledgementSchemaVersion, Status: "retired_publication_acknowledged",
 		ReceiptPath: receiptPath, AcknowledgementPath: ackPath,
@@ -288,7 +302,7 @@ func acknowledgeRetiredPublication(ctx context.Context, options WorktreeMergeRet
 		ack.RetirementPhase = retiredEvidence.Retirement.Phase
 	}
 	ack.ID = retiredPublicationAcknowledgementID(ack)
-	if existing, readErr := readRetiredPublicationAcknowledgementWithReceiptHash(ackPath, receipt, receiptHash); readErr == nil {
+	if existing, readErr := readRetiredPublicationAcknowledgementInNamespace(ackPath, receipt, receiptHash, namespace); readErr == nil {
 		return resolveExistingRetiredPublicationAcknowledgement(existing, ack, ackPath)
 	} else if !errors.Is(readErr, os.ErrNotExist) {
 		return WorktreeMergeRetiredPublicationAcknowledgement{}, readErr
@@ -327,14 +341,18 @@ func acknowledgeRetiredPublication(ctx context.Context, options WorktreeMergeRet
 			return WorktreeMergeRetiredPublicationAcknowledgement{}, fmt.Errorf("retirement evidence changed while proving retired publication: %w", err)
 		}
 	}
-	if err := ports.persist(ackPath, ack); err != nil {
+	if err := namespace.verify(); err != nil {
+		return WorktreeMergeRetiredPublicationAcknowledgement{}, fmt.Errorf("acknowledgement parent changed before publication: %w", err)
+	}
+	if err := ports.persist(namespace, ackPath, ack); err != nil {
 		if !errors.Is(err, errRetiredPublicationAcknowledgementExists) {
 			return WorktreeMergeRetiredPublicationAcknowledgement{}, err
 		}
 		// Another publisher won the no-replace link. Reread the exact immutable
-		// evidence: identical valid evidence is idempotent, anything conflicting
-		// or malformed refuses without touching the existing bytes.
-		existing, readErr := readRetiredPublicationAcknowledgementWithReceiptHash(ackPath, receipt, receiptHash)
+		// evidence through the same admitted namespace: identical valid evidence
+		// is idempotent, anything conflicting or malformed refuses without
+		// touching the existing bytes.
+		existing, readErr := readRetiredPublicationAcknowledgementInNamespace(ackPath, receipt, receiptHash, namespace)
 		if readErr != nil {
 			return WorktreeMergeRetiredPublicationAcknowledgement{}, readErr
 		}
@@ -347,8 +365,8 @@ func acknowledgeRetiredPublication(ctx context.Context, options WorktreeMergeRet
 // acknowledgements without retirement evidence idempotent and accepts only
 // byte-identical immutable evidence for the new retirement-bound form.
 func resolveExistingRetiredPublicationAcknowledgement(existing, ack WorktreeMergeRetiredPublicationAcknowledgement, ackPath string) (WorktreeMergeRetiredPublicationAcknowledgement, error) {
-	if !retiredPublicationHasRetirementEvidence(existing) {
-		// A legacy acknowledgement written before retirement evidence existed
+	if retiredPublicationIsLegacyAcknowledgement(existing) {
+		// A schema-1 acknowledgement written before retirement evidence existed
 		// remains valid and idempotent for the same receipt.
 		return existing, nil
 	}
@@ -356,6 +374,16 @@ func resolveExistingRetiredPublicationAcknowledgement(existing, ack WorktreeMerg
 		return WorktreeMergeRetiredPublicationAcknowledgement{}, fmt.Errorf("retired-publication acknowledgement %s binds different immutable evidence", ackPath)
 	}
 	return existing, nil
+}
+
+// retiredPublicationIsLegacyAcknowledgement limits the compatibility shortcut
+// to schema-1 records that never carried retirement evidence. A current
+// acknowledgement written for a still-present candidate has no retirement
+// fields either, so inferring legacy status from absent fields alone would let
+// changed immutable proof be accepted as idempotent.
+func retiredPublicationIsLegacyAcknowledgement(existing WorktreeMergeRetiredPublicationAcknowledgement) bool {
+	return existing.SchemaVersion == worktreeMergeRetiredPublicationAcknowledgementLegacySchemaVersion &&
+		!retiredPublicationHasRetirementEvidence(existing)
 }
 
 // retiredPublicationGit runs one Git query either through the held retirement
@@ -571,30 +599,64 @@ func persistRetiredPublicationAcknowledgement(path string, ack WorktreeMergeReti
 // no-replace hard link. An acknowledgement appearing after the caller's own
 // existence check is never overwritten: the link fails and the caller rereads
 // the exact existing evidence. The parent descriptor is held across staging,
-// publication and the directory sync, so a parent-path swap cannot split the
-// temporary file and the published name into different directories.
+// publication and the directory sync, and the lexical parent path is
+// re-corroborated at each of those boundaries, so a parent-path swap refuses
+// instead of publishing only into a detached renamed directory.
 func persistRetiredPublicationAcknowledgementInjected(path string, ack WorktreeMergeRetiredPublicationAcknowledgement, inj *filewrite.Injector) error {
+	contents, err := marshalRetiredPublicationAcknowledgement(ack)
+	if err != nil {
+		return err
+	}
+	namespace, err := openPublicationNamespace(path, true)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = namespace.Close() }()
+	return persistRetiredPublicationAcknowledgementBytes(namespace, path, contents, inj)
+}
+
+// persistRetiredPublicationAcknowledgementBound is the production port: it
+// publishes only through the namespace the acknowledgement flow admitted from
+// the receipt evidence.
+func persistRetiredPublicationAcknowledgementBound(namespace *publicationNamespace, path string, ack WorktreeMergeRetiredPublicationAcknowledgement) error {
+	contents, err := marshalRetiredPublicationAcknowledgement(ack)
+	if err != nil {
+		return err
+	}
+	if namespace == nil {
+		// A caller without an already-admitted namespace still goes through the
+		// same verified open; this is never an unchecked path write or a
+		// detached-namespace substitute for the acknowledgement flow.
+		return persistRetiredPublicationAcknowledgement(path, ack)
+	}
+	return persistRetiredPublicationAcknowledgementBytes(namespace, path, contents, nil)
+}
+
+func marshalRetiredPublicationAcknowledgement(ack WorktreeMergeRetiredPublicationAcknowledgement) ([]byte, error) {
 	contents, err := json.MarshalIndent(ack, "", "  ")
 	if err != nil {
+		return nil, err
+	}
+	return append(contents, '\n'), nil
+}
+
+func persistRetiredPublicationAcknowledgementBytes(namespace *publicationNamespace, path string, contents []byte, inj *filewrite.Injector) error {
+	if namespace == nil {
+		return fmt.Errorf("acknowledgement parent namespace is unavailable")
+	}
+	if filepath.Clean(namespace.path) != filepath.Dir(path) {
+		return fmt.Errorf("acknowledgement path %s is outside its admitted namespace %s", path, namespace.path)
+	}
+	if err := namespace.verify(); err != nil {
 		return err
 	}
-	contents = append(contents, '\n')
-	directoryPath := filepath.Dir(path)
-	if err := os.MkdirAll(directoryPath, 0o700); err != nil {
-		return err
-	}
-	directory, err := worktreesecure.OpenAbsoluteDirectoryNoFollow(directoryPath, false)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = directory.Close() }()
 	name := ".retired-publication-ack-" + rand.Text() + ".tmp"
-	fd, err := filewrite.CreateExclusive(int(directory.Fd()), name, 0o600, inj)
+	fd, err := filewrite.CreateExclusive(int(namespace.directory.Fd()), name, 0o600, inj)
 	if err != nil {
 		return err
 	}
 	file := os.NewFile(uintptr(fd), name)
-	removeTemporary := func() { _ = unix.Unlinkat(int(directory.Fd()), name, 0) }
+	removeTemporary := func() { _ = unix.Unlinkat(int(namespace.directory.Fd()), name, 0) }
 	defer removeTemporary()
 	if err := filewrite.ChmodFile(file, 0o600, name, inj); err != nil {
 		_ = file.Close()
@@ -611,17 +673,43 @@ func persistRetiredPublicationAcknowledgementInjected(path string, ack WorktreeM
 	if err := filewrite.Close(file, name, inj); err != nil {
 		return err
 	}
-	if err := filewrite.LinkNoReplace(int(directory.Fd()), name, filepath.Base(path), inj); err != nil {
+	if err := namespace.verify(); err != nil {
+		return err
+	}
+	if err := filewrite.LinkNoReplace(int(namespace.directory.Fd()), name, filepath.Base(path), inj); err != nil {
 		if errors.Is(err, unix.EEXIST) {
 			return errRetiredPublicationAcknowledgementExists
 		}
 		return err
 	}
+	// The link may have captured a directory that was renamed away while the
+	// syscall ran. Verify the bound path before touching the temp name again
+	// so a detached namespace is refused, never acknowledged as success.
+	if err := namespace.verify(); err != nil {
+		return fmt.Errorf("acknowledgement published outside its bound namespace: %w", err)
+	}
 	removeTemporary()
-	return filewrite.SyncDir(directory, inj)
+	if err := filewrite.SyncDir(namespace.directory, inj); err != nil {
+		return err
+	}
+	if err := namespace.verify(); err != nil {
+		return fmt.Errorf("acknowledgement parent changed during directory sync: %w", err)
+	}
+	return nil
 }
 
 func readRetiredPublicationAcknowledgement(path string, receipt WorktreeMergeReceipt) (WorktreeMergeRetiredPublicationAcknowledgement, error) {
+	// Refuse malformed sidecar bytes before requiring the historical receipt
+	// digest: a mutated or truncated acknowledgement must keep the lane
+	// blocked even when the receipt itself is gone or unreadable, rather than
+	// being downgraded to "no acknowledgement" by a missing-file error.
+	contents, err := readSecureBoundedRegularFile(path, maxRetiredPublicationEvidenceBytes)
+	if err != nil {
+		return WorktreeMergeRetiredPublicationAcknowledgement{}, err
+	}
+	if err := decodeMergeAcknowledgement(contents, path, "retired-publication acknowledgement", new(WorktreeMergeRetiredPublicationAcknowledgement)); err != nil {
+		return WorktreeMergeRetiredPublicationAcknowledgement{}, err
+	}
 	receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
 	if err != nil {
 		return WorktreeMergeRetiredPublicationAcknowledgement{}, err
@@ -634,15 +722,28 @@ func readRetiredPublicationAcknowledgement(path string, receipt WorktreeMergeRec
 // publication, and binds it to the receipt digest produced by the caller's own
 // validated receipt snapshot rather than to a separate path hash.
 func readRetiredPublicationAcknowledgementWithReceiptHash(path string, receipt WorktreeMergeReceipt, receiptHash string) (WorktreeMergeRetiredPublicationAcknowledgement, error) {
+	namespace, err := openPublicationNamespace(path, false)
+	if err != nil {
+		return WorktreeMergeRetiredPublicationAcknowledgement{}, err
+	}
+	defer func() { _ = namespace.Close() }()
+	return readRetiredPublicationAcknowledgementInNamespace(path, receipt, receiptHash, namespace)
+}
+
+// readRetiredPublicationAcknowledgementInNamespace authenticates one
+// acknowledgement through the namespace admitted from the receipt evidence,
+// refusing when that namespace no longer binds the acknowledgement path.
+func readRetiredPublicationAcknowledgementInNamespace(path string, receipt WorktreeMergeReceipt, receiptHash string, namespace *publicationNamespace) (WorktreeMergeRetiredPublicationAcknowledgement, error) {
 	var ack WorktreeMergeRetiredPublicationAcknowledgement
-	contents, err := readSecureBoundedRegularFile(path, maxRetiredPublicationEvidenceBytes)
+	contents, err := readSecureBoundedRegularFileInNamespace(path, maxRetiredPublicationEvidenceBytes, namespace)
 	if err != nil {
 		return WorktreeMergeRetiredPublicationAcknowledgement{}, err
 	}
 	if err := decodeMergeAcknowledgement(contents, path, "retired-publication acknowledgement", &ack); err != nil {
 		return WorktreeMergeRetiredPublicationAcknowledgement{}, err
 	}
-	if ack.SchemaVersion != worktreeMergeRetiredPublicationAcknowledgementSchemaVersion || ack.Status != "retired_publication_acknowledged" ||
+	if ack.SchemaVersion != worktreeMergeRetiredPublicationAcknowledgementSchemaVersion && ack.SchemaVersion != worktreeMergeRetiredPublicationAcknowledgementLegacySchemaVersion ||
+		ack.Status != "retired_publication_acknowledged" ||
 		ack.AcknowledgementPath != path || ack.ReceiptPath != receipt.ReceiptPath || ack.ReceiptID != receipt.ID || ack.ReceiptSHA256 != receiptHash ||
 		ack.ReceiptPhase != receipt.Phase || ack.ReceiptStatus != receipt.Status || ack.Lane != receipt.Lane || ack.Repository != receipt.Repository || ack.Target != receipt.Target ||
 		ack.ReceiptTargetSHA != receipt.TargetSHA || ack.CandidateTask != receipt.Candidate.Task || ack.CandidateWorktree != receipt.Candidate.Worktree ||

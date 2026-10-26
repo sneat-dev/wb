@@ -1,3 +1,5 @@
+//go:build e2e
+
 package orchestrate
 
 import (
@@ -55,13 +57,13 @@ func retiredPublicationNativeJourney(t *testing.T, label string) (engineFixture,
 	return fixture, receipt, retired, ports, options
 }
 
-// TestAcknowledgeRetiredPublicationRefusesRetirementReceiptChangedBeforePersist
+// TestE2EAcknowledgeRetiredPublicationRefusesRetirementReceiptChangedBeforePersist
 // changes the exact retirement receipt after the proof but immediately before
 // publication. The held session must revalidate its bytes and refuse without
 // recording an acknowledgement or touching the original receipt again.
 //
 //nolint:paralleltest // engine and GH fixtures change process-wide environment.
-func TestAcknowledgeRetiredPublicationRefusesRetirementReceiptChangedBeforePersist(t *testing.T) {
+func TestE2EAcknowledgeRetiredPublicationRefusesRetirementReceiptChangedBeforePersist(t *testing.T) {
 	_, receipt, retired, ports, options := retiredPublicationNativeJourney(t, "retired-receipt-race")
 	mergeReceiptBefore, err := os.ReadFile(receipt.ReceiptPath)
 	if err != nil {
@@ -93,13 +95,13 @@ func TestAcknowledgeRetiredPublicationRefusesRetirementReceiptChangedBeforePersi
 	}
 }
 
-// TestAcknowledgeRetiredPublicationRefusesCanonicalReboundBeforeFetch proves
+// TestE2EAcknowledgeRetiredPublicationRefusesCanonicalReboundBeforeFetch proves
 // the exact canonical identity survives the proof boundary: replacing the
 // canonical root after ProveRetiredCheckoutHeld succeeds refuses the first
 // orchestration Git read instead of resolving the newly created path.
 //
 //nolint:paralleltest // engine and GH fixtures change process-wide environment.
-func TestAcknowledgeRetiredPublicationRefusesCanonicalReboundBeforeFetch(t *testing.T) {
+func TestE2EAcknowledgeRetiredPublicationRefusesCanonicalReboundBeforeFetch(t *testing.T) {
 	fixture, receipt, retired, ports, options := retiredPublicationNativeJourney(t, "retired-canonical-race")
 	mergeReceiptBefore, err := os.ReadFile(receipt.ReceiptPath)
 	if err != nil {

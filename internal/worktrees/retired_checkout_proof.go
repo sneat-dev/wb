@@ -148,31 +148,13 @@ func productionRetiredCheckoutProofPorts() retiredCheckoutProofPorts {
 	}
 }
 
-// ProveRetiredCheckout proves, from the deterministic retirement receipt for
-// the receipted candidate task/repository, that a supported preserved
-// retirement completed, then releases the held canonical session. Callers that
-// still have Git or publication work to do against the same canonical identity
-// must use ProveRetiredCheckoutHeld and keep the session open.
-func ProveRetiredCheckout(ctx context.Context, options RetiredCheckoutProofOptions) (RetiredCheckoutEvidence, error) {
-	return proveRetiredCheckoutWith(ctx, options, productionRetiredCheckoutProofPorts())
-}
-
-// ProveRetiredCheckoutHeld is ProveRetiredCheckout that keeps the exact
-// descriptor-bound canonical identity open through the caller's later Git
-// reads and final acknowledgement publication.
+// ProveRetiredCheckoutHeld proves, from the deterministic retirement receipt
+// for the receipted candidate task/repository, that a supported preserved
+// retirement completed, and keeps the exact descriptor-bound canonical
+// identity open through the caller's later Git reads and final
+// acknowledgement publication.
 func ProveRetiredCheckoutHeld(ctx context.Context, options RetiredCheckoutProofOptions) (*RetiredCheckoutProof, error) {
 	return proveRetiredCheckoutHeldWith(ctx, options, productionRetiredCheckoutProofPorts())
-}
-
-// proveRetiredCheckoutWith proves the retirement and releases the held
-// canonical session, returning only the immutable evidence.
-func proveRetiredCheckoutWith(ctx context.Context, options RetiredCheckoutProofOptions, ports retiredCheckoutProofPorts) (RetiredCheckoutEvidence, error) {
-	proof, err := proveRetiredCheckoutHeldWith(ctx, options, ports)
-	if err != nil {
-		return RetiredCheckoutEvidence{}, err
-	}
-	defer func() { _ = proof.Close() }()
-	return proof.Evidence(), nil
 }
 
 func proveRetiredCheckoutHeldWith(ctx context.Context, options RetiredCheckoutProofOptions, ports retiredCheckoutProofPorts) (*RetiredCheckoutProof, error) {

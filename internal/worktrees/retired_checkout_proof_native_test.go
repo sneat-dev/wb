@@ -1,3 +1,5 @@
+//go:build e2e
+
 package worktrees
 
 import (
@@ -10,13 +12,13 @@ import (
 	"github.com/sneat-dev/wb/internal/testenv"
 )
 
-// TestProveRetiredCheckoutVerifiesCompletedPreservedRetirement exercises the
+// TestE2EProveRetiredCheckoutVerifiesCompletedPreservedRetirement exercises the
 // production proof facade end to end: real bare source and archive remotes, a
 // supported preserved retirement that removes the checkout, then the
 // read-only evidence a merger acknowledgement binds.
 //
 //nolint:paralleltest // newGitFixture sets process-wide WB and Git configuration variables.
-func TestProveRetiredCheckoutVerifiesCompletedPreservedRetirement(t *testing.T) {
+func TestE2EProveRetiredCheckoutVerifiesCompletedPreservedRetirement(t *testing.T) {
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot, Operation: "retired-proof", WorkLog: WorkLogOptions{Model: "unknown"},
@@ -54,7 +56,7 @@ func TestProveRetiredCheckoutVerifiesCompletedPreservedRetirement(t *testing.T) 
 			return RetiredArchiveInspection{Exists: true, Private: true, Repository: repository}, nil
 		},
 	}
-	evidence, err := ProveRetiredCheckout(context.Background(), options)
+	evidence, err := proveRetiredCheckoutWith(context.Background(), options, productionRetiredCheckoutProofPorts())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,14 +70,14 @@ func TestProveRetiredCheckoutVerifiesCompletedPreservedRetirement(t *testing.T) 
 	if err := os.MkdirAll(worktree, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ProveRetiredCheckout(context.Background(), options); err == nil || !strings.Contains(err.Error(), "still exists") {
+	if _, err := proveRetiredCheckoutWith(context.Background(), options, productionRetiredCheckoutProofPorts()); err == nil || !strings.Contains(err.Error(), "still exists") {
 		t.Fatalf("recreated checkout proof = %v", err)
 	}
 	if err := os.RemoveAll(worktree); err != nil {
 		t.Fatal(err)
 	}
 	options.Task = "other-task"
-	if _, err := ProveRetiredCheckout(context.Background(), options); err == nil || !strings.Contains(err.Error(), "read retirement receipt") {
+	if _, err := proveRetiredCheckoutWith(context.Background(), options, productionRetiredCheckoutProofPorts()); err == nil || !strings.Contains(err.Error(), "read retirement receipt") {
 		t.Fatalf("missing retirement receipt proof = %v", err)
 	}
 }

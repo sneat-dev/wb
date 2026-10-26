@@ -367,7 +367,7 @@ func TestPublishedTerminalOwnersRefuseBeforeAnyProviderObservation(t *testing.T)
 						return "", errors.New("selected initial provider refusal")
 					}
 					if kind == "retired" {
-						_, err = acknowledgeRetiredPublication(t.Context(), WorktreeMergeRetiredPublicationAcknowledgementOptions{ProjectsRoot: root, Receipt: input, Apply: apply, Actor: actor, Reason: "review"}, retiredPublicationPorts{run: defaultRunner, readReceipt: readSnapshot, persist: persistRetiredPublicationAcknowledgement, readPR: readPR,
+						_, err = acknowledgeRetiredPublication(t.Context(), WorktreeMergeRetiredPublicationAcknowledgementOptions{ProjectsRoot: root, Receipt: input, Apply: apply, Actor: actor, Reason: "review"}, retiredPublicationPorts{run: defaultRunner, readReceipt: readSnapshot, persist: persistRetiredPublicationAcknowledgementBound, readPR: readPR,
 							proveRetirement: func(context.Context, worktrees.RetiredCheckoutProofOptions) (heldRetiredCheckout, error) {
 								return nil, errors.New("no supported retirement receipt")
 							}})

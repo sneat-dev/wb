@@ -1,3 +1,5 @@
+//go:build e2e
+
 package orchestrate
 
 import (
@@ -11,14 +13,14 @@ import (
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
-// TestAcknowledgeRetiredPublicationAfterSupportedPreservedRetirement is the
+// TestE2EAcknowledgeRetiredPublicationAfterSupportedPreservedRetirement is the
 // native red->green journey: the candidate PR was closed unmerged, the
 // supported preserved-retirement transaction verified the retired source and
 // private archive and removed the checkout, and only then can the retired
 // publication acknowledgement prove the exact lane is free.
 //
 //nolint:paralleltest // engine fixture and GH fixture change process-wide environment and use one private repository.
-func TestAcknowledgeRetiredPublicationAfterSupportedPreservedRetirement(t *testing.T) {
+func TestE2EAcknowledgeRetiredPublicationAfterSupportedPreservedRetirement(t *testing.T) {
 	fixture := newEngineFixture(t)
 	receipt := buildStuckRetiredPublicationReceipt(t, fixture, "retired-absent-source", "feature/retired-absent", "absent")
 	original, err := os.ReadFile(receipt.ReceiptPath)

@@ -54,7 +54,7 @@ func TestE2ERetiredPublicationOwnerNativeStagesPreserveEvidenceAndRelease(t *tes
 			sentinel := errors.New("selected retired " + mode)
 			consumed := false
 			readReceipt := readWorktreeMergeReceiptSnapshot
-			persist := persistRetiredPublicationAcknowledgement
+			persist := persistRetiredPublicationAcknowledgementBound
 			run := defaultRunner
 			want := ""
 			remoteRestored := false
@@ -71,12 +71,12 @@ func TestE2ERetiredPublicationOwnerNativeStagesPreserveEvidenceAndRelease(t *tes
 				}
 				want = sentinel.Error()
 			case "persist":
-				persist = func(path string, ack WorktreeMergeRetiredPublicationAcknowledgement) error {
+				persist = func(namespace *publicationNamespace, path string, ack WorktreeMergeRetiredPublicationAcknowledgement) error {
 					if path == ackPath {
 						consumed = true
 						return sentinel
 					}
-					return persistRetiredPublicationAcknowledgement(path, ack)
+					return persistRetiredPublicationAcknowledgementBound(namespace, path, ack)
 				}
 				want = sentinel.Error()
 			case "publication read", "fetch", "ancestry":

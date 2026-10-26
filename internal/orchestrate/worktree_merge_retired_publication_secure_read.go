@@ -17,13 +17,67 @@ import (
 // not only on a stat that a writer can invalidate before the read.
 const maxRetiredPublicationEvidenceBytes = 1 << 20
 
+// publicationNamespace binds one evidence path's lexical parent to the exact
+// directory descriptor admitted for it. The descriptor is the only authority
+// for staging, publication, directory syncs and collision rereads; every one
+// of those boundaries re-corroborates that the lexical path still names the
+// held directory, so a parent or ancestor swap can never turn a detached
+// directory into a successful acknowledgement.
+type publicationNamespace struct {
+	path      string
+	directory *os.File
+}
+
+// openPublicationNamespace opens path's parent without following repository
+// symlinks and admits it only while the lexical parent still resolves to that
+// same descriptor.
+func openPublicationNamespace(path string, create bool) (*publicationNamespace, error) {
+	directoryPath := filepath.Dir(path)
+	if create {
+		if err := os.MkdirAll(directoryPath, 0o700); err != nil {
+			return nil, err
+		}
+	}
+	directory, err := worktreesecure.OpenAbsoluteDirectoryNoFollow(directoryPath, false)
+	if err != nil {
+		return nil, err
+	}
+	namespace := &publicationNamespace{path: directoryPath, directory: directory}
+	if err := namespace.verify(); err != nil {
+		_ = directory.Close()
+		return nil, err
+	}
+	return namespace, nil
+}
+
+// verify refuses a namespace whose bound path no longer names the held
+// directory. It is checked before and after every durable boundary.
+func (namespace *publicationNamespace) verify() error {
+	if namespace == nil || namespace.directory == nil {
+		return fmt.Errorf("evidence parent namespace is unavailable")
+	}
+	if !worktreesecure.DirectoryStillMatches(namespace.path, namespace.directory) {
+		return fmt.Errorf("evidence parent namespace %s no longer holds the admitted directory", namespace.path)
+	}
+	return nil
+}
+
+// Close releases the held namespace descriptor.
+func (namespace *publicationNamespace) Close() error {
+	if namespace == nil || namespace.directory == nil {
+		return nil
+	}
+	return namespace.directory.Close()
+}
+
 // secureEvidenceReadOps are one bounded evidence read's durable boundaries,
 // scoped so every refusal branch is testable without package globals.
 type secureEvidenceReadOps struct {
-	openParent func(string) (*os.File, error)
-	openFile   func(*os.File, string) (*os.File, error)
-	stat       func(*os.File) (os.FileInfo, error)
-	read       func(io.Reader) ([]byte, error)
+	openParent   func(string) (*os.File, error)
+	openFile     func(*os.File, string) (*os.File, error)
+	stat         func(*os.File) (os.FileInfo, error)
+	read         func(io.Reader) ([]byte, error)
+	stillMatches func(string, *os.File) bool
 }
 
 func productionSecureEvidenceReadOps() secureEvidenceReadOps {
@@ -38,14 +92,17 @@ func productionSecureEvidenceReadOps() secureEvidenceReadOps {
 			}
 			return os.NewFile(uintptr(fd), name), nil
 		},
-		stat: (*os.File).Stat,
-		read: io.ReadAll,
+		stat:         (*os.File).Stat,
+		read:         io.ReadAll,
+		stillMatches: worktreesecure.DirectoryStillMatches,
 	}
 }
 
 // readSecureBoundedRegularFile reads one regular file through its held parent
 // directory and a no-follow descriptor. Symlinks, non-regular replacements,
-// oversize files and parent-directory swaps refuse instead of being followed.
+// oversize files and parent-directory swaps refuse instead of being followed:
+// the parent pathname is corroborated both after admission and after the read,
+// so returned bytes can never describe a detached namespace.
 func readSecureBoundedRegularFile(path string, max int64) ([]byte, error) {
 	return readSecureBoundedRegularFileWith(path, max, productionSecureEvidenceReadOps())
 }
@@ -56,6 +113,48 @@ func readSecureBoundedRegularFileWith(path string, max int64, ops secureEvidence
 		return nil, err
 	}
 	defer func() { _ = parent.Close() }()
+	if err := verifyReadNamespace(path, parent, ops); err != nil {
+		return nil, err
+	}
+	body, err := readBoundedRegularFileAt(path, parent, max, ops)
+	if err != nil {
+		return nil, err
+	}
+	if err := verifyReadNamespace(path, parent, ops); err != nil {
+		return nil, err
+	}
+	return body, nil
+}
+
+func verifyReadNamespace(path string, parent *os.File, ops secureEvidenceReadOps) error {
+	if ops.stillMatches != nil && !ops.stillMatches(filepath.Dir(path), parent) {
+		return fmt.Errorf("%s parent namespace changed while reading evidence", path)
+	}
+	return nil
+}
+
+// readSecureBoundedRegularFileInNamespace reads one evidence file through the
+// exact namespace admitted for the acknowledgement, refusing when that
+// namespace no longer matches its bound path before or after the read.
+func readSecureBoundedRegularFileInNamespace(path string, max int64, namespace *publicationNamespace) ([]byte, error) {
+	return readSecureBoundedRegularFileInNamespaceWith(path, max, namespace, productionSecureEvidenceReadOps())
+}
+
+func readSecureBoundedRegularFileInNamespaceWith(path string, max int64, namespace *publicationNamespace, ops secureEvidenceReadOps) ([]byte, error) {
+	if err := namespace.verify(); err != nil {
+		return nil, err
+	}
+	body, err := readBoundedRegularFileAt(path, namespace.directory, max, ops)
+	if err != nil {
+		return nil, err
+	}
+	if err := namespace.verify(); err != nil {
+		return nil, err
+	}
+	return body, nil
+}
+
+func readBoundedRegularFileAt(path string, parent *os.File, max int64, ops secureEvidenceReadOps) ([]byte, error) {
 	file, err := ops.openFile(parent, filepath.Base(path))
 	if err != nil {
 		return nil, err
