@@ -24,6 +24,35 @@ async function stubAgents(page: Page) {
   await page.route('**/api/v1/cockpit/machine-metrics?**', (route) => route.fulfill({ json: { machine: 'x', route: 'local', samples: [] } }))
 }
 
+test('owner sees named sessions with per-repository usage and can find one in the table', async ({ page }) => {
+  await stubAgents(page)
+  await page.route('**/api/v1/cockpit/session', (route) => route.fulfill({ json: {
+    principal: 'owner', capabilities: ['fleet.read', 'repo.content.read'], code_browser_url: 'https://codegrapher.dev/',
+  } }))
+  await page.route('**/api/v1/cockpit/agent-session-stats', (route) => route.fulfill({ json: {
+    total: { session_id: '', repository: '', runs: 2, completed: 1, failed: 1, pending: 0,
+      duration_ms: 90_000, usage_runs: 1, input_tokens: 120, output_tokens: 30, cost_runs: 1, estimated_usd: 0.25 },
+    by_session_repository: [
+      { session_id: 'thread-one', session_name: 'builder', repository: 'acme/app', runs: 1, completed: 1, failed: 0, pending: 0,
+        duration_ms: 60_000, usage_runs: 1, input_tokens: 120, output_tokens: 30, cost_runs: 1, estimated_usd: 0.25 },
+      { session_id: '', repository: 'acme/lib', runs: 1, completed: 0, failed: 1, pending: 0,
+        duration_ms: 30_000, usage_runs: 0, input_tokens: 0, output_tokens: 0, cost_runs: 0, estimated_usd: 0 },
+    ],
+  } }))
+  await page.goto('/cockpit/agents')
+  await page.getByRole('button', { name: 'View session usage' }).click()
+  const section = page.getByRole('region', { name: 'Session usage' })
+  await expect(section).toBeInViewport()
+  await expect(section.getByRole('row')).toHaveCount(3)
+  const named = section.getByRole('row').filter({ hasText: 'builder' })
+  await expect(named).toContainText('thread-one')
+  await expect(named).toContainText('acme/app')
+  await expect(named).toContainText('$0.2500')
+  await section.getByRole('searchbox', { name: 'Find a session or repository' }).fill('acme/lib')
+  await expect(section.getByRole('row')).toHaveCount(2)
+  await expect(section).toContainText('Unattributed')
+})
+
 test('filter, chip, select, panel, detail route and back keep each state, and no row shows an identifier', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
   await stubAgents(page)

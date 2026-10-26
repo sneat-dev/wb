@@ -37,3 +37,14 @@ func TestSummarizeRunsIncludesReportedCacheWriteAndReasoningTokens(t *testing.T)
 		t.Fatalf("reported token categories missing: %+v", report.Total)
 	}
 }
+
+func TestSummarizeRunsUsesKnownSessionNameAcrossRepositories(t *testing.T) {
+	report := SummarizeRuns([]Result{
+		{Caller: CallerSession{ID: "thread-one", Name: "builder"}, Repository: "acme/app", Status: StatusCompleted},
+		{Caller: CallerSession{ID: "thread-one"}, Repository: "acme/lib", Status: StatusCompleted},
+	})
+	if len(report.BySessionRepository) != 2 || report.BySessionRepository[0].SessionName != "builder" ||
+		report.BySessionRepository[1].SessionName != "builder" {
+		t.Fatalf("known session name missing from repository rows: %+v", report.BySessionRepository)
+	}
+}

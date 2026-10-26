@@ -1,11 +1,41 @@
 import { FleetFormatError, FleetRequestError, ReadmeRequestError } from './fleet-client'
-import { readBranches, readMachineMetrics, readReadme } from './lazy-client'
+import { readAgentSessionStats, readBranches, readMachineMetrics, readReadme } from './lazy-client'
 
 function respond(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status })
 }
 
 describe('the lazy reads', () => {
+  it('reads owner-only session and repository totals from the local daemon', async () => {
+    const bucket = { session_id: 'thread-one', session_name: 'builder', repository: 'acme/app', runs: 2,
+      completed: 1, failed: 1, pending: 0, duration_ms: 1500, usage_runs: 1,
+      input_tokens: 120, output_tokens: 30, cost_runs: 1, estimated_usd: 0.25 }
+    const report = { total: { ...bucket, session_id: '', repository: '' }, by_session_repository: [bucket] }
+    const fetcher = vi.fn(async () => respond(200, report))
+    expect(await readAgentSessionStats(fetcher)).toEqual(report)
+    expect(fetcher).toHaveBeenCalledWith('/api/v1/cockpit/agent-session-stats', {
+      headers: { Accept: 'application/json' }, credentials: 'same-origin', signal: expect.any(AbortSignal),
+    })
+    await expect(readAgentSessionStats(async () => respond(401, {}))).rejects.toBeInstanceOf(FleetRequestError)
+    await expect(readAgentSessionStats(async () => respond(200, { total: bucket, by_session_repository: [{ ...bucket, runs: 'two' }] }))).rejects.toThrow('Invalid session usage report')
+  })
+
+  it('rejects malformed or incomplete session usage without rendering its fields', async () => {
+    const bucket = { session_id: '', repository: 'acme/app', runs: 1, completed: 1, failed: 0, pending: 0,
+      duration_ms: 1000, usage_runs: 1, input_tokens: 2, output_tokens: 3, cost_runs: 0, estimated_usd: 0 }
+    const valid = { total: bucket, by_session_repository: [bucket] }
+    for (const body of [null, 'text', 3, { ...valid, total: null }, { ...valid, total: 'bad' },
+      { ...valid, total: { ...bucket, session_id: 7 } }, { ...valid, total: { ...bucket, repository: null } },
+      { ...valid, total: { ...bucket, session_name: 5 } }, { ...valid, total: { ...bucket, session_name: 'named', runs: -1 } },
+      { ...valid, total: { ...bucket, runs: 'one' } }, { ...valid, total: { ...bucket, runs: Number.POSITIVE_INFINITY } },
+      { ...valid, by_session_repository: null }, { ...valid, by_session_repository: [null] },
+    ]) {
+      await expect(readAgentSessionStats(async () => respond(200, body))).rejects.toThrow('Invalid session usage report')
+    }
+    await expect(readAgentSessionStats(async () => new Response('not-json', { status: 200 }))).rejects.toThrow('Invalid session usage report')
+    expect(await readAgentSessionStats(async () => respond(200, valid))).toEqual(valid)
+  })
+
   it('reads the branches of one repository from the lazy route, naming it in the query', async () => {
     const fetcher = vi.fn(async () => respond(200, { branches: [], reason: 'cached repository' }))
     expect(await readBranches(fetcher, 'repo/a b')).toEqual({ branches: [], reason: 'cached repository' })

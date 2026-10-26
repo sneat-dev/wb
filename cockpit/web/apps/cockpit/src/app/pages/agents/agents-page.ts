@@ -5,12 +5,13 @@ import { chipOf } from '@cockpit/fleet-data/list'
 import { StateBadge, UiClock } from '@cockpit/ui/control'
 import { ALWAYS, ListCell, ListChip, ListColumn, ListPanelTemplate, ListView, MachineCell } from '@cockpit/ui/list'
 import { AgentPanelView } from './agent-panel'
+import { AgentSessionStats } from './agent-session-stats'
 import { agentFallback, agentName, timeCell } from './agent-text'
 
 /** Every registered agent session and dispatched run, one row each (REQ:agents-list). */
 @Component({
   selector: 'app-agents-page',
-  imports: [RouterLink, ListView, ListCell, ListPanelTemplate, StateBadge, MachineCell, AgentPanelView],
+  imports: [RouterLink, ListView, ListCell, ListPanelTemplate, StateBadge, MachineCell, AgentPanelView, AgentSessionStats],
   templateUrl: './agents-page.html',
   styleUrl: './agents-page.css',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -50,6 +51,9 @@ export class AgentsPage {
   protected readonly tasks = (agent: Agent): string[] => this.store.model().tasksOfAgent(agent)
   protected readonly repository = (agent: Agent): string | undefined => (agent.repository === undefined ? undefined : this.store.model().repositoryName(agent.repository))
   protected readonly fallback = (agent: Agent): string => agentFallback(agent, this.clock())
+  protected scrollToUsage(): void {
+    document.getElementById('session-usage')?.scrollIntoView()
+  }
   /** A state the agent can still report an activity for: a finished run has no activity to miss. */
   protected readonly reportsActivity = (agent: Agent): boolean => ['running', 'live', 'parked'].includes(agent.state)
 

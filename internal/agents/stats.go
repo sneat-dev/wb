@@ -54,6 +54,11 @@ func SummarizeRuns(runs []Result) StatsReport {
 		report.ByRepository = append(report.ByRepository, *bucket)
 	}
 	for _, bucket := range byPair {
+		// A name may have been reported by a different run of this caller in
+		// another repository. Keep it visible on every session/repository row.
+		if bucket.SessionName == "" {
+			bucket.SessionName = bySession[bucket.SessionID].SessionName
+		}
 		report.BySessionRepository = append(report.BySessionRepository, *bucket)
 	}
 	sort.Slice(report.BySession, func(i, j int) bool { return report.BySession[i].SessionID < report.BySession[j].SessionID })
