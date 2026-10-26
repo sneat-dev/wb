@@ -175,8 +175,8 @@ func acknowledgeStrandedPullRequestLanding(ctx context.Context, options Worktree
 
 // validateStrandedLandingReceipt narrowly scopes eligibility to the exact
 // shape of a stranded publish: a non-terminal land-phase receipt that never
-// recorded a landing SHA but did publish its exact candidate in a pull
-// request. A real merge conflict
+// recorded a landing SHA but did publish a candidate (or its proved ancestor)
+// in a pull request. A real merge conflict
 // during prepare (wrong phase), a land conflict before any PR existed (no
 // PullRequest), and an already-landed post-target CI failure (LandingSHA
 // set; that is acknowledge-landed-failed's territory) are all excluded.
@@ -197,7 +197,7 @@ func validateStrandedLandingReceipt(receipt WorktreeMergeReceipt, receiptPath st
 		return fmt.Errorf("receipt %s lacks complete immutable repository, target, or candidate identity", receiptPath)
 	}
 	if receipt.PublishedCandidateSHA == "" {
-		return fmt.Errorf("receipt %s published candidate %s does not match its exact preserved candidate %s", receiptPath, receipt.PublishedCandidateSHA, receipt.Candidate.SHA)
+		return fmt.Errorf("receipt %s has no published candidate SHA to prove", receiptPath)
 	}
 	return nil
 }

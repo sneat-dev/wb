@@ -703,7 +703,11 @@ func (store Store) listSince(since time.Time) ([]Record, error) {
 		}
 		return nil, fmt.Errorf("list agent runs under %s: %w", store.Root, err)
 	}
-	records := make([]Record, 0, len(entries))
+	capacity := 0
+	if since.IsZero() {
+		capacity = len(entries)
+	}
+	records := make([]Record, 0, capacity)
 	for _, entry := range entries {
 		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), IDPrefix) {
 			continue
