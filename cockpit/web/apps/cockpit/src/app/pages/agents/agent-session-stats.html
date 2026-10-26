@@ -1,0 +1,66 @@
+<section id="session-usage" class="usage" aria-labelledby="session-usage-heading">
+  <header class="heading">
+    <div>
+      <p class="eyebrow">WB dispatched work</p>
+      <h2 id="session-usage-heading">Session usage</h2>
+      <p class="description">Runs are grouped by the calling session and repository on this machine.</p>
+    </div>
+    @if (owner()) {
+      <button type="button" class="refresh" [disabled]="loading()" (click)="refresh()">Refresh</button>
+    }
+  </header>
+
+  @if (store.sessionStatus() === 'loading') {
+    <p class="message" role="status">Checking access to session usage…</p>
+  } @else if (!owner()) {
+    <p class="message">Sign in as owner with <code>wb cockpit</code> to see session usage.</p>
+  } @else {
+    @if (error()) {
+      <p class="message error" role="alert">Session usage is unavailable. Refresh to try again.</p>
+    }
+    @if (report(); as stats) {
+      <div class="summary" aria-label="Session usage totals">
+        <span><strong>{{ count(stats.total.runs) }}</strong> runs</span>
+        <span><strong>{{ count(stats.total.input_tokens + stats.total.output_tokens) }}</strong> observed tokens</span>
+        <span><strong>{{ cost(stats.total) }}</strong> estimated cost</span>
+      </div>
+      @if (stats.total.runs > stats.total.usage_runs || stats.total.runs > stats.total.cost_runs) {
+        <p class="coverage">Tokens reported for {{ stats.total.usage_runs }} of {{ stats.total.runs }} runs; cost for {{ stats.total.cost_runs }} of {{ stats.total.runs }}.</p>
+      }
+      <label class="search-label" for="session-usage-search">Find a session or repository</label>
+      <input id="session-usage-search" class="search" type="search" [value]="query()" (input)="search($event)" autocomplete="off" />
+      @if (rows().length === 0) {
+        <p class="message" role="status">{{ stats.total.runs === 0 ? 'No WB-dispatched agent runs have been recorded yet.' : 'No sessions match this search.' }}</p>
+      } @else {
+        <div class="table-scroll">
+          <table>
+            <caption class="visually-hidden">WB agent run usage by session and repository</caption>
+            <thead><tr>
+              <th scope="col">Session</th><th scope="col">Repository</th><th scope="col">Runs</th>
+              <th scope="col">Outcomes</th><th scope="col">Duration</th><th scope="col">Tokens</th><th scope="col">Est. cost</th>
+            </tr></thead>
+            <tbody>
+              @for (row of rows(); track row.session_id + ':' + row.repository) {
+                <tr>
+                  <td class="session">
+                    <strong>{{ row.session_name || (row.session_id ? row.session_id : 'Unattributed') }}</strong>
+                    @if (row.session_name && row.session_id) { <code [title]="row.session_id">{{ row.session_id }}</code> }
+                    @if (!row.session_id) { <small>Recorded before caller IDs were captured</small> }
+                  </td>
+                  <td>{{ row.repository || 'Unknown repository' }}</td>
+                  <td class="numeric">{{ count(row.runs) }}</td>
+                  <td class="outcomes">{{ row.completed }} done · {{ row.failed }} failed @if (row.pending) { · {{ row.pending }} pending }</td>
+                  <td class="numeric">{{ duration(row.duration_ms) }}</td>
+                  <td class="tokens">{{ tokens(row) }} @if (row.usage_runs < row.runs) { <small>{{ row.usage_runs }}/{{ row.runs }} reported</small> }</td>
+                  <td class="numeric">{{ cost(row) }} @if (row.cost_runs < row.runs) { <small>{{ row.cost_runs }}/{{ row.runs }} reported</small> }</td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+      }
+    } @else if (loading()) {
+      <p class="message" role="status">Loading session usage…</p>
+    }
+  }
+</section>

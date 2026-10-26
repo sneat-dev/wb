@@ -1,3 +1,4 @@
+<button type="button" class="usage-jump" (click)="scrollToUsage()">View session usage</button>
 <app-list page="agents" [columns]="columns" [extraChips]="runtimeChips()" [panelLabel]="panelLabel">
   <ng-template appCell="agent" let-a>
     <span class="agent">
@@ -45,3 +46,4 @@
     <p class="note" listFooter>Agents are reported only by machines that publish them; {{ silentMachines().join(', ') }} {{ silentMachines().length === 1 ? 'reports' : 'report' }} none.</p>
   }
 </app-list>
+<app-agent-session-stats />
