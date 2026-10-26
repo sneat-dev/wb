@@ -1676,7 +1676,7 @@ func listClaimedRegistryWorktreesWithClaimReader(
 				diagnostics = append(diagnostics, listDiagnostic("", claim.Task, path, layoutErr.Error()))
 				continue
 			}
-			if !filterMatches(filter, claim.Repository, path) {
+			if !filterMatchesClaimRepository(home, filter, path, claim) {
 				continue
 			}
 			locked, lockErr := inspectLifecycleTaskLock(home, layout, claim.Task)
@@ -1765,7 +1765,7 @@ func listTaskScopedClaimedRegistryWorktrees(
 				if err != nil {
 					continue
 				}
-				if !filterMatches(filter, claim.Repository, claim.Worktree) {
+				if !filterMatchesClaimRepository(home, filter, claim.Worktree, claim) {
 					continue
 				}
 				if _, statErr := os.Stat(claim.Worktree); statErr != nil {
@@ -2537,6 +2537,16 @@ func inspectErrorFilterCandidates(owner, path, slug string, err error) []string 
 // path, a bare repository name, or an "owner/repository" slug — whatever
 // identity is available at the point of the check; a malformed candidate
 // often cannot offer more than that.
+// Repository identity may change without moving a central checkout. Keep the
+// immutable claim for placement; use only completed evidence to widen a filter.
+func filterMatchesClaimRepository(home, filter, path string, claim workLogClaim) bool {
+	if filterMatches(filter, claim.Repository, path) {
+		return true
+	}
+	resolved, err := latestRelocationResolution(home, claim, path)
+	return err == nil && resolved.receipt != nil && filterMatches(filter, resolved.repository)
+}
+
 func filterMatches(filter string, candidates ...string) bool {
 	if filter == "" {
 		return true

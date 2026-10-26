@@ -864,6 +864,8 @@ type workLogRelocationResolution struct {
 	receiptPath string
 	repository  string
 	worktree    string
+	// Keep repository authority across later layout-only receipts.
+	remoteURL string
 }
 
 func latestRelocationResolution(home string, claim workLogClaim, destination string) (workLogRelocationResolution, error) {
@@ -918,6 +920,7 @@ func resolveRelocationChain(home string, claim workLogClaim) (workLogRelocationR
 				return resolution, fmt.Errorf("repository relocation receipt %s does not continue the immutable claim repository", receipt.OperationID)
 			}
 			resolution.repository = receipt.DestinationRepository
+			resolution.remoteURL = receipt.RemoteURL
 		}
 		resolution.worktree = filepath.Clean(receipt.Destination)
 		copy := receipt
@@ -932,7 +935,40 @@ func latestRelocationReceipt(home string, claim workLogClaim, destination string
 	return resolution.receipt, resolution.receiptPath, err
 }
 
-func corroborateRepositoryRelocation(ctx context.Context, worktree, repository string) error {
+// Guard may recognize a canonical-local path without claim-based placement.
+// Still retain any completed repository-transfer authority across layout moves;
+// this read does not constrain a legitimate in-progress Git history operation.
+func corroborateRecordedRepositoryTransfer(home, worktree string) error {
+	projection, err := readWorkLogProjectionForReadOnlyClaim(worktree)
+	if errors.Is(err, errWorkLogProjectionNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	run, _, err := openWorkLogRun(home, projection.EffortID, projection.RunID, false)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = run.Close() }()
+	claim, err := readWorkLogClaimAt(run, projection.ClaimID)
+	if err != nil {
+		return err
+	}
+	if err := validateStaticWorkLogClaim(claim, projection.EffortID, projection.RunID); err != nil {
+		return err
+	}
+	resolved, err := resolveRelocationChain(home, claim)
+	if err != nil || resolved.remoteURL == "" {
+		return err
+	}
+	if resolved.worktree != filepath.Clean(worktree) {
+		return fmt.Errorf("completed repository transfer does not bind this checkout path")
+	}
+	return corroborateRepositoryRelocation(context.Background(), worktree, resolved.repository, resolved.remoteURL)
+}
+
+func corroborateRepositoryRelocation(ctx context.Context, worktree, repository string, expectedRemote ...string) error {
 	for _, push := range []bool{false, true} {
 		urls, err := exactOriginURLs(ctx, worktree, push)
 		if err != nil || len(urls) != 1 {
@@ -941,6 +977,12 @@ func corroborateRepositoryRelocation(ctx context.Context, worktree, repository s
 		remote, err := gitremote.Parse(urls[0])
 		if err != nil || remote.Identity.Repository != repository {
 			return fmt.Errorf("relocated repository origin does not identify %s", repository)
+		}
+		if len(expectedRemote) != 0 && expectedRemote[0] != "" {
+			expected, err := gitremote.Parse(expectedRemote[0])
+			if err != nil || !remote.Identity.Equal(expected.Identity) {
+				return fmt.Errorf("relocated repository origin does not match its completed transfer evidence")
+			}
 		}
 	}
 	return nil
