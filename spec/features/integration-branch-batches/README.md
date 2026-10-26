@@ -210,6 +210,29 @@ A pull request without the marker any of whose commits carries a `Wb-Lane`
 trailer refuses `batch-block-invalid` (naming `wb integration promote`, which
 restores the body) instead of landing under the ordinary rules.
 
+
+### REQ: legacy-receipt-provenance
+
+An explicit `wb integration adopt-legacy <repository> <integration> --receipt
+<path>` validates a schema1 completed direct WB receipt against the complete
+ordered remotely published first-parent merge chain. Default dry-run makes no
+writes. `--apply` archives a sanitized typed provenance commit comment; it never
+rewrites history or claims the old ancestor received a zero-findings review.
+Unsigned receipt SHA256 is audit identity, not authorship or approval.
+
+`--legacy-record <commit-comment-url>=sha256:<digest>` supplies exact archived
+bindings to delta/promote. Generated promotion inventory is portable: delta,
+promote and land re-fetch and verify exact record bytes, repository, candidate,
+source/parent chain and identity. URLs are validated before reads. Foreign,
+changed, missing, duplicate, unsupported or unaccounted merges fail closed.
+
+Every adopted legacy merge remains visible in FULL in the integration delta,
+alongside later fixes. The fresh independent final review must name both
+`Reviewed-Head: <head>` and `Reviewed-Legacy-Provenance: <inventory-sha256>`.
+Changing the inventory invalidates review. Existing lane review, identity,
+current-target, CI and no-auto-merge gates remain mandatory. No provenance
+record alone authorizes landing; private receipt bytes are never uploaded.
+
 ## Acceptance Criteria
 
 ### AC: bad-pins-refused-together-nothing-changed
@@ -325,6 +348,19 @@ deleted, (d) with an independent review of the current head
 **Then** (a) refuses `batch-delta-unreviewed`, (b) refuses
 `batch-delta-self-review`, (c) refuses `batch-block-invalid`, and (d) lands
 it under the repository's merge policy, without arming auto-merge.
+
+### AC: legacy-receipts-preserve-review-and-history
+
+**Requirements:** integration-branch-batches#req:legacy-receipt-provenance
+
+**Given** an exact completed old WB receipt with two original source merges and
+a later fix for an ancestor defect
+**When** adoption dry-run and apply, delta, promote and land execute
+**Then** dry-run writes nothing, apply archives only safe provenance, both full
+legacy diffs plus the later fix remain visible, and landing requires a fresh
+independent review of the exact head and inventory, current target and full CI.
+A changed/foreign/deleted record, incomplete chain or unreviewed inventory fails
+closed without mutation or fake historical approval.
 
 ## Open Questions
 

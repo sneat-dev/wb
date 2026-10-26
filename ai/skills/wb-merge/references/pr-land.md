@@ -474,3 +474,21 @@ an estimate; `--non-interactive` suppresses the footer and keeps the fields.
 Consume a library through `wb deps propagate local`; the orchestrator runs
 `remote` at the end. End with `wb worktree end` — or let `wb pr land` end it for
 you, which is the point.
+
+## Adopt completed legacy WB merge provenance
+
+For an older completed direct WB worktree-merge receipt lacking lane trailers:
+
+```sh
+wb integration adopt-legacy <owner/repository> <integration> --receipt <receipt>
+wb integration adopt-legacy <owner/repository> <integration> --receipt <receipt> --apply
+wb integration promote <owner/repository> <integration> --legacy-record <commit-comment-url>=sha256:<digest>
+```
+
+Dry-run is read-only. Apply archives a sanitized portable provenance projection;
+it never edits original receipts, commits, branches or historical reviews. The
+unsigned original receipt hash is audit identity, not proof of authorship. Full
+legacy merge diffs stay visible beside later fixes. The independent current-head
+review must also bind the exact `Reviewed-Legacy-Provenance:` inventory digest.
+Delta, promote and land revalidate remote evidence; unknown merges and changed
+records fail closed. Existing full CI/current-target/no-auto gates remain.

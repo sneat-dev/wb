@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -93,8 +94,9 @@ func decodeIssueComment(raw []byte, err error, repository string, id int64) (Iss
 
 // PromotionReceipt is what landing a promotion verified.
 type PromotionReceipt struct {
-	Lanes    []LaneMerge `json:"lanes"`
-	Reviewer string      `json:"reviewer"`
+	Lanes    []LaneMerge        `json:"lanes"`
+	Legacy   []LegacyProvenance `json:"legacy,omitempty"`
+	Reviewer string             `json:"reviewer"`
 }
 
 func promoteRefusal(code, reason, command string) *landRefusal {
@@ -151,7 +153,12 @@ func promotionLandingGate(ctx context.Context, options *PullRequestLandOptions, 
 		return nil, promoteRefusal(LandRefusalBatchBehindTarget, "the promotion does not contain "+view.Base.Ref+"; refresh it with a recorded merge, then promote again",
 			"wb integration merge "+options.Repository+" "+shellSingleQuote(view.Head.Ref)+" --to "+shellSingleQuote(view.Base.Ref)), nil
 	}
-	reviewer, refusal := promotionReview(ctx, *options, ports, view, number, delta)
+	bindings, err := parseLegacyInventory(view.Body)
+	if err != nil {
+		return nil, promoteRefusal(LandRefusalBatchBlockInvalid, err.Error(), delta), nil
+	}
+	sort.Slice(bindings, func(i, j int) bool { return bindings[i].URL < bindings[j].URL })
+	reviewer, refusal := promotionReview(ctx, *options, ports, view, number, delta, bindings)
 	if refusal != nil {
 		return nil, refusal, nil
 	}
@@ -179,6 +186,9 @@ func promotionLandingGate(ctx context.Context, options *PullRequestLandOptions, 
 	if err != nil {
 		return nil, nil, err
 	}
+	if err = verifyLegacyProvenance(ctx, ports.review, options.Repository, view.Head.Ref, view.Base.Ref, walk, &verdict, bindings); err != nil {
+		return nil, promoteRefusal(LandRefusalBatchBlockInvalid, err.Error(), delta), nil
+	}
 	if len(verdict.Unrecorded) > 0 {
 		return nil, promoteRefusal(BatchRefusalUnrecordedMerge,
 			fmt.Sprintf("merge %s brings in commits no still-valid review covers", shortMergeRevision(verdict.Unrecorded[0])), delta), nil
@@ -186,7 +196,7 @@ func promotionLandingGate(ctx context.Context, options *PullRequestLandOptions, 
 	if verdict.mergedBy(reviewer.Session) {
 		return nil, promoteRefusal(LandRefusalBatchDeltaSelfReview, fmt.Sprintf("reviewer session %s made a lane merge in this promotion", reviewer.Session), delta), nil
 	}
-	return &PromotionReceipt{Lanes: verdict.Lanes, Reviewer: reviewer.String()}, nil, nil
+	return &PromotionReceipt{Lanes: verdict.Lanes, Legacy: verdict.Legacy, Reviewer: reviewer.String()}, nil, nil
 }
 
 // promotionApprovalForm refuses, before any review comment is posted, a
@@ -210,7 +220,7 @@ func promotionDeltaCommand(repository string, view githubchecks.PullRequestView)
 
 // promotionReview reads the --approved-by comment on this pull request and
 // requires it to name the current head from an independent identity.
-func promotionReview(ctx context.Context, options PullRequestLandOptions, ports promoteLandingPorts, view githubchecks.PullRequestView, number, delta string) (ReviewerIdentity, *landRefusal) {
+func promotionReview(ctx context.Context, options PullRequestLandOptions, ports promoteLandingPorts, view githubchecks.PullRequestView, number, delta string, bindings []LegacyBinding) (ReviewerIdentity, *landRefusal) {
 	unreviewed := func(reason string) (ReviewerIdentity, *landRefusal) {
 		return ReviewerIdentity{}, promoteRefusal(LandRefusalBatchDeltaUnreviewed, reason, delta)
 	}
@@ -228,6 +238,9 @@ func promotionReview(ctx context.Context, options PullRequestLandOptions, ports 
 	}
 	if reviewed, err := parseReviewedHeadLine(comment.Body); err != nil || !strings.EqualFold(reviewed, view.Head.SHA) {
 		return unreviewed(fmt.Sprintf("the review does not name the current head %s", shortMergeRevision(view.Head.SHA)))
+	}
+	if len(bindings) > 0 && !legacyReviewBinds(comment.Body, legacyInventoryDigest(bindings)) {
+		return unreviewed("review does not bind the current legacy provenance inventory")
 	}
 	reviewer := declaredReviewer(comment.Body)
 	if !identityComplete(reviewer) || strings.EqualFold(reviewer.Session, ports.operator().Session) {
