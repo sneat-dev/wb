@@ -45,6 +45,11 @@ func TestStrandedLandingAcknowledgementIDPreservesExactHeadCompatibility(t *test
 	if got := strandedLandingAcknowledgementID(ack); got == legacyID {
 		t.Fatal("descendant acknowledgement ID must bind the observed pull request head")
 	}
+	ack.PullRequestHeadSHA = ""
+	ack.PublishedPredecessorSHA = "published-predecessor"
+	if got := strandedLandingAcknowledgementID(ack); got == legacyID {
+		t.Fatal("advanced candidate acknowledgement ID must bind its published predecessor")
+	}
 }
 
 // installStrandedLandingGH fakes the exact `gh` invocations
@@ -71,6 +76,10 @@ func installStrandedLandingGH(t *testing.T, pullRequest, remoteGitDir string) {
     pair="${2#*compare/}"
     base="${pair%%...*}"
     candidate="${pair#*...}"
+    if [ "${WB_TEST_COMPARE_FAILURE_BASE:-}" = "$base" ]; then
+      echo "remote comparison unavailable" >&2
+      exit 2
+    fi
     merge_base="$(git --git-dir="$WB_TEST_REMOTE" merge-base "$base" "$candidate" 2>/dev/null || true)"
     if [ "$base" = "$candidate" ]; then
       status="identical"
@@ -126,7 +135,7 @@ func TestAcknowledgeStrandedPullRequestLandingProvesRemoteContainmentAndFreesLan
 	receipt.Phase = WorktreeMergePhaseLand
 	receipt.Status = WorktreeMergeConflict
 	receipt.PullRequest = "https://example.test/acme/app/pull/91"
-	receipt.PublishedCandidateSHA = receipt.Candidate.SHA
+	receipt.PublishedCandidateSHA = receipt.TargetSHA
 	receipt.Failure = "read pull-request landing receipt: gh pr view https://example.test/acme/app/pull/91 --repo acme/app --json state,mergedAt,mergeCommit,headRefOid,baseRefName: chdir " + receipt.Candidate.Worktree + ": no such file or directory"
 	if err := persistWorktreeMergeReceipt(receipt); err != nil {
 		t.Fatal(err)
@@ -178,7 +187,7 @@ func TestAcknowledgeStrandedPullRequestLandingProvesRemoteContainmentAndFreesLan
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ack.ID == "" || ack.AcknowledgementPath == "" {
+	if ack.ID == "" || ack.AcknowledgementPath == "" || ack.PublishedPredecessorSHA != receipt.TargetSHA {
 		t.Fatalf("applied acknowledgement lacks identity: %+v", ack)
 	}
 	unchanged, err := os.ReadFile(receipt.ReceiptPath)
@@ -216,6 +225,37 @@ func TestAcknowledgeStrandedPullRequestLandingProvesRemoteContainmentAndFreesLan
 	}
 	if next.Status != WorktreeMergePrepared || next.Candidate.SHA == "" {
 		t.Fatalf("new merge preflight = %+v", next)
+	}
+}
+
+func TestStrandedLandingRejectsUnrelatedPublishedPredecessor(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "stranded-predecessor-source", "feature/stranded-predecessor", "predecessor.txt", "candidate\n")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt.PullRequest = "https://example.test/acme/app/pull/96"
+	targetTree := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", receipt.TargetSHA+"^{tree}"))
+	unrelated := strings.TrimSpace(runEngineGit(t, fixture.canonical, "commit-tree", targetTree, "-p", receipt.TargetSHA, "-m", "unrelated published predecessor"))
+	runEngineGit(t, fixture.canonical, "push", "origin", unrelated+":refs/heads/unrelated-published-predecessor")
+	receipt.PublishedCandidateSHA = unrelated
+	runEngineGit(t, fixture.canonical, "merge", "--ff-only", receipt.Candidate.SHA)
+	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+	installStrandedLandingGH(t, receipt.PullRequest, fixture.repository.CloneURL)
+	t.Setenv("WB_TEST_PR_STATE", "MERGED")
+	t.Setenv("WB_TEST_CANDIDATE_SHA", receipt.Candidate.SHA)
+	t.Setenv("WB_TEST_MERGE_COMMIT_SHA", receipt.Candidate.SHA)
+	_, _, _, _, _, err = proveStrandedPullRequestLanding(context.Background(), receipt)
+	if err == nil || !strings.Contains(err.Error(), "does not contain published predecessor") {
+		t.Fatalf("unrelated published predecessor proof = %v", err)
+	}
+	t.Setenv("WB_TEST_COMPARE_FAILURE_BASE", unrelated)
+	_, _, _, _, _, err = proveStrandedPullRequestLanding(context.Background(), receipt)
+	if err == nil || !strings.Contains(err.Error(), "remote comparison unavailable") {
+		t.Fatalf("remote predecessor comparison failure = %v", err)
 	}
 }
 
@@ -463,7 +503,7 @@ func TestValidateStrandedLandingReceiptRefusesWrongShape(t *testing.T) {
 		{name: "wrong status", mutate: func(r *WorktreeMergeReceipt) { r.Status = WorktreeMergePrepared }, wantErr: "want recoverable land receipt"},
 		{name: "already has a landing SHA", mutate: func(r *WorktreeMergeReceipt) { r.LandingSHA = strings.Repeat("c", 40) }, wantErr: "already recorded a landing SHA"},
 		{name: "no pull request", mutate: func(r *WorktreeMergeReceipt) { r.PullRequest = "" }, wantErr: "no published pull request"},
-		{name: "published candidate mismatch", mutate: func(r *WorktreeMergeReceipt) { r.PublishedCandidateSHA = strings.Repeat("d", 40) }, wantErr: "does not match its exact preserved candidate"},
+		{name: "missing published candidate", mutate: func(r *WorktreeMergeReceipt) { r.PublishedCandidateSHA = "" }, wantErr: "published candidate"},
 		{name: "inconsistent lane", mutate: func(r *WorktreeMergeReceipt) { r.Lane = "some-other-lane" }, wantErr: "inconsistent immutable receipt identity"},
 	}
 	for _, tt := range tests {

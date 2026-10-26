@@ -685,6 +685,21 @@ func (store Store) Load(agentID string) (Record, error) {
 // List returns every run record, newest first. A directory that cannot be read
 // is reported rather than silently skipped.
 func (store Store) List() ([]Record, error) {
+	return store.listSince(time.Time{})
+}
+
+// ListSince avoids decoding run records in directories that have not changed
+// since the requested window. It still checks StartedAt after loading because
+// an older run may have a recently updated record.
+func (store Store) ListSince(since time.Time) ([]Record, error) {
+	return store.listSince(since)
+}
+
+func (store Store) listSince(since time.Time) ([]Record, error) {
+	return store.listSinceWithInfo(since, os.DirEntry.Info)
+}
+
+func (store Store) listSinceWithInfo(since time.Time, entryInfo func(os.DirEntry) (os.FileInfo, error)) ([]Record, error) {
 	entries, err := os.ReadDir(store.Root)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -692,14 +707,30 @@ func (store Store) List() ([]Record, error) {
 		}
 		return nil, fmt.Errorf("list agent runs under %s: %w", store.Root, err)
 	}
-	records := make([]Record, 0, len(entries))
+	capacity := 0
+	if since.IsZero() {
+		capacity = len(entries)
+	}
+	records := make([]Record, 0, capacity)
 	for _, entry := range entries {
 		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), IDPrefix) {
 			continue
 		}
+		if !since.IsZero() {
+			info, infoErr := entryInfo(entry)
+			if infoErr != nil {
+				return nil, fmt.Errorf("inspect agent run %s: %w", entry.Name(), infoErr)
+			}
+			if info.ModTime().Before(since) {
+				continue
+			}
+		}
 		record, loadErr := store.Load(entry.Name())
 		if loadErr != nil {
 			return nil, loadErr
+		}
+		if !since.IsZero() && record.StartedAt.Before(since) {
+			continue
 		}
 		records = append(records, record)
 	}

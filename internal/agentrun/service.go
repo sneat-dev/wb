@@ -14,7 +14,10 @@ import (
 )
 
 type LookupRequest struct{ ProjectsRoot, AgentID string }
-type ListRequest struct{ ProjectsRoot string }
+type ListRequest struct {
+	ProjectsRoot string
+	Since        time.Time
+}
 type DispatchRequest struct {
 	ProjectsRoot string
 	Stderr       io.Writer
@@ -316,7 +319,12 @@ func (s *Service) List(_ context.Context, r ListRequest) ([]agents.Result, error
 	if err != nil {
 		return nil, err
 	}
-	records, err := store.List()
+	var records []agents.Record
+	if r.Since.IsZero() {
+		records, err = store.List()
+	} else {
+		records, err = store.ListSince(r.Since)
+	}
 	if err != nil {
 		return nil, err
 	}

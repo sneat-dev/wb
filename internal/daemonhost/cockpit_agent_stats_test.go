@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/agentrun"
 	"github.com/sneat-dev/wb/internal/agents"
@@ -26,6 +27,9 @@ func TestCockpitAgentSessionStatsRequiresOwnerAndSummarizesRuns(t *testing.T) {
 		reads++
 		if request.ProjectsRoot != "/projects" {
 			t.Fatalf("wrong projects root: %+v", request)
+		}
+		if delta := time.Since(request.Since); delta < 29*24*time.Hour || delta > 31*24*time.Hour {
+			t.Fatalf("wrong default window: %v", request.Since)
 		}
 		return []agents.Result{
 			{Caller: agents.CallerSession{ID: "thread-one", Name: "builder"}, Repository: "acme/app", Status: agents.StatusCompleted,
@@ -63,16 +67,43 @@ func TestCockpitAgentSessionStatsRequiresOwnerAndSummarizesRuns(t *testing.T) {
 	if owner.Code != http.StatusOK || reads != 1 || owner.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("owner request = %d, reads=%d, cache=%q", owner.Code, reads, owner.Header().Get("Cache-Control"))
 	}
-	var report agents.StatsReport
+	var report struct {
+		agents.StatsReport
+		WindowDays int `json:"window_days"`
+	}
 	if err := json.Unmarshal(owner.Body.Bytes(), &report); err != nil {
 		t.Fatal(err)
 	}
-	if report.Total.Runs != 3 || report.Total.UsageRuns != 1 || report.Total.EstimatedUSD != cost ||
+	if report.WindowDays != 30 || report.Total.Runs != 3 || report.Total.UsageRuns != 1 || report.Total.EstimatedUSD != cost ||
 		len(report.BySessionRepository) != 3 || report.BySessionRepository[1].SessionName != "builder" {
 		t.Fatalf("session/repository report = %+v", report)
 	}
 	if strings.Contains(owner.Body.String(), "task") || strings.Contains(owner.Body.String(), "log") {
 		t.Fatalf("usage response leaked unrelated run data: %s", owner.Body.String())
+	}
+}
+
+func TestCockpitAgentSessionStatsWindowValidation(t *testing.T) {
+	t.Parallel()
+	reads := 0
+	handler := agentSessionStatsHandler("/projects", func(_ context.Context, request agentrun.ListRequest) ([]agents.Result, error) {
+		reads++
+		if delta := time.Since(request.Since); delta < 6*24*time.Hour || delta > 8*24*time.Hour {
+			t.Fatalf("wrong seven-day window: %v", request.Since)
+		}
+		return nil, nil
+	})
+	for _, query := range []string{"?days=1", "?days=abc", "?days=-7"} {
+		response := httptest.NewRecorder()
+		handler(response, httptest.NewRequest(http.MethodGet, agentSessionStatsPath+query, nil))
+		if response.Code != http.StatusBadRequest || reads != 0 || response.Header().Get("Content-Type") != "application/json" {
+			t.Fatalf("%s: response %d, reads %d", query, response.Code, reads)
+		}
+	}
+	response := httptest.NewRecorder()
+	handler(response, httptest.NewRequest(http.MethodGet, agentSessionStatsPath+"?days=7", nil))
+	if response.Code != http.StatusOK || reads != 1 || !strings.Contains(response.Body.String(), `"window_days":7`) {
+		t.Fatalf("valid window: %d, reads %d, body %s", response.Code, reads, response.Body.String())
 	}
 }
 

@@ -121,6 +121,26 @@ func TestRemotePrepareDispatchPreservesSourceCallerWithoutTargetInference(t *tes
 		t.Fatalf("older remote request acquired target identity: %+v", oldRemote.Caller)
 	}
 }
+
+func TestListSinceReportsCorruptRecentRun(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store := agents.NewStore(filepath.Join(root, ".wb"))
+	id, err := agents.NewID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := agents.Record{AgentID: id, State: agents.StateCompleted, StartedAt: time.Now().UTC()}
+	if err := store.Create(record); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store.RecordPath(record.AgentID), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(DefaultDependencies()).List(t.Context(), ListRequest{ProjectsRoot: root, Since: time.Now().Add(-time.Hour)}); err == nil {
+		t.Fatal("windowed list must report a corrupt recent run")
+	}
+}
 func TestReadOperationsUseAnImmutableTerminalCorpus(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -150,7 +170,7 @@ func TestReadOperationsUseAnImmutableTerminalCorpus(t *testing.T) {
 					t.Fatal(result, err)
 				}
 			case "list":
-				results, err := ops.List(t.Context(), ListRequest{root})
+				results, err := ops.List(t.Context(), ListRequest{ProjectsRoot: root})
 				if err != nil || len(results) != 1 || results[0].AgentID != id {
 					t.Fatal(results, err)
 				}
@@ -219,7 +239,7 @@ func TestReadAndStopFailuresPreserveIdentity(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, ".wb", "agents"), nil, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.List(t.Context(), ListRequest{root}); err == nil {
+	if _, err := s.List(t.Context(), ListRequest{ProjectsRoot: root}); err == nil {
 		t.Fatal("expected actual non-directory list error")
 	}
 }

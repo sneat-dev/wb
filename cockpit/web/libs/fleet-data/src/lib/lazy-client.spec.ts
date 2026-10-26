@@ -10,21 +10,25 @@ describe('the lazy reads', () => {
     const bucket = { session_id: 'thread-one', session_name: 'builder', repository: 'acme/app', runs: 2,
       completed: 1, failed: 1, pending: 0, duration_ms: 1500, usage_runs: 1,
       input_tokens: 120, output_tokens: 30, cost_runs: 1, estimated_usd: 0.25 }
-    const report = { total: { ...bucket, session_id: '', repository: '' }, by_session_repository: [bucket] }
+    const report = { window_days: 30, total: { ...bucket, session_id: '', repository: '' }, by_session_repository: [bucket] }
     const fetcher = vi.fn(async () => respond(200, report))
     expect(await readAgentSessionStats(fetcher)).toEqual(report)
-    expect(fetcher).toHaveBeenCalledWith('/api/v1/cockpit/agent-session-stats', {
+    expect(fetcher).toHaveBeenCalledWith('/api/v1/cockpit/agent-session-stats?days=30', {
       headers: { Accept: 'application/json' }, credentials: 'same-origin', signal: expect.any(AbortSignal),
     })
     await expect(readAgentSessionStats(async () => respond(401, {}))).rejects.toBeInstanceOf(FleetRequestError)
     await expect(readAgentSessionStats(async () => respond(200, { total: bucket, by_session_repository: [{ ...bucket, runs: 'two' }] }))).rejects.toThrow('Invalid session usage report')
+    const weekFetcher = vi.fn(async () => respond(200, { ...report, window_days: 7 }))
+    await readAgentSessionStats(weekFetcher, 7)
+    expect(weekFetcher).toHaveBeenCalledWith('/api/v1/cockpit/agent-session-stats?days=7', expect.anything())
+    await expect(readAgentSessionStats(fetcher, 7)).rejects.toThrow('Invalid session usage report')
   })
 
   it('rejects malformed or incomplete session usage without rendering its fields', async () => {
     const bucket = { session_id: '', repository: 'acme/app', runs: 1, completed: 1, failed: 0, pending: 0,
       duration_ms: 1000, usage_runs: 1, input_tokens: 2, output_tokens: 3, cost_runs: 0, estimated_usd: 0 }
-    const valid = { total: bucket, by_session_repository: [bucket] }
-    for (const body of [null, 'text', 3, { ...valid, total: null }, { ...valid, total: 'bad' },
+    const valid = { window_days: 30, total: bucket, by_session_repository: [bucket] }
+    for (const body of [null, 'text', 3, { ...valid, window_days: '30' }, { ...valid, window_days: 0 }, { ...valid, total: null }, { ...valid, total: 'bad' },
       { ...valid, total: { ...bucket, session_id: 7 } }, { ...valid, total: { ...bucket, repository: null } },
       { ...valid, total: { ...bucket, session_name: 5 } }, { ...valid, total: { ...bucket, session_name: 'named', runs: -1 } },
       { ...valid, total: { ...bucket, runs: 'one' } }, { ...valid, total: { ...bucket, runs: Number.POSITIVE_INFINITY } },

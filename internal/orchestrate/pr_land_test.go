@@ -194,8 +194,10 @@ case "$*" in
     # body is JSON-escaped already; a test may replace it through state.
     body='Summary line.\n\n## Details\nhidden'
     if [ -f "$S/body" ]; then body=$(cat "$S/body"); fi
-    printf '{"number":7,"node_id":"PR_kwDOtest7","state":"%s","draft":false,"locked":false,"title":"feat: the change","body":"%s","merged":%s,"merge_commit_sha":"%s","mergeable":true,"mergeable_state":"clean","head":{"ref":"%s","sha":"%s","repo":{"full_name":"%s"}},"base":{"ref":"main","sha":""}}\n' \
-      "$state" "$body" "$merged" "$merge_sha" "$WB_LAND_BRANCH" "$head" "$(cat "$S/head-repository")"
+    base_sha=""
+    if [ -f "$S/base-sha" ]; then base_sha=$(cat "$S/base-sha"); fi
+    printf '{"number":7,"node_id":"PR_kwDOtest7","state":"%s","draft":false,"locked":false,"title":"feat: the change","body":"%s","merged":%s,"merge_commit_sha":"%s","mergeable":true,"mergeable_state":"clean","head":{"ref":"%s","sha":"%s","repo":{"full_name":"%s"}},"base":{"ref":"main","sha":"%s"}}\n' \
+      "$state" "$body" "$merged" "$merge_sha" "$WB_LAND_BRANCH" "$head" "$(cat "$S/head-repository")" "$base_sha"
     # M3: a force push that landed in the exact window between the
     # update-branch write and this read must be visible on the NEXT read,
     # never THIS one - the response above already used the head captured at

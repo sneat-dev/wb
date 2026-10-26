@@ -38,7 +38,7 @@ unattributed. The table can be searched by session name, ID, or repository.
 ```
 wb daemon  --GET /api/v1/cockpit/fleet (ETag, gzip)-->  FleetStore  -->  FleetModel  -->  pages
            --GET /api/v1/cockpit/session----------->   (signals)       (memoised          (lists, panels,
-           --GET /api/v1/cockpit/agent-session-stats (owner only)
+           --GET /api/v1/cockpit/agent-session-stats?days=30 (owner only)
            --GET /api/v1/cockpit/branches?repository=   per document)   derivations)       Home sections)
            --GET /api/v1/cockpit/machine-metrics?machine=
 ```
@@ -50,9 +50,10 @@ wb daemon  --GET /api/v1/cockpit/fleet (ETag, gzip)-->  FleetStore  -->  FleetMo
   whether to update `wb` or reload.
 - **Branches** are read lazily per repository, **machine metrics** every 10 seconds only while
   a page that shows them exists (`MetricsPoller`), a **README** only for an owner session.
-- **Session usage** is read from this daemon's durable agent-run store only by
-  the owner on the Agents page and on Refresh. It is not part of fleet exports
-  or anonymous metadata, and its response is marked `no-store`.
+- **Session usage** includes only WB-dispatched agent runs recorded by this
+  machine. The owner can select the last 7, 30 (default), or 90 days on the
+  Agents page; the API applies the window before summarizing. It is not part of
+  fleet exports or anonymous metadata, and its response is marked `no-store`.
 - `FleetModel` (in `@cockpit/fleet-data`) derives merged repositories, tasks with their state,
   "Needs you", "Ready to land", cleanup counts and fleet health once per document. Pages never
   re-derive them.
