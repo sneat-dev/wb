@@ -76,6 +76,10 @@ func installStrandedLandingGH(t *testing.T, pullRequest, remoteGitDir string) {
     pair="${2#*compare/}"
     base="${pair%%...*}"
     candidate="${pair#*...}"
+    if [ "${WB_TEST_COMPARE_FAILURE_BASE:-}" = "$base" ]; then
+      echo "remote comparison unavailable" >&2
+      exit 2
+    fi
     merge_base="$(git --git-dir="$WB_TEST_REMOTE" merge-base "$base" "$candidate" 2>/dev/null || true)"
     if [ "$base" = "$candidate" ]; then
       status="identical"
@@ -247,6 +251,11 @@ func TestStrandedLandingRejectsUnrelatedPublishedPredecessor(t *testing.T) {
 	_, _, _, _, _, err = proveStrandedPullRequestLanding(context.Background(), receipt)
 	if err == nil || !strings.Contains(err.Error(), "does not contain published predecessor") {
 		t.Fatalf("unrelated published predecessor proof = %v", err)
+	}
+	t.Setenv("WB_TEST_COMPARE_FAILURE_BASE", unrelated)
+	_, _, _, _, _, err = proveStrandedPullRequestLanding(context.Background(), receipt)
+	if err == nil || !strings.Contains(err.Error(), "remote comparison unavailable") {
+		t.Fatalf("remote predecessor comparison failure = %v", err)
 	}
 }
 
