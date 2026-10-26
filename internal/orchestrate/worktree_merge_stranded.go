@@ -352,7 +352,7 @@ func proveStrandedPullRequestLandingWithRead(ctx context.Context, receipt Worktr
 		}
 		return "", "", "", "", "", errors.New(reason)
 	}
-	if receipt.PublishedCandidateSHA != receipt.Candidate.SHA {
+	if receipt.PublishedCandidateSHA != "" && receipt.PublishedCandidateSHA != receipt.Candidate.SHA {
 		if contains, reason := githubchecks.ContainsTarget(ctx, receipt.Repository, receipt.PublishedCandidateSHA, receipt.Candidate.SHA); !contains {
 			if reason == "" {
 				reason = fmt.Sprintf("receipted candidate %s does not contain published predecessor %s", receipt.Candidate.SHA, receipt.PublishedCandidateSHA)
