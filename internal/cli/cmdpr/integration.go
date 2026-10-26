@@ -18,10 +18,11 @@ import (
 // IntegrationDependencies are the integration verbs' orchestration entry
 // points.
 type IntegrationDependencies struct {
-	Add     func(context.Context, orchestrate.IntegrationOptions) (orchestrate.IntegrationResult, error)
-	Merge   func(context.Context, orchestrate.IntegrationOptions) (orchestrate.IntegrationResult, error)
-	Delta   func(context.Context, orchestrate.PromoteOptions) (orchestrate.PromoteResult, error)
-	Promote func(context.Context, orchestrate.PromoteOptions) (orchestrate.PromoteResult, error)
+	AdoptLegacy func(context.Context, orchestrate.LegacyAdoptOptions) (orchestrate.LegacyAdoptResult, error)
+	Add         func(context.Context, orchestrate.IntegrationOptions) (orchestrate.IntegrationResult, error)
+	Merge       func(context.Context, orchestrate.IntegrationOptions) (orchestrate.IntegrationResult, error)
+	Delta       func(context.Context, orchestrate.PromoteOptions) (orchestrate.PromoteResult, error)
+	Promote     func(context.Context, orchestrate.PromoteOptions) (orchestrate.PromoteResult, error)
 }
 
 // DefaultIntegrationDependencies wires the production verbs.
@@ -95,7 +96,7 @@ func NewIntegration(runtime shared.Runtime, deps IntegrationDependencies) *cobra
 		"Merge reviewed lanes, run the local checks, and push without force", integrationLong, false, deps.Merge)
 	promote := newPromoteVerb(runtime, "promote <owner/repository> <integration> [--to <branch>]",
 		"Re-prove every lane merge and open or refresh the one pull request to main", promoteLong, false, deps.Promote)
-	command.AddCommand(merge, promote)
+	command.AddCommand(merge, promote, newLegacyAdopt(runtime, deps))
 	return command
 }
 
@@ -129,6 +130,7 @@ Exit codes: 0 opened, refreshed or nothing to promote, 2 refused.`
 func newPromoteVerb(runtime shared.Runtime, use, short, long string, batch bool, run func(context.Context, orchestrate.PromoteOptions) (orchestrate.PromoteResult, error)) *cobra.Command {
 	var target, to, worktree, format string
 	var overlap bool
+	var legacyRecords []string
 	command := &cobra.Command{
 		Use: use, Short: short, Long: long,
 		Args: func(command *cobra.Command, args []string) error {
@@ -141,7 +143,7 @@ func newPromoteVerb(runtime shared.Runtime, use, short, long string, batch bool,
 			if err := shared.RequireOutputFormat(format, "text", "json"); err != nil {
 				return err
 			}
-			options := orchestrate.PromoteOptions{Repository: args[0], To: to, Worktree: worktree, Overlap: overlap}
+			options := orchestrate.PromoteOptions{Repository: args[0], To: to, Worktree: worktree, Overlap: overlap, LegacyRecords: legacyRecords}
 			if batch {
 				if strings.TrimSpace(target) == "" {
 					return runtime.ExitError(shared.ExitUsage, "--target <integration branch> is required")
@@ -176,6 +178,7 @@ func newPromoteVerb(runtime shared.Runtime, use, short, long string, batch bool,
 		command.Flags().StringVar(&target, "target", "", "integration branch (required)")
 		command.Flags().BoolVar(&overlap, "overlap", false, "also print each lane's own diff of every file more than one lane changed")
 	}
+	command.Flags().StringSliceVar(&legacyRecords, "legacy-record", nil, "exact archived provenance <commit-comment-url>=sha256:<digest> (repeatable; does not approve code)")
 	command.Flags().StringVar(&to, "to", "", "promotion target (default: the repository's default branch)")
 	command.Flags().StringVar(&worktree, "worktree", "", "checkout to read from (default: the current directory)")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
