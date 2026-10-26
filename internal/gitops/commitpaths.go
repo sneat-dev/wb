@@ -1,30 +1,30 @@
 package gitops
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/sneat-dev/wb/internal/console"
+	"github.com/sneat-dev/wb/internal/runner"
 )
 
 // runStdout is runEnv returning stdout alone, for commands whose output is
 // parsed: git reports warnings such as an unreadable directory on stderr, and
 // those must never be read as data. Stderr still goes into the error.
 func runStdout(dir string, extra []string, name string, args ...string) (string, error) {
-	cmd := exec.Command(name, args...)
-	cmd.Dir = dir
-	cmd.Env = append(console.Env(), extra...)
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
+	return runStdoutWithRunner(runner.New(), dir, extra, name, args...)
+}
+
+func runStdoutWithRunner(run runner.Runner, dir string, extra []string, name string, args ...string) (string, error) {
+	result, err := run.RunOpts(context.Background(), dir, runner.RunOptions{Env: append(console.Env(), extra...)}, name, args...)
 	if err != nil {
-		return string(out), fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+		return result.Stdout, fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(result.Stderr))
 	}
-	return string(out), nil
+	return result.Stdout, nil
 }
 
 // CommitPaths stages paths (additions, modifications and deletions) and

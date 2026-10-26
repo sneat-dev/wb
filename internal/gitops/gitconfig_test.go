@@ -6,6 +6,8 @@ import (
 )
 
 // GitConfig sets, reads and unsets a key, and reports an unset key as an error.
+//
+//nolint:paralleltest // Git fixtures or failure scripts override process-wide Git identity, PATH, or TMPDIR.
 func TestGitConfigSetsReadsAndUnsetsAKey(t *testing.T) {
 	_, clone := seededOriginAndClone(t)
 	hooks := filepath.Join(clone, ".git", "wb-hooks")

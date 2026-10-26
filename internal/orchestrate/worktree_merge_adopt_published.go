@@ -129,7 +129,7 @@ func validatePublishedCandidateAdoptionReceipt(r WorktreeMergeReceipt, path stri
 	return nil
 }
 
-func provePublishedCandidatePullRequest(ctx context.Context, run runner.Runner, r WorktreeMergeReceipt, selector string) error {
+func provePublishedCandidatePullRequest(ctx context.Context, run runner.Runner, r WorktreeMergeReceipt, selector string, superseded ...bool) error {
 	hostedRepository, err := hostedRepositoryForCandidate(ctx, run, r)
 	if err != nil {
 		return err
@@ -138,7 +138,8 @@ func provePublishedCandidatePullRequest(ctx context.Context, run runner.Runner, 
 	if err != nil {
 		return err
 	}
-	if !strings.EqualFold(v.State, "open") {
+	allowedState := strings.EqualFold(v.State, "open") || (len(superseded) == 1 && superseded[0] && strings.EqualFold(v.State, "closed"))
+	if v.Merged || !allowedState {
 		return fmt.Errorf("pull request %s is %s, not open", selector, v.State)
 	}
 	if v.Base.Ref != r.Target || v.Head.Ref != r.Candidate.Branch || v.Head.SHA != r.Candidate.SHA || v.Head.Repo == nil || v.Head.Repo.FullName != hostedRepository || v.Base.Repo == nil || v.Base.Repo.FullName != hostedRepository {

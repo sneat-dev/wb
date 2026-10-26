@@ -1,3 +1,5 @@
+//go:build e2e
+
 package integration
 
 import (
@@ -19,7 +21,7 @@ import (
 // to a local bare repository so nothing reaches the network.
 //
 //nolint:paralleltest // newRemoteFixture sets process-wide environment.
-func TestOpenedRemoteStoreRecoversAStrandedStagedClaim(t *testing.T) {
+func TestE2EOpenedRemoteStoreRecoversAStrandedStagedClaim(t *testing.T) {
 	f := newRemoteFixture(t, "mac")
 	cfg := remotestate.Config{Provider: "git", Repo: "team/wb-state", Machine: "mac"}
 	clonePath, err := remotepublish.ClonePath(f.projectsRoot, cfg)

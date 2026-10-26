@@ -28,6 +28,8 @@ func moveClaimStoreIntoStateDir(t *testing.T, claim claimFixture) string {
 
 // After the remote store clone moved into WB's state directory, the live-claim
 // check reads the claim from there and still refuses the dispatch.
+//
+//nolint:paralleltest // newClaimFixture overrides process-wide XDG_CONFIG_HOME.
 func TestAgentDispatchRefusesLiveClaimHeldInTheMigratedRemoteStore(t *testing.T) {
 	claim := newClaimFixture(t)
 	moveClaimStoreIntoStateDir(t, claim)
@@ -44,6 +46,8 @@ func TestAgentDispatchRefusesLiveClaimHeldInTheMigratedRemoteStore(t *testing.T)
 
 // Once migrated, the clone in the state directory is the store: a claim file
 // left behind in a stray legacy copy is not live.
+//
+//nolint:paralleltest // newClaimFixture overrides process-wide XDG_CONFIG_HOME.
 func TestAgentDispatchIgnoresAStrayLegacyClaimOnceTheStoreMigrated(t *testing.T) {
 	claim := newClaimFixture(t)
 	migrated := moveClaimStoreIntoStateDir(t, claim)

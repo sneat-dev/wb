@@ -196,6 +196,8 @@ func TestDQCovPublishReportsReadmeWriteFailure(t *testing.T) {
 
 // TestPublishReportsCommitFailure proves Publish reports a failed commit (a
 // stale branch ref lock) instead of reporting a successful publish.
+//
+//nolint:paralleltest // Git fixtures override process-wide author, committer, and maintenance environment.
 func TestPublishReportsCommitFailure(t *testing.T) {
 	origin := dqCovEmptyBareOrigin(t)
 	p := machine(t, origin)

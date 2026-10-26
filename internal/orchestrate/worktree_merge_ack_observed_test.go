@@ -117,6 +117,7 @@ func TestHistoricalObservedAcknowledgementRejectsMalformedEvidence(t *testing.T)
 		}, "invalid receipt identity"},
 	}
 	for _, tc := range cases {
+		//nolint:paralleltest // Mutation callbacks retain the parent test assertion handle.
 		t.Run(tc.name, func(t *testing.T) {
 			r, a := historicalObservedAcknowledgement(t)
 			tc.mutate(&r, &a)
@@ -135,6 +136,7 @@ func TestHistoricalObservedAcknowledgementDigestBindsObservedFields(t *testing.T
 	_, a := historicalObservedAcknowledgement(t)
 	for _, field := range []string{"ReceiptSHA256", "Task", "Worktree", "Branch", "SHA"} {
 		t.Run(field, func(t *testing.T) {
+			t.Parallel()
 			changed := a
 			changed.ObservedSources = append([]WorktreeMergeSource(nil), a.ObservedSources...)
 			switch field {
@@ -183,6 +185,7 @@ func TestHistoricalObservedAcknowledgementRejectsUnboundDescendant(t *testing.T)
 	t.Parallel()
 	for _, kind := range []string{"changed descendant", "legacy id"} {
 		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
 			r, a := historicalObservedAcknowledgement(t)
 			if kind == "changed descendant" {
 				a.ObservedSources[0].SHA = "another-descendant"

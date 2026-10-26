@@ -18003,6 +18003,8 @@
                 "--progress",
                 "--provider",
                 "--rebatch-receipt",
+                "--rebatch-published-target-sha",
+                "--rebatch-audit-only",
                 "--retry",
                 "--route",
                 "--shard-attempt-timeout",
@@ -18017,7 +18019,7 @@
                 "Leaves every source and the canonical clone unchanged so dependent agents can consume the candidate SHA before remote landing",
                 "Before starting candidate validation, refuses when the host's 1-minute load average exceeds the admission.load_floor in wb.yaml (default 2x NumCPU; CI/env may disable); --allow-saturated-host overrides, and the override is recorded on the receipt's host_load_admission field (load, floor, overridden, checked_at).",
                 "After failed post-target CI, accepts only an additive same-source repair, proves the target contains the failed landing, advances the retained candidate, and records every failed attempt before a fresh PR",
-                "With --rebatch-receipt, replaces one unlanded prepared lane only with a new candidate whose source set retains every old ref at a descendant head and adds a distinct ref; target drift and dirty or ambiguous identity are refused, while immutable evidence is linked by an append-only acknowledgement"
+                "With --rebatch-receipt, retains every source and adds a distinct ref. Explicit --rebatch-published-target-sha also permits a prepare/conflict refreshed publication with identical source custody and a strict descendant advance at that exact target. Every captured root is retained; existing safe supersession retires the old PR. Append-only evidence preserves the original receipt. --rebatch-audit-only proves this recovery without creating candidates, changing receipts, or retiring PRs."
               ]
             }
           ],

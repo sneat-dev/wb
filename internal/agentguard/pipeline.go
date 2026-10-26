@@ -126,7 +126,7 @@ var valueFlags = setOf(
 	"--max-waves", "--merge-method", "--message", "--mode", "--model", "--module-ref",
 	"--new-worktree", "--note", "--older-than", "--on-failure", "--org", "--original-prompt-file",
 	"--override-secret", "--parallel", "--peer-evidence", "--pid", "--poll-interval",
-	"--prepare-timeout", "--profile", "--projects-root", "--provider", "--reason", "--rebatch-receipt", "--ref", "--replacement", "--retention",
+	"--prepare-timeout", "--profile", "--projects-root", "--provider", "--reason", "--rebatch-receipt", "--rebatch-published-target-sha", "--ref", "--replacement", "--retention",
 	"--refresh-after", "--regex", "--release-poll", "--remaining", "--repo", "--report-dir",
 	"--require-host", "--residue-depth", "--retry", "--review-comment",
 	"--review-comment-file", "--role", "--route", "--run", "--runtime", "--scope",

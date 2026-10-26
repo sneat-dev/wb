@@ -1,14 +1,15 @@
 package landinglane
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/session"
 )
 
@@ -66,7 +67,17 @@ func releaseIdle(home, repository, target, wbSessionID string, alive func(int) b
 // the operation or guessing from heartbeat age. Hold the lane lock throughout
 // this observation and removal; commands acquiring later create a fresh claim.
 func legacyOperationActive() (bool, error) {
-	return legacyOperationActiveWith(func() ([]byte, error) { return exec.Command("ps", "-A", "-o", "pid=", "-o", "comm=").Output() })
+	return legacyOperationActiveWithRunner(runner.New())
+}
+
+func legacyOperationActiveWithRunner(run runner.Runner) (bool, error) {
+	return legacyOperationActiveWith(func() ([]byte, error) {
+		result, err := run.RunOpts(context.Background(), "", runner.RunOptions{}, "ps", "-A", "-o", "pid=", "-o", "comm=")
+		if err != nil {
+			return []byte(result.Stdout), fmt.Errorf("%w: %s", err, strings.TrimSpace(result.Stderr))
+		}
+		return []byte(result.Stdout), nil
+	})
 }
 
 func legacyOperationActiveWith(snapshot func() ([]byte, error)) (bool, error) {
