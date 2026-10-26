@@ -2301,11 +2301,15 @@ func writeEngineGoModule(t *testing.T, root, source string) {
 	writeEngineFile(t, filepath.Join(root, "app.go"), source)
 }
 
-func createMergeSourceOnBase(t *testing.T, fixture engineFixture, task, branch, base, name, contents string) worktrees.CreateResult {
+func createMergeSourceOnBase(t *testing.T, fixture engineFixture, task, branch, base, name, contents string, efforts ...string) worktrees.CreateResult {
 	t.Helper()
 	prompt := filepath.Join(t.TempDir(), "prompt.txt")
 	if err := os.WriteFile(prompt, []byte("prepare merge fixture\n"), 0o600); err != nil {
 		t.Fatal(err)
+	}
+	effort := task
+	if len(efforts) > 0 {
+		effort = efforts[0]
 	}
 	created, err := worktrees.Create(context.Background(), []string{fixture.repository.Slug}, worktrees.CreateOptions{
 		ProjectsRoot: fixture.githubDir,
@@ -2314,7 +2318,7 @@ func createMergeSourceOnBase(t *testing.T, fixture engineFixture, task, branch, 
 		BranchChosen: true,
 		Base:         base,
 		WorkLog: worktrees.WorkLogOptions{
-			EffortID: task, RunID: task + "-run", Initiator: "test", AgentID: task,
+			EffortID: effort, RunID: task + "-run", Initiator: "test", AgentID: task,
 			AgentRuntime: "test", Model: "test-model", OriginalPrompt: prompt, RequireOriginalPrompt: true,
 		},
 	})
