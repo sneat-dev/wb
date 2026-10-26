@@ -11,7 +11,8 @@ import (
 // mergeAcknowledgementDocument keeps this writer bound to the existing audit
 // schemas. Marshal errors remain meaningful: these records contain time.Time.
 type mergeAcknowledgementDocument interface {
-	WorktreeMergeReceiptCollisionAcknowledgement |
+	WorktreeMergeUnpublishedConflictAcknowledgement |
+		WorktreeMergeReceiptCollisionAcknowledgement |
 		WorktreeMergePreparedRebatch |
 		WorktreeMergeLandedFailureAcknowledgement |
 		WorktreeMergeConflictCandidateAdvance |

@@ -177,6 +177,7 @@ wb worktree merge supersede-validation-failed /path/to/merge-receipt /path/to/re
 	inv.bindings.Landing(command, "worktree")
 	bindWorktreeMergeFlags(command, &flags, true, true, false)
 	command.AddCommand(newWorktreeMergePrepareCmd(inv), newWorktreeMergeLandCmd(inv, "land"), newWorktreeMergeLandCmd(inv, "resume"), newWorktreeMergeRevertCmd(inv))
+	command.AddCommand(newWorktreeMergeAcknowledgeUnpublishedConflictCmd(inv))
 	command.AddCommand(newWorktreeMergeAcknowledgeLandedFailedCmd(inv), newWorktreeMergeAcknowledgeStrandedLandingCmd(inv), newWorktreeMergeAcknowledgeAbsorbedConflictCmd(inv), newWorktreeMergeAcknowledgeRetiredPrepareCandidateCmd(inv), newWorktreeMergeAcknowledgeRetiredPublicationCmd(inv), newWorktreeMergeAcknowledgeUnpublishedValidationFailureCmd(inv), newWorktreeMergeAcknowledgeMissingCleanupCmd(inv), newWorktreeMergeAcknowledgeTargetAbsorbedCmd(inv), newWorktreeMergeAcknowledgeReceiptCollisionCmd(inv), newWorktreeMergeAdoptPublishedCandidateCmd(inv), newWorktreeMergeSealValidationFailedCmd(inv), newWorktreeMergeSupersedeValidationFailedCmd(inv), newWorktreeMergeCorrectSelfSupersessionCmd(inv), newWorktreeMergePreparePublishedForwardRepairCmd(inv), newWorktreeMergePrepareConflictReplacementCmd(inv))
 	return command
 }

@@ -59,7 +59,7 @@ and `--format` (`text`, the default, or `json`).
 
 Mutation admission flags are command-specific: `worktree adopt`,
 `worktree rename`, and the recovery leaves `worktree merge
-acknowledge-landed-failed`/`acknowledge-missing-cleanup`/`acknowledge-target-absorbed`/`acknowledge-stranded-landing`/`acknowledge-absorbed-conflict`/`acknowledge-retired-prepare-candidate`/`acknowledge-retired-publication`/`acknowledge-retired-unpublished-validation-failure`/`acknowledge-receipt-collision`/`adopt-published-candidate`/`seal-validation-failed`/`supersede-validation-failed`/`prepare-published-forward-repair` expose `--mode` and
+acknowledge-landed-failed`/`acknowledge-missing-cleanup`/`acknowledge-target-absorbed`/`acknowledge-stranded-landing`/`acknowledge-absorbed-conflict`/`acknowledge-retired-prepare-candidate`/`acknowledge-retired-publication`/`acknowledge-retired-unpublished-validation-failure`/`acknowledge-unpublished-conflict`/`acknowledge-receipt-collision`/`adopt-published-candidate`/`seal-validation-failed`/`supersede-validation-failed`/`prepare-published-forward-repair` expose `--mode` and
 `--initiator` (only `--apply` requires admission); `worktree own` and
 `worktree correct-identity` always mutate and therefore use the same flags.
 Work Log mutation leaves inherit these flags from `worktree log`; `show`, and
@@ -139,6 +139,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `worktree abort` | yes | yes | rejected | yes |
 | `create` (root alias), `worktree create`, `guard`, `log`, `info` | yes | rejected | rejected | yes |
 | `worktree end` | yes | rejected | rejected | yes |
+| `worktree merge acknowledge-unpublished-conflict` | yes | rejected | rejected | yes |
 | `land` (root alias), `worktree land` | yes | rejected | rejected | yes |
 | `worktree merge`, `merge prepare` (including `--rebatch-receipt` and target-fenced `--rebatch-published-target-sha`, with read-only `--rebatch-audit-only`), `merge land`, `merge resume` (including PR-only `--stop-before-merge`), `merge revert`, `merge acknowledge-landed-failed`, `merge acknowledge-missing-cleanup`, `merge acknowledge-target-absorbed`, `merge acknowledge-stranded-landing`, `merge acknowledge-absorbed-conflict`, `merge acknowledge-retired-prepare-candidate`, `merge acknowledge-retired-publication`, `merge acknowledge-retired-unpublished-validation-failure`, `merge acknowledge-receipt-collision`, `merge adopt-published-candidate`, `merge seal-validation-failed`, `merge supersede-validation-failed`, `merge prepare-published-forward-repair` | yes | rejected | rejected | yes |
 | `worktree log init`, `steer`, `show`, `checkpoint`, `refresh`, `integrate`, `handoff`, `recover`, `finalize`, `sync`, `archive` | yes | rejected | rejected | yes |
