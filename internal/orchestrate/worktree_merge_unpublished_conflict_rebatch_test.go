@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/githubobserver"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 // Both candidates and source branches are genuine WB-created Git worktrees.
@@ -29,7 +30,17 @@ func TestUnpublishedConflictPreservesExactRebatchedCandidateCustody(t *testing.T
 			if err := persistWorktreeMergeReceipt(old); err != nil {
 				t.Fatal(err)
 			}
-			extra := createMergeSource(t, f, "rebatch-extra", "feature/rebatch-extra", "extra.txt", "extra work\n")
+			extraBase := "main"
+			if published {
+				extraBase = old.Candidate.Branch
+			}
+			extra := createMergeSourceOnBase(t, f, "rebatch-extra", "feature/rebatch-extra", extraBase, "extra.txt", "extra work\n")
+			if published {
+				view, err := worktrees.LoadWorkLogView(t.Context(), worktrees.LoadWorkLogOptions{ProjectsRoot: f.githubDir, Worktree: extra.WorktreeDir})
+				if err != nil || view.Claim == nil || view.Claim.Base != old.Candidate.Branch || view.Claim.BaseSHA != old.Candidate.SHA {
+					t.Fatalf("native source lacks exact predecessor branch/base: %+v %v", view.Claim, err)
+				}
+			}
 			r, err := PrepareWorktreeMerge(t.Context(), WorktreeMergePrepareOptions{ProjectsRoot: f.githubDir, Sources: []string{old.Sources[0].Worktree, extra.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test", RebatchReceipt: old.ReceiptPath})
 			if err != nil {
 				t.Fatal(err)

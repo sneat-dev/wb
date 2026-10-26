@@ -222,7 +222,7 @@ func inspectUnpublishedConflictWithPorts(ctx context.Context, root string, r Wor
 		if err != nil {
 			return zero, err
 		}
-		if !mergeClaimMatchesIdentity(view.Claim, r.Repository, source.Task, source.Worktree, source.Branch) || view.Claim.Base != r.Target || view.Claim.BaseSHA == "" || view.Claim.ClaimID == "" {
+		if !mergeClaimMatchesIdentity(view.Claim, r.Repository, source.Task, source.Worktree, source.Branch) || !unpublishedConflictClaimBaseMatches(view.Claim.Base, view.Claim.BaseSHA, r.Target, index > 0 && index <= len(r.Sources), lineage) || view.Claim.BaseSHA == "" || view.Claim.ClaimID == "" {
 			return zero, errors.New("preserved checkout lacks its exact active immutable claim identity")
 		}
 		if index == 0 && view.Claim.BaseSHA != r.TargetSHA {
@@ -297,6 +297,23 @@ func inspectUnpublishedConflictWithPorts(ctx context.Context, root string, r Wor
 	ack.RebatchOf, ack.RebatchedCandidates, ack.RebatchProofs = r.RebatchOf, append([]WorktreeMergeCandidate(nil), r.RebatchedCandidates...), lineage
 	ack.ID = unpublishedConflictProofID(ack)
 	return ack, nil
+}
+
+// Only source claims may name a different base, and only the exact branch/SHA
+// pair from the already authenticated rebatch lineage. The caller separately
+// proves base ancestry, complete claim identity, and predecessor publication.
+func unpublishedConflictClaimBaseMatches(base, baseSHA, target string, isSource bool, lineage []UnpublishedConflictRebatchProof) bool {
+	if base == target {
+		return true
+	}
+	if isSource {
+		for _, proof := range lineage {
+			if base == proof.Candidate.Branch && baseSHA == proof.Candidate.SHA {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func unpublishedConflictProofID(ack WorktreeMergeUnpublishedConflictAcknowledgement) string {

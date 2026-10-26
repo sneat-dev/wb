@@ -404,6 +404,11 @@ one fresh CLOSED/unmerged PR snapshot with exact repository, target, branch and
 head identity, and the exact surviving remote ref. Their publication is recorded
 as closed superseded custody, rather than described as unpublished. All chain
 receipt and acknowledgement hashes participate in the reviewed proof ID.
+A source claim may use a predecessor candidate as its base only when both its
+base branch and immutable base SHA exactly match that authenticated lineage.
+Its source HEAD must still contain that base, and every predecessor checkout,
+claim and publication proof remains required. Current and prior candidate
+claims keep their target-base requirements; other non-target source bases refuse.
 
 If a historical supersession acknowledgement incorrectly named the failed
 candidate as its own replacement, do not edit it. Use
