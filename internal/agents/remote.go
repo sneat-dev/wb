@@ -49,14 +49,15 @@ type RemoteRequest struct {
 	Operation     string `json:"operation"`
 
 	// dispatch
-	Mode       string `json:"mode,omitempty"`
-	Worktree   string `json:"worktree,omitempty"`
-	Profile    string `json:"profile,omitempty"`
-	Task       string `json:"task,omitempty"`
-	Repository string `json:"repository,omitempty"`
-	Branch     string `json:"branch,omitempty"`
-	Base       string `json:"base,omitempty"`
-	TimeoutMS  int64  `json:"timeout_ms,omitempty"`
+	Mode       string        `json:"mode,omitempty"`
+	Worktree   string        `json:"worktree,omitempty"`
+	Profile    string        `json:"profile,omitempty"`
+	Task       string        `json:"task,omitempty"`
+	Repository string        `json:"repository,omitempty"`
+	Branch     string        `json:"branch,omitempty"`
+	Base       string        `json:"base,omitempty"`
+	TimeoutMS  int64         `json:"timeout_ms,omitempty"`
+	Caller     CallerSession `json:"caller_session,omitzero"`
 
 	// status, await, logs, stop
 	AgentID       string `json:"agent_id,omitempty"`
@@ -88,6 +89,9 @@ func (request RemoteRequest) Validate() error {
 	}
 	switch request.Operation {
 	case RemoteDispatch:
+		if err := request.Caller.Validate(); err != nil {
+			return err
+		}
 		if request.Mode != ModeNew && request.Mode != ModeExisting {
 			return fmt.Errorf("remote dispatch mode %q must be %q or %q", request.Mode, ModeNew, ModeExisting)
 		}

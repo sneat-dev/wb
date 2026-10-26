@@ -183,6 +183,18 @@ type CostRecord struct {
 	Note           string     `json:"note,omitempty"`
 }
 
+// CallerSession identifies the session that invoked WB to dispatch this run.
+// The native ID wins when a harness exposes one: several Codex chats can share
+// one app-server PID and therefore one PID-based WB registration.
+type CallerSession struct {
+	ID              string `json:"session_id,omitempty"`
+	WBSessionID     string `json:"wb_session_id,omitempty"`
+	NativeHarnessID string `json:"native_harness_id,omitempty"`
+	Name            string `json:"name,omitempty"`
+	Runtime         string `json:"runtime,omitempty"`
+	Source          string `json:"source,omitempty"`
+}
+
 // ValidationStepResult is one executed objective check.
 type ValidationStepResult struct {
 	Name       string   `json:"name"`
@@ -254,13 +266,14 @@ type Record struct {
 	TaskSHA256 string `json:"task_sha256,omitempty"`
 	TaskBytes  int    `json:"task_bytes,omitempty"`
 
-	Repository   string `json:"repository"`
-	WorktreeMode string `json:"worktree_mode"`
-	Worktree     string `json:"worktree"`
-	WorktreeDir  string `json:"worktree_dir,omitempty"`
-	Branch       string `json:"branch,omitempty"`
-	Base         string `json:"base,omitempty"`
-	BaseSHA      string `json:"base_sha,omitempty"`
+	Repository   string        `json:"repository"`
+	Caller       CallerSession `json:"caller_session,omitzero"`
+	WorktreeMode string        `json:"worktree_mode"`
+	Worktree     string        `json:"worktree"`
+	WorktreeDir  string        `json:"worktree_dir,omitempty"`
+	Branch       string        `json:"branch,omitempty"`
+	Base         string        `json:"base,omitempty"`
+	BaseSHA      string        `json:"base_sha,omitempty"`
 
 	// SourceSHA is the commit the writable checkout was at when the run
 	// started, and SnapshotSHA the stash commit a dirty checkout produced, so a
@@ -373,6 +386,7 @@ type Result struct {
 	HarnessVersion      string              `json:"harness_version,omitempty"`
 	HarnessCapabilities HarnessCapabilities `json:"harness_capabilities"`
 	Repository          string              `json:"repository"`
+	Caller              CallerSession       `json:"caller_session,omitzero"`
 	WorktreeMode        string              `json:"worktree_mode"`
 	Worktree            string              `json:"worktree"`
 	WorktreeDir         string              `json:"worktree_dir,omitempty"`
@@ -499,7 +513,7 @@ func (store Store) Render(record Record) Result {
 		EffortApplied: record.EffortApplied, EffortNote: record.EffortNote,
 		WorktreeSource: record.WorktreeSource, TimeoutSource: record.TimeoutSource,
 		HarnessVersion: record.HarnessVersion, HarnessCapabilities: record.HarnessCapabilities,
-		Repository:   record.Repository,
+		Repository: record.Repository, Caller: record.Caller,
 		WorktreeMode: record.WorktreeMode, Worktree: record.Worktree,
 		WorktreeDir: record.WorktreeDir, Branch: record.Branch,
 		Base: record.Base, BaseSHA: record.BaseSHA,

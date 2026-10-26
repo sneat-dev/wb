@@ -111,7 +111,15 @@ wb agent await <agent-id> --format json
 wb agent status <agent-id> --format json
 wb agent logs <agent-id>
 wb agent stop <agent-id>
+wb agent stats --format json
 ```
+
+`wb agent stats` groups retained runs by calling session, repository, and
+session/repository pair. `--session <id>` and `--repo <owner/repo>` narrow the
+report. WB uses a harness-native session ID when available (for example a Codex
+thread ID), otherwise a registered WB session ID. Older unattributed runs remain
+visible with an empty session ID. Usage and cost totals include only runs whose
+harness supplied those measurements.
 
 `await` reports the still-running state truthfully if its bound elapses; that is
 not a success. `stop` (alias `cancel`) records `cancelled`, which is distinct

@@ -45,7 +45,9 @@ func Handle(ctx context.Context, ops Operations, root string, stderr io.Writer, 
 	lookup := LookupRequest{root, r.AgentID}
 	switch r.Operation {
 	case agents.RemoteDispatch:
-		result, err := ops.Dispatch(ctx, DispatchRequest{root, stderr, agents.DispatchRequest{Mode: r.Mode, Worktree: r.Worktree, Profile: r.Profile, Task: r.Task, Repository: r.Repository, Branch: r.Branch, Base: r.Base, Timeout: time.Duration(r.TimeoutMS) * time.Millisecond}})
+		result, err := ops.Dispatch(ctx, DispatchRequest{ProjectsRoot: root, Stderr: stderr, Remote: true, Caller: r.Caller,
+			Request: agents.DispatchRequest{Mode: r.Mode, Worktree: r.Worktree, Profile: r.Profile, Task: r.Task,
+				Repository: r.Repository, Branch: r.Branch, Base: r.Base, Timeout: time.Duration(r.TimeoutMS) * time.Millisecond}})
 		if err != nil {
 			return err
 		}

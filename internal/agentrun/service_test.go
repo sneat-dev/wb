@@ -78,7 +78,7 @@ func TestDispatchUsesActualDependencyBuilderAndPreservesRequests(t *testing.T) {
 		return agents.Record{AgentID: "id", State: agents.StateCompleted}, nil
 	}
 	service := New(deps)
-	result, err := service.Dispatch(ctx, DispatchRequest{root, &warning, request})
+	result, err := service.Dispatch(ctx, DispatchRequest{ProjectsRoot: root, Stderr: &warning, Request: request})
 	if err != nil || result.AgentID != "id" || !result.Terminal || !reflect.DeepEqual(calls, []string{"config", "before", "after", "spawn"}) {
 		t.Fatal(result, err, calls)
 	}
@@ -91,6 +91,34 @@ func TestDispatchUsesActualDependencyBuilderAndPreservesRequests(t *testing.T) {
 	deps.EnsureRoot = func(string) (string, error) { return "", sentinel }
 	if _, err := New(deps).Dispatch(ctx, DispatchRequest{}); err != sentinel {
 		t.Fatal(err)
+	}
+}
+
+func TestRemotePrepareDispatchPreservesSourceCallerWithoutTargetInference(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("CODEX_THREAD_ID", "thread-on-target")
+	service := New(DefaultDependencies())
+	_, local, err := service.PrepareDispatch(DispatchRequest{ProjectsRoot: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if local.Caller.ID != "thread-on-target" {
+		t.Fatal(local.Caller)
+	}
+	source := agents.CallerSession{ID: "thread-on-source", Runtime: "codex", Source: "CODEX_THREAD_ID"}
+	_, remote, err := service.PrepareDispatch(DispatchRequest{ProjectsRoot: root, Remote: true, Caller: source})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if remote.Caller != source {
+		t.Fatalf("remote caller replaced by target: %+v", remote.Caller)
+	}
+	_, oldRemote, err := service.PrepareDispatch(DispatchRequest{ProjectsRoot: root, Remote: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oldRemote.Caller.ID != "" {
+		t.Fatalf("older remote request acquired target identity: %+v", oldRemote.Caller)
 	}
 }
 func TestReadOperationsUseAnImmutableTerminalCorpus(t *testing.T) {
