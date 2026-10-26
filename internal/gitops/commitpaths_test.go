@@ -1,3 +1,5 @@
+//go:build e2e
+
 package gitops
 
 import (
@@ -24,7 +26,9 @@ func writeRepoFile(t *testing.T, repo, relative, content string) {
 // CommitPaths records additions, modifications and deletions as one commit
 // on the branch, leaves the shared index matching the new HEAD, and reports
 // false for a second, identical call.
-func TestCommitPathsCommitsWorkingTreeStateAndLeavesTheIndexClean(t *testing.T) {
+//
+//nolint:paralleltest // Git fixtures or failure scripts override process-wide Git identity, PATH, or TMPDIR.
+func TestE2ECommitPathsCommitsWorkingTreeStateAndLeavesTheIndexClean(t *testing.T) {
 	_, clone := seededOriginAndClone(t)
 	writeRepoFile(t, clone, "claims/keep.yaml", "keep\n")
 	writeRepoFile(t, clone, "claims/drop.yaml", "drop\n")
@@ -60,7 +64,9 @@ func TestCommitPathsCommitsWorkingTreeStateAndLeavesTheIndexClean(t *testing.T) 
 }
 
 // The first commit into an unborn branch has no parent and creates it.
-func TestCommitPathsCreatesTheFirstCommitOnAnUnbornBranch(t *testing.T) {
+//
+//nolint:paralleltest // Git fixtures or failure scripts override process-wide Git identity, PATH, or TMPDIR.
+func TestE2ECommitPathsCreatesTheFirstCommitOnAnUnbornBranch(t *testing.T) {
 	setGitIdentity(t)
 	repo := t.TempDir()
 	gitIn(t, repo, "init", "-q", "-b", "main")
@@ -82,7 +88,9 @@ func TestCommitPathsCreatesTheFirstCommitOnAnUnbornBranch(t *testing.T) {
 // that refuses — as WB's canonical-clean guard did in the remote-store clone —
 // or a commit that fails for any other reason leaves nothing staged in the
 // shared index (sneat-dev/wb#899).
-func TestCommitPathsRunsHooksAndNeverLeavesTheSharedIndexStaged(t *testing.T) {
+//
+//nolint:paralleltest // Git fixtures or failure scripts override process-wide Git identity, PATH, or TMPDIR.
+func TestE2ECommitPathsRunsHooksAndNeverLeavesTheSharedIndexStaged(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("hook scripts rely on a POSIX shell")
 	}
@@ -117,7 +125,9 @@ func TestCommitPathsRunsHooksAndNeverLeavesTheSharedIndexStaged(t *testing.T) {
 }
 
 // Every git step's failure is reported, never read as "nothing to commit".
-func TestCommitPathsReportsEachGitStepFailure(t *testing.T) {
+//
+//nolint:paralleltest // Git fixtures or failure scripts override process-wide Git identity, PATH, or TMPDIR.
+func TestE2ECommitPathsReportsEachGitStepFailure(t *testing.T) {
 	notAnIndex := t.TempDir() // a directory: reading it as the index fails
 	for name, body := range map[string]string{
 		"locate index": `case "$1" in rev-parse) exit 1;; esac; exit 0`,
@@ -126,6 +136,7 @@ func TestCommitPathsReportsEachGitStepFailure(t *testing.T) {
 		"inspect":      `case "$1" in rev-parse) echo /nonexistent/index;; diff) exit 128;; esac; exit 0`,
 		"commit":       `case "$1" in rev-parse) echo /nonexistent/index;; diff) exit 1;; commit) exit 1;; esac; exit 0`,
 	} {
+		//nolint:paralleltest // Child fixtures override process-wide Git identity, PATH, or TMPDIR.
 		t.Run(name, func(t *testing.T) {
 			lgCovFakeGit(t, body)
 			if committed, err := CommitPaths(t.TempDir(), "msg", "claims"); err == nil || committed {
@@ -133,6 +144,7 @@ func TestCommitPathsReportsEachGitStepFailure(t *testing.T) {
 			}
 		})
 	}
+	//nolint:paralleltest // Child fixtures override process-wide Git identity, PATH, or TMPDIR.
 	t.Run("scratch index directory", func(t *testing.T) {
 		t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "missing"))
 		if committed, err := CommitPaths(t.TempDir(), "msg", "claims"); err == nil || committed {
@@ -143,7 +155,9 @@ func TestCommitPathsReportsEachGitStepFailure(t *testing.T) {
 
 // ChangedPaths lists one entry per changed file, with untracked directories
 // expanded, and reports a failing status.
-func TestChangedPathsListsEveryChangedFile(t *testing.T) {
+//
+//nolint:paralleltest // Git fixtures or failure scripts override process-wide Git identity, PATH, or TMPDIR.
+func TestE2EChangedPathsListsEveryChangedFile(t *testing.T) {
 	_, clone := seededOriginAndClone(t)
 	writeRepoFile(t, clone, "tracked.txt", "a\n")
 	gitIn(t, clone, "add", "tracked.txt")
@@ -176,7 +190,9 @@ func TestChangedPathsListsEveryChangedFile(t *testing.T) {
 
 // DiscardPaths undoes staged and unstaged changes, restores a deleted tracked
 // file, removes a staged new file, and tolerates a path already gone.
-func TestDiscardPathsReturnsPathsToHead(t *testing.T) {
+//
+//nolint:paralleltest // Git fixtures or failure scripts override process-wide Git identity, PATH, or TMPDIR.
+func TestE2EDiscardPathsReturnsPathsToHead(t *testing.T) {
 	_, clone := seededOriginAndClone(t)
 	writeRepoFile(t, clone, "machines/me/snapshot.yaml", "committed\n")
 	writeRepoFile(t, clone, "claims/old.yaml", "old\n")
@@ -202,12 +218,15 @@ func TestDiscardPathsReturnsPathsToHead(t *testing.T) {
 }
 
 // Every DiscardPaths step's failure is reported.
-func TestDiscardPathsReportsEachStepFailure(t *testing.T) {
+//
+//nolint:paralleltest // Git fixtures or failure scripts override process-wide Git identity, PATH, or TMPDIR.
+func TestE2EDiscardPathsReportsEachStepFailure(t *testing.T) {
 	for name, body := range map[string]string{
 		"reset":          `case "$1" in reset) exit 1;; esac; exit 0`,
 		"ls-files":       `case "$1" in ls-files) exit 1;; esac; exit 0`,
 		"checkout-index": `case "$1" in ls-files) printf 'claims/a.yaml\0';; checkout-index) exit 1;; esac; exit 0`,
 	} {
+		//nolint:paralleltest // Child fixtures override process-wide Git identity, PATH, or TMPDIR.
 		t.Run(name, func(t *testing.T) {
 			lgCovFakeGit(t, body)
 			if err := DiscardPaths(t.TempDir(), "claims/a.yaml"); err == nil {
@@ -215,6 +234,7 @@ func TestDiscardPathsReportsEachStepFailure(t *testing.T) {
 			}
 		})
 	}
+	//nolint:paralleltest // Child fixtures override process-wide Git identity, PATH, or TMPDIR.
 	t.Run("remove", func(t *testing.T) {
 		lgCovFakeGit(t, `exit 0`)
 		repo := t.TempDir()
@@ -228,7 +248,9 @@ func TestDiscardPathsReportsEachStepFailure(t *testing.T) {
 
 // Warnings git prints on stderr (an unreadable directory, say) are never
 // parsed as changed paths.
-func TestChangedPathsIgnoresGitWarnings(t *testing.T) {
+//
+//nolint:paralleltest // Git fixtures or failure scripts override process-wide Git identity, PATH, or TMPDIR.
+func TestE2EChangedPathsIgnoresGitWarnings(t *testing.T) {
 	lgCovFakeGit(t, `echo "warning: could not open directory 'machines/': Permission denied" >&2; printf ' M notes.md\0'; exit 0`)
 	changed, err := ChangedPaths(t.TempDir())
 	if err != nil {

@@ -44,6 +44,7 @@ func seededOriginAndClone(t *testing.T) (origin, clone string) {
 	return origin, clone
 }
 
+//nolint:paralleltest // Git fixtures or failure scripts override process-wide Git identity, PATH, or TMPDIR.
 func TestCommitPathsPushAndHeadSHA(t *testing.T) {
 	origin, clone := seededOriginAndClone(t)
 	if err := os.WriteFile(filepath.Join(clone, "a.txt"), []byte("a"), 0o644); err != nil {

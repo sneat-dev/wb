@@ -267,7 +267,7 @@ internal/remotestate/gitrepo/provider_dqcov_test.go	2	task-15
 internal/remotestate/gitrepo/provider_test.go	43	task-15
 internal/remotestate/gitrepo/sync_report_dqcov_test.go	4	task-15
 internal/remotestate/gitrepo/sync_report_test.go	4	task-15
-internal/remotestate/gitrepo/zz_dqcov_helpers_test.go	19	task-15
+internal/remotestate/gitrepo/zz_dqcov_helpers_test.go	18	task-15
 internal/remotestate/gitrepo/zz_dqcov_shim_test.go	2	task-15
 internal/repopath/repopath_test.go	10	task-15
 internal/repositoryevents/processor_test.go	52	task-15

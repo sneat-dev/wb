@@ -15,7 +15,7 @@ import (
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
-func TestRefreshedPublicationRebatchPreservesOriginalAndRejectsChangedProof(t *testing.T) {
+func TestE2ERefreshedPublicationRebatchPreservesOriginalAndRejectsChangedProof(t *testing.T) {
 	f := newEngineFixture(t)
 	source := createMergeSource(t, f, "refreshed-source", "feature/refreshed", "source.txt", "source\n")
 	opts := WorktreeMergePrepareOptions{ProjectsRoot: f.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test"}

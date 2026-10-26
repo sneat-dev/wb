@@ -295,6 +295,7 @@ func TestDQCovMutateStoreReportsMutateError(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // Git fixtures override process-wide author, committer, and maintenance environment.
 func TestMutateStoreReportsCommitError(t *testing.T) {
 	origin := dqCovEmptyBareOrigin(t)
 	p := machine(t, origin)

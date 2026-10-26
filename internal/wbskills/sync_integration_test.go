@@ -369,8 +369,9 @@ func TestEmbeddedSkillsHarnessJourneys(t *testing.T) {
 // TestEmbeddedAgentSkillInstallsForClaudeAndCodex is the acceptance check for the
 // execution skill: one canonical source, installed by the existing bundle for
 // both orchestrator harnesses without a harness-specific copy.
+//
+//nolint:paralleltest // The installation assertions require process-wide HOME and harness-home overrides.
 func TestEmbeddedAgentSkillInstallsForClaudeAndCodex(t *testing.T) {
-	//nolint:paralleltest // the assertions rely on process-wide HOME overrides
 	cfg, err := wbskills.Config(ai.SkillsFS, buildinfo.Snapshot())
 	if err != nil {
 		t.Fatal(err)

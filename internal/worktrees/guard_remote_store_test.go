@@ -1,3 +1,5 @@
+//go:build e2e
+
 package worktrees
 
 import (
@@ -12,7 +14,9 @@ import (
 // guard admits it with uncommitted changes (WB's commit there briefly has the
 // claim it is committing staged), while every other canonical clone stays
 // held to the canonical-clean rule (sneat-dev/wb#899).
-func TestGuardAdmitsTheConfiguredRemoteStoreCloneWithLocalChanges(t *testing.T) {
+//
+//nolint:paralleltest // newGitFixture overrides process-wide HOME and WB/XDG roots.
+func TestE2EGuardAdmitsTheConfiguredRemoteStoreCloneWithLocalChanges(t *testing.T) {
 	fixture := newGitFixture(t)
 	claim := filepath.Join(fixture.canonical, "claims", "task.yaml")
 	if err := os.MkdirAll(filepath.Dir(claim), 0o755); err != nil {
