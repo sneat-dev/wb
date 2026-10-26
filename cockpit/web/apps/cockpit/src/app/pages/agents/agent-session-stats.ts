@@ -16,6 +16,7 @@ export class AgentSessionStats {
   protected readonly loading = signal(false)
   protected readonly error = signal(false)
   protected readonly query = signal('')
+  protected readonly days = signal<7 | 30 | 90>(30)
   protected readonly owner = computed(() => this.store.session()?.principal === 'owner')
   private requestVersion = 0
 
@@ -44,6 +45,14 @@ export class AgentSessionStats {
     this.query.set((event.target as HTMLInputElement).value)
   }
 
+  protected setWindow(event: Event): void {
+    const selected = Number((event.target as HTMLSelectElement).value)
+    if (selected !== 7 && selected !== 30 && selected !== 90) return
+    this.days.set(selected)
+    this.report.set(null)
+    void this.load()
+  }
+
   protected refresh(): void {
     void this.load()
   }
@@ -53,7 +62,7 @@ export class AgentSessionStats {
     this.loading.set(true)
     this.error.set(false)
     try {
-      const report = await readAgentSessionStats(this.fetcher)
+      const report = await readAgentSessionStats(this.fetcher, this.days())
       if (version === this.requestVersion && this.owner()) this.report.set(report)
     } catch {
       if (version === this.requestVersion && this.owner()) {

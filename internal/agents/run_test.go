@@ -274,6 +274,52 @@ func TestStoreListReportsACorruptRecordRatherThanHidingIt(t *testing.T) {
 	}
 }
 
+func TestStoreListSinceSkipsOldDirectoriesAndOldRuns(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t)
+	cutoff := time.Now().UTC().Add(-7 * 24 * time.Hour)
+	old := sampleRecord(t)
+	old.StartedAt = cutoff.Add(-time.Hour)
+	if err := store.Create(old); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store.RecordPath(old.AgentID), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(store.Dir(old.AgentID), cutoff.Add(-time.Hour), cutoff.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	recent := sampleRecord(t)
+	if err := store.Create(recent); err != nil {
+		t.Fatal(err)
+	}
+	staleUpdated := sampleRecord(t)
+	staleUpdated.StartedAt = cutoff.Add(-time.Minute)
+	if err := store.Create(staleUpdated); err != nil {
+		t.Fatal(err)
+	}
+	records, err := store.ListSince(cutoff)
+	if err != nil || len(records) != 1 || records[0].AgentID != recent.AgentID {
+		t.Fatalf("windowed list = %+v, %v", records, err)
+	}
+}
+
+func TestStoreListSinceReportsDirectoryInspectionFailure(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t)
+	record := sampleRecord(t)
+	if err := store.Create(record); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := errors.New("directory metadata unavailable")
+	_, err := store.listSinceWithInfo(time.Now().Add(-time.Hour), func(os.DirEntry) (os.FileInfo, error) {
+		return nil, sentinel
+	})
+	if !errors.Is(err, sentinel) || !strings.Contains(err.Error(), record.AgentID) {
+		t.Fatalf("directory inspection error = %v", err)
+	}
+}
+
 func TestRenderResolvesDeadRunsToAbandoned(t *testing.T) {
 	t.Parallel()
 	store := newTestStore(t)

@@ -49,8 +49,8 @@ func (world *promoteWorld) ports() *promoteLandingPorts {
 			return IssueComment{Body: world.review, PullRequest: world.reviewPR}, world.commentErr
 		},
 		review: &fakeCommitComments{comments: map[int64]CommitComment{9: {CommitID: world.laneCommit, Body: world.laneBody}}},
-		contains: func(_ context.Context, _, ancestor, _ string) (bool, string) {
-			if ancestor == "main" && world.containsErr == "" {
+		contains: func(_ context.Context, _, ancestor, candidate string) (bool, string) {
+			if ancestor == promoteBase && candidate == promoteHead && world.containsErr == "" {
 				return true, "" // the promotion contains its target
 			}
 			return world.contained, world.containsErr
@@ -87,7 +87,7 @@ func promotionCommits(world *promoteWorld) []SourceCommit {
 
 func promotionView() githubchecks.PullRequestView {
 	view := githubchecks.PullRequestView{Number: 7, Body: promoteMarker + "\nlanes"}
-	view.Head.SHA, view.Head.Ref, view.Base.Ref = promoteHead, "public-demo", "main"
+	view.Head.SHA, view.Head.Ref, view.Base.Ref, view.Base.SHA = promoteHead, "public-demo", "main", promoteBase
 	return view
 }
 
@@ -128,6 +128,22 @@ func TestPromotionGateLandsAReviewedPromotionWithoutUpdateBranchOrAutoMerge(t *t
 	ordinary := []SourceCommit{{SHA: promoteHead, Subject: "feat", Parents: []string{promoteBase}}}
 	if receipt, refusal, narrowed, err := runPromotionGate(world, plain, ordinary, ""); receipt != nil || refusal != nil || err != nil || narrowed.NoAutoMerge {
 		t.Fatal("an ordinary pull request went through the promotion gate")
+	}
+}
+
+func TestPromotionGateChecksExactBaseSHA(t *testing.T) {
+	t.Parallel()
+	world := newPromoteWorld()
+	ports := world.ports()
+	ports.contains = func(_ context.Context, _, target, candidate string) (bool, string) {
+		if candidate == promoteHead && target != promoteBase {
+			return false, "ancestry proof must use the exact target SHA"
+		}
+		return true, ""
+	}
+	options := PullRequestLandOptions{Repository: "acme/app", ApprovedBy: promoteApproval, promotePorts: ports}
+	if _, refusal, err := promotionLandingGate(context.Background(), &options, promotionView(), "7", promotionCommits(world)); err != nil || refusal != nil {
+		t.Fatalf("exact base SHA was refused: %+v, %v", refusal, err)
 	}
 }
 
@@ -265,7 +281,7 @@ func TestPromotionGateRefusesAPromotionBehindItsTarget(t *testing.T) {
 	t.Parallel()
 	world := newPromoteWorld()
 	ports := world.ports()
-	ports.contains = func(_ context.Context, _, ancestor, _ string) (bool, string) { return ancestor != "main", "" }
+	ports.contains = func(_ context.Context, _, ancestor, _ string) (bool, string) { return ancestor != promoteBase, "" }
 	options := PullRequestLandOptions{Repository: "acme/app", ApprovedBy: promoteApproval, promotePorts: ports}
 	_, refusal, err := promotionLandingGate(context.Background(), &options, promotionView(), "7", promotionCommits(world))
 	if err != nil || refusal == nil || refusal.code != LandRefusalBatchBehindTarget || !strings.Contains(refusal.command, "wb integration merge acme/app 'public-demo' --to 'main'") {

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/agentrun"
 	"github.com/sneat-dev/wb/internal/agents"
@@ -24,7 +26,19 @@ func registerCockpitAgentStats(server *cockpit.Server, projectsRoot string) {
 
 func agentSessionStatsHandler(projectsRoot string, list agentRunsList) cockpit.OwnerHandler {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		runs, err := list(request.Context(), agentrun.ListRequest{ProjectsRoot: projectsRoot})
+		days := 30
+		if raw := request.URL.Query().Get("days"); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || (parsed != 7 && parsed != 30 && parsed != 90) {
+				writer.Header().Set("Cache-Control", "no-store")
+				writer.Header().Set("Content-Type", "application/json")
+				writer.WriteHeader(http.StatusBadRequest)
+				_, _ = writer.Write([]byte("{\"error\":\"invalid_days\"}\n"))
+				return
+			}
+			days = parsed
+		}
+		runs, err := list(request.Context(), agentrun.ListRequest{ProjectsRoot: projectsRoot, Since: time.Now().UTC().AddDate(0, 0, -days)})
 		if err != nil {
 			writer.Header().Set("Cache-Control", "no-store")
 			writer.Header().Set("Content-Type", "application/json")
@@ -32,7 +46,10 @@ func agentSessionStatsHandler(projectsRoot string, list agentRunsList) cockpit.O
 			_, _ = writer.Write([]byte("{\"error\":\"agent_runs_unavailable\"}\n"))
 			return
 		}
-		body, err := json.Marshal(agents.SummarizeRuns(runs))
+		body, err := json.Marshal(struct {
+			agents.StatsReport
+			WindowDays int `json:"window_days"`
+		}{agents.SummarizeRuns(runs), days})
 		if err != nil {
 			writer.Header().Set("Cache-Control", "no-store")
 			writer.WriteHeader(http.StatusInternalServerError)

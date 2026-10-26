@@ -65,7 +65,7 @@ func Handle(ctx context.Context, ops Operations, root string, stderr io.Writer, 
 		}
 		response.Result = &result
 	case agents.RemoteList:
-		results, err := ops.List(ctx, ListRequest{root})
+		results, err := ops.List(ctx, ListRequest{ProjectsRoot: root})
 		if err != nil {
 			return err
 		}

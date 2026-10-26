@@ -145,7 +145,7 @@ func promotionLandingGate(ctx context.Context, options *PullRequestLandOptions, 
 	delta := promotionDeltaCommand(options.Repository, view)
 	// Never updated server-side, a promotion behind its target is refreshed
 	// by WB with a recorded merge instead.
-	if current, reason := ports.contains(ctx, options.Repository, view.Base.Ref, view.Head.SHA); reason != "" {
+	if current, reason := ports.contains(ctx, options.Repository, view.Base.SHA, view.Head.SHA); reason != "" {
 		return nil, nil, fmt.Errorf("check the promotion contains %s: %s", view.Base.Ref, reason)
 	} else if !current {
 		return nil, promoteRefusal(LandRefusalBatchBehindTarget, "the promotion does not contain "+view.Base.Ref+"; refresh it with a recorded merge, then promote again",

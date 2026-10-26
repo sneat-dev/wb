@@ -18,6 +18,7 @@ import (
 func landPromotionFixture(t *testing.T) (*landFixture, PullRequestLandOptions) {
 	t.Helper()
 	fixture := newLandFixture(t, "public-demo", "go.mod", "go.sum")
+	fixture.writeState(t, "base-sha", fixture.baseSHA)
 	fixture.writeState(t, "body", jsonEscapedBody(promoteMarker+"\nPromotes public-demo into main."))
 	// The commits as GitHub lists them, with parents, so the walk runs.
 	commits := make([]map[string]any, 0, len(fixture.commitSHAs))
@@ -133,9 +134,9 @@ func TestE2ELandFailsWhenThePromotionHistoryCannotBeRead(t *testing.T) {
 
 //nolint:paralleltest // Native Land fixture sets WB_PROJECTS_ROOT and installs the process-wide GH/PATH shim.
 func TestE2ELandRefusesAPromotionBehindItsTarget(t *testing.T) {
-	_, opts := landPromotionFixture(t)
+	fixture, opts := landPromotionFixture(t)
 	opts.ApprovedBy = "https://github.com/acme/app/pull/7#issuecomment-2"
-	opts.promotePorts.contains = func(_ context.Context, _, ancestor, _ string) (bool, string) { return ancestor != "main", "" }
+	opts.promotePorts.contains = func(_ context.Context, _, ancestor, _ string) (bool, string) { return ancestor != fixture.baseSHA, "" }
 	result, err := LandPullRequest(context.Background(), opts)
 	if err != nil {
 		t.Fatal(err)
