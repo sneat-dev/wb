@@ -50,6 +50,7 @@ func TestUnpublishedConflictPreservesExactRebatchedCandidateCustody(t *testing.T
 				t.Fatal(err)
 			}
 			state, head := "closed", old.Candidate.SHA
+			merged, mergedAt := false, "null"
 			ctx := githubobserver.WithReader(t.Context(), githubobserver.Reader{
 				Read: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 					if len(args) > 1 && args[0] == "pr" && args[1] == "list" {
@@ -67,7 +68,9 @@ func TestUnpublishedConflictPreservesExactRebatchedCandidateCustody(t *testing.T
 					if request.Endpoint != "repos/acme/app/pulls/41" {
 						return githubobserver.Response{}, fmt.Errorf("unexpected endpoint %s", request.Endpoint)
 					}
-					return githubobserver.Response{Body: []byte(fmt.Sprintf(`{"number":41,"state":%q,"merged":false,"head":{"ref":%q,"sha":%q,"repo":{"full_name":"acme/app"}},"base":{"ref":"main","repo":{"full_name":"acme/app"}}}`, state, old.Candidate.Branch, head))}, nil
+					// GitHub may retain a synthetic merge candidate SHA on a closed,
+					// unmerged PR. It does not establish that the PR was merged.
+					return githubobserver.Response{Body: []byte(fmt.Sprintf(`{"number":41,"state":%q,"merged":%t,"merged_at":%s,"merge_commit_sha":%q,"head":{"ref":%q,"sha":%q,"repo":{"full_name":"acme/app"}},"base":{"ref":"main","repo":{"full_name":"acme/app"}}}`, state, merged, mergedAt, old.TargetSHA, old.Candidate.Branch, head))}, nil
 				},
 			})
 			o := WorktreeMergeUnpublishedConflictOptions{ProjectsRoot: f.githubDir, Receipt: r.ReceiptPath, Actor: "operator", Reason: "preserve all rebatch custody"}
@@ -134,6 +137,16 @@ func TestUnpublishedConflictPreservesExactRebatchedCandidateCustody(t *testing.T
 					}
 				}
 				state = "closed"
+				merged = true
+				if err := proveClosedUnpublishedConflictPredecessor(ctx, old); err == nil {
+					t.Fatal("accepted a truly merged predecessor despite CLOSED state")
+				}
+				merged = false
+				mergedAt = `"2026-10-26T00:00:00Z"`
+				if err := proveClosedUnpublishedConflictPredecessor(ctx, old); err == nil {
+					t.Fatal("accepted predecessor with a merge timestamp")
+				}
+				mergedAt = "null"
 				head = "wrong-head"
 				if _, err := AcknowledgeUnpublishedConflict(ctx, o); err == nil {
 					t.Fatal("accepted drifted superseded PR head")
