@@ -12,6 +12,10 @@ agents:
     dsh-flash:
       harness: dsh
       model: deepseek-v4-flash
+    antigravity-worker:
+      harness: antigravity
+      model: gemini-3.1-pro-high # choose an available slug from agy models
+      effort: high
     cheap-codex:
       harness: codex
       provider: deepseek
@@ -23,6 +27,7 @@ agents:
 - `provider` is required for `codex` and names an entry in `agents.providers`.
   For `opencode` it is derived from the `provider/model` prefix and, if written,
   must match it. For `dsh` it is `deepseek-official`.
+  For `antigravity`, omit it: `agy` manages model routing and credentials.
 - `variant` is OpenCode only and is appended as `#variant` when the command is
   built. Keep it out of `model`: `model` must stay a legal execution
   identifier.
@@ -36,6 +41,7 @@ agents:
 | `codex` | `model_reasoning_effort` | passes `low`, `medium`, `high`, `xhigh` through |
 | `opencode` | model variant | maps the effort through the profile's `effort_variants` |
 | `dsh` | none | refuses an explicit effort, records an inherited one as not applied |
+| `antigravity` | `--effort` | accepts only `low`, `medium`, `high` |
 
 For OpenCode, a mapped effort wins over the static variant:
 
@@ -62,6 +68,24 @@ the credential in their environment only; OpenCode and `dsh` read their own auth
 stores and run with the real home directory, so their tool subprocesses can read
 those stores. That difference is recorded on every run as
 `harness_capabilities.isolation`.
+
+Antigravity also uses the real home and its own cached authentication. Install
+`agy` and authenticate interactively before dispatching. WB probes its required
+flags before creating a worktree (verified with CLI 1.1.13). It runs
+`--mode accept-edits --sandbox`, with a private 0600 brief in a dedicated
+subdirectory under the run directory; only that brief directory is added with
+`--add-dir`. The task body stays off argv (`task_visibility: private-file`).
+The bootstrap names the absolute worktree for edits. This is user-home
+execution, not a guarantee that the process cannot access other user files.
+
+Workspace file edits need no interactive approval. Commands still use the
+operator's `agy` permission settings and may be soft-denied in headless mode;
+configure scoped command permissions and require WB validation for the task.
+WB records that limitation in harness diagnostics and never passes
+`--dangerously-skip-permissions`. A terminal `SUCCESS` means the harness
+finished, not that the work passed validation or review. Token fields come only
+from the final `result.usage`; missing fields stay unavailable, and cost is
+unavailable. See the [official headless contract](https://antigravity.google/docs/cli/headless/).
 
 ## Fallback: an ordered list, not a guess
 

@@ -353,6 +353,9 @@ func (planner Planner) resolveEffort(plan *Plan, request RunRequest, resolved Re
 	capability := HarnessCapabilityFor(resolved.Harness)
 	switch capability {
 	case EffortConfig:
+		if resolved.Harness == HarnessAntigravity && requested != "low" && requested != "medium" && requested != "high" {
+			return requestErrorf("antigravity effort must be low, medium, or high")
+		}
 		plan.EffortEffective, plan.EffortApplied = requested, true
 	case EffortVariant:
 		variant := resolved.EffortVariants[requested]

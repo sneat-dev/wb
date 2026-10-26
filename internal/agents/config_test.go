@@ -11,7 +11,7 @@ import (
 
 func TestHelpersExposeTheClosedVocabularies(t *testing.T) {
 	t.Parallel()
-	if got := AllHarnesses(); len(got) != 3 || got[0] != HarnessCodex {
+	if got := AllHarnesses(); len(got) != 4 || got[0] != HarnessCodex || got[3] != HarnessAntigravity {
 		t.Fatalf("harnesses = %#v", got)
 	}
 	if err := NewRequestError("refused"); !IsRequestError(err) || err.Error() != "refused" {
