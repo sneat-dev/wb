@@ -173,7 +173,7 @@ func AdoptLegacyIntegration(ctx context.Context, options LegacyAdoptOptions) (Le
 		return result, fmt.Errorf("unsupported or incomplete legacy WB receipt")
 	}
 	git := options.checkoutGit()
-	refused, _, err := options.PromoteOptions.open(ctx, git, &PromoteResult{})
+	refused, _, err := options.open(ctx, git, &PromoteResult{})
 	if err != nil {
 		return result, err
 	}

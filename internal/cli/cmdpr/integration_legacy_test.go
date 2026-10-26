@@ -59,3 +59,29 @@ func TestLegacyAdoptionCLIDryRunUsesCurrentCheckoutAndDefaultDriver(t *testing.T
 		t.Fatal("default driver did not validate")
 	}
 }
+
+func TestLegacyAdoptionCLIReportsOutputFailures(t *testing.T) {
+	t.Parallel()
+	deps := IntegrationDependencies{AdoptLegacy: func(context.Context, orchestrate.LegacyAdoptOptions) (orchestrate.LegacyAdoptResult, error) {
+		return orchestrate.LegacyAdoptResult{Binding: &orchestrate.LegacyBinding{}}, nil
+	}}
+	for _, format := range []string{"text", "json"} {
+		t.Run(format, func(t *testing.T) {
+			t.Parallel()
+			command := NewIntegration(testRuntime(), deps)
+			command.SetOut(failingWriter{})
+			command.SetErr(&bytes.Buffer{})
+			command.SetArgs([]string{"adopt-legacy", "acme/app", "integration", "--receipt", "unused", "--format", format})
+			if err := command.Execute(); err == nil {
+				t.Fatal("output error lost")
+			}
+		})
+	}
+	command := NewIntegration(testRuntime(), deps)
+	command.SetOut(&failAtCallWriter{failAt: 2})
+	command.SetErr(&bytes.Buffer{})
+	command.SetArgs([]string{"adopt-legacy", "acme/app", "integration", "--receipt", "unused"})
+	if err := command.Execute(); err == nil {
+		t.Fatal("binding output error lost")
+	}
+}

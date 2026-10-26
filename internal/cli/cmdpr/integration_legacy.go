@@ -33,9 +33,12 @@ func newLegacyAdopt(runtime shared.Runtime, deps IntegrationDependencies) *cobra
 			_, err = fmt.Fprintln(command.OutOrStdout(), string(raw))
 			return err
 		}
-		fmt.Fprintf(command.OutOrStdout(), "Legacy provenance only (not approval): %s\n", result.Record.CandidateSHA)
+		if _, err := fmt.Fprintf(command.OutOrStdout(), "Legacy provenance only (not approval): %s\n", result.Record.CandidateSHA); err != nil {
+			return err
+		}
 		if result.Binding != nil {
-			fmt.Fprintf(command.OutOrStdout(), "--legacy-record %s=%s\n", result.Binding.URL, result.Binding.Digest)
+			_, err := fmt.Fprintf(command.OutOrStdout(), "--legacy-record %s=%s\n", result.Binding.URL, result.Binding.Digest)
+			return err
 		}
 		return nil
 	}}
