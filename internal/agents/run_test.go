@@ -304,6 +304,22 @@ func TestStoreListSinceSkipsOldDirectoriesAndOldRuns(t *testing.T) {
 	}
 }
 
+func TestStoreListSinceReportsDirectoryInspectionFailure(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t)
+	record := sampleRecord(t)
+	if err := store.Create(record); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := errors.New("directory metadata unavailable")
+	_, err := store.listSinceWithInfo(time.Now().Add(-time.Hour), func(os.DirEntry) (os.FileInfo, error) {
+		return nil, sentinel
+	})
+	if !errors.Is(err, sentinel) || !strings.Contains(err.Error(), record.AgentID) {
+		t.Fatalf("directory inspection error = %v", err)
+	}
+}
+
 func TestRenderResolvesDeadRunsToAbandoned(t *testing.T) {
 	t.Parallel()
 	store := newTestStore(t)

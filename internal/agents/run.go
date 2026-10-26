@@ -696,6 +696,10 @@ func (store Store) ListSince(since time.Time) ([]Record, error) {
 }
 
 func (store Store) listSince(since time.Time) ([]Record, error) {
+	return store.listSinceWithInfo(since, os.DirEntry.Info)
+}
+
+func (store Store) listSinceWithInfo(since time.Time, entryInfo func(os.DirEntry) (os.FileInfo, error)) ([]Record, error) {
 	entries, err := os.ReadDir(store.Root)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -713,7 +717,7 @@ func (store Store) listSince(since time.Time) ([]Record, error) {
 			continue
 		}
 		if !since.IsZero() {
-			info, infoErr := entry.Info()
+			info, infoErr := entryInfo(entry)
 			if infoErr != nil {
 				return nil, fmt.Errorf("inspect agent run %s: %w", entry.Name(), infoErr)
 			}

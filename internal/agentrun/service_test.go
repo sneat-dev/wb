@@ -121,6 +121,26 @@ func TestRemotePrepareDispatchPreservesSourceCallerWithoutTargetInference(t *tes
 		t.Fatalf("older remote request acquired target identity: %+v", oldRemote.Caller)
 	}
 }
+
+func TestListSinceReportsCorruptRecentRun(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store := agents.NewStore(filepath.Join(root, ".wb"))
+	id, err := agents.NewID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := agents.Record{AgentID: id, State: agents.StateCompleted, StartedAt: time.Now().UTC()}
+	if err := store.Create(record); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store.RecordPath(record.AgentID), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(DefaultDependencies()).List(t.Context(), ListRequest{ProjectsRoot: root, Since: time.Now().Add(-time.Hour)}); err == nil {
+		t.Fatal("windowed list must report a corrupt recent run")
+	}
+}
 func TestReadOperationsUseAnImmutableTerminalCorpus(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

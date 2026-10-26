@@ -353,11 +353,8 @@ func proveStrandedPullRequestLandingWithRead(ctx context.Context, receipt Worktr
 		return "", "", "", "", "", errors.New(reason)
 	}
 	if receipt.PublishedCandidateSHA != "" && receipt.PublishedCandidateSHA != receipt.Candidate.SHA {
-		if contains, reason := githubchecks.ContainsTarget(ctx, receipt.Repository, receipt.PublishedCandidateSHA, receipt.Candidate.SHA); !contains {
-			if reason == "" {
-				reason = fmt.Sprintf("receipted candidate %s does not contain published predecessor %s", receipt.Candidate.SHA, receipt.PublishedCandidateSHA)
-			}
-			return "", "", "", "", "", errors.New(reason)
+		if contains, _ := githubchecks.ContainsTarget(ctx, receipt.Repository, receipt.PublishedCandidateSHA, receipt.Candidate.SHA); !contains {
+			return "", "", "", "", "", fmt.Errorf("receipted candidate %s does not contain published predecessor %s", receipt.Candidate.SHA, receipt.PublishedCandidateSHA)
 		}
 	}
 	return view.MergeCommit.OID, currentTarget, observedPullRequestHead, proofKind, landingTreeSHA, nil
