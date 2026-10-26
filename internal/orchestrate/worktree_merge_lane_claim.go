@@ -59,7 +59,7 @@ func ActiveMergeLaneClaim(projectsRoot, repository, branch string) (*MergeLaneCl
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}
-		if strings.HasSuffix(entry.Name(), worktreeMergeLandedFailureAcknowledgementSuffix) ||
+		if strings.HasSuffix(entry.Name(), worktreeMergeUnpublishedConflictSuffix) || strings.HasSuffix(entry.Name(), worktreeMergeLandedFailureAcknowledgementSuffix) ||
 			strings.HasSuffix(entry.Name(), worktreeMergeConflictCandidateAdvanceSuffix) ||
 			strings.HasSuffix(entry.Name(), worktreeMergeValidationFailureSupersessionSuffix) ||
 			strings.HasSuffix(entry.Name(), worktreeMergeMissingCleanupAcknowledgementSuffix) ||
@@ -113,6 +113,9 @@ func ActiveMergeLaneClaim(projectsRoot, repository, branch string) (*MergeLaneCl
 // decision between lane and branch scans. Each scan rereads the authenticated
 // acknowledgement before supersession; neither caller caches custody evidence.
 func mergeReceiptReleasedByFailureEvidence(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt) (bool, error) {
+	if acknowledged, err := hasUnpublishedConflictAcknowledgement(receipt); err != nil || acknowledged {
+		return acknowledged, err
+	}
 	acknowledged, err := hasLandedFailureAcknowledgement(receipt)
 	if err != nil {
 		return false, err

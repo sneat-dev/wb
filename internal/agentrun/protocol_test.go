@@ -28,7 +28,8 @@ func TestProtocolOperationsPreserveConcreteRequestsAndStopShape(t *testing.T) {
 	}
 	ops.Dispatch = func(c context.Context, r DispatchRequest) (agents.Result, error) {
 		check(c, r.ProjectsRoot, "dispatch")
-		if r.Stderr != &stderr || r.Request.Timeout != 3*time.Second || r.Request.Task != "private" {
+		if r.Stderr != &stderr || r.Request.Timeout != 3*time.Second || r.Request.Task != "private" ||
+			!r.Remote || r.Caller.ID != "thread-source" || r.Caller.Name != "source-chat" {
 			t.Fatal(r)
 		}
 		if _, err := io.WriteString(r.Stderr, "bound marker warning\n"); err != nil {
@@ -67,7 +68,8 @@ func TestProtocolOperationsPreserveConcreteRequestsAndStopShape(t *testing.T) {
 	}
 	for _, verb := range []string{"dispatch", "status", "await", "list", "logs", "stop"} {
 		var response agents.RemoteResponse
-		if err := Handle(ctx, ops, root, &stderr, agents.RemoteRequest{Operation: verb, AgentID: "id", Task: "private", TimeoutMS: 3000, WaitTimeoutMS: 2000, Tail: 4, Raw: true}, &response); err != nil {
+		if err := Handle(ctx, ops, root, &stderr, agents.RemoteRequest{Operation: verb, AgentID: "id", Task: "private", TimeoutMS: 3000, WaitTimeoutMS: 2000, Tail: 4, Raw: true,
+			Caller: agents.CallerSession{ID: "thread-source", Name: "source-chat"}}, &response); err != nil {
 			t.Fatal(err)
 		}
 		switch verb {

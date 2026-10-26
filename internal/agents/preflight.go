@@ -41,7 +41,16 @@ func runProbe(ctx context.Context, name string, args ...string) ([]byte, error) 
 	// A probe never needs the user's credential in its environment; the
 	// harness reads its own store when it runs.
 	command.Env = WorkerEnvironment(Credential{})
-	output, err := command.Output()
+	// agy writes --help to stderr even when the probe succeeds. Capture both
+	// streams for capability discovery without changing stdout-only version and
+	// model probes.
+	var output []byte
+	var err error
+	if len(args) == 1 && args[0] == "--help" {
+		output, err = command.CombinedOutput()
+	} else {
+		output, err = command.Output()
+	}
 	if err != nil {
 		return output, fmt.Errorf("%s %s: %w", filepath.Base(name), strings.Join(args, " "), err)
 	}

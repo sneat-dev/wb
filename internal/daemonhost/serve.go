@@ -249,6 +249,7 @@ func (host *Host) servePrepared(projectsRoot string, ctx context.Context, out, e
 	fleetOptions := host.deps.FleetOptions(projectsRoot, location.Home, hubConfigPath(), cockpitConfig, errOut, os.Hostname)
 	fleetOptions.Remotes = withoutOwnAddress(fleetOptions.Remotes, address, fleetOptions.Logf)
 	fleetSnapshotter := registerCockpitFleet(cockpitServer, fleetOptions)
+	registerCockpitAgentStats(cockpitServer, projectsRoot)
 	mount.serveExportOf(fleetSnapshotter, cockpitConfig)
 	// A hub write is the owner's alone: the same session check the log uses.
 	mount.authorizeOwnerWith(cockpitServer.IsOwner)

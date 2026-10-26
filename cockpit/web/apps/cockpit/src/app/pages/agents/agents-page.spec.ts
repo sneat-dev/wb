@@ -16,6 +16,14 @@ const workOf = (row: HTMLElement) => [...row.querySelectorAll('.work > *')].map(
 const idsOf = (root: HTMLElement) => rowsOf(root).map((row) => row.querySelector('a.open')?.getAttribute('href')?.replace('/agents/', ''))
 
 describe('AgentsPage', () => {
+  it('scrolls to the usage table from the page shortcut', async () => {
+    const { root } = await openPage('/agents', AgentsPage, agentsDocument())
+    const usage = root.querySelector<HTMLElement>('#session-usage') as HTMLElement
+    usage.scrollIntoView = vi.fn()
+    root.querySelector<HTMLButtonElement>('.usage-jump')?.click()
+    expect(usage.scrollIntoView).toHaveBeenCalledOnce()
+  })
+
   it('renders on its own over an empty, warming-up fleet, with placeholder rows', async () => {
     TestBed.configureTestingModule({ providers: [provideRouter([]), { provide: LIST_SHORTCUTS, useValue: { registerFilter: () => () => undefined, registerPanel: () => () => undefined } }] })
     const fixture = TestBed.createComponent(AgentsPage)

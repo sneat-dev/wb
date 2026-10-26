@@ -119,7 +119,7 @@ var valueFlags = setOf(
 	"--defer-direct-ci-pr", "--derived-path", "--description", "--disposition", "--effort", "--exclude",
 	"--expected-candidate", "--expected-current-source", "--expected-current-target",
 	"--expected-historical-refresh-source", "--expected-immutable-claim-sha256",
-	"--expected-receipt-sha256", "--expected-source-sha", "--expected-supersession-sha256",
+	"--expected-proof-id", "--expected-receipt-sha256", "--expected-source-sha", "--expected-supersession-sha256",
 	"--expected-target", "--filter", "--format",
 	"--github-dir", "--go-private", "--handover-file", "--harness", "--hold", "--include-task",
 	"--initiator", "--keep-commits", "--lane-reason", "--library", "--manifest", "--match",

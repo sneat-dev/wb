@@ -19,6 +19,10 @@ type DispatchRequest struct {
 	ProjectsRoot string
 	Stderr       io.Writer
 	Request      agents.DispatchRequest
+	// Remote requests carry the originating caller from the source machine.
+	// An older remote caller with no identity stays unattributed on this host.
+	Remote bool
+	Caller agents.CallerSession
 }
 type AwaitRequest struct {
 	ProjectsRoot, AgentID string
@@ -253,8 +257,13 @@ func (s *Service) PrepareDispatch(r DispatchRequest) (agents.Store, agents.Dispa
 		return agents.Store{}, agents.DispatchDeps{}, err
 	}
 	store := agents.NewStore(home)
+	caller := CurrentCaller(r.ProjectsRoot)
+	if r.Remote {
+		caller = r.Caller
+	}
 	deps := agents.DispatchDeps{
 		ProjectsRoot: r.ProjectsRoot, Home: home, ConfigPath: s.deps.ConfigPath(),
+		Caller:     caller,
 		LoadConfig: func() (agents.Config, error) { return s.deps.LoadConfig(s.deps.ConfigPath()) },
 		Now:        s.deps.Now,
 		BeforeCreate: func(repos []string) error {

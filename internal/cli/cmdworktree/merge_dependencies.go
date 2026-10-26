@@ -12,6 +12,7 @@ import (
 )
 
 type MergeOperations struct {
+	AcknowledgeUnpublishedConflict                 func(context.Context, orchestrate.WorktreeMergeUnpublishedConflictOptions) (orchestrate.WorktreeMergeUnpublishedConflictAcknowledgement, error)
 	AcknowledgeAbsorbedConflict                    func(ctx context.Context, options orchestrate.WorktreeMergeAbsorbedConflictAcknowledgementOptions) (orchestrate.WorktreeMergeAbsorbedConflictAcknowledgement, error)
 	AcknowledgeLandedMergeFailure                  func(ctx context.Context, options orchestrate.WorktreeMergeLandedFailureAcknowledgementOptions) (orchestrate.WorktreeMergeLandedFailureAcknowledgement, error)
 	AcknowledgeMissingWorktreeMergeCleanup         func(ctx context.Context, options orchestrate.WorktreeMergeMissingCleanupAcknowledgementOptions) (orchestrate.WorktreeMergeMissingCleanupAcknowledgement, error)
@@ -38,6 +39,7 @@ type MergeOperations struct {
 
 func DefaultMergeOperations() MergeOperations {
 	return MergeOperations{
+		AcknowledgeUnpublishedConflict:                 orchestrate.AcknowledgeUnpublishedConflict,
 		AcknowledgeAbsorbedConflict:                    orchestrate.AcknowledgeAbsorbedConflict,
 		AcknowledgeLandedMergeFailure:                  orchestrate.AcknowledgeLandedMergeFailure,
 		AcknowledgeMissingWorktreeMergeCleanup:         orchestrate.AcknowledgeMissingWorktreeMergeCleanup,

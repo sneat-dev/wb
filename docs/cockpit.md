@@ -26,11 +26,19 @@ the panel. The Home tab badge counts the tasks in "Needs you" and links to Tasks
 chip `needs-you`; the Agents badge counts running agents and links to Agents with the chip
 `running`.
 
+The Agents page links to a Session usage table below the live agent list. For an
+owner session it groups locally stored WB-dispatched runs by calling session and
+repository, with the recorded session name above its ID, outcomes, duration,
+observed input/output tokens, and estimated cost. Missing token or cost reports
+are shown as unavailable, and older runs without a caller ID remain explicitly
+unattributed. The table can be searched by session name, ID, or repository.
+
 ## Data flow
 
 ```
 wb daemon  --GET /api/v1/cockpit/fleet (ETag, gzip)-->  FleetStore  -->  FleetModel  -->  pages
            --GET /api/v1/cockpit/session----------->   (signals)       (memoised          (lists, panels,
+           --GET /api/v1/cockpit/agent-session-stats (owner only)
            --GET /api/v1/cockpit/branches?repository=   per document)   derivations)       Home sections)
            --GET /api/v1/cockpit/machine-metrics?machine=
 ```
@@ -42,6 +50,9 @@ wb daemon  --GET /api/v1/cockpit/fleet (ETag, gzip)-->  FleetStore  -->  FleetMo
   whether to update `wb` or reload.
 - **Branches** are read lazily per repository, **machine metrics** every 10 seconds only while
   a page that shows them exists (`MetricsPoller`), a **README** only for an owner session.
+- **Session usage** is read from this daemon's durable agent-run store only by
+  the owner on the Agents page and on Refresh. It is not part of fleet exports
+  or anonymous metadata, and its response is marked `no-store`.
 - `FleetModel` (in `@cockpit/fleet-data`) derives merged repositories, tasks with their state,
   "Needs you", "Ready to land", cleanup counts and fleet health once per document. Pages never
   re-derive them.

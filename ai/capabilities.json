@@ -813,6 +813,66 @@
       "notes": "Run is the task-type-aware entry point. WB ships no model identifier: the answer always comes from wb.yaml, and a profile that cannot execute fails before a worktree exists. A task type may name an ordered fallback list of profiles (cheapest first) with preflight and optional runtime failover; run --wait carries the failover and records retry_of/fallback_from/fallback_reason."
     },
     {
+      "id": "wb.agent.stats",
+      "feature_refs": [
+        "spec/features/agent-dispatch/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb agent stats",
+              "flags": ["--format", "--json", "--repo", "--session"],
+              "modes": [
+                "Groups durable agent run counts, duration, tool calls, reported tokens and estimated cost by caller session, repository and their pair."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb agent stats --help",
+              "contains": ["--session", "--repo", "--json"]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-agent/SKILL.md",
+              "marker": "# WB agent",
+              "examples": ["wb agent stats --format json"]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/cli/cmdagent/stats_test.go",
+              "name": "TestAgentStatsFiltersBySessionAndRepository",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agents/stats_test.go",
+              "name": "TestSummarizeRunsKeepsUnknownUsageAndCallerSeparate",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Older runs without caller identity stay in an unattributed group. Usage and cost counts distinguish absent harness reports from observed zeroes."
+    },
+    {
       "id": "wb.agent.status",
       "feature_refs": [
         "spec/features/agent-dispatch/README.md"
@@ -17723,6 +17783,34 @@
         }
       },
       "notes": "The merge prepare and land lane scan writes the same acknowledgement on demand; this verb only clears lanes before their next lander. Live candidate branch heads must be on the target too; landed receipts need passed post-target CI for the exact landing and a 15-minute quiet period; preparing and landed_post_target_ci_failed receipts are never released, and any proof or write failure keeps the lane blocked."
+    },
+    {
+      "id": "wb.worktree.merge.acknowledge-unpublished-conflict",
+      "feature_refs": ["spec/features/mechanical-worktree-merge/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [{"path": "wb worktree merge acknowledge-unpublished-conflict", "flags": ["--actor", "--apply", "--expected-proof-id", "--format", "--initiator", "--mode", "--reason"], "modes": ["Dry-run proves exact clean claimed source and candidate preservation plus fresh remote candidate absence and target ancestry", "Apply requires the exact preview proof ID and writes an immutable lane-release acknowledgement without changing historical receipts or assets"]}],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [{"command": "wb worktree merge acknowledge-unpublished-conflict --help", "contains": ["land/conflict", "dry-run", "--expected-proof-id", "preserves all receipts"]}],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [{"path": "ai/skills/wb-merge/references/worktree-merge.md", "marker": "# Mechanical worktree merge", "examples": ["wb worktree merge acknowledge-unpublished-conflict <merge-receipt> --actor <operator> --reason <reason>"]}],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [{"path": "internal/orchestrate/worktree_merge_unpublished_conflict_test.go", "name": "TestUnpublishedConflictAcknowledgementPreservesWorkAndReleasesExactLane", "kind": "integration"}],
+          "limitation": null
+        }
+      },
+      "notes": "Preserves an exact unpublished historical land/conflict candidate and all sources. It neither claims landing nor permits cleanup; changed, dirty, missing, published, or actively owned work is refused."
     },
     {
       "id": "wb.worktree.merge.adopt-published-candidate",

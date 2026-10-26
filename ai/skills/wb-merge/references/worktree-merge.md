@@ -18,6 +18,8 @@ wb worktree merge acknowledge-absorbed-conflict <merge-receipt> --apply --actor 
 wb worktree merge acknowledge-retired-prepare-candidate <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-retired-publication <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-retired-unpublished-validation-failure <merge-receipt> --apply --actor <operator> --reason <reason>
+wb worktree merge acknowledge-unpublished-conflict <merge-receipt> --actor <operator> --reason <reason>
+wb worktree merge acknowledge-unpublished-conflict <merge-receipt> --actor <operator> --reason <reason> --apply --expected-proof-id <dry-run-proof-id>
 wb worktree merge acknowledge-receipt-collision <merge-receipt> --expected-receipt-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --expected-target <sha> --expected-candidate <sha> --expected-current-source <sha> --expected-historical-refresh-source <sha> --apply --actor <operator> --reason <reason>
 wb worktree merge adopt-published-candidate <unlanded-receipt> <pull-request> --apply --actor <operator> --reason <reason>
 wb worktree merge seal-validation-failed <merge-receipt> --apply --actor <operator> --reason <reason>
@@ -381,6 +383,32 @@ rewrite the candidate, source worktrees, branches, receipt, or Work Logs.
 A pull request still OPEN or proved MERGED, a candidate branch that still
 carries a remote ref, or a candidate already reachable from the current
 target refuses closed.
+
+For a historical `land/conflict` receipt with a nonempty candidate SHA, no
+recorded publication or landing, and all source and candidate checkouts still
+intact, use `acknowledge-unpublished-conflict`. Preview with `--actor` and
+`--reason`, inspect the proof ID, then repeat with `--apply --expected-proof-id`.
+Every checkout must be clean at its exact receipted HEAD, in the correct
+canonical repository, with its immutable active claim and no live owner. WB
+checks the remote candidate ref is absent and fetches the exact target, which
+must contain the historical target and exclude the candidate. Any changed
+receipt, claim bytes, or target invalidates the reviewed proof. An immutable
+sidecar releases only that historical receipt's lane claim; it proves neither
+landing nor cleanup eligibility. Prepare an independent landing afterward.
+The original receipt and every branch, checkout and Work Log are preserved.
+Rebatched candidates are included through the authenticated predecessor receipt
+and rebatch acknowledgement chain. Every prior candidate needs its exact clean
+checkout and immutable claim. Unpublished predecessors require absent remote
+refs and PR history. Published predecessors require the recorded supersession,
+one fresh CLOSED/unmerged PR snapshot with exact repository, target, branch and
+head identity, and the exact surviving remote ref. Their publication is recorded
+as closed superseded custody, rather than described as unpublished. All chain
+receipt and acknowledgement hashes participate in the reviewed proof ID.
+A source claim may use a predecessor candidate as its base only when both its
+base branch and immutable base SHA exactly match that authenticated lineage.
+Its source HEAD must still contain that base, and every predecessor checkout,
+claim and publication proof remains required. Current and prior candidate
+claims keep their target-base requirements; other non-target source bases refuse.
 
 If a historical supersession acknowledgement incorrectly named the failed
 candidate as its own replacement, do not edit it. Use

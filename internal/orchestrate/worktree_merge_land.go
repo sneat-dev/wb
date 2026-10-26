@@ -44,6 +44,11 @@ func landWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions, sa
 	// first-ever transition from prepare into land, which must keep refusing
 	// on a bare identity mismatch rather than silently re-validating it away.
 	resumedFromLandPhase := receipt.Phase == WorktreeMergePhaseLand
+	if acknowledged, ackErr := hasUnpublishedConflictAcknowledgement(receipt); ackErr != nil {
+		return receipt, ackErr
+	} else if acknowledged {
+		return receipt, fmt.Errorf("merge receipt %s has an unpublished-conflict preservation acknowledgement; it cannot be replayed", receiptPath)
+	}
 	if options.StopBeforeMerge && options.Route != WorktreeMergeRoutePullRequest {
 		return receipt, fmt.Errorf("stop-before-merge requires the pull-request route")
 	}
