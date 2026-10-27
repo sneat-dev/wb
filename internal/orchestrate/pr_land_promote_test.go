@@ -259,21 +259,37 @@ func TestDecodeIssueCommentBindsItsPullRequest(t *testing.T) {
 	}
 }
 
-func TestPromotionApprovalFormIsCheckedBeforeAnyCommentIsPosted(t *testing.T) {
+func TestPromotionApprovalFormIsCheckedByOwningGateBeforeAnyCommentIsPosted(t *testing.T) {
 	t.Parallel()
+	for _, approval := range []string{"opus@codex@reviewer", "review.md", "https://github.com/acme/app/pull/8#issuecomment-5", "https://github.com/foreign/app/pull/7#issuecomment-5", promoteApproval} {
+		t.Run(approval, func(t *testing.T) {
+			t.Parallel()
+			world := newPromoteWorld()
+			view := promotionView()
+			receipt, refusal, options, err := runPromotionGate(world, view, promotionCommits(world), approval)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !options.NoAutoMerge || !options.NoUpdateBranch {
+				t.Fatal("promotion armed automatic effects")
+			}
+			if approval == promoteApproval {
+				if refusal != nil || receipt == nil {
+					t.Fatalf("valid current review rejected: %+v %v", refusal, receipt)
+				}
+				return
+			}
+			if receipt != nil || refusal == nil || refusal.code != LandRefusalBatchDeltaUnreviewed || !strings.Contains(refusal.command, "--target 'public-demo'") {
+				t.Fatalf("invalid review admitted: %+v %+v", receipt, refusal)
+			}
+		})
+	}
+	world := newPromoteWorld()
 	view := promotionView()
-	options := PullRequestLandOptions{Repository: "acme/app", ApprovedBy: "opus@codex@reviewer"}
-	if refusal := promotionApprovalForm(options, view, "7"); refusal == nil || refusal.code != LandRefusalBatchDeltaUnreviewed || !strings.Contains(refusal.command, "--target 'public-demo'") {
-		t.Fatalf("identity form refusal = %+v", refusal)
-	}
-	options.ApprovedBy = promoteApproval
-	if refusal := promotionApprovalForm(options, view, "7"); refusal != nil {
-		t.Fatalf("a comment URL was refused: %+v", refusal)
-	}
 	view.Body = "ordinary"
-	options.ApprovedBy = "opus@codex@reviewer"
-	if refusal := promotionApprovalForm(options, view, "7"); refusal != nil {
-		t.Fatal("an ordinary pull request's identity form was refused")
+	receipt, refusal, options, err := runPromotionGate(world, view, []SourceCommit{{SHA: promoteHead, Parents: []string{promoteBase}}}, "opus@codex@reviewer")
+	if receipt != nil || refusal != nil || err != nil || options.NoAutoMerge || options.NoUpdateBranch {
+		t.Fatalf("ordinary identity path changed: %+v %+v %v", receipt, refusal, err)
 	}
 }
 

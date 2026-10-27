@@ -227,24 +227,6 @@ func promotionLandingGate(ctx context.Context, options *PullRequestLandOptions, 
 	return &PromotionReceipt{Lanes: verdict.Lanes, Legacy: verdict.Legacy, Reviewer: reviewer.String()}, nil, nil
 }
 
-// promotionApprovalForm refuses, before any review comment is posted, a
-// promotion whose --approved-by is not a comment URL on it.
-func promotionApprovalForm(options PullRequestLandOptions, view githubchecks.PullRequestView, number string) *landRefusal {
-	if !strings.Contains(view.Body, promoteMarker) {
-		if strings.Contains(view.Body, legacyInventoryPrefix) {
-			return promoteRefusal(LandRefusalBatchBlockInvalid, "legacy provenance inventory requires the promotion marker", promotionDeltaCommand(options.Repository, view))
-		}
-		return nil
-	}
-	match := issueCommentURLPattern.FindStringSubmatch(strings.TrimSpace(options.ApprovedBy))
-	if match != nil && strings.EqualFold(match[1], options.Repository) && match[2] == number {
-		return nil
-	}
-	return promoteRefusal(LandRefusalBatchDeltaUnreviewed,
-		"a promotion lands only with --approved-by naming an existing review comment on this pull request whose Reviewed-Head is its head",
-		promotionDeltaCommand(options.Repository, view))
-}
-
 func promotionDeltaCommand(repository string, view githubchecks.PullRequestView) string {
 	return fmt.Sprintf("wb pr batch delta %s --target %s --to %s --overlap", repository, shellSingleQuote(view.Head.Ref), shellSingleQuote(view.Base.Ref))
 }
