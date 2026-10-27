@@ -222,7 +222,7 @@ func inspectFileTool(input toolInput, projectsRoot string) *finding {
 // run instead.
 func refusal(result finding) string {
 	// Message is set by policies that are not about a canonical-clone write —
-	// missing-model dispatch, hook bypass, auto-tagging, a literal report
+	// hook bypass, auto-tagging, a literal report
 	// path, a claimed repository — and carries its own complete, self-quoting
 	// text. Those policies never set Location/Detail in the shape the
 	// canonical-clone wording below assumes.
