@@ -21,7 +21,7 @@ type finding struct {
 	GovernedCommand []string
 	// Message, when set, is the complete refusal text and bypasses every
 	// other field's wording in refusal(). Policies that are not about a
-	// canonical-clone write (missing-model dispatch, hook bypass,
+	// canonical-clone write (hook bypass,
 	// auto-tagging, a literal report path, a claimed repository) set this
 	// instead of relying on the canonical-clone phrasing built from Location.
 	Message string
