@@ -11,12 +11,17 @@ one of these outcomes and the evidence that establishes it:
 |---|---|
 | `implemented` | Scoped verification passed and the change is committed in its WB worktree. |
 | `published` | `implemented`, plus the exact commit is pushed and its pull request is created or updated. |
-| `landed` | `published`, required checks passed, the exact merge result is contained in `origin/main`, and the canonical checkout was reconciled cleanly. |
+| `landed` | `published`, required checks passed, WB landing verb produced a terminal receipt (`status: complete` or `status: landed`), the exact merge result is contained in `origin/main`, the canonical checkout was reconciled cleanly, and the landing lane is released. |
 | `blocked` | A required check, receipt, permission, or external action is missing; state the blocker and the highest achieved outcome. |
 
 Choose the outcome required by the request. “Implement” normally requires
 `implemented`; “push”, “open a PR”, and “deliver for review” require
 `published`; “merge”, “ship”, and “push to main” require `landed`.
+
+Never declare `landed` based on GitHub PR merged state alone while a WB landing
+command is still running or pending (`checks_pending`). Always resume pending check
+waits to obtain a terminal receipt, acknowledge any post-target failures, and verify
+the landing lane is released.
 
 Do not infer permission to push, open a pull request, merge, or release. If
 the requested outcome needs authority the caller has not granted, report

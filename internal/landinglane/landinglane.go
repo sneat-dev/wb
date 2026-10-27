@@ -43,6 +43,15 @@ const DirName = "lanes"
 // live run.
 const DefaultStaleAfter = 30 * time.Minute
 
+// DefaultDeadOperationStaleAfter is how long an idle lane owner whose specific
+// WB landing command (OperationPID) has already exited may go unrefreshed before
+// it is treated as abandoned and taken over automatically. While an active
+// operation refreshes its heartbeat during CI waits and is never taken over
+// implicitly, a terminated operation leaves the lane idle; 5 minutes gives an
+// agent or person enough time between prepare and land, while preventing an
+// idle IDE or harness process from blocking other sessions indefinitely.
+const DefaultDeadOperationStaleAfter = 5 * time.Minute
+
 // SchemaVersion guards forward-incompatible record shape changes.
 const SchemaVersion = 1
 
@@ -89,7 +98,8 @@ type Record struct {
 // names the owner, its command and receipt, and the only sanctioned
 // overrides, so a refusal is actionable without a second lookup.
 type ConflictError struct {
-	Record Record
+	Record          Record
+	IsOperationLive func(int) bool
 }
 
 func (e *ConflictError) Error() string {
@@ -113,11 +123,19 @@ func (e *ConflictError) Error() string {
 	if receipt == "" {
 		receipt = "no receipt written yet"
 	}
+	status := "running " + command
+	isOpAlive := session.ProcessAlive
+	if e.IsOperationLive != nil {
+		isOpAlive = e.IsOperationLive
+	}
+	if owner.OperationPID > 0 && !isOpAlive(owner.OperationPID) {
+		status = fmt.Sprintf("prior command %s (operation PID %d exited)", command, owner.OperationPID)
+	}
 	return fmt.Sprintf(
-		"landing lane %s (%s -> %s) is held by session %s (pid %d, %s) since %s, running %s; receipt: %s; "+
+		"landing lane %s (%s -> %s) is held by session %s (pid %d, %s) since %s, %s; receipt: %s; "+
 			"ask it to return control with `wb session recall %s`, or override with --take-over-lane --lane-reason <text>",
 		e.Record.Lane, e.Record.Repository, e.Record.Target,
-		owner.WBSessionID, owner.PID, runtime, since, command, receipt, owner.WBSessionID,
+		owner.WBSessionID, owner.PID, runtime, since, status, receipt, owner.WBSessionID,
 	)
 }
 
@@ -159,11 +177,16 @@ type AcquireRequest struct {
 	// Tests inject this to avoid depending on real processes; production
 	// callers should leave it nil.
 	IsOwnerLive func(Owner) bool
+	// IsOperationLive overrides the default process liveness check for
+	// Owner.OperationPID. Tests inject this to avoid depending on real processes;
+	// production callers should leave it nil.
+	IsOperationLive func(int) bool
 	// LegacyOperationActive overrides conservative legacy process observation for tests.
 	LegacyOperationActive func() (bool, error)
 
-	StaleAfter time.Duration
-	Now        func() time.Time
+	StaleAfter              time.Duration
+	DeadOperationStaleAfter time.Duration
+	Now                     func() time.Time
 
 	TakeOver       bool
 	TakeoverReason string
@@ -279,16 +302,29 @@ func Acquire(home string, request AcquireRequest) (Record, error) {
 	stale := moment.Sub(existing.Owner.HeartbeatAt) > staleAfter
 	live := isLive(existing.Owner)
 
-	// A live owner is never taken over implicitly, no matter how stale its
-	// heartbeat looks: liveness is the authoritative session-registry check
-	// (internal/session), and a heartbeat gap is only a proxy for "the owner
-	// stopped running" — one a long CI wait can produce on its own even while
-	// the owner is very much alive (see startLandingLaneHeartbeat in
-	// internal/orchestrate, added for exactly this). Staleness on its own no
-	// longer grants an automatic takeover; it only ever applies once live is
-	// already false, and it is kept here purely to enrich the recorded note.
-	if !request.TakeOver && live {
-		return existing, &ConflictError{Record: existing}
+	isOpAlive := session.ProcessAlive
+	if request.IsOperationLive != nil {
+		isOpAlive = request.IsOperationLive
+	}
+	opDead := existing.Owner.OperationPID > 0 && !isOpAlive(existing.Owner.OperationPID)
+	deadOpStaleAfter := DefaultDeadOperationStaleAfter
+	if request.DeadOperationStaleAfter > 0 {
+		deadOpStaleAfter = request.DeadOperationStaleAfter
+	} else if staleAfter < deadOpStaleAfter {
+		deadOpStaleAfter = staleAfter
+	}
+	deadOpStale := opDead && moment.Sub(existing.Owner.HeartbeatAt) > deadOpStaleAfter
+
+	// A live owner with an actively running operation (or a live legacy record
+	// without OperationPID, or an operation that exited within its idle grace
+	// period) is never taken over implicitly: liveness protects active CI waits
+	// and brief pauses between prepare and land.
+	// However, once an operation process has exited and stayed unrefreshed
+	// beyond deadOpStaleAfter, the lane is idle; an idle session is taken over
+	// automatically so an abandoned command does not lock out subsequent
+	// sessions while a harness or IDE remains open.
+	if !request.TakeOver && live && !deadOpStale {
+		return existing, &ConflictError{Record: existing, IsOperationLive: isOpAlive}
 	}
 
 	prior := existing.Owner
@@ -304,11 +340,10 @@ func Acquire(home string, request AcquireRequest) (Record, error) {
 	if request.TakeOver {
 		record.TakeoverReason = strings.TrimSpace(request.TakeoverReason)
 	} else {
-		// Reaching here with !request.TakeOver means the guard above already
-		// established live is false: the prior owner's WB session is
-		// confirmed gone, not merely quiet.
 		note := "prior owner's WB session is no longer live"
-		if stale {
+		if deadOpStale && live {
+			note = fmt.Sprintf("prior owner's landing operation (PID %d) exited and heartbeat is stale since %s", existing.Owner.OperationPID, existing.Owner.HeartbeatAt.UTC().Format(time.RFC3339))
+		} else if stale {
 			note += " (heartbeat stale since " + existing.Owner.HeartbeatAt.UTC().Format(time.RFC3339) + ")"
 		}
 		record.TakeoverNote = note
