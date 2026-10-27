@@ -339,15 +339,16 @@ func TestLegacyArchiveAdapterUsesOnlyValidatedRepositoryCommitEndpoints(t *testi
 					return githubobserver.Response{Body: raw}, nil
 				}})
 				got, err := adapter.LegacyComments(ctx, repo, sha)
-				if kind == "list" {
+				switch kind {
+				case "list":
 					if err != nil || len(got) != 1 || got[0] != binding {
 						t.Fatal(got, err)
 					}
-				} else if kind == "list ordinary" || kind == "list empty inventory" {
+				case "list ordinary", "list empty inventory":
 					if err != nil || len(got) != 0 {
 						t.Fatal(got, err)
 					}
-				} else {
+				default:
 					want := "invalid legacy archive endpoint"
 					switch kind {
 					case "list outage":

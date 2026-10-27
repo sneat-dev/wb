@@ -107,7 +107,7 @@ func (p *landOwnerProtocol) get(_ context.Context, request githubobserver.GetReq
 				body = []byte(fmt.Sprintf(`{"status":"ahead","base_commit":{"sha":%q},"merge_base_commit":{"sha":%q}}`, p.target, p.target))
 			}
 		case strings.HasSuffix(request.Endpoint, "/check-runs?per_page=100"):
-			if request.Head != p.head && !(p.allowPriorReviewChecks && request.Head == landOwnerBase) {
+			if request.Head != p.head && (!p.allowPriorReviewChecks || request.Head != landOwnerBase) {
 				p.t.Fatalf("check identity %+v, head=%s", request, p.head)
 			}
 			p.checkReads++
