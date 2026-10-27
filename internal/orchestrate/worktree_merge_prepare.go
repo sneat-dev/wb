@@ -110,6 +110,19 @@ func newPreparingWorktreeMergeReceipt(input preparingReceiptInput) WorktreeMerge
 			if receipt.PullRequest != "" && receipt.PublishedCandidateSHA == "" {
 				receipt.PublishedCandidateSHA = prior.Candidate.SHA
 			}
+			// A refresh of an already published candidate is built on the
+			// published branch head, so the last proved publication identity is
+			// the predecessor every new merge commit descends from. Carrying it
+			// keeps a failed refresh recoverable: without it the receipt would
+			// inherit the pull request while recording no candidate at all.
+			//
+			// This never claims the new, unvalidated HEAD was prepared: status
+			// stays preparing (a later failure records its own conflict or
+			// validation failure), and unpublished preparation keeps its empty
+			// candidate snapshot and existing empty-SHA recovery semantics.
+			if receipt.PublishedCandidateSHA != "" {
+				receipt.Candidate.SHA = receipt.PublishedCandidateSHA
+			}
 			receipt.PreviousTargetSHA = prior.PreviousTargetSHA
 		}
 	}

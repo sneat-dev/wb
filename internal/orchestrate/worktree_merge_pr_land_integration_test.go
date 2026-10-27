@@ -82,6 +82,16 @@ else
 fi
 state=$(cat "$S/pr-state")
 merged=$(cat "$S/merged")
+# Optional exact-identity overrides let a test express a provider that reports
+# a pull request which does not match the private Git evidence: a wrong base,
+# branch, head, or repository must be refused, never repaired into agreement.
+head_ref="${WB_TEST_PR_HEAD_REF:-$head_ref}"
+head="${WB_TEST_PR_HEAD_SHA:-$head}"
+state="${WB_TEST_PR_STATE:-$state}"
+merged="${WB_TEST_PR_MERGED:-$merged}"
+base_ref="${WB_TEST_PR_BASE_REF:-main}"
+head_repo="${WB_TEST_PR_HEAD_REPO:-acme/app}"
+base_repo="${WB_TEST_PR_BASE_REPO:-acme/app}"
 merge_sha=""
 if [ "$merged" = true ]; then merge_sha=$(git --git-dir="$WB_TEST_REMOTE" rev-parse refs/heads/main); fi
 case "$*" in
@@ -114,8 +124,8 @@ case "$*" in
 	    exit 1
 	  fi
 	fi
-    printf '{"number":41,"node_id":"PR_kwDOtest41","state":"%s","draft":false,"locked":false,"title":"candidate","body":"","merged":%s,"merge_commit_sha":"%s","mergeable":true,"mergeable_state":"clean","head":{"ref":"%s","sha":"%s","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}\n' \
-      "$state" "$merged" "$merge_sha" "$head_ref" "$head" ;;
+    printf '{"number":41,"node_id":"PR_kwDOtest41","state":"%s","draft":false,"locked":false,"title":"candidate","body":"","merged":%s,"merge_commit_sha":"%s","mergeable":true,"mergeable_state":"clean","head":{"ref":"%s","sha":"%s","repo":{"full_name":"%s"}},"base":{"ref":"%s","sha":"","repo":{"full_name":"%s"}}}\n' \
+      "$state" "$merged" "$merge_sha" "$head_ref" "$head" "$head_repo" "$base_ref" "$base_repo" ;;
   'pr view https://example.test/acme/app/pull/41 --repo acme/app --json state,mergedAt,mergeCommit,headRefOid,baseRefName')
 	if [ -f "$S/pr-view-fail-count" ]; then
 	  failures=$(cat "$S/pr-view-fail-count")
@@ -126,12 +136,12 @@ case "$*" in
 	  fi
 	fi
     if [ "$merged" = true ]; then
-      printf '{"state":"MERGED","mergedAt":"2026-09-18T00:00:00Z","headRefOid":"%s","baseRefName":"main","mergeCommit":{"oid":"%s"}}\n' "$head" "$merge_sha"
+      printf '{"state":"MERGED","mergedAt":"2026-09-18T00:00:00Z","headRefOid":"%s","baseRefName":"%s","mergeCommit":{"oid":"%s"}}\n' "$head" "$base_ref" "$merge_sha"
     else
-      printf '{"state":"%s","mergedAt":"","headRefOid":"%s","baseRefName":"main","mergeCommit":{"oid":""}}\n' "$state" "$head"
+      printf '{"state":"%s","mergedAt":"","headRefOid":"%s","baseRefName":"%s","mergeCommit":{"oid":""}}\n' "$state" "$head" "$base_ref"
     fi ;;
   'pr view https://example.test/acme/app/pull/41 --repo acme/app --json state,headRefOid,baseRefName')
-    printf '{"state":"%s","headRefOid":"%s","baseRefName":"main"}\n' "$state" "$head" ;;
+    printf '{"state":"%s","headRefOid":"%s","baseRefName":"%s"}\n' "$state" "$head" "$base_ref" ;;
   *'/check-runs?per_page=100 --include'|*'/check-runs?per_page=100')
     if [ -f "$S/advance-on-checks" ]; then
       rm -f "$S/advance-on-checks"

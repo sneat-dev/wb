@@ -162,34 +162,51 @@ func landWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions, sa
 	// sneat-dev/wb#591).
 	applyRecordedWorktreeMergeRouteBeforeFirstResolve(&receipt, &options)
 	planHolder := &worktreeMergeValidationPlanHolder{}
-	if receipt.Candidate.SHA == "" {
-		recovered, recoverErr := recoverResolvedWorktreeMergeCandidate(ctx, options.ProjectsRoot, &receipt, options.Timeout, options.Retry)
+	// A prepare conflict that still carries an open publication, but whose
+	// recorded candidate cannot account for the receipt's own current source
+	// snapshots, is the failed-refresh shape. Its predecessor identity is only
+	// a thing to PROVE before any new candidate may be recorded. Ordinary
+	// published conflicts whose candidate already contains every source are
+	// left to their existing advance, target refresh, and validation owners.
+	publishedRecovery, publishedRecoverErr := recoverPublishedPrepareConflictCandidate(ctx, options.ProjectsRoot, &receipt, options.Timeout, options.Retry)
+	if publishedRecoverErr != nil {
+		return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, publishedRecoverErr, save)
+	}
+	recovered := publishedRecovery
+	if !recovered && receipt.Candidate.SHA == "" {
+		var recoverErr error
+		recovered, recoverErr = recoverResolvedWorktreeMergeCandidate(ctx, options.ProjectsRoot, &receipt, options.Timeout, options.Retry)
 		if recoverErr != nil {
 			return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, recoverErr, save)
 		}
-		if recovered {
-			reportWorktreeMergeProgress(options.Progress, "recover_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
-			checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
-			plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally, options.AllowUnfenced || receipt.AllowUnfenced, options.DirectCIPullRequest)
-			if planErr != nil {
-				return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, planErr, save)
-			}
-			if validationErr := applyOrDeferWorktreeMergeValidation(ctx, &receipt, plan, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress); validationErr != nil {
-				// Keep retry truthful: the resolved head is present in the
-				// validation report, but it is not a prepared candidate until
-				// that validation succeeds. A later resume must recover and
-				// validate the exact head again.
-				receipt.Candidate.SHA = ""
-				return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeValidationFailed, fmt.Errorf("recovered candidate validation failed: %w", validationErr), save)
-			}
-			receipt.Status = WorktreeMergePrepared
-			receipt.Failure = ""
-			receipt.UpdatedAt = time.Now().UTC()
-			if err := save(receipt); err != nil {
-				return receipt, err
-			}
-			reportWorktreeMergeProgress(options.Progress, "recover_candidate", progress.Completed, shortMergeRevision(receipt.Candidate.SHA))
+	}
+	if recovered {
+		reportWorktreeMergeProgress(options.Progress, "recover_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
+		checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
+		plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally, options.AllowUnfenced || receipt.AllowUnfenced, options.DirectCIPullRequest)
+		if planErr != nil {
+			return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, planErr, save)
 		}
+		if validationErr := applyOrDeferWorktreeMergeValidation(ctx, &receipt, plan, options.Timeout, options.Retry, checkTimeout, shardAttemptTimeout, options.Progress); validationErr != nil {
+			// Keep retry truthful: the resolved head is present in the
+			// validation report, but it is not a prepared candidate until
+			// that validation succeeds. A later resume must recover and
+			// validate the exact head again. A proved published recovery
+			// keeps that exact head because its publication identity stays
+			// truthful and the recorded SHA is what makes the retry
+			// resumable; the unpublished contract keeps its empty snapshot.
+			if !publishedRecovery {
+				receipt.Candidate.SHA = ""
+			}
+			return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeValidationFailed, fmt.Errorf("recovered candidate validation failed: %w", validationErr), save)
+		}
+		receipt.Status = WorktreeMergePrepared
+		receipt.Failure = ""
+		receipt.UpdatedAt = time.Now().UTC()
+		if err := save(receipt); err != nil {
+			return receipt, err
+		}
+		reportWorktreeMergeProgress(options.Progress, "recover_candidate", progress.Completed, shortMergeRevision(receipt.Candidate.SHA))
 	}
 	if receipt.Status == WorktreeMergePreparing {
 		if err := applyWorktreeMergeValidationLimits(&receipt, options, save); err != nil {

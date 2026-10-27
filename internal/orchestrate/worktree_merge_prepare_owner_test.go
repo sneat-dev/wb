@@ -69,7 +69,7 @@ func TestPreparingReceiptConstructionPreservesDistinctRefreshAndRepairHistory(t 
 				t.Fatalf("immutable refresh history=%+v prior=%+v", receipt.SourceRefreshes, prior)
 			}
 			if mode == "forward repair" {
-				if receipt.PullRequest != "" || receipt.PublishedCandidateSHA != "" || receipt.PreviousTargetSHA != "" || len(receipt.ForwardRepairs) != 2 || receipt.ForwardRepairs[1].CandidateSHA != previous.Candidate.SHA || receipt.ForwardRepairs[1].LandingSHA != previous.LandingSHA || receipt.ForwardRepairs[1].Failure != previous.Failure || receipt.ForwardRepairs[1].PullRequest != previous.PullRequest || receipt.ForwardRepairs[1].Status != previous.Status || receipt.ForwardRepairs[1].TargetSHA != previous.TargetSHA {
+				if receipt.PullRequest != "" || receipt.PublishedCandidateSHA != "" || receipt.PreviousTargetSHA != "" || receipt.Candidate.SHA != "" || len(receipt.ForwardRepairs) != 2 || receipt.ForwardRepairs[1].CandidateSHA != previous.Candidate.SHA || receipt.ForwardRepairs[1].LandingSHA != previous.LandingSHA || receipt.ForwardRepairs[1].Failure != previous.Failure || receipt.ForwardRepairs[1].PullRequest != previous.PullRequest || receipt.ForwardRepairs[1].Status != previous.Status || receipt.ForwardRepairs[1].TargetSHA != previous.TargetSHA {
 					t.Fatalf("repair retained publication or lost landing history: %+v", receipt)
 				}
 			} else {
@@ -77,7 +77,12 @@ func TestPreparingReceiptConstructionPreservesDistinctRefreshAndRepairHistory(t 
 				if previous.PullRequest != "" && expectedPublished == "" {
 					expectedPublished = previous.Candidate.SHA
 				}
-				if receipt.PullRequest != previous.PullRequest || receipt.PublishedCandidateSHA != expectedPublished || receipt.PreviousTargetSHA != previous.PreviousTargetSHA || len(receipt.ForwardRepairs) != 0 {
+				// A refresh of an already published candidate preserves the
+				// prior proved publication identity as its candidate snapshot;
+				// an unpublished refresh keeps the empty preparation snapshot
+				// its own empty-SHA recovery contract expects.
+				expectedCandidate := expectedPublished
+				if receipt.PullRequest != previous.PullRequest || receipt.PublishedCandidateSHA != expectedPublished || receipt.Candidate.SHA != expectedCandidate || receipt.PreviousTargetSHA != previous.PreviousTargetSHA || len(receipt.ForwardRepairs) != 0 {
 					t.Fatalf("ordinary refresh publication/history=%+v", receipt)
 				}
 			}
