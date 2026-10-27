@@ -59,9 +59,59 @@ func publishedPrepareConflictMissingSource(ctx context.Context, run runner.Runne
 	return false, nil
 }
 
+// recordedWorktreeMergeCandidateRoots returns every candidate identity this
+// receipt still records for the same publication: the active candidate, the
+// last published predecessor, the validated head, the validation
+// deferral/identity candidate, and every candidate and source snapshot named
+// by the append-only target and source refresh history. Each returned commit
+// must still be contained by a replacement head; a resolution that drops one
+// would silently discard recorded intent (for example a validated local
+// repair that was never published).
+//
+// The set is derived only from structured receipt evidence for this receipt.
+// A missing record contributes nothing, and no value is inferred from prose
+// failures, branch names, or an older unrelated publication.
+func recordedWorktreeMergeCandidateRoots(r WorktreeMergeReceipt) []string {
+	roots := make([]string, 0, 3+len(r.SourceRefreshes)+4*len(r.TargetRefreshes))
+	seen := make(map[string]struct{}, cap(roots))
+	appendRoot := func(sha string) {
+		if sha == "" {
+			return
+		}
+		if _, duplicate := seen[sha]; duplicate {
+			return
+		}
+		seen[sha] = struct{}{}
+		roots = append(roots, sha)
+	}
+	appendRoot(r.PublishedCandidateSHA)
+	appendRoot(r.Candidate.SHA)
+	appendRoot(r.Validation.Revision)
+	if r.ValidationDeferral != nil {
+		appendRoot(r.ValidationDeferral.CandidateSHA)
+	}
+	if r.ValidationIdentity != nil {
+		appendRoot(r.ValidationIdentity.CandidateSHA)
+	}
+	for _, refresh := range r.TargetRefreshes {
+		appendRoot(refresh.PreviousTargetSHA)
+		appendRoot(refresh.NewTargetSHA)
+		appendRoot(refresh.PreviousCandidateSHA)
+		appendRoot(refresh.NewCandidateSHA)
+	}
+	for _, refresh := range r.SourceRefreshes {
+		for _, source := range refresh.Sources {
+			appendRoot(source.SHA)
+		}
+	}
+	return roots
+}
+
 // recoverPublishedPrepareConflictCandidate proves, before recording anything,
-// that a clean managed candidate descends from the exact published predecessor,
-// the recorded target, the recorded candidate (when one is still named), and
+// that a clean managed candidate descends from every recorded candidate root
+// (see recordedWorktreeMergeCandidateRoots: the prior candidate, the published
+// predecessor, the validated head, the validation deferral/identity candidate,
+// the target and source refresh history) together with the recorded target and
 // every exact source snapshot, while the open pull request and its remote
 // branch still stand at that predecessor. The predecessor supplies the
 // identity to PROVE, never permission: every fact is re-read from private Git
@@ -132,10 +182,7 @@ func recoverPublishedPrepareConflictCandidateWithRunner(ctx context.Context, run
 			return false, fmt.Errorf("published prepare candidate Work Log claim base differs from receipt target: %w", err)
 		}
 	}
-	roots := []string{receipt.TargetSHA, receipt.PublishedCandidateSHA}
-	if receipt.Candidate.SHA != "" {
-		roots = append(roots, receipt.Candidate.SHA)
-	}
+	roots := append([]string{receipt.TargetSHA}, recordedWorktreeMergeCandidateRoots(*receipt)...)
 	roots = append(roots, sourceSHAs(receipt.Sources)...)
 	for _, root := range roots {
 		contains, ancestorErr := isMergeAncestorWithRunner(ctx, run, guard.Path, root, head)

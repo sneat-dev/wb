@@ -9,10 +9,170 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/quality"
 )
+
+// resolvePublishedRepairMerge rebuilds the managed candidate on an exact base
+// and resolves the advanced-source conflict exactly as a human would, returning
+// the clean resolution commit. It proves the merge genuinely conflicts first,
+// so the fixture cannot silently degenerate into a fast-forward.
+func resolvePublishedRepairMerge(t *testing.T, worktree, base, source, sharedContents string) string {
+	t.Helper()
+	runEngineGit(t, worktree, "reset", "--hard", base)
+	if _, _, mergeErr := runCommand(context.Background(), defaultRunner, 0, 0, worktree, "git", "merge", "--no-edit", source); mergeErr == nil {
+		t.Fatalf("resolution fixture did not conflict at %s", base)
+	}
+	writeEngineFile(t, filepath.Join(worktree, "shared.txt"), sharedContents)
+	runEngineGit(t, worktree, "add", "shared.txt")
+	runEngineGit(t, worktree, "commit", "--no-edit")
+	return strings.TrimSpace(runEngineGit(t, worktree, "rev-parse", "HEAD"))
+}
+
+// TestE2EPublishedPrepareRefreshConflictPreservesRecordedLocalRepairAndRefusesItsLoss
+// is the recorded-candidate root-cause regression. A validated local repair Q
+// descends the published predecessor P but was never published. A later prepare
+// refresh fails while integrating an advanced source S: the receipt must still
+// name Q, never replace it with P. A resolution containing P+Q+S may recover; a
+// replacement head that keeps P+S but drops the Q-only repair must refuse
+// without mutating the candidate or publication identity. The same refusal has
+// to hold for the legacy empty-candidate receipt when Q is still recorded as
+// its own validated revision.
+//
+//nolint:paralleltest // the scripted provider changes PATH/XDG and the private lane is shared
+func TestE2EPublishedPrepareRefreshConflictPreservesRecordedLocalRepairAndRefusesItsLoss(t *testing.T) {
+	fixture := newEngineFixture(t)
+	sourceA := createMergeSource(t, fixture, "recorded-repair-a", "feature/recorded-repair-a", "shared.txt", "a\n")
+	sourceB := createMergeSource(t, fixture, "recorded-repair-b", "feature/recorded-repair-b", "b-other.txt", "b\n")
+	runEngineGit(t, sourceB.WorktreeDir, "merge", "--no-edit", sourceA.Branch)
+	writeEngineFile(t, filepath.Join(sourceB.WorktreeDir, "shared.txt"), "b\n")
+	runEngineGit(t, sourceB.WorktreeDir, "add", "shared.txt")
+	runEngineGit(t, sourceB.WorktreeDir, "commit", "-m", "feat: change the shared file on the descendant source")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{sourceA.WorktreeDir, sourceB.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	published := receipt.Candidate.SHA
+	runEngineGit(t, receipt.Candidate.Worktree, "push", "origin", published+":refs/heads/"+receipt.Candidate.Branch)
+
+	// A validated local repair Q descends P and adds work that was never
+	// published. The prior receipt therefore records Q as its candidate while
+	// the pull request and remote branch still stand at P.
+	writeEngineFile(t, filepath.Join(receipt.Candidate.Worktree, "local-repair.txt"), "validated local repair, not yet published\n")
+	runEngineGit(t, receipt.Candidate.Worktree, "add", "local-repair.txt")
+	runEngineGit(t, receipt.Candidate.Worktree, "commit", "-m", "fix: validated local repair that is not yet published")
+	repair := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD"))
+	validated := receipt
+	validated.Candidate.SHA = repair
+	validated.Validation, validated.BaselineValidation = quality.VerificationReport{}, quality.VerificationReport{}
+	validated.ValidationIdentity, validated.ValidationDeferral = nil, nil
+	if err := validateWorktreeMergeCandidate(context.Background(), &validated, 30*time.Second, 0, 0, 0, nil); err != nil {
+		t.Fatalf("validate the local repair: %v", err)
+	}
+	if validated.Validation.Status != quality.StatusPassed || validated.Validation.Revision != repair {
+		t.Fatalf("local repair validation=%+v", validated.Validation)
+	}
+	receipt.Validation, receipt.BaselineValidation = validated.Validation, validated.BaselineValidation
+	receipt.ValidationIdentity, receipt.ValidationDeferral = validated.ValidationIdentity, validated.ValidationDeferral
+	receipt.Candidate.SHA = repair
+	receipt.Phase, receipt.Status = WorktreeMergePhasePrepare, WorktreeMergePrepared
+	receipt.PullRequest, receipt.PublishedCandidateSHA = "https://example.test/acme/app/pull/41", published
+	if err := persistWorktreeMergeReceipt(receipt); err != nil {
+		t.Fatal(err)
+	}
+
+	// The advanced source S makes the refresh conflict.
+	writeEngineFile(t, filepath.Join(sourceA.WorktreeDir, "shared.txt"), "a-advanced\n")
+	runEngineGit(t, sourceA.WorktreeDir, "add", "shared.txt")
+	runEngineGit(t, sourceA.WorktreeDir, "commit", "-m", "feat: advance the conflicting recorded-repair source")
+	advanced := strings.TrimSpace(runEngineGit(t, sourceA.WorktreeDir, "rev-parse", "HEAD"))
+	failed, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{sourceA.WorktreeDir, sourceB.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err == nil || failed.Status != WorktreeMergeConflict || failed.Phase != WorktreeMergePhasePrepare || !strings.Contains(err.Error(), "conflict") {
+		t.Fatalf("failed recorded-repair refresh=%+v error=%v", failed, err)
+	}
+	// Root cause: the refresh keeps Q. Recording P here would erase the
+	// recorded intent and let a P+S resolution silently drop the repair.
+	if failed.Candidate.SHA != repair || failed.PublishedCandidateSHA != published ||
+		failed.PullRequest != receipt.PullRequest || failed.Sources[0].SHA != advanced {
+		t.Fatalf("failed recorded-repair refresh lost Q: %+v", failed)
+	}
+	stored, err := readWorktreeMergeReceipt(receipt.ReceiptPath)
+	if err != nil || stored.Candidate.SHA != repair || stored.PublishedCandidateSHA != published ||
+		stored.PullRequest != receipt.PullRequest || stored.Status != WorktreeMergeConflict || stored.Sources[0].SHA != advanced {
+		t.Fatalf("durable failed recorded-repair refresh=%+v error=%v", stored, err)
+	}
+	if head := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD")); head != repair {
+		t.Fatalf("failed refresh left the candidate at %s, want preserved repair %s", head, repair)
+	}
+	if remote := strings.TrimSpace(runEngineGit(t, fixture.repository.CloneURL, "rev-parse", "refs/heads/"+receipt.Candidate.Branch)); remote != published {
+		t.Fatalf("failed refresh moved the published branch: %s", remote)
+	}
+
+	gh := installWorktreeMergeEngineGH(t, fixture, published, receipt.Candidate.Branch)
+	options := wmEngineLandOptions(fixture, receipt.ReceiptPath)
+	options.StopBeforeMerge = true
+	options.ValidateLocally = true
+
+	// A replacement head containing P+S+target but not Q must refuse.
+	dropped := resolvePublishedRepairMerge(t, receipt.Candidate.Worktree, published, advanced, "a-advanced\nb\n")
+	refused, refuseErr := ResumeWorktreeMerge(context.Background(), options)
+	if refuseErr == nil || !strings.Contains(refuseErr.Error(), "does not contain required immutable root") || !strings.Contains(refuseErr.Error(), repair) {
+		t.Fatalf("repair-dropping resume=%+v error=%v", refused, refuseErr)
+	}
+	if refused.Candidate.SHA != repair || refused.PublishedCandidateSHA != published || refused.PullRequest != gh.pr || refused.LandingSHA != "" {
+		t.Fatalf("repair-dropping refusal changed identity: %+v", refused)
+	}
+	if head := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD")); head != dropped {
+		t.Fatalf("refusal moved the replacement head from %s to %s", dropped, head)
+	}
+	if remote := strings.TrimSpace(runEngineGit(t, fixture.repository.CloneURL, "rev-parse", "refs/heads/"+receipt.Candidate.Branch)); remote != published {
+		t.Fatalf("repair-dropping refusal moved the published branch: %s", remote)
+	}
+
+	// The legacy shape records no candidate SHA at all, but the same repair is
+	// still available through its validated revision. It must be preserved and
+	// proved too, not waived because the candidate field is empty.
+	legacy, err := readWorktreeMergeReceipt(receipt.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy.Candidate.SHA = ""
+	legacy.Validation = quality.VerificationReport{Repository: legacy.Repository, Path: "git:" + repair, Revision: repair, Status: quality.StatusPassed, WorkspaceClean: true}
+	if err := persistWorktreeMergeReceipt(legacy); err != nil {
+		t.Fatal(err)
+	}
+	legacyRefused, legacyErr := ResumeWorktreeMerge(context.Background(), options)
+	if legacyErr == nil || !strings.Contains(legacyErr.Error(), "does not contain required immutable root") || !strings.Contains(legacyErr.Error(), repair) {
+		t.Fatalf("legacy repair-dropping resume=%+v error=%v", legacyRefused, legacyErr)
+	}
+	if legacyRefused.Candidate.SHA != "" || legacyRefused.PublishedCandidateSHA != published || legacyRefused.PullRequest != gh.pr || legacyRefused.LandingSHA != "" {
+		t.Fatalf("legacy repair-dropping refusal changed identity: %+v", legacyRefused)
+	}
+	if remote := strings.TrimSpace(runEngineGit(t, fixture.repository.CloneURL, "rev-parse", "refs/heads/"+receipt.Candidate.Branch)); remote != published {
+		t.Fatalf("legacy refusal moved the published branch: %s", remote)
+	}
+
+	// A clean resolution H that keeps P and Q and integrates S may recover and
+	// publish by fast-forward only.
+	resolved := resolvePublishedRepairMerge(t, receipt.Candidate.Worktree, repair, advanced, "a-advanced\nb\n")
+	publishedResume, err := ResumeWorktreeMerge(context.Background(), options)
+	if err != nil || publishedResume.Status != WorktreeMergePublished || publishedResume.Candidate.SHA != resolved ||
+		publishedResume.PublishedCandidateSHA != resolved || publishedResume.PullRequest != gh.pr || publishedResume.Validation.Revision != resolved {
+		t.Fatalf("recorded-repair resolution resume=%+v error=%v", publishedResume, err)
+	}
+	if remote := strings.TrimSpace(runEngineGit(t, fixture.repository.CloneURL, "rev-parse", "refs/heads/"+receipt.Candidate.Branch)); remote != resolved {
+		t.Fatalf("resolved published branch=%s, want %s", remote, resolved)
+	}
+	for _, root := range []string{published, repair, advanced, receipt.TargetSHA} {
+		assertNativeAncestor(t, fixture.repository.CloneURL, root, resolved)
+	}
+}
 
 // TestE2EPublishedPrepareConflictRecoveryResumesExistingPullRequest drives the
 // legacy empty-SHA published prepare conflict through the ordinary

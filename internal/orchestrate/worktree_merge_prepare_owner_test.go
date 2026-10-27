@@ -78,10 +78,15 @@ func TestPreparingReceiptConstructionPreservesDistinctRefreshAndRepairHistory(t 
 					expectedPublished = previous.Candidate.SHA
 				}
 				// A refresh of an already published candidate preserves the
-				// prior proved publication identity as its candidate snapshot;
-				// an unpublished refresh keeps the empty preparation snapshot
-				// its own empty-SHA recovery contract expects.
+				// prior recorded candidate identity (here "old-candidate")
+				// rather than replacing it with the published predecessor, and
+				// falls back to that predecessor only when no candidate was
+				// recorded. An unpublished refresh keeps the empty preparation
+				// snapshot its own empty-SHA recovery contract expects.
 				expectedCandidate := expectedPublished
+				if previous.PublishedCandidateSHA != "" {
+					expectedCandidate = previous.Candidate.SHA
+				}
 				if receipt.PullRequest != previous.PullRequest || receipt.PublishedCandidateSHA != expectedPublished || receipt.Candidate.SHA != expectedCandidate || receipt.PreviousTargetSHA != previous.PreviousTargetSHA || len(receipt.ForwardRepairs) != 0 {
 					t.Fatalf("ordinary refresh publication/history=%+v", receipt)
 				}
@@ -90,6 +95,57 @@ func TestPreparingReceiptConstructionPreservesDistinctRefreshAndRepairHistory(t 
 			receipt.SourceRefreshes[len(receipt.SourceRefreshes)-1].Sources[0].Task = "changed private result"
 			if previous.ResumeArgs[0] != "original" || previous.Sources[0].Task != "old-source" {
 				t.Fatal("constructed receipt aliased mutable prior resume/source snapshots")
+			}
+		})
+	}
+}
+
+func TestPreparingReceiptConstructionPreservesRecordedCandidateOverPublishedPredecessor(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name          string
+		prior         WorktreeMergeReceipt
+		wantCandidate string
+		wantPublished string
+	}{
+		{
+			// The recorded candidate Q may be a validated local descendant of
+			// the published predecessor P carrying an unpublished repair. A
+			// refresh must keep Q, not replace it with P.
+			name: "recorded local repair is preserved",
+			prior: WorktreeMergeReceipt{
+				PullRequest: "https://example.test/pull/1", PublishedCandidateSHA: "published-predecessor",
+				Candidate: WorktreeMergeCandidate{SHA: "validated-local-repair"},
+			},
+			wantCandidate: "validated-local-repair", wantPublished: "published-predecessor",
+		},
+		{
+			// P is a fallback only when the prior receipt genuinely recorded no
+			// candidate identity, so a failed refresh stays recoverable.
+			name: "empty candidate falls back to the publication",
+			prior: WorktreeMergeReceipt{
+				PullRequest: "https://example.test/pull/1", PublishedCandidateSHA: "published-predecessor",
+			},
+			wantCandidate: "published-predecessor", wantPublished: "published-predecessor",
+		},
+		{
+			// Unpublished preparation keeps its empty candidate snapshot and
+			// the distinct empty-SHA recovery contract that depends on it.
+			name:          "unpublished refresh records no candidate",
+			prior:         WorktreeMergeReceipt{Candidate: WorktreeMergeCandidate{SHA: "unpublished-preparation"}},
+			wantCandidate: "", wantPublished: "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			receipt := newPreparingWorktreeMergeReceipt(preparingReceiptInput{
+				candidate: worktrees.CreateResult{WorktreeDir: "/next", Branch: "wb/next", BaseSHA: "next-base"},
+				prior:     &tc.prior, now: now, operation: "next", lane: "lane", repository: "acme/app", target: "main", receiptPath: "/next.json",
+			})
+			if receipt.Candidate.SHA != tc.wantCandidate || receipt.PublishedCandidateSHA != tc.wantPublished ||
+				receipt.PullRequest != tc.prior.PullRequest || receipt.Status != WorktreeMergePreparing || receipt.Phase != WorktreeMergePhasePrepare {
+				t.Fatalf("%s: receipt=%+v", tc.name, receipt)
 			}
 		})
 	}

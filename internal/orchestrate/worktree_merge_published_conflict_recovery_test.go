@@ -248,6 +248,137 @@ func TestPublishedPrepareConflictRecoveryRefusesUnprovenPullRequestIdentity(t *t
 	}
 }
 
+// recordLocalOnlyRepair commits a Q-only repair on the published predecessor in
+// the managed candidate worktree and returns Q, restoring the branch so the
+// fixture's clean head still omits the repair.
+func recordLocalOnlyRepair(t *testing.T, worktree, branch, predecessor string) string {
+	t.Helper()
+	runEngineGit(t, worktree, "checkout", "-q", "--detach", predecessor)
+	writeEngineFile(t, filepath.Join(worktree, "local-repair.txt"), "validated local repair, not yet published\n")
+	runEngineGit(t, worktree, "add", "local-repair.txt")
+	runEngineGit(t, worktree, "commit", "-q", "-m", "fix: validated local repair that is not yet published")
+	repair := strings.TrimSpace(runEngineGit(t, worktree, "rev-parse", "HEAD"))
+	runEngineGit(t, worktree, "checkout", "-q", branch)
+	return repair
+}
+
+func TestPublishedPrepareConflictRecoveryPreservesRecordedLocalRepair(t *testing.T) {
+	t.Run("resolution dropping the recorded repair refuses", func(t *testing.T) {
+		fixture, receipt, published, head := newPublishedPrepareConflictFixture(t)
+		installWorktreeMergeEngineGH(t, fixture, published, receipt.Candidate.Branch)
+		repair := recordLocalOnlyRepair(t, receipt.Candidate.Worktree, receipt.Candidate.Branch, published)
+		// The legacy receipt records the local repair only through its
+		// validated revision; the clean head still contains P+S+target but
+		// drops Q.
+		receipt.Validation.Revision = repair
+		receipt.Failure = "prepare refresh failed after validating " + repair
+		before := receipt
+
+		changed, err := recoverPublishedPrepareConflictCandidate(t.Context(), fixture.githubDir, &receipt, 5*time.Second, 0)
+		if changed || err == nil || !strings.Contains(err.Error(), "does not contain required immutable root") || !strings.Contains(err.Error(), repair) {
+			t.Fatalf("repair-dropping resolution changed=%v error=%v receipt=%+v", changed, err, receipt)
+		}
+		if receipt.Candidate.SHA != before.Candidate.SHA || receipt.PublishedCandidateSHA != before.PublishedCandidateSHA || receipt.PullRequest != before.PullRequest {
+			t.Fatalf("repair-dropping refusal changed publication identity: %+v", receipt)
+		}
+		if got := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD")); got != head {
+			t.Fatalf("refusal moved the candidate head to %s, want preserved %s", got, head)
+		}
+	})
+
+	t.Run("resolution containing the recorded repair recovers", func(t *testing.T) {
+		fixture, receipt, published, _ := newPublishedPrepareConflictFixture(t)
+		installWorktreeMergeEngineGH(t, fixture, published, receipt.Candidate.Branch)
+		repair := recordLocalOnlyRepair(t, receipt.Candidate.Worktree, receipt.Candidate.Branch, published)
+		// A clean resolution H descends from P and Q and integrates the
+		// advanced source S.
+		runEngineGit(t, receipt.Candidate.Worktree, "reset", "--hard", repair)
+		runEngineGit(t, receipt.Candidate.Worktree, "merge", "--no-edit", receipt.Sources[0].SHA)
+		resolved := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD"))
+		receipt.Validation.Revision = repair
+
+		changed, err := recoverPublishedPrepareConflictCandidate(t.Context(), fixture.githubDir, &receipt, 5*time.Second, 0)
+		if err != nil || !changed || receipt.Candidate.SHA != resolved || receipt.Status != WorktreeMergePreparing ||
+			receipt.PublishedCandidateSHA != published || receipt.PullRequest != "https://example.test/acme/app/pull/41" {
+			t.Fatalf("repair-preserving resolution changed=%v error=%v receipt=%+v", changed, err, receipt)
+		}
+		for _, root := range []string{published, repair, receipt.TargetSHA, receipt.Sources[0].SHA} {
+			assertNativeAncestor(t, receipt.Candidate.Worktree, root, resolved)
+		}
+	})
+}
+
+func TestPublishedPrepareConflictRecoveryProvesEveryRecordedCandidateRoot(t *testing.T) {
+	// Each row records one available root of the same publication that a
+	// replacement head omitted. The refusal must name it and leave the
+	// candidate and publication identity untouched.
+	for _, tc := range []struct {
+		name   string
+		mutate func(*testing.T, engineFixture, *WorktreeMergeReceipt, string)
+	}{
+		{"validation revision", func(_ *testing.T, _ engineFixture, r *WorktreeMergeReceipt, side string) {
+			r.Validation.Revision = side
+		}},
+		{"validation deferral candidate", func(_ *testing.T, _ engineFixture, r *WorktreeMergeReceipt, side string) {
+			r.ValidationDeferral = &WorktreeMergeValidationDeferral{Route: WorktreeMergeRoutePullRequest, CandidateSHA: side, Reason: "test deferral"}
+		}},
+		{"validation identity candidate", func(_ *testing.T, _ engineFixture, r *WorktreeMergeReceipt, side string) {
+			r.ValidationIdentity = &WorktreeMergeValidationIdentity{CandidateSHA: side, TargetSHA: r.TargetSHA}
+		}},
+		{"target refresh previous candidate", func(_ *testing.T, _ engineFixture, r *WorktreeMergeReceipt, side string) {
+			r.TargetRefreshes = []WorktreeMergeTargetRefresh{{PreviousTargetSHA: r.TargetSHA, NewTargetSHA: r.TargetSHA, PreviousCandidateSHA: side, NewCandidateSHA: r.PublishedCandidateSHA}}
+		}},
+		{"target refresh new candidate", func(_ *testing.T, _ engineFixture, r *WorktreeMergeReceipt, side string) {
+			r.TargetRefreshes = []WorktreeMergeTargetRefresh{{PreviousTargetSHA: r.TargetSHA, NewTargetSHA: r.TargetSHA, PreviousCandidateSHA: r.PublishedCandidateSHA, NewCandidateSHA: side}}
+		}},
+		{"target refresh previous target", func(_ *testing.T, _ engineFixture, r *WorktreeMergeReceipt, side string) {
+			r.TargetRefreshes = []WorktreeMergeTargetRefresh{{PreviousTargetSHA: side, NewTargetSHA: r.TargetSHA, PreviousCandidateSHA: r.PublishedCandidateSHA, NewCandidateSHA: r.PublishedCandidateSHA}}
+		}},
+		{"source refresh evidence", func(_ *testing.T, _ engineFixture, r *WorktreeMergeReceipt, side string) {
+			r.SourceRefreshes = []WorktreeMergeSourceRefresh{{RecordedAt: r.CreatedAt, Sources: []WorktreeMergeSource{{Task: "historical-source", Worktree: r.Sources[0].Worktree, Branch: r.Sources[0].Branch, SHA: side}}}}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture, receipt, published, head := newPublishedPrepareConflictFixture(t)
+			installWorktreeMergeEngineGH(t, fixture, published, receipt.Candidate.Branch)
+			side := createMergeSource(t, fixture, "unrelated-"+strings.ReplaceAll(tc.name, " ", "-"), "feature/unrelated-recorded-root", "unrelated.txt", "unrelated\n")
+			sideSHA := strings.TrimSpace(runEngineGit(t, side.WorktreeDir, "rev-parse", "HEAD"))
+			tc.mutate(t, fixture, &receipt, sideSHA)
+			before := receipt
+
+			changed, err := recoverPublishedPrepareConflictCandidate(t.Context(), fixture.githubDir, &receipt, 5*time.Second, 0)
+			if changed || err == nil || !strings.Contains(err.Error(), "does not contain required immutable root") || !strings.Contains(err.Error(), sideSHA) {
+				t.Fatalf("%s omission changed=%v error=%v receipt=%+v", tc.name, changed, err, receipt)
+			}
+			if receipt.Candidate.SHA != before.Candidate.SHA || receipt.PublishedCandidateSHA != before.PublishedCandidateSHA || receipt.PullRequest != before.PullRequest {
+				t.Fatalf("%s refusal changed publication identity: %+v", tc.name, receipt)
+			}
+			if got := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD")); got != head {
+				t.Fatalf("%s refusal moved the candidate head to %s, want %s", tc.name, got, head)
+			}
+		})
+	}
+}
+
+func TestPublishedPrepareConflictRecoveryRecoversWhenEveryRecordedRootIsContained(t *testing.T) {
+	fixture, receipt, published, head := newPublishedPrepareConflictFixture(t)
+	installWorktreeMergeEngineGH(t, fixture, published, receipt.Candidate.Branch)
+	receipt.Validation.Revision = published
+	receipt.ValidationDeferral = &WorktreeMergeValidationDeferral{Route: WorktreeMergeRoutePullRequest, CandidateSHA: head, Reason: "test deferral"}
+	receipt.ValidationIdentity = &WorktreeMergeValidationIdentity{CandidateSHA: published, TargetSHA: receipt.TargetSHA}
+	receipt.TargetRefreshes = []WorktreeMergeTargetRefresh{{PreviousTargetSHA: receipt.TargetSHA, NewTargetSHA: receipt.TargetSHA, PreviousCandidateSHA: published, NewCandidateSHA: head}}
+	receipt.SourceRefreshes = []WorktreeMergeSourceRefresh{{RecordedAt: receipt.CreatedAt, Sources: append([]WorktreeMergeSource(nil), receipt.Sources...)}}
+	// Prose that names an unrelated commit is not recorded evidence: it must
+	// neither add a root nor influence the proof.
+	receipt.Failure = "prepare refresh failed near " + strings.Repeat("0", 40)
+
+	changed, err := recoverPublishedPrepareConflictCandidate(t.Context(), fixture.githubDir, &receipt, 5*time.Second, 0)
+	if err != nil || !changed || receipt.Candidate.SHA != head || receipt.Status != WorktreeMergePreparing ||
+		receipt.PublishedCandidateSHA != published || receipt.PullRequest != "https://example.test/acme/app/pull/41" {
+		t.Fatalf("complete-root recovery changed=%v error=%v receipt=%+v", changed, err, receipt)
+	}
+}
+
 func TestPublishedPrepareConflictRecoveryUsesTheProvedTargetNormalization(t *testing.T) {
 	fixture, receipt, published, _ := newPublishedPrepareConflictFixture(t)
 	installWorktreeMergeEngineGH(t, fixture, published, receipt.Candidate.Branch)
