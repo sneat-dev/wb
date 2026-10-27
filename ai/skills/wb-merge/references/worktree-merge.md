@@ -438,3 +438,19 @@ as a required root. The command creates no receipt or acknowledgement, so pass
 the resulting candidate to `supersede-validation-failed` to append the only
 lane-releasing transition. Use `--progress` for heartbeat updates during long
 Git operations while JSON output remains stable.
+
+## Interrupted forward repair before an additive rebatch
+
+When a forward repair is interrupted at `prepare/preparing`, recover its exact
+receipt without publishing a partial repair:
+
+```sh
+wb worktree merge resume <receipt> --prepare-only --progress
+wb worktree merge prepare <original-source> <additional-source> --rebatch-receipt <receipt> --progress
+```
+
+`--prepare-only` requires an unpublished forward-repair receipt with its exact
+clean candidate, active Work Log claim, unchanged source heads and current
+target. It always runs local validation and stops at `prepared`; it neither
+pushes nor opens a PR. Validation failures remain failures. Cleanup, PR handoff
+and deferred direct-CI flags cannot combine with this mode.

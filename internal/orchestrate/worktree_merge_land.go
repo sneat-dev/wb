@@ -34,6 +34,12 @@ func landWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions, sa
 	if err != nil {
 		return WorktreeMergeReceipt{}, err
 	}
+	if options.PrepareOnly {
+		if err := validatePrepareOnlyShape(receipt, options); err != nil {
+			return receipt, err
+		}
+		options.ValidateLocally = true
+	}
 	if options.HostLoadAdmission != nil {
 		receipt.HostLoadAdmission = options.HostLoadAdmission
 	}
@@ -104,6 +110,11 @@ func landWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions, sa
 			_ = lock.Release()
 		}
 	}()
+	if options.PrepareOnly {
+		if err := validatePrepareOnlyCandidate(ctx, options, receipt); err != nil {
+			return receipt, err
+		}
+	}
 	if receipt.Status == WorktreeMergeLanded && receipt.LandingSHA != "" && receipt.Cleanup && options.Cleanup {
 		ackPath := receipt.ReceiptPath + worktreeMergeMissingCleanupAcknowledgementSuffix
 		if _, statErr := os.Stat(ackPath); statErr == nil {
@@ -221,6 +232,13 @@ func landWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions, sa
 			return receipt, err
 		}
 		reportWorktreeMergeProgress(options.Progress, "validate_candidate", progress.Completed, string(receipt.Validation.Status))
+	}
+	// This boundary precedes every publication, landing-intent or phase change.
+	if options.PrepareOnly {
+		if err := validatePrepareOnlyCandidate(ctx, options, receipt); err != nil {
+			return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, err, save)
+		}
+		return receipt, nil
 	}
 	if receipt.Phase == WorktreeMergePhasePrepare && receipt.Status == WorktreeMergeValidationFailed && receipt.Candidate.SHA != "" {
 		// A prepare/validation_failed receipt must never reach publish without

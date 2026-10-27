@@ -29,6 +29,7 @@ type worktreeMergeFlags struct {
 	allowUnfenced                          bool
 	progress                               bool
 	stopBeforeMerge                        bool
+	prepareOnly                            bool
 	allowSaturatedHost                     bool
 	validateLocally                        bool
 	directCIPullRequest                    string
@@ -536,6 +537,9 @@ func newWorktreeMergeLandCmd(inv *mergeInvocation, name string) *cobra.Command {
 			if err := validateWorktreeMergeFlags(flags); err != nil {
 				return err
 			}
+			if flags.prepareOnly {
+				flags.validateLocally = true
+			}
 			// The land verbs are the ones that push, so the live-link guard
 			// has to run here too — it used to cover only merge/prepare, so
 			// preparing before linking and then landing the receipt walked a
@@ -580,10 +584,13 @@ func newWorktreeMergeLandCmd(inv *mergeInvocation, name string) *cobra.Command {
 			"and its recorded validation identity still names it. A published PR already " +
 			"merged after its integration worktree was retired is recovered from GitHub's " +
 			"remote evidence, then continues through target checks and cleanup. An explicit " +
-			"--allow-unfenced approval is persisted across every later resume."
+			"--allow-unfenced approval is persisted across every later resume. " +
+			"With --prepare-only, an exact interrupted unpublished forward repair is validated locally " +
+			"and returned as prepared before any publication, enabling an audited additive rebatch."
 		command.Flags().DurationVar(&flags.prepareTimeout, "prepare-timeout", 0, "optional deadline for recovering an interrupted prepare or re-validating a validation_failed receipt; zero keeps the stored behavior")
 		command.Flags().DurationVar(&flags.checkTimeout, "check-timeout", 0, "override the logical validation-check deadline while recovering an interrupted prepare or re-validating a validation_failed receipt")
 		command.Flags().DurationVar(&flags.shardAttemptTimeout, "shard-attempt-timeout", 0, "override the process-isolated Go test shard-attempt deadline while recovering an interrupted prepare or re-validating a validation_failed receipt")
+		command.Flags().BoolVar(&flags.prepareOnly, "prepare-only", false, "validate an interrupted unpublished forward repair locally and stop before any publication; enables additive rebatch")
 		command.Flags().BoolVar(&flags.stopBeforeMerge, "stop-before-merge", false, "PR-only: validate and publish the exact candidate, prove the open PR, then stop before checks or merge")
 	}
 	return command
@@ -1355,6 +1362,9 @@ func validateWorktreeMergeFlags(flags worktreeMergeFlags) error {
 	if flags.onFailure != "" && flags.onFailure != "stop" && flags.onFailure != "revert" {
 		return fmt.Errorf("unsupported --on-failure %q; use stop or revert", flags.onFailure)
 	}
+	if flags.prepareOnly && (flags.cleanup || flags.stopBeforeMerge || flags.directCIPullRequest != "") {
+		return fmt.Errorf("--prepare-only cannot combine with --cleanup, --stop-before-merge or --defer-direct-ci-pr")
+	}
 	if flags.stopBeforeMerge && orchestrate.WorktreeMergeRoute(flags.route) != orchestrate.WorktreeMergeRoutePullRequest {
 		return fmt.Errorf("--stop-before-merge requires --route pr")
 	}
@@ -1390,7 +1400,7 @@ func landMergeOptions(inv *mergeInvocation, flags worktreeMergeFlags, receipt st
 		Timeout: flags.timeout, Retry: flags.retry, PrepareTimeout: flags.prepareTimeout, CheckTimeout: flags.checkTimeout,
 		ShardAttemptTimeout: flags.shardAttemptTimeout, CheckPollInterval: flags.interval, Progress: reporter, ProgressRequested: flags.progress,
 		Lane:            inv.bindings.LaneRequest(inv.runtime.Flags().ProjectsRoot, "wb worktree merge land", flags.laneReason, flags.takeOverLane),
-		StopBeforeMerge: flags.stopBeforeMerge, HostLoadAdmission: admission, CheckoutUpdated: inv.bindings.CheckoutUpdated(errOut)}
+		StopBeforeMerge: flags.stopBeforeMerge, PrepareOnly: flags.prepareOnly, HostLoadAdmission: admission, CheckoutUpdated: inv.bindings.CheckoutUpdated(errOut)}
 }
 
 // hostLoadCheckSkippable reports whether a land/resume step for receipt will

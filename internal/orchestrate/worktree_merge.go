@@ -363,6 +363,9 @@ type WorktreeMergeLandOptions struct {
 	// persisted as future landing intent: a bare resume is how the merger takes
 	// over from the published handoff.
 	StopBeforeMerge bool
+	// PrepareOnly validates an interrupted unpublished forward repair by receipt
+	// and returns before publication. It always requires local validation.
+	PrepareOnly bool
 	// HostLoadAdmission is the host-load admission check cmd/wb ran, if any,
 	// before calling Land/ResumeWorktreeMerge. Nil means the caller decided no
 	// check was needed for this step (e.g. it neither validates nor pushes).
