@@ -380,7 +380,6 @@ github.com/sneat-dev/wb/internal/orchestrate.canPreparePostTargetRepair
 github.com/sneat-dev/wb/internal/orchestrate.canRefreshWorktreeMergeReceipt
 github.com/sneat-dev/wb/internal/orchestrate.inspectWorktreeMergeSources
 github.com/sneat-dev/wb/internal/orchestrate.requireCandidateContainsImmutableClaimBase
-github.com/sneat-dev/wb/internal/orchestrate.requireCleanMergeWorktree
 github.com/sneat-dev/wb/internal/orchestrate.validateExactPreparingWorktreeMergeReceipt
 github.com/sneat-dev/wb/internal/orchestrate.validatePrepareFailureSupersessionCandidate
 github.com/sneat-dev/wb/internal/orchestrate.validatePreparingWorktreeMergeCandidate
@@ -395,8 +394,6 @@ github.com/sneat-dev/wb/internal/worktrees.EnsureManifest
 # Production-package functions whose only callers are tests in another package, so they cannot move
 # into a _test.go file without a shared test package.
 github.com/sneat-dev/wb/internal/buildinfo.Set
-github.com/sneat-dev/wb/internal/landinglane.Read
-github.com/sneat-dev/wb/internal/landinglane.lockShared
 github.com/sneat-dev/wb/internal/quality.ReadCoverageSummary
 github.com/sneat-dev/wb/internal/runqueue.Peek
 github.com/sneat-dev/wb/internal/worktreebranches.DependencyManifestValue
