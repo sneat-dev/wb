@@ -139,7 +139,7 @@ func TestTheHubExportEncodesOnlyTheHalfThatMoved(t *testing.T) {
 		Tick: func(time.Duration) (<-chan time.Time, func()) { return ticks, func() {} },
 	})
 	stop := sampler.Start(t.Context())
-	defer stop()
+	t.Cleanup(stop)
 	waitFor(t, "the initial committed metrics sample", func() bool {
 		return sampler.Version() == 1 && len(sampler.Snapshot().Samples) == 1
 	})
