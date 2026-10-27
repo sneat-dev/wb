@@ -31,9 +31,12 @@ func TestLegacyInventoryCannotDowngradeToOrdinaryApprovalOrLanding(t *testing.T)
 			if err != nil || refusal == nil || refusal.code != LandRefusalBatchBlockInvalid || receipt != nil || !options.NoAutoMerge || !options.NoUpdateBranch {
 				t.Fatal("inventory downgrade", receipt, refusal, err, options.NoAutoMerge, options.NoUpdateBranch)
 			}
-			if refusal := promotionApprovalForm(options, view, "7"); refusal == nil || refusal.code != LandRefusalBatchBlockInvalid {
-				t.Fatal("ordinary approval allowed", refusal)
+			options.ApprovedBy = "opus@codex@ordinary-review"
+			receipt, refusal, err = promotionLandingGate(context.Background(), &options, view, "7", commits)
+			if err != nil || receipt != nil || refusal == nil || refusal.code != LandRefusalBatchBlockInvalid || !options.NoAutoMerge || !options.NoUpdateBranch {
+				t.Fatalf("ordinary approval allowed inventory downgrade: %+v %+v %v", receipt, refusal, err)
 			}
+
 		})
 	}
 }
