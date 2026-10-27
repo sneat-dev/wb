@@ -79,8 +79,9 @@ PreToolUse payload on stdin and carries these policies:
   own admission checks (wb#645 review Blocker 3). Both IDs are validated
   against a compact safe charset before they are ever interpolated into the
   rewritten command; an unsafe or absent `agent_id` drops the whole prefix.
-- **Missing model** (`Agent`/`Task` tool) — refuses a subagent dispatch that
-  names no `model`; an omitted model silently inherits the parent's.
+- **Delegation model choice** (`Agent`/`Task` tool) — allows the orchestrator
+  to select a supported model or inherit the runtime default. Separate WB
+  session and work-log execution-provenance requirements still apply.
 - **Literal report path** (`Agent`/`Task` tool) — refuses a dispatch prompt
   that hand-writes a WB report path (e.g. `$HOME/.wb/reports/...`) instead of
   deriving it from `wb worktree log finalize --report`.

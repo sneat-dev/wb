@@ -29,41 +29,23 @@ func agentDispatch(prompt, model string) string {
 	return string(encoded)
 }
 
-// TestAgentDispatchRequiresModel pins
-// lesson:l49-subagent-dispatch-should-fail-before-an-unnamed-model-can-inherit:
-// a dispatch that never names a model inherits the parent's silently, which
-// is exactly the rule ("Name the model on every subagent dispatch — never
-// let it inherit") a prose-only rule could not fail closed on.
-func TestAgentDispatchRequiresModel(t *testing.T) {
+// Orchestrators may select any supported model or inherit the runtime default.
+func TestAgentDispatchAllowsModelChoice(t *testing.T) {
 	t.Parallel()
 	repositories := newFixture(t)
-
-	t.Run("no model is denied", func(t *testing.T) {
-		t.Parallel()
-		decision := Inspect(agentCall(agentDispatch("Investigate the failing test.", ""), repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot})
-		if !decision.Deny {
-			t.Fatal("Inspect allowed a dispatch with no model")
-		}
-		for _, expected := range []string{"model", "l49-subagent-dispatch-should-fail-before-an-unnamed-model-can-inherit", "Name the model on every subagent dispatch"} {
-			if !strings.Contains(decision.Reason, expected) {
-				t.Fatalf("refusal is missing %q:\n%s", expected, decision.Reason)
+	for _, model := range []string{"", "sonnet", "gpt-6.1-sol", "another-supported-model"} {
+		t.Run("model="+model, func(t *testing.T) {
+			t.Parallel()
+			decision := Inspect(agentCall(agentDispatch("Investigate the failing test.", model), repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot})
+			if decision.Deny {
+				t.Fatalf("Inspect refused model choice %q: %s", model, decision.Reason)
 			}
-		}
-	})
-
-	t.Run("an explicit model is allowed", func(t *testing.T) {
+		})
+	}
+	t.Run("empty input", func(t *testing.T) {
 		t.Parallel()
-		decision := Inspect(agentCall(agentDispatch("Investigate the failing test.", "sonnet"), repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot})
-		if decision.Deny {
-			t.Fatalf("Inspect refused a dispatch that named a model:\n%s", decision.Reason)
-		}
-	})
-
-	t.Run("an empty/unrecognised tool_input is allowed, not guessed at", func(t *testing.T) {
-		t.Parallel()
-		decision := Inspect(agentCall(`{}`, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot})
-		if decision.Deny {
-			t.Fatalf("Inspect refused an empty tool_input:\n%s", decision.Reason)
+		if decision := Inspect(agentCall(`{}`, repositories.Canonical), Options{ProjectsRoot: repositories.ProjectsRoot}); decision.Deny {
+			t.Fatalf("Inspect refused empty input: %s", decision.Reason)
 		}
 	})
 }
