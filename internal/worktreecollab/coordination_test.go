@@ -486,6 +486,63 @@ func TestRecoverInactiveOwnerRefusesRepeatedTransitionWithoutSecondEpoch(t *test
 	}
 }
 
+// TestRecoverInactiveOwnerRequiresTheExactAuditToRecognizeACompletedTransition
+// proves the completed-transition recognizer never reports "already completed"
+// for a state whose owner, root, epoch and revision match the request while a
+// durable audit record is missing or bound to different evidence. Each case
+// retries the very recovery that produced that tuple, so a recognizer that
+// checked only the ownership tuple would claim the recovery had already been
+// published instead of naming its actual mismatch, and none may advance it.
+func TestRecoverInactiveOwnerRequiresTheExactAuditToRecognizeACompletedTransition(t *testing.T) {
+	t.Parallel()
+	oldRoot := filepath.Join(string(os.PathSeparator), "retired", "checkout")
+	currentRoot := filepath.Join(string(os.PathSeparator), "current", "checkout")
+	for _, tc := range []struct {
+		name   string
+		damage func(*State)
+	}{
+		{"no checkout rebind recorded", func(state *State) { state.CheckoutRebinds = nil }},
+		{"no ownership change recorded", func(state *State) { state.OwnerChanges = nil }},
+		{"rebind bound to another previous root", func(state *State) {
+			state.CheckoutRebinds[len(state.CheckoutRebinds)-1].PreviousRoot = filepath.Join(string(os.PathSeparator), "other")
+		}},
+		{"rebind published for another actor", func(state *State) {
+			state.CheckoutRebinds[len(state.CheckoutRebinds)-1].Actor = "peer"
+		}},
+		{"ownership change published for another actor", func(state *State) {
+			state.OwnerChanges[len(state.OwnerChanges)-1].Actor = "peer"
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			stale := staleRecoveryState(t, oldRoot)
+			recovery := recoveryOf(t, stale, oldRoot)
+			current := recoveryCheckout(stale, currentRoot)
+			if err := stale.RecoverInactiveOwner(current, recovery); err != nil {
+				t.Fatal(err)
+			}
+			epoch, revision := stale.OwnerEpoch, stale.Revision
+			tc.damage(&stale)
+			damaged, err := json.Marshal(stale)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = stale.RecoverInactiveOwner(current, recovery)
+			if err == nil || strings.Contains(err.Error(), "already completed") ||
+				!strings.Contains(err.Error(), "prior and current checkout identities") {
+				t.Fatalf("retry with incomplete audit records = %v, want the exact-identity refusal", err)
+			}
+			after, err := json.Marshal(stale)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != string(damaged) || stale.OwnerEpoch != epoch || stale.Revision != revision {
+				t.Fatalf("refused retry advanced the snapshot: %s", after)
+			}
+		})
+	}
+}
+
 func TestRecoverInactiveOwnerRefusesCounterExhaustionBeforeIncrement(t *testing.T) {
 	t.Parallel()
 	oldRoot := filepath.Join(string(os.PathSeparator), "retired", "checkout")

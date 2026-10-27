@@ -771,6 +771,47 @@ func TestStoreRecoverInactiveOwnerRefusalsPreserveExactBytes(t *testing.T) {
 	}
 }
 
+// TestStoreRecoverInactiveOwnerRevalidatesInputsBeforeTouchingState proves the
+// store refuses an inexact recovery or an incomplete checkout identity on its
+// own, before the private home, coordination directory, lock or snapshot exist,
+// so a caller that skipped its own checks still cannot publish a transition whose
+// audit would be unbound.
+func TestStoreRecoverInactiveOwnerRevalidatesInputsBeforeTouchingState(t *testing.T) {
+	t.Parallel()
+	checkout := testCheckout()
+	retiredRoot := filepath.Join(string(os.PathSeparator), "retired")
+	currentRoot := filepath.Join(string(os.PathSeparator), "current")
+	valid := InactiveOwnerRecovery{ExpectedRoot: retiredRoot, ExpectedOwner: "owner", ExpectedEpoch: 1, ExpectedRevision: 1,
+		OwnerStatus: "inactive", Actor: "successor", Reason: "reviewed retirement", At: testNow}
+	for _, tc := range []struct {
+		name      string
+		recovery  InactiveOwnerRecovery
+		checkout  Checkout
+		wantError string
+	}{
+		{name: "recorded epoch not stated", recovery: InactiveOwnerRecovery{ExpectedRoot: retiredRoot, ExpectedOwner: "owner",
+			ExpectedRevision: 1, OwnerStatus: "inactive", Actor: "successor", Reason: "reviewed retirement", At: testNow},
+			checkout: checkout, wantError: "exact recorded owner epoch"},
+		{name: "recorded owner not proven inactive", recovery: InactiveOwnerRecovery{ExpectedRoot: retiredRoot, ExpectedOwner: "owner",
+			ExpectedEpoch: 1, ExpectedRevision: 1, OwnerStatus: "live", Actor: "successor", Reason: "reviewed retirement", At: testNow},
+			checkout: checkout, wantError: "proven inactive"},
+		{name: "checkout identity incomplete", recovery: valid, checkout: Checkout{ID: "checkout-1", Root: currentRoot},
+			wantError: "checkout identity is incomplete"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			store := NewStore(privateTestHome(t))
+			_, err := store.RecoverInactiveOwner(context.Background(), tc.checkout, tc.recovery, func() error { return nil })
+			if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+				t.Fatalf("recovery error = %v, want %q", err, tc.wantError)
+			}
+			if _, err := os.Stat(store.Home); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("refused recovery created the private home: %v", err)
+			}
+		})
+	}
+}
+
 func TestStoreRecoverInactiveOwnerRejectsFailedPersistenceAndMissingState(t *testing.T) {
 	t.Parallel()
 	store, oldCheckout, currentCheckout, recovery := recoveryFixture(t, nil)

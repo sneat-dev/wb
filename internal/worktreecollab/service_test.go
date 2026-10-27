@@ -430,6 +430,39 @@ func TestServiceRecoverInactiveOwnerRequiresProvenInactiveOwnerAndFinalRevalidat
 				return resolved, nil
 			}
 		}, "invoking session changed"},
+		{"invoking session unreadable at final revalidation", func(service *Service, _ *string) {
+			original := service.Ports.Caller
+			calls := 0
+			service.Ports.Caller = func() (string, error) {
+				calls++
+				if calls > 1 {
+					return "", errors.New("registered ancestor unreadable")
+				}
+				return original()
+			}
+		}, "recheck invoking session"},
+		{"current checkout unreadable at final revalidation", func(service *Service, _ *string) {
+			original := service.Ports.Resolve
+			calls := 0
+			service.Ports.Resolve = func(ctx context.Context, value string) (Checkout, error) {
+				calls++
+				if calls > 1 {
+					return Checkout{}, errors.New("worktree registration unreadable")
+				}
+				return original(ctx, value)
+			}
+		}, "recheck current checkout"},
+		{"recorded owner liveness unreadable at final revalidation", func(service *Service, _ *string) {
+			original := service.Ports.OwnerStatus
+			calls := 0
+			service.Ports.OwnerStatus = func(id string) (string, error) {
+				calls++
+				if calls > 1 {
+					return "", errors.New("owner registry unreadable")
+				}
+				return original(id)
+			}
+		}, "owner registry unreadable"},
 		{"current checkout identity changed before write", func(service *Service, _ *string) {
 			original := service.Ports.Resolve
 			calls := 0

@@ -161,6 +161,11 @@ type inactiveOwnerRecoveryAudit struct {
 // auditReason encodes the comparison this recovery performed and the transition
 // it published. The resulting tuple is the one the caller's revision and epoch
 // advance to, so an audit reader can rebuild the exact CAS binding later.
+//
+// Every audited field is a string or an unsigned integer and the audit type has
+// no marshal hook, so encoding this value cannot fail. The encoder's error is
+// returned unchanged rather than replaced with a message of the recovery's own,
+// so the canonical bytes remain the only thing the audit can hold.
 func (recovery InactiveOwnerRecovery) auditReason(checkout Checkout) (string, error) {
 	encoded, err := json.Marshal(inactiveOwnerRecoveryAudit{
 		Reason: strings.TrimSpace(recovery.Reason),
@@ -173,10 +178,7 @@ func (recovery InactiveOwnerRecovery) auditReason(checkout Checkout) (string, er
 			Epoch: recovery.ExpectedEpoch + 1, Revision: recovery.ExpectedRevision + 1,
 		},
 	})
-	if err != nil {
-		return "", fmt.Errorf("encode inactive owner recovery audit: %w", err)
-	}
-	return string(encoded), nil
+	return string(encoded), err
 }
 
 func validID(value string) bool {
@@ -305,23 +307,25 @@ func (state *State) RecoverInactiveOwner(checkout Checkout, recovery InactiveOwn
 	if state.OwnerEpoch == maxCounter || state.Revision == maxCounter {
 		return fmt.Errorf("coordination counters are exhausted; refusing to wrap an inactive owner recovery")
 	}
-	if _, joined := state.Members[recovery.Actor]; !joined {
-		state.Members[recovery.Actor] = Member{JoinedAt: recovery.At.UTC()}
-	}
+	// Publish only once the canonical audit exists: when the audit cannot be
+	// encoded, nothing is applied and that error is the whole result, so a
+	// snapshot can never hold a transition without its exact CAS binding.
 	reason, err := recovery.auditReason(checkout)
-	if err != nil {
-		return err
+	if err == nil {
+		if _, joined := state.Members[recovery.Actor]; !joined {
+			state.Members[recovery.Actor] = Member{JoinedAt: recovery.At.UTC()}
+		}
+		state.Checkout = checkout
+		state.Owner = recovery.Actor
+		state.OwnerEpoch++
+		state.Revision++
+		state.CheckoutRebinds = append(state.CheckoutRebinds, CheckoutRebind{
+			PreviousRoot: recovery.ExpectedRoot, CurrentRoot: checkout.Root, Actor: recovery.Actor, At: recovery.At.UTC(),
+		})
+		state.recordChange(OwnerChange{Epoch: state.OwnerEpoch, Previous: recovery.ExpectedOwner, Current: recovery.Actor,
+			Actor: recovery.Actor, Reason: reason, At: recovery.At.UTC()})
 	}
-	state.Checkout = checkout
-	state.Owner = recovery.Actor
-	state.OwnerEpoch++
-	state.Revision++
-	state.CheckoutRebinds = append(state.CheckoutRebinds, CheckoutRebind{
-		PreviousRoot: recovery.ExpectedRoot, CurrentRoot: checkout.Root, Actor: recovery.Actor, At: recovery.At.UTC(),
-	})
-	state.recordChange(OwnerChange{Epoch: state.OwnerEpoch, Previous: recovery.ExpectedOwner, Current: recovery.Actor,
-		Actor: recovery.Actor, Reason: reason, At: recovery.At.UTC()})
-	return nil
+	return err
 }
 
 // completedInactiveOwnerRecovery recognizes exactly the durable transition this
