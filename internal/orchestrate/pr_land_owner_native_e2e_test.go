@@ -257,7 +257,7 @@ func TestE2ELandPostWaitReviewRefusalUsesRestoredNativeForeignHistory(t *testing
 	})
 	restored := false
 	p.beforeGet = func(req githubobserver.GetRequest) {
-		if req.Endpoint == "repos/acme/app/pulls/7/commits?per_page=100" {
+		if strings.Contains(req.Endpoint, "/check-runs?") && !restored {
 			if err := os.Rename(staged, proofPath); err != nil {
 				t.Fatal(err)
 			}

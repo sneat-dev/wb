@@ -938,7 +938,7 @@ func latestRelocationReceipt(home string, claim workLogClaim, destination string
 // Guard may recognize a canonical-local path without claim-based placement.
 // Still retain any completed repository-transfer authority across layout moves;
 // this read does not constrain a legitimate in-progress Git history operation.
-func corroborateRecordedRepositoryTransfer(home, worktree string) error {
+func corroborateRecordedRepositoryTransfer(homes wbhome.Resolution, worktree string) error {
 	projection, err := readWorkLogProjectionForReadOnlyClaim(worktree)
 	if errors.Is(err, errWorkLogProjectionNotFound) {
 		return nil
@@ -946,26 +946,36 @@ func corroborateRecordedRepositoryTransfer(home, worktree string) error {
 	if err != nil {
 		return err
 	}
-	run, _, err := openWorkLogRun(home, projection.EffortID, projection.RunID, false)
-	if err != nil {
-		return err
+	matches := 0
+	for _, home := range resolvedClaimHomes(homes) {
+		claim, found, err := projectedClaimInHome(home, projection)
+		if err != nil {
+			return err
+		}
+		if !found {
+			continue
+		}
+		resolved, err := resolveRelocationChain(home, claim)
+		if err != nil {
+			return err
+		}
+		if resolved.remoteURL != "" {
+			if resolved.worktree != filepath.Clean(worktree) {
+				return fmt.Errorf("completed repository transfer does not bind this checkout path")
+			}
+			if err = corroborateRepositoryRelocation(context.Background(), worktree, resolved.repository, resolved.remoteURL); err != nil {
+				return err
+			}
+		}
+		matches++
 	}
-	defer func() { _ = run.Close() }()
-	claim, err := readWorkLogClaimAt(run, projection.ClaimID)
-	if err != nil {
-		return err
+	if matches == 0 {
+		return absentRelocationClaim()
 	}
-	if err := validateStaticWorkLogClaim(claim, projection.EffortID, projection.RunID); err != nil {
-		return err
+	if matches > 1 {
+		return fmt.Errorf("projected Work Log claim matches more than one WB home")
 	}
-	resolved, err := resolveRelocationChain(home, claim)
-	if err != nil || resolved.remoteURL == "" {
-		return err
-	}
-	if resolved.worktree != filepath.Clean(worktree) {
-		return fmt.Errorf("completed repository transfer does not bind this checkout path")
-	}
-	return corroborateRepositoryRelocation(context.Background(), worktree, resolved.repository, resolved.remoteURL)
+	return nil
 }
 
 func corroborateRepositoryRelocation(ctx context.Context, worktree, repository string, expectedRemote ...string) error {

@@ -415,10 +415,12 @@ type ListResult struct {
 // more than one resolver-recognized layout is being read at once (see
 // wbhome.Resolve) — Task name alone is not always unique across layouts.
 type ListDiagnostic struct {
-	Task          string `json:"task,omitempty"`
-	WorktreesRoot string `json:"worktrees_root,omitempty"`
-	Path          string `json:"path"`
-	Message       string `json:"message"`
+	// DiscoveryScope distinguishes selected authority obstructions from unattributed fleet uncertainty.
+	DiscoveryScope string `json:"discovery_scope,omitempty"`
+	Task           string `json:"task,omitempty"`
+	WorktreesRoot  string `json:"worktrees_root,omitempty"`
+	Path           string `json:"path"`
+	Message        string `json:"message"`
 	// NonBlocking identifies visible foreign filesystem debris that has no
 	// corresponding canonical repository. It is never a validated WB asset
 	// and must not prevent a real sibling from reaching its own safe terminal
@@ -1720,6 +1722,29 @@ func listTaskScopedClaimedRegistryWorktrees(
 ) ([]ListResult, []ListDiagnostic) {
 	results := make([]ListResult, 0)
 	diagnostics := make([]ListDiagnostic, 0)
+	type discoveryProblem struct{ effort, path, message string }
+	var problems []discoveryProblem
+	associated := map[string]map[string]string{}
+	deferClassify := func() {
+		for _, problem := range problems {
+			matched := false
+			for task, root := range associated[problem.effort] {
+				d := listDiagnostic(root, task, problem.path, problem.message)
+				d.DiscoveryScope = "selected-associated-effort"
+				diagnostics = append(diagnostics, d)
+				matched = true
+			}
+			if !matched {
+				task, scope := "", "unattributed"
+				if tasks[problem.effort] {
+					task, scope = problem.effort, "selected-legacy-namespace"
+				}
+				d := listDiagnostic("", task, problem.path, problem.message)
+				d.DiscoveryScope = scope
+				diagnostics = append(diagnostics, d)
+			}
+		}
+	}
 	// Effort namespaces can contain several independently named helper tasks.
 	// Discover their immutable claims, selecting by claim.Task rather than by
 	// the directory name. runInspections still corroborates the live projection.
@@ -1737,7 +1762,7 @@ func listTaskScopedClaimedRegistryWorktrees(
 			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
-			diagnostics = append(diagnostics, listDiagnostic("", task, filepath.Join(home, "worklogs", task), fmt.Sprintf("read task Work Log runs: %v", err)))
+			problems = append(problems, discoveryProblem{task, filepath.Join(home, "worklogs", task), fmt.Sprintf("read task Work Log runs: %v", err)})
 			continue
 		}
 		for _, run := range runs {
@@ -1750,7 +1775,7 @@ func listTaskScopedClaimedRegistryWorktrees(
 				if errors.Is(err, os.ErrNotExist) {
 					continue
 				}
-				diagnostics = append(diagnostics, listDiagnostic("", task, claimsRoot, fmt.Sprintf("read task Work Log claims: %v", err)))
+				problems = append(problems, discoveryProblem{task, claimsRoot, fmt.Sprintf("read task Work Log claims: %v", err)})
 				continue
 			}
 			for _, entry := range claims {
@@ -1763,17 +1788,36 @@ func listTaskScopedClaimedRegistryWorktrees(
 				}
 				runDirectory, _, err := openWorkLogRun(home, task, run.Name(), false)
 				if err != nil {
+					problems = append(problems, discoveryProblem{task, claimsRoot, fmt.Sprintf("open task Work Log run: %v", err)})
 					continue
 				}
 				claim, readErr := readWorkLogClaimAt(runDirectory, claimID)
 				_ = runDirectory.Close()
-				if readErr != nil ||
-					claim.EffortID != task || claim.RunID != run.Name() || claim.ClaimID != claimID ||
-					claim.Lifecycle != "active" || !taskSelectionMatches(tasks, claim.Task) || claim.Worktree == "" || known[filepath.Clean(claim.Worktree)] {
+				if readErr == nil {
+					readErr = validateStaticWorkLogClaim(claim, task, run.Name())
+				}
+				if readErr == nil && claim.ClaimID != claimID {
+					readErr = fmt.Errorf("immutable claim ID differs from filename")
+				}
+				if readErr != nil {
+					problems = append(problems, discoveryProblem{task, filepath.Join(claimsRoot, entry.Name()), fmt.Sprintf("read task Work Log claim: %v", readErr)})
+					continue
+				}
+				if !taskSelectionMatches(tasks, claim.Task) || claim.Worktree == "" {
 					continue
 				}
 				layout, err := claimedSharedWorktreeLayoutFromClaim(home, claim.Worktree, claim)
 				if err != nil {
+					d := listDiagnostic("", claim.Task, claim.Worktree, fmt.Sprintf("corroborate selected claim layout: %v", err))
+					d.DiscoveryScope = "selected-proof"
+					diagnostics = append(diagnostics, d)
+					continue
+				}
+				if associated[task] == nil {
+					associated[task] = map[string]string{}
+				}
+				associated[task][claim.Task] = layout.WorktreesRoot
+				if claim.Lifecycle != "active" || known[filepath.Clean(claim.Worktree)] {
 					continue
 				}
 				if !filterMatchesClaimRepository(home, filter, claim.Worktree, claim) {
@@ -1801,6 +1845,7 @@ func listTaskScopedClaimedRegistryWorktrees(
 			}
 		}
 	}
+	deferClassify()
 	return results, diagnostics
 }
 
@@ -2813,6 +2858,11 @@ func (run *cleanupRun) verifyTasksFound() error {
 			found = cleanupTaskWasFound(task, unfiltered, nil)
 		}
 		if !found {
+			for _, diagnostic := range run.listed.Diagnostics {
+				if diagnostic.DiscoveryScope == "unattributed" {
+					return fmt.Errorf("WB worktree task %q has incomplete scoped discovery; cannot prove absence while %s: %s", task, diagnostic.Path, diagnostic.Message)
+				}
+			}
 			return fmt.Errorf("WB worktree task %q was not found", task)
 		}
 	}
@@ -4583,6 +4633,9 @@ func blockDiagnosedTasks(results []CleanupResult, diagnostics []ListDiagnostic, 
 		if backlogPaths[filepath.Clean(diagnostic.Path)] {
 			continue
 		}
+		if diagnostic.Task == "" {
+			continue
+		}
 		key := cleanupTaskKey(diagnostic.WorktreesRoot, diagnostic.Task)
 		if reasonByTask[key] == "" {
 			reasonByTask[key] = diagnostic.Path + ": " + diagnostic.Message
@@ -4590,7 +4643,11 @@ func blockDiagnosedTasks(results []CleanupResult, diagnostics []ListDiagnostic, 
 	}
 	for index := range results {
 		key := cleanupTaskKey(results[index].WorktreesRoot, results[index].Task)
-		if reason, blocked := reasonByTask[key]; blocked && results[index].Eligible {
+		reason, blocked := reasonByTask[key]
+		if !blocked {
+			reason, blocked = reasonByTask[cleanupTaskKey("", results[index].Task)]
+		}
+		if blocked && results[index].Eligible {
 			results[index].Eligible = false
 			results[index].Reason = "coordinated task blocked by malformed candidate " + reason
 		}

@@ -2,8 +2,10 @@ package orchestrate
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/sneat-dev/wb/internal/githubobserver"
 	"strings"
 	"testing"
 )
@@ -291,12 +293,6 @@ func TestLegacyArchiveAdapterUsesOnlyValidatedRepositoryCommitEndpoints(t *testi
 					text += "edit"
 				}
 				value := map[string]string{"html_url": url, "commit_id": commit, "body": text}
-				if args[1] == "--paginate" {
-					if !strings.Contains(strings.Join(args, " "), "--slurp") || !strings.Contains(args[len(args)-1], "per_page=100") {
-						t.Fatal(args)
-					}
-					return []byte(legacyJSON([][]map[string]string{{value}, {}})), nil
-				}
 				if args[1] != "-X" || args[2] != "POST" || !strings.HasPrefix(args[3], "repos/acme/app/commits/") {
 					t.Fatal(args)
 				}
@@ -315,17 +311,61 @@ func TestLegacyArchiveAdapterUsesOnlyValidatedRepositoryCommitEndpoints(t *testi
 				writeBody = legacyRecordPrefix + legacyJSON(altered)
 			}
 			if strings.HasPrefix(kind, "list") {
-				got, err := adapter.LegacyComments(context.Background(), repo, sha)
+				ctx := githubobserver.WithReader(context.Background(), githubobserver.Reader{Get: func(_ context.Context, request githubobserver.GetRequest) (githubobserver.Response, error) {
+					calls++
+					if kind == "list outage" {
+						return githubobserver.Response{}, fmt.Errorf("provider outage")
+					}
+					raw := []byte("[]")
+					switch kind {
+					case "list null page":
+						raw = []byte("null")
+					case "list malformed":
+						raw = []byte("{")
+					case "list empty inventory":
+					default:
+						target, commit, text := binding.URL, sha, body
+						if kind == "list foreign url" {
+							target = "file:///receipt"
+						}
+						if kind == "list foreign commit" {
+							commit = r.TargetSHA
+						}
+						if kind == "list ordinary" {
+							text = "ordinary comment"
+						}
+						raw = []byte(legacyJSON([]map[string]string{{"html_url": target, "commit_id": commit, "body": text}}))
+					}
+					return githubobserver.Response{Body: raw}, nil
+				}})
+				got, err := adapter.LegacyComments(ctx, repo, sha)
 				if kind == "list" {
 					if err != nil || len(got) != 1 || got[0] != binding {
 						t.Fatal(got, err)
 					}
-				} else if kind == "list ordinary" {
+				} else if kind == "list ordinary" || kind == "list empty inventory" {
 					if err != nil || len(got) != 0 {
 						t.Fatal(got, err)
 					}
-				} else if err == nil {
-					t.Fatal("accepted", kind)
+				} else {
+					want := "invalid legacy archive endpoint"
+					switch kind {
+					case "list outage":
+						want = "provider outage"
+					case "list foreign url", "list foreign commit":
+						want = "foreign legacy archive response"
+					case "list null page":
+						want = "incomplete legacy comment page"
+					case "list malformed":
+						var syntax *json.SyntaxError
+						if !errors.As(err, &syntax) {
+							t.Fatal(kind, err)
+						}
+						want = ""
+					}
+					if err == nil || want != "" && !strings.Contains(err.Error(), want) {
+						t.Fatal(kind, err)
+					}
 				}
 			} else {
 				got, err := adapter.CreateLegacyComment(context.Background(), repo, sha, writeBody)

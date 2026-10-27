@@ -379,23 +379,22 @@ func (adapter githubIntegration) LegacyComments(ctx context.Context, repository,
 	if !legacyRepositoryPattern.MatchString(repository) || !legacySHA.MatchString(candidate) {
 		return nil, fmt.Errorf("invalid legacy archive endpoint")
 	}
-	raw, err := adapter.gh(ctx, "api", "--paginate", "--slurp", "repos/"+repository+"/commits/"+candidate+"/comments?per_page=100")
+	responses, err := legacyCommentPages(ctx, repository, candidate)
 	if err != nil {
 		return nil, err
 	}
-	var pages [][]struct {
-		Body     string `json:"body"`
-		URL      string `json:"html_url"`
-		CommitID string `json:"commit_id"`
-	}
-	if err := json.Unmarshal(raw, &pages); err != nil {
-		return nil, err
-	}
-	if len(pages) == 0 {
-		return nil, fmt.Errorf("incomplete legacy comment inventory")
-	}
+	// The fixed nonempty first endpoint makes successful GetPages append at
+	// least one response. Each page still must decode to an explicit array.
 	var bindings []LegacyBinding
-	for _, page := range pages {
+	for _, response := range responses {
+		var page []struct {
+			Body     string `json:"body"`
+			URL      string `json:"html_url"`
+			CommitID string `json:"commit_id"`
+		}
+		if err := json.Unmarshal(response.Body, &page); err != nil {
+			return nil, err
+		}
 		if page == nil {
 			return nil, fmt.Errorf("incomplete legacy comment page")
 		}
