@@ -1814,8 +1814,45 @@ func listTaskScopedClaimedRegistryWorktrees(
 				if !taskSelectionMatches(tasks, claim.Task) || claim.Worktree == "" {
 					continue
 				}
+				// A previously inspected asset may now live at a completed
+				// repository-relocation destination or use a sanctioned legacy
+				// projection. Bind association to that current exact projection,
+				// never reinterpret its immutable original path as a new asset.
+				relocated, relocationErr := resolveRelocationChain(home, claim)
+				if relocationErr != nil {
+					d := listDiagnostic("", claim.Task, claim.Worktree, fmt.Sprintf("resolve selected claim relocation: %v", relocationErr))
+					d.DiscoveryScope = "selected-proof"
+					diagnostics = append(diagnostics, d)
+					continue
+				}
+				if known[filepath.Clean(relocated.worktree)] {
+					projection, projectionErr := readWorkLogProjectionForReadOnlyClaim(relocated.worktree)
+					if projectionErr == nil && projection.EffortID == claim.EffortID && projection.RunID == claim.RunID && projection.ClaimID == claim.ClaimID {
+						projectionErr = corroborateProjectionWithPrivateClaim(home, relocated.worktree, projection)
+						if projectionErr == nil {
+							if associated[task] == nil {
+								associated[task] = map[string]string{}
+							}
+							associated[task][claim.Task] = ""
+							continue
+						}
+					} else if projectionErr == nil {
+						// A retained historical claim is not the current owner.
+						continue
+					}
+					d := listDiagnostic("", claim.Task, relocated.worktree, fmt.Sprintf("corroborate selected current projection: %v", projectionErr))
+					d.DiscoveryScope = "selected-proof"
+					diagnostics = append(diagnostics, d)
+					continue
+				}
 				layout, err := claimedSharedWorktreeLayoutFromClaim(home, claim.Worktree, claim)
 				if err != nil {
+					// Canonical-local discovery owns this legitimate shape and
+					// independently validates Git identity; shared recovery must
+					// not turn it into malformed shared-layout evidence.
+					if _, localErr := claimedLocalWorktreeLayout(projectsRoot, claim.Worktree, claim); localErr == nil {
+						continue
+					}
 					d := listDiagnostic("", claim.Task, claim.Worktree, fmt.Sprintf("corroborate selected claim layout: %v", err))
 					d.DiscoveryScope = "selected-proof"
 					diagnostics = append(diagnostics, d)
