@@ -137,3 +137,17 @@ Implemented and verified in the coordinated WB feature worktree; the initial pla
 
 Evidence: internal/orchestrate/worktree_merge.go, internal/orchestrate/worktree_merge_test.go, cmd/wb/worktree_merge.go, internal/worktrees/worklog.go
 *This document follows the https://specscore.md/plan-specification*
+
+## Legacy promotion compatibility (issue #919)
+
+Preserve previously published WB merge history while adding portable provenance
+adoption and current full-delta review. The receipt and graph are evidence, never
+historical approval. Implement the explicit dry-run/apply archive, shared
+revalidation in delta/promote/land, full legacy diff visibility, inventory-bound
+final review, CLI capability/help and adversarial local-Git/adapter tests.
+
+**Verifies:** integration-branch-batches#ac:legacy-receipts-preserve-review-and-history
+
+No production receipt editing, source-history rewrite or bypass is permitted.
+Independent exact implementation review and normal owning changed-statement and
+selected-profile coverage gates precede publication.

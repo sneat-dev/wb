@@ -7757,6 +7757,73 @@
       "notes": "Behavior comes from github.com/strongo/cli-helpers/cliinstall against wb's own compiled catalog entry; an unknown target or a usage mistake (invalid --format, --all with names) exits wb's exitUsage (2, rejected before any work started); every other failure, including the two remaining kinds cli-install adds, maps to wb's exitFindings (1). Every message carries an exact \"install: \" prefix, never \"self-update: \"/\"upgrade: \"."
     },
     {
+      "id": "wb.integration.adopt-legacy",
+      "feature_refs": [
+        "spec/features/integration-branch-batches/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb integration adopt-legacy",
+              "flags": [
+                "--receipt",
+                "--to",
+                "--worktree",
+                "--format",
+                "--apply"
+              ],
+              "modes": [
+                "Dry-run validates exact completed direct WB receipt and remotely published parent chain without mutations",
+                "Apply archives sanitized portable provenance, never historical approval or code changes"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb integration adopt-legacy --help",
+              "contains": [
+                "Dry-run",
+                "provenance"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/pr-land.md",
+              "marker": "## Adopt completed legacy WB merge provenance",
+              "examples": [
+                "wb integration adopt-legacy <owner/repository> <integration> --receipt <receipt>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/integration_legacy_e2e_test.go",
+              "name": "TestE2ELegacyAdoptionPreservesHistoryAndFullDeltaThroughFinalFix",
+              "kind": "e2e"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Receipt hashes are audit identity, not proof of authorship or review. Final independent current-head review binds the complete inventory and full legacy delta."
+    },
+    {
       "id": "wb.integration.merge",
       "feature_refs": [
         "spec/features/integration-branch-batches/README.md"
@@ -7837,12 +7904,14 @@
               "flags": [
                 "--format",
                 "--to",
-                "--worktree"
+                "--worktree",
+                "--legacy-record"
               ],
               "modes": [
                 "Refuses batch-unrecorded-merge when any merge the target lacks cannot be proved to bring in a still-reviewed lane commit or target history",
                 "Opens, or refreshes the body of, the one pull request from the integration branch to its target, listing every lane and carrying the promotion marker",
-                "wb pr land then needs a fresh independent review of that pull request's exact head and never updates the branch or arms auto-merge"
+                "wb pr land then needs a fresh independent review of that pull request's exact head and never updates the branch or arms auto-merge",
+                "Explicit archived legacy provenance keeps full merge diffs visible and requires a final head and inventory digest review"
               ]
             }
           ],
@@ -8890,7 +8959,8 @@
                 "--overlap",
                 "--target",
                 "--to",
-                "--worktree"
+                "--worktree",
+                "--legacy-record"
               ],
               "modes": [
                 "Prints only conflict resolutions, fix commits and the full diff of unrecorded merges between the integration branch and its target",

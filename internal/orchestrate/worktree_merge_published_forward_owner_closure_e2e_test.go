@@ -497,17 +497,10 @@ func TestE2EPublishedForwardRevalidationKeepsNativeCustodyAndCorrectionOrdering(
 				if err != nil || view.Claim == nil {
 					t.Fatalf("native source claim: %v", err)
 				}
-				var claim map[string]any
-				bytes, err := os.ReadFile(view.Claim.ClaimPath)
-				if err != nil {
-					t.Fatal(err)
+				if _, err := worktrees.LogFinalize(t.Context(), worktrees.LogFinalizeOptions{ProjectsRoot: f.githubDir, Worktree: o.Sources[1], Result: "success", Apply: true}); err != nil {
+					t.Fatalf("seal native inactive source: %v", err)
 				}
-				if err := json.Unmarshal(bytes, &claim); err != nil {
-					t.Fatal(err)
-				}
-				claim["lifecycle"] = "terminal"
-				forwardClosureWriteRecord(t, view.Claim.ClaimPath, claim)
-				want = "no authoritative active Work Log claim"
+				want = "has no exact active Work Log claim"
 			}
 			err = revalidatePublishedForwardRepairEvidence(t.Context(), o, run, hash, os.ReadFile, r.ReceiptPath, e.receiptHash, e.claimHash, e.supersessionHash, correctionHash, e.sources, e.repository, e.canonical, e.currentTarget)
 			if err == nil || !strings.Contains(err.Error(), want) {

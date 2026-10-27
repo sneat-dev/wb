@@ -423,3 +423,25 @@ operation PID conservatively refuse while any other WB executable runs, even
 for an unrelated repository; retry after that command exits. An unavailable
 process table also refuses legacy release. New claims check only the recorded
 operation PID, separately from the long-lived harness PID.
+
+When a landing command exits, its operation PID terminates and leaves the lane idle.
+If that idle lane remains unrefreshed for more than 5 minutes (`DefaultDeadOperationStaleAfter`),
+subsequent landing commands automatically take over the idle claim with a printed note,
+even if the prior session's harness (IDE) process is still alive. If an incoming agent
+encounters a lane whose operation PID has exited but is within the 5-minute grace period,
+the refusal indicates `operation PID <pid> exited`, and the incoming agent can take over
+immediately using `--take-over-lane --lane-reason "<reason>"`.
+
+### Terminal receipt gate and settlement checklist
+
+- **Never bypass WB from GitHub state**: A merge is complete only when the invoking WB
+  verb exits code 0 and produces a terminal receipt (`status: complete` or `status: landed`).
+  A GitHub PR showing `MERGED` is intermediate evidence, not merge completion.
+- **Resume pending checks**: If a foreground wait slice elapses with `status: checks_pending`,
+  always resume with `wb worktree merge resume <receipt>`. Never abandon a pending slice.
+- **Acknowledge post-target failures**: If post-target checks fail (`landed_post_target_ci_failed`),
+  acknowledge the failure receipt immediately (`wb worktree merge acknowledge-landed-failed <receipt> --apply`)
+  and release the lane with `wb lane release owner/repository --target main`.
+- **Settlement verification**: Before ending a session or moving to another task, run
+  `wb lane release owner/repository --target main` to verify the landing lane is clean
+  (`already absent` or `released`).

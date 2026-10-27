@@ -777,10 +777,23 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	}
 
 	result.ApprovedBy = strings.TrimSpace(options.ApprovedBy)
-	// A promotion is reviewed only by an existing comment on it; refuse the
-	// identity form before WB would post one.
-	if refusal := promotionApprovalForm(options, view, number); refusal != nil {
+	// Classification must precede any ordinary approval comment or arming:
+	// legacy provenance can survive removal of both editable PR-body markers.
+	reportPullRequestLandProgress(options.OperationProgress, "inspect_source_commits", progress.Started, view.Head.Ref, 0, 0)
+	sourceCommits, err := pullRequestCommits(ctx, options.Repository, number)
+	if err != nil {
+		return result, err
+	}
+	reportPullRequestLandProgress(options.OperationProgress, "inspect_source_commits", progress.Completed, "commits", len(sourceCommits), len(sourceCommits))
+	// A promotion lands only under its own rules, decided before anything is
+	// armed; the gate also turns off update-branch and auto-merge.
+	if promotion, refusal, promoteErr := promotionLandingGate(ctx, &options, view, number, sourceCommits); promoteErr != nil {
+		return result, promoteErr
+	} else if refusal != nil {
 		return mergeRefusal(result, *refusal), nil
+	} else if promotion != nil {
+		result.Promotion = promotion
+		result.Evidence["promotion"] = fmt.Sprintf("%d reviewed lane(s), head reviewed by %s", len(promotion.Lanes), promotion.Reviewer)
 	}
 	// reviewedHead is the head this landing binds any review to (#586): the
 	// exact head observed before any update-branch cycle runs. A review
@@ -959,22 +972,6 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		result.Subject = subject
 	}
 
-	reportPullRequestLandProgress(options.OperationProgress, "inspect_source_commits", progress.Started, view.Head.Ref, 0, 0)
-	sourceCommits, err := pullRequestCommits(ctx, options.Repository, number)
-	if err != nil {
-		return result, err
-	}
-	reportPullRequestLandProgress(options.OperationProgress, "inspect_source_commits", progress.Completed, "commits", len(sourceCommits), len(sourceCommits))
-	// A promotion lands only under its own rules, decided before anything is
-	// armed; the gate also turns off update-branch and auto-merge.
-	if promotion, refusal, promoteErr := promotionLandingGate(ctx, &options, view, number, sourceCommits); promoteErr != nil {
-		return result, promoteErr
-	} else if refusal != nil {
-		return mergeRefusal(result, *refusal), nil
-	} else if promotion != nil {
-		result.Promotion = promotion
-		result.Evidence["promotion"] = fmt.Sprintf("%d reviewed lane(s), head reviewed by %s", len(promotion.Lanes), promotion.Reviewer)
-	}
 	options.sourceCommits = sourceCommits
 	body := aggregatedCommitMessage(view, sourceCommits, result.ApprovedBy, options.Reason)
 

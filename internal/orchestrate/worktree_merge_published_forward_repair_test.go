@@ -733,17 +733,8 @@ func TestPreparePublishedForwardRepairRefusesTamperDriftAndRaceBeforeCandidateCr
 			if viewErr != nil || view.Claim == nil {
 				t.Fatalf("load current source claim for terminalization: view=%+v err=%v", view, viewErr)
 			}
-			contents, readErr := os.ReadFile(view.Claim.ClaimPath)
-			if readErr != nil {
-				t.Fatalf("read current source claim for terminalization: %v", readErr)
-			}
-			terminalized := bytes.Replace(contents, []byte(`"lifecycle":"active"`), []byte(`"lifecycle":"terminal"`), 1)
-			terminalized = bytes.Replace(terminalized, []byte(`"lifecycle": "active"`), []byte(`"lifecycle": "terminal"`), 1)
-			if bytes.Equal(terminalized, contents) {
-				t.Fatal("current source claim has no active lifecycle to terminalize")
-			}
-			if writeErr := os.WriteFile(view.Claim.ClaimPath, terminalized, 0o600); writeErr != nil {
-				t.Fatalf("terminalize current source claim: %v", writeErr)
+			if _, err := worktrees.LogFinalize(context.Background(), worktrees.LogFinalizeOptions{ProjectsRoot: fixture.githubDir, Worktree: options.Sources[1], Result: "success", Apply: true}); err != nil {
+				t.Fatalf("seal native source: %v", err)
 			}
 		}
 		if _, err := preparePublishedValidationFailureForwardRepair(context.Background(), options, defaultRunner, worktreeMergeReceiptSHA256, os.ReadFile, nil, beforeFinalRevalidation); err == nil || !strings.Contains(err.Error(), "active Work Log claim") {

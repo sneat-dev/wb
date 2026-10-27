@@ -508,7 +508,7 @@ func TestE2ERepositoryTransferRefusesBlockedPrivateJournal(t *testing.T) {
 	options := RepositoryRelocateOptions{ProjectsRoot: fixture.projectsRoot, SourceRepository: "acme/app",
 		DestinationRepository: "newco/renamed", RemoteURL: fixture.newRemote, DefaultBranch: "main", Apply: true}
 	result, err := RelocateRepository(context.Background(), options)
-	if err == nil || !strings.Contains(err.Error(), "record repository relocation intent") || result.Applied {
+	if err != nil || result.Eligible || result.Applied || !strings.Contains(result.Reason, "WB claim is ambiguous") || !strings.Contains(result.Reason, "not a directory") || len(result.ReceiptPaths) != 0 {
 		t.Fatalf("obstructed private journal: %+v, %v", result, err)
 	}
 	if _, err := os.Stat(fixture.canonical); err != nil {

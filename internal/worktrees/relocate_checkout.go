@@ -48,11 +48,11 @@ func resolvedClaimHomes(resolution wbhome.Resolution) []string {
 // claim: an operator naming a task explicitly is a different case from
 // migrate's own automatic sweep.
 func claimForRelocation(home, worktree string) (workLogClaim, *workLogTerminalRecord, error) {
-	claim, _, _, activeErr := activeWorkLogClaim(home, worktree)
+	claim, _, _, activeErr := activeWorkLogClaimReadOnly(home, worktree)
 	if activeErr == nil {
 		return claim, nil, nil
 	}
-	terminal, terminalErr := readWorkLogTerminalRecord(home, worktree)
+	terminal, terminalErr := readWorkLogTerminalRecordReadOnly(home, worktree)
 	if terminalErr != nil {
 		return workLogClaim{}, nil, terminalErr
 	}
@@ -71,18 +71,40 @@ func claimForRelocation(home, worktree string) (workLogClaim, *workLogTerminalRe
 // under which the claim was found so callers write any new relocation
 // record to that same home.
 func claimForRelocationAcrossHomes(resolution wbhome.Resolution, worktree string) (workLogClaim, *workLogTerminalRecord, string, error) {
-	var lastErr error
+	if len(resolvedClaimHomes(resolution)) == 0 {
+		return workLogClaim{}, nil, "", fmt.Errorf("no resolved home for relocation claim")
+	}
+	projection, err := readWorkLogProjectionForReadOnlyClaim(worktree)
+	if errors.Is(err, errWorkLogProjectionNotFound) {
+		return workLogClaim{}, nil, "", absentRelocationClaim()
+	}
+	if err != nil {
+		return workLogClaim{}, nil, "", err
+	}
+	var selected workLogClaim
+	var terminal *workLogTerminalRecord
+	selectedHome := ""
 	for _, home := range resolvedClaimHomes(resolution) {
-		claim, terminal, err := claimForRelocation(home, worktree)
-		if err == nil {
-			return claim, terminal, home, nil
+		_, found, err := projectedClaimInHome(home, projection)
+		if err != nil {
+			return workLogClaim{}, nil, "", err
 		}
-		lastErr = err
+		if !found {
+			continue
+		}
+		claim, completed, err := claimForRelocation(home, worktree)
+		if err != nil {
+			return workLogClaim{}, nil, "", err
+		}
+		if selectedHome != "" {
+			return workLogClaim{}, nil, "", fmt.Errorf("projected Work Log claim matches more than one WB home")
+		}
+		selected, terminal, selectedHome = claim, completed, home
 	}
-	if lastErr == nil {
-		lastErr = fmt.Errorf("no resolved home could corroborate a Work Log claim")
+	if selectedHome == "" {
+		return workLogClaim{}, nil, "", absentRelocationClaim()
 	}
-	return workLogClaim{}, nil, "", lastErr
+	return selected, terminal, selectedHome, nil
 }
 
 // checkoutSafetyRefusal runs the per-checkout safety checks REQ:

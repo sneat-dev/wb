@@ -194,10 +194,17 @@ command now — the reason is recorded on the lane and, for `worktree merge`,
 on the receipt's `lane_owner` field, so `--format json` shows it). A session
 whose registry entry is gone and whose recorded WB operation is no longer live
 is taken over automatically with a printed note;
-a live session is **never** taken over implicitly, no matter how old its
+an actively landing operation is **never** taken over implicitly, no matter how old its
 heartbeat looks — a heartbeat refresh runs for the whole duration of any CI
-wait the lane holds, so a live, actively-landing session's lane never goes
-stale out from under it. The same session resuming or retrying refreshes its own
+wait the lane holds, so an actively-landing session's lane never goes
+stale out from under it. When a landing command exits, its recorded operation
+PID terminates; after 5 minutes (`DefaultDeadOperationStaleAfter`) of no
+heartbeat from a terminated operation, subsequent landing commands automatically
+take over the idle lane with a printed note even if the holding harness/IDE
+session is still open. Within that 5-minute grace period, the refusal indicates
+that the operation PID has exited, allowing the incoming agent to proceed
+immediately with `--take-over-lane --lane-reason "<reason>"`.
+The same session resuming or retrying refreshes its own
 lane only after any different recorded operation has exited. A lane record that cannot be parsed refuses the same
 way a live owner does, naming the corrupt file, rather than being treated as
 free. This is the mechanical enforcement of "one landing owner per repository
@@ -208,6 +215,36 @@ an operation PID conservatively refuse while any other WB executable runs, even
 for another repository, and fail closed if process observation is unavailable.
 This command preserves branches, worktrees and PRs. See the
 [release lifecycle](../wb-worktrees/references/lifecycle.md#release-an-idle-landing-lane).
+
+### Terminal receipt gate — never declare completion from GitHub state alone
+
+- **The golden rule**: A merge is **only** complete when the invoking WB command (`wb worktree land`, `wb land`, `wb pr land`, or `wb worktree merge resume`) exits with code `0` and produces a terminal receipt (`status: complete` or `status: landed`).
+- **Never bypass WB based on GitHub PR state**: When GitHub UI or `gh pr view` reports `state: MERGED`, the merge lifecycle is **not** finished. WB must reconcile the canonical clone, observe required post-target checks, and clean up. Jumping forward to create release tags, publish announcements, flip visibility, or start new work before WB finishes strands the landing lane and leaves unfinished receipts.
+- **Handling `checks_pending`**: If a WB landing command exits because its foreground wait slice elapsed while checks remain running on GitHub Actions (`status: checks_pending`), the agent **must** immediately run the printed resume command in another slice (`wb worktree merge resume <receipt>`). Never treat `checks_pending` as complete, and never abandon a pending slice.
+- **Handling `landed_post_target_ci_failed`**: If post-target CI fails after landing on `main`, the candidate is already merged into target history. The agent **must** immediately acknowledge the failure receipt and release the lane before ending the session:
+  ```sh
+  wb worktree merge acknowledge-landed-failed <receipt> --apply --actor "<actor>" --reason "<reason>"
+  wb lane release <owner/repo> --target main
+  ```
+  Never leave an unfinalized failed receipt blocking the lane for other agents.
+
+### Landing settlement checklist
+
+Before reporting a task complete, switching branches, or ending an agent turn:
+1. **Background tasks**: Verify no background WB merge or wait tasks are running (`task list`).
+2. **Terminal receipt**: Confirm the WB landing command exited with code `0` and produced a terminal receipt (`status: complete` or `status: landed`).
+3. **Lane released**: Verify the landing lane is released:
+   ```sh
+   wb lane release <owner/repo> --target main
+   ```
+   (Must output `already absent` or `released`).
+
+### Takeover guidance for blocked agents
+
+When an incoming agent is blocked by a landing lane held by another session:
+1. Inspect the refusal message: if it indicates the holding session's operation PID has exited (`prior command ... operation PID <pid> exited`), or if the heartbeat is older than 5 minutes:
+   The lane is **idle and abandoned**.
+2. Do not halt the workflow or stop to ask for manual user intervention! Proceed immediately by supplying `--take-over-lane --lane-reason "Prior owner operation PID <pid> exited and lane is idle"`.
 
 An unpublished prepare-time conflict releases receipt-based lane ownership after
 the prepare stops and WB verifies its candidate branch is absent remotely: its

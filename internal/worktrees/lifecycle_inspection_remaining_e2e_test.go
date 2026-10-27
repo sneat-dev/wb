@@ -188,8 +188,8 @@ func TestE2ETaskScopedClaimScanRefusesMisboundAndSymlinkedRecords(t *testing.T) 
 		return listTaskScopedClaimedRegistryWorktrees(context.Background(), t.TempDir(), home, nil,
 			map[string]bool{"task": true}, "main", "", "", false, 1, nil, inspectPolicy{})
 	}
-	if results, diagnostics := read(); len(results) != 0 || len(diagnostics) != 0 {
-		t.Fatalf("symlinked claim acquired managed placement: %+v %+v", results, diagnostics)
+	if results, diagnostics := read(); len(results) != 0 || len(diagnostics) != 1 || diagnostics[0].Task != "task" || diagnostics[0].DiscoveryScope != "selected-legacy-namespace" || diagnostics[0].Path != entry || !strings.Contains(diagnostics[0].Message, "read task Work Log claim:") {
+		t.Fatalf("symlinked claim lost exact refusal: %+v %+v", results, diagnostics)
 	}
 	if err := os.Remove(entry); err != nil {
 		t.Fatal(err)
@@ -205,8 +205,8 @@ func TestE2ETaskScopedClaimScanRefusesMisboundAndSymlinkedRecords(t *testing.T) 
 		!strings.Contains(err.Error(), "entry identity mismatch") {
 		t.Fatalf("missing-checkout reader accepted mismatched claim filename: %+v %v", claim, err)
 	}
-	if results, diagnostics := read(); len(results) != 0 || len(diagnostics) != 0 {
-		t.Fatalf("misbound claim acquired managed placement: %+v %+v", results, diagnostics)
+	if results, diagnostics := read(); len(results) != 0 || len(diagnostics) != 1 || diagnostics[0].Task != "task" || diagnostics[0].DiscoveryScope != "selected-legacy-namespace" || diagnostics[0].Path != entry || !strings.Contains(diagnostics[0].Message, "immutable claim ID differs from filename") {
+		t.Fatalf("misbound claim lost exact refusal: %+v %+v", results, diagnostics)
 	}
 }
 
@@ -335,8 +335,8 @@ func TestE2ETaskScopedRegistrySkipsMissingClaimsAndRefusesLinkedStore(t *testing
 	if err := os.Symlink(filepath.Join(store, "worklogs"), filepath.Join(home, "worklogs")); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	if results, diagnostics := read(home); len(results) != 0 || len(diagnostics) != 0 {
-		t.Fatalf("linked private store supplied managed authority: %+v %+v", results, diagnostics)
+	if results, diagnostics := read(home); len(results) != 0 || len(diagnostics) != 1 || diagnostics[0].Task != "task" || diagnostics[0].DiscoveryScope != "selected-legacy-namespace" || diagnostics[0].Path != filepath.Join(home, "worklogs", "task", "runs", "run-two", "claims") || !strings.Contains(diagnostics[0].Message, "open task Work Log run:") {
+		t.Fatalf("linked private store lost exact refusal: %+v %+v", results, diagnostics)
 	}
 }
 

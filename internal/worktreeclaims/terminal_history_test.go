@@ -372,7 +372,7 @@ func TestRemovedTerminalHistoryRefusesIncompleteScans(t *testing.T) {
 		t.Fatalf("legacy-only history = %v", err)
 	}
 	addRemovedHistoryRun(t, home, expectation, claim)
-	for _, stage := range []string{"read runs", "read claims", "reopen claims"} {
+	for _, stage := range []string{"read efforts", "read runs", "read claims", "reopen claims"} {
 		stage := stage
 		t.Run(stage, func(t *testing.T) {
 			t.Parallel()
@@ -390,13 +390,13 @@ func TestRemovedTerminalHistoryRefusesIncompleteScans(t *testing.T) {
 						return nil, errors.New(stage)
 					}
 				}
-				if err == nil && ((stage == "read runs" && name == "runs") || (stage == "read claims" && name == "claims")) {
+				if err == nil && ((stage == "read efforts" && name == "worklogs") || (stage == "read runs" && name == "runs") || (stage == "read claims" && name == "claims")) {
 					_ = file.Close()
 				}
 				return file, err
 			}
 			_, err := broken.ReadRemovedTerminalWorkLogClaimBase(home, expectation)
-			want := map[string]string{"read runs": "read terminal Work Log runs", "read claims": "read terminal Work Log claims", "reopen claims": "reopen terminal Work Log claims"}[stage]
+			want := map[string]string{"read efforts": "read terminal Work Log efforts", "read runs": "read terminal Work Log runs", "read claims": "read terminal Work Log claims", "reopen claims": "reopen terminal Work Log claims"}[stage]
 			if err == nil || !strings.Contains(err.Error(), want) {
 				t.Fatalf("%s fault = %v", stage, err)
 			}
@@ -450,5 +450,93 @@ func TestRemovedTerminalHistoryRefusesAnOutboxThatOmitsTheLanding(t *testing.T) 
 		Lifecycle: "terminal", Disposition: "landed"})
 	if _, err := terminalHistoryTestPorts().ReadRemovedTerminalWorkLogClaimBase(home, expectation); err == nil || !strings.Contains(err.Error(), "outbox") {
 		t.Fatalf("an outbox receipt without the landing corroborated it: %v", err)
+	}
+}
+
+func TestRemovedHelperHistoryUsesSharedEffortWithoutWeakeningExactProof(t *testing.T) {
+	t.Parallel()
+	home, expectation, claim := terminalHistoryFixture(t)
+	claim.EffortID = "shared-effort"
+	claim.ClaimID = WorkLogClaimID(claim.EffortID, CreationResult{Repository: claim.Repository, WorktreeDir: claim.Worktree, Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA})
+	addRemovedHistoryRun(t, home, expectation, claim)
+	sibling := claim
+	sibling.Task = "other-helper"
+	sibling.Worktree = filepath.Join(home, "other-helper")
+	sibling.Branch = "other-branch"
+	sibling.ClaimID = WorkLogClaimID(sibling.EffortID, CreationResult{Repository: sibling.Repository, WorktreeDir: sibling.Worktree, Branch: sibling.Branch, Base: sibling.Base, BaseSHA: sibling.BaseSHA})
+	addRemovedHistoryRun(t, home, expectation, sibling)
+	ports := terminalHistoryTestPorts()
+	if base, err := ports.ReadRemovedTerminalWorkLogClaimBase(home, expectation); err != nil || base != claim.BaseSHA {
+		t.Fatalf("exact helper under shared effort: base=%s err=%v", base, err)
+	}
+	for _, change := range []func(*TerminalWorkLogExpectation){
+		func(e *TerminalWorkLogExpectation) { e.Task = sibling.Task },
+		func(e *TerminalWorkLogExpectation) { e.Repository = "acme/foreign" },
+		func(e *TerminalWorkLogExpectation) { e.Branch = sibling.Branch },
+		func(e *TerminalWorkLogExpectation) { e.FinalCommit = strings.Repeat("d", 40) },
+	} {
+		wrong := expectation
+		change(&wrong)
+		if _, err := ports.ReadRemovedTerminalWorkLogClaimBase(home, wrong); err == nil {
+			t.Fatalf("shared effort authorized mismatched receipt: %+v", wrong)
+		}
+	}
+	// A second exact historical acquisition is ambiguous across efforts, too.
+	claim.EffortID = "second-effort"
+	claim.ClaimID = WorkLogClaimID(claim.EffortID, CreationResult{Repository: claim.Repository, WorktreeDir: claim.Worktree, Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA})
+	addRemovedHistoryRun(t, home, expectation, claim)
+	if _, err := ports.ReadRemovedTerminalWorkLogClaimBase(home, expectation); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("cross-effort duplicate must fail closed: %v", err)
+	}
+}
+
+func TestRemovedHelperHistoryRejectsUnsafeEffortAndMisboundClaim(t *testing.T) {
+	t.Parallel()
+	for _, problem := range []string{"unsafe-effort", "unsafe-run", "misbound-effort"} {
+		t.Run(problem, func(t *testing.T) {
+			t.Parallel()
+			home, expectation, claim := terminalHistoryFixture(t)
+			addRemovedHistoryRun(t, home, expectation, claim)
+			switch problem {
+			case "unsafe-effort":
+				if err := os.Mkdir(filepath.Join(home, "worklogs", ".unsafe"), 0700); err != nil {
+					t.Fatal(err)
+				}
+			case "unsafe-run":
+				if err := os.Mkdir(filepath.Join(home, "worklogs", "task", "runs", ".unsafe"), 0700); err != nil {
+					t.Fatal(err)
+				}
+			default:
+				path := filepath.Join(home, "worklogs", "task", "runs", "run", "claims", claim.ClaimID+".json")
+				claim.EffortID = "different-effort"
+				writeHistoryJSON(t, path, claim)
+			}
+			if _, err := terminalHistoryTestPorts().ReadRemovedTerminalWorkLogClaimBase(home, expectation); err == nil {
+				t.Fatalf("accepted %s", problem)
+			}
+		})
+	}
+}
+
+func TestRemovedHistoryAbsenceDistinguishesUnrelatedAndMismatchedTaskEvidence(t *testing.T) {
+	t.Parallel()
+	home, expected, claim := terminalHistoryFixture(t)
+	claim.EffortID = "unrelated"
+	claim.Task = "unrelated"
+	claim.Worktree = filepath.Join(home, "unrelated")
+	claim.ClaimID = WorkLogClaimID(claim.EffortID, CreationResult{Repository: claim.Repository, WorktreeDir: claim.Worktree, Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA})
+	addRemovedHistoryRun(t, home, expected, claim)
+	ports := terminalHistoryTestPorts()
+	if _, err := ports.ReadRemovedTerminalWorkLogClaimBase(home, expected); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing selected namespace must retain typed absence: %v", err)
+	}
+	// A selected task claim under an alias with mismatched immutable binding is
+	// evidence to preserve, not absence eligible for acknowledgement fallback.
+	claim.Task = expected.Task
+	claim.EffortID = "aliased-selected"
+	claim.ClaimID = WorkLogClaimID(claim.EffortID, CreationResult{Repository: claim.Repository, WorktreeDir: claim.Worktree, Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA})
+	addRemovedHistoryRun(t, home, expected, claim)
+	if _, err := ports.ReadRemovedTerminalWorkLogClaimBase(home, expected); err == nil || errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("mismatched selected evidence cannot become absence: %v", err)
 	}
 }

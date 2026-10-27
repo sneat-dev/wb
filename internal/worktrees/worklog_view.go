@@ -204,10 +204,8 @@ func (p workLogViewPorts) loadWorkLogView(ctx context.Context, options LoadWorkL
 		view.Notes = append(view.Notes, fmt.Sprintf("could not resolve WB home: %v", homeErr))
 	} else if claim, projection, claimPath, claimErr := p.activeClaim(home, root); claimErr == nil {
 		resolvedRepository, resolvedWorktree := claim.Repository, claim.Worktree
-		if filepath.Clean(root) != filepath.Clean(claim.Worktree) {
-			if resolution, resolutionErr := p.relocation(home, claim, root); resolutionErr == nil && resolution.receipt != nil {
-				resolvedRepository, resolvedWorktree = resolution.repository, resolution.worktree
-			}
+		if resolution, resolutionErr := p.relocation(home, claim, root); resolutionErr == nil && resolution.receipt != nil {
+			resolvedRepository, resolvedWorktree = resolution.repository, resolution.worktree
 		}
 		view.Claim = newWorkLogClaimView(claim, resolvedRepository, resolvedWorktree, claimPath)
 		if options.IncludePromptBodies {

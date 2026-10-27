@@ -91,9 +91,48 @@ func (p HistoryPorts) validateRemovedTerminalWorkLog(home string, expectation Te
 		return "", fmt.Errorf("open terminal Work Logs: %w", err)
 	}
 	defer func() { _ = worklogs.Close() }()
-	effort, err := p.OpenChild(worklogs, expectation.Task, false)
+	// Task is the physical helper identity, not necessarily its Work Log effort.
+	// Old merge receipts predate an effort locator: discover it through secure
+	// descriptors, then require the unchanged exact immutable claim/terminal.
+	efforts, err := worklogs.Readdirnames(-1)
 	if err != nil {
-		return "", fmt.Errorf("open terminal Work Log task %s: %w", expectation.Task, err)
+		return "", fmt.Errorf("read terminal Work Log efforts: %w", err)
+	}
+	sort.Strings(efforts)
+	matches := 0
+	taskEvidence := false
+	baseSHA := ""
+	for _, effortName := range efforts {
+		if !p.ValidSegment(effortName) {
+			return "", fmt.Errorf("unsafe terminal Work Log effort %q", effortName)
+		}
+		if effortName == expectation.Task {
+			taskEvidence = true
+		}
+		claimBase, err := p.validateRemovedTerminalWorkLogEffort(home, worklogs, expectation, effortName, &matches, &taskEvidence)
+		if err != nil {
+			return "", err
+		}
+		if claimBase != "" {
+			baseSHA = claimBase
+		}
+	}
+	if matches == 0 {
+		if !taskEvidence {
+			return "", fmt.Errorf("missing exact removed terminal Work Log for task %s: %w", expectation.Task, os.ErrNotExist)
+		}
+		return "", fmt.Errorf("missing exact removed terminal Work Log for task %s", expectation.Task)
+	}
+	if matches != 1 {
+		return "", fmt.Errorf("ambiguous removed terminal Work Log evidence for task %s", expectation.Task)
+	}
+	return baseSHA, nil
+}
+
+func (p HistoryPorts) validateRemovedTerminalWorkLogEffort(home string, worklogs *os.File, expectation TerminalWorkLogExpectation, effortName string, matches *int, taskEvidence *bool) (string, error) {
+	effort, err := p.OpenChild(worklogs, effortName, false)
+	if err != nil {
+		return "", fmt.Errorf("open terminal Work Log effort %s: %w", effortName, err)
 	}
 	defer func() { _ = effort.Close() }()
 	runs, err := p.OpenChild(effort, "runs", false)
@@ -106,29 +145,22 @@ func (p HistoryPorts) validateRemovedTerminalWorkLog(home string, expectation Te
 		return "", fmt.Errorf("read terminal Work Log runs for task %s: %w", expectation.Task, err)
 	}
 	sort.Strings(runNames)
-	matches := 0
 	baseSHA := ""
 	for _, run := range runNames {
 		if !p.ValidSegment(run) {
 			return "", fmt.Errorf("unsafe terminal Work Log run %q for task %s", run, expectation.Task)
 		}
-		if claimBase, err := p.validateRemovedTerminalWorkLogRun(home, expectation, run, &matches); err != nil {
+		if claimBase, err := p.validateRemovedTerminalWorkLogRun(home, expectation, effortName, run, matches, taskEvidence); err != nil {
 			return "", err
 		} else if claimBase != "" {
 			baseSHA = claimBase
 		}
 	}
-	if matches == 0 {
-		return "", fmt.Errorf("missing exact removed terminal Work Log for task %s", expectation.Task)
-	}
-	if matches != 1 {
-		return "", fmt.Errorf("ambiguous removed terminal Work Log evidence for task %s", expectation.Task)
-	}
 	return baseSHA, nil
 }
 
-func (p HistoryPorts) validateRemovedTerminalWorkLogRun(home string, expectation TerminalWorkLogExpectation, run string, matches *int) (string, error) {
-	runDir, _, err := p.OpenRun(home, expectation.Task, run, false)
+func (p HistoryPorts) validateRemovedTerminalWorkLogRun(home string, expectation TerminalWorkLogExpectation, effort, run string, matches *int, taskEvidence *bool) (string, error) {
+	runDir, _, err := p.OpenRun(home, effort, run, false)
 	if err != nil {
 		return "", fmt.Errorf("open terminal Work Log run %s for task %s: %w", run, expectation.Task, err)
 	}
@@ -184,10 +216,13 @@ func (p HistoryPorts) validateRemovedTerminalWorkLogRun(home string, expectation
 		if readErr != nil {
 			return "", fmt.Errorf("read immutable terminal Work Log claim %s: %w", claimID, readErr)
 		}
+		if claim.Task == expectation.Task {
+			*taskEvidence = true
+		}
 		if !p.matchesRemovedTerminalExpectation(claim, expectation) {
 			continue
 		}
-		if err := p.validateStaticWorkLogClaim(claim, expectation.Task, run); err != nil {
+		if err := p.validateStaticWorkLogClaim(claim, effort, run); err != nil {
 			return "", fmt.Errorf("validate immutable terminal Work Log claim %s: %w", claimID, err)
 		}
 		*matches++
@@ -221,7 +256,7 @@ func (p HistoryPorts) validateRemovedTerminalWorkLogRun(home string, expectation
 }
 
 func (p HistoryPorts) matchesRemovedTerminalExpectation(claim Claim, expectation TerminalWorkLogExpectation) bool {
-	return claim.Version >= 1 && claim.EffortID == expectation.Task && claim.Task == expectation.Task &&
+	return claim.Version >= 1 && claim.Task == expectation.Task &&
 		claim.Repository == expectation.Repository && filepath.Clean(claim.Worktree) == filepath.Clean(expectation.Worktree) &&
 		claim.Branch == expectation.Branch && (expectation.Base == "" || claim.Base == expectation.Base) && claim.Lifecycle == "active"
 }

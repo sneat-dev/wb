@@ -210,6 +210,49 @@ A pull request without the marker any of whose commits carries a `Wb-Lane`
 trailer refuses `batch-block-invalid` (naming `wb integration promote`, which
 restores the body) instead of landing under the ordinary rules.
 
+
+### REQ: legacy-receipt-provenance
+
+An explicit `wb integration adopt-legacy <repository> <integration> --receipt
+<path>` validates a schema1 completed direct WB receipt against the complete
+ordered remotely published first-parent merge chain. Default dry-run makes no
+writes. `--apply` archives a sanitized typed provenance commit comment; it never
+rewrites history or claims the old ancestor received a zero-findings review.
+Unsigned receipt SHA256 is audit identity, not authorship or approval.
+
+`--legacy-record <commit-comment-url>=sha256:<digest>` supplies exact archived
+bindings to delta/promote. Generated promotion inventory is portable: delta,
+promote and land re-fetch and verify exact record bytes, repository, candidate,
+source/parent chain and identity. URLs are validated before reads. Foreign,
+changed, missing, duplicate, unsupported or unaccounted merges fail closed.
+
+Every adopted legacy merge remains visible in FULL in the integration delta,
+alongside later fixes. The fresh independent final review must name both
+`Reviewed-Head: <head>` and `Reviewed-Legacy-Provenance: <inventory-sha256>`.
+Changing the inventory invalidates review. Existing lane review, identity,
+current-target, CI and no-auto-merge gates remain mandatory. No provenance
+record alone authorizes landing; private receipt bytes are never uploaded.
+
+A valid or malformed typed inventory without the promotion marker is refused
+before ordinary approval or landing. If both body markers disappear, complete
+comment inventories on unmarked source merges still detect a durable legacy
+archive and require promotion; an incomplete/unavailable inventory fails closed.
+There is no hidden classification registry: if ALL typed body and remote archive
+evidence is erased, WB cannot prove a past adoption and makes no such guarantee.
+Ordinary PR review/CI rules still apply. Ordinary unadopted merges with a complete
+empty archive inventory retain their existing flow.
+
+Adopter harness/session and optional original merger are bounded 1–128
+character ASCII atoms starting with an alphanumeric character and containing
+only alphanumerics, `.`, `_`, `:`, `+` or `-`. Model names may additionally use
+relative provider/model namespace segments within the same total length bound.
+Absolute paths, empty/dot/dotdot model segments, controls, whitespace, oversized
+and partial identities are rejected before publication and during portable
+validation; identities are never silently rewritten. An arbitrary relative
+model identifier cannot reveal whether its words encode private information;
+WB makes no such content-deduction guarantee.
+
+
 ## Acceptance Criteria
 
 ### AC: bad-pins-refused-together-nothing-changed
@@ -325,6 +368,19 @@ deleted, (d) with an independent review of the current head
 **Then** (a) refuses `batch-delta-unreviewed`, (b) refuses
 `batch-delta-self-review`, (c) refuses `batch-block-invalid`, and (d) lands
 it under the repository's merge policy, without arming auto-merge.
+
+### AC: legacy-receipts-preserve-review-and-history
+
+**Requirements:** integration-branch-batches#req:legacy-receipt-provenance
+
+**Given** an exact completed old WB receipt with two original source merges and
+a later fix for an ancestor defect
+**When** adoption dry-run and apply, delta, promote and land execute
+**Then** dry-run writes nothing, apply archives only safe provenance, both full
+legacy diffs plus the later fix remain visible, and landing requires a fresh
+independent review of the exact head and inventory, current target and full CI.
+A changed/foreign/deleted record, incomplete chain or unreviewed inventory fails
+closed without mutation or fake historical approval.
 
 ## Open Questions
 
