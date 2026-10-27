@@ -44,12 +44,10 @@ func proveRefreshedPublicationRebatch(ctx context.Context, projectsRoot string, 
 	// are handled only by the existing persisted supersession-intent recovery.
 	publication := r
 	if err := provePublishedCandidatePullRequest(ctx, defaultRunner, publication, r.PullRequest, true); err != nil {
-		if !recordedAdvance {
-			return r, err
-		}
 		// A target-drift refusal can leave the repaired candidate local while
 		// the PR still has its exact recorded published head. Prove that head
-		// independently, then carry it into the normal open/close-intent check.
+		// independently for either proven source advance, then carry it into
+		// the normal open/close-intent check.
 		publication.Candidate.SHA = r.PublishedCandidateSHA
 		if err := provePublishedCandidatePullRequest(ctx, defaultRunner, publication, r.PullRequest, true); err != nil {
 			return r, err

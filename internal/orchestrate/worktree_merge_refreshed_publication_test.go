@@ -92,7 +92,7 @@ esac
 			case "wrong PR":
 				candidate.PullRequest = "8"
 			case "wrong live head":
-				t.Setenv("WB_TEST_PR_SHA", predecessor)
+				t.Setenv("WB_TEST_PR_SHA", r.TargetSHA)
 			case "lost published ancestor":
 				candidate.PublishedCandidateSHA = strings.Repeat("c", 40)
 			case "lost historical root":
@@ -288,6 +288,7 @@ esac
 
 }
 
+//nolint:paralleltest // fixture and subcases set process-wide PATH and WB test environment.
 func TestE2ERefreshedPublicationRebatchRecognizesRecordedRepair(t *testing.T) {
 	f := newEngineFixture(t)
 	source := createMergeSource(t, f, "recorded-repair", "feature/recorded-repair", "source.txt", "source\n")
@@ -327,7 +328,14 @@ esac
 	t.Setenv("WB_TEST_PR_SHA", published)
 	closed := filepath.Join(t.TempDir(), "closed")
 	t.Setenv("WB_TEST_CLOSED", closed)
+	unrecorded := r
+	unrecorded.Sources = append([]WorktreeMergeSource(nil), r.SourceRefreshes[0].Sources...)
+	publication, err := proveRefreshedPublicationRebatch(t.Context(), f.githubDir, unrecorded, r.Sources, r.TargetSHA)
+	if err != nil || publication.Candidate.SHA != published {
+		t.Fatalf("unrecorded forward repair lost its exact publication: head=%s err=%v", publication.Candidate.SHA, err)
+	}
 	for _, mode := range []string{"missing history", "unchanged history", "changed history custody", "changed current custody", "unrelated history", "wrong published head", "wrong PR head", "canceled history proof"} {
+		//nolint:paralleltest // subcase sets WB_TEST_PR_SHA in the shared process environment.
 		t.Run(mode, func(t *testing.T) {
 			probe := r
 			probe.SourceRefreshes = append([]WorktreeMergeSourceRefresh(nil), r.SourceRefreshes...)
