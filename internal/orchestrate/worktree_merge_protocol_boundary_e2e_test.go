@@ -544,8 +544,10 @@ func TestE2EProtocolBoundaryLegacyConflictReauthenticatesRetiredHistory(t *testi
 	}
 	path := retiredPublicationAcknowledgementPath(r.ReceiptPath)
 	// Decoder-level historical eligibility: this record authenticates an omitted
-	// candidate SHA. It is not evidence that the public retirement workflow would
-	// authorize writing an empty-SHA publication record.
+	// candidate SHA in the single persisted schema 1 — the same schema every
+	// current acknowledgement uses, so the historical part is the shape, not a
+	// version marker. It is not evidence that the public retirement workflow
+	// would authorize writing an empty-SHA publication record.
 	a := WorktreeMergeRetiredPublicationAcknowledgement{SchemaVersion: worktreeMergeRetiredPublicationAcknowledgementSchemaVersion, Status: "retired_publication_acknowledged", ReceiptPath: r.ReceiptPath, AcknowledgementPath: path, ReceiptID: r.ID, ReceiptSHA256: h, ReceiptPhase: r.Phase, ReceiptStatus: r.Status, Lane: r.Lane, Repository: r.Repository, Target: r.Target, ReceiptTargetSHA: r.TargetSHA, CurrentTargetSHA: r.TargetSHA, CandidateTask: r.Candidate.Task, CandidateWorktree: r.Candidate.Worktree, CandidateBranch: r.Candidate.Branch, CandidateSHA: "", PullRequest: r.PullRequest, PullRequestState: "CLOSED", Sources: append([]WorktreeMergeSource(nil), r.Sources...), Actor: "historical operator", Reason: "controlled historical decoder eligibility", RecordedAt: time.Now().UTC()}
 	a.ID = retiredPublicationAcknowledgementID(a)
 	if err := persistRetiredPublicationAcknowledgement(path, a); err != nil {

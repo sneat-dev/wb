@@ -122,6 +122,54 @@ func (service Service) Rebind(ctx context.Context, idOrPath, expectedRoot string
 	return service.Store.Rebind(ctx, checkout, expectedRoot, caller, service.Ports.Now())
 }
 
+// RecoverInactiveOwner repairs a stale checkout root and replaces its recorded
+// owner only when that owner is proven inactive. The invoking registered
+// session becomes the owner in the same snapshot. Liveness is never inferred:
+// live, unknown, ambiguous, or unreadable owners refuse, and the caller,
+// current checkout identity, retired root, and old owner's inactivity are all
+// re-corroborated under the coordination lock immediately before publication.
+func (service Service) RecoverInactiveOwner(ctx context.Context, idOrPath string, recovery InactiveOwnerRecovery) (State, error) {
+	checkout, err := service.checkout(ctx, idOrPath)
+	if err != nil {
+		return State{}, err
+	}
+	caller, err := service.caller()
+	if err != nil {
+		return State{}, err
+	}
+	recovery.Actor, recovery.At = caller, service.Ports.Now()
+	if recovery.ExpectedOwner == caller {
+		return State{}, fmt.Errorf("inactive owner recovery requires a recorded owner other than the live invoking session")
+	}
+	if recovery.OwnerStatus, err = service.Ports.OwnerStatus(recovery.ExpectedOwner); err != nil {
+		return State{}, err
+	}
+	if recovery.OwnerStatus != "inactive" {
+		return State{}, fmt.Errorf("inactive owner recovery requires the recorded owner to be proven inactive; observed %q", recovery.OwnerStatus)
+	}
+	revalidate := func() error {
+		if current, err := service.caller(); err != nil {
+			return fmt.Errorf("recheck invoking session: %w", err)
+		} else if current != caller {
+			return fmt.Errorf("invoking session changed before recovery")
+		}
+		if fresh, err := service.Ports.Resolve(ctx, idOrPath); err != nil {
+			return fmt.Errorf("recheck current checkout: %w", err)
+		} else if fresh != checkout {
+			return fmt.Errorf("current checkout identity changed before recovery")
+		}
+		status, err := service.Ports.OwnerStatus(recovery.ExpectedOwner)
+		if err != nil {
+			return err
+		}
+		if status != "inactive" {
+			return fmt.Errorf("recorded owner liveness changed before recovery; observed %q", status)
+		}
+		return nil
+	}
+	return service.Store.RecoverInactiveOwner(ctx, checkout, recovery, revalidate)
+}
+
 func (service Service) Take(ctx context.Context, idOrPath, expected string, force bool, reason string) (State, error) {
 	checkout, err := service.checkout(ctx, idOrPath)
 	if err != nil {

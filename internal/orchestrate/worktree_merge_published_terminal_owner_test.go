@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 // These records prove policy/error ordering, not native publication or custody.
@@ -207,7 +208,9 @@ func TestPublishedTerminalInitialProofPreservesExactQueriesAndRefusals(t *testin
 						}
 					case "missing head":
 						view["headRefOid"] = ""
-						if kind == "stranded" {
+						if kind == "retired" {
+							want = "does not match exact receipted candidate SHA"
+						} else {
 							want = "returned no head commit"
 						}
 					case "merged":
@@ -231,6 +234,7 @@ func TestPublishedTerminalInitialProofPreservesExactQueriesAndRefusals(t *testin
 						view["headRefName"] = ""
 						if kind == "retired" {
 							view["headRefOid"] = "not-a-strict-oid"
+							want = "does not match exact receipted candidate branch"
 						}
 					}
 					data, err := json.Marshal(view)
@@ -312,6 +316,14 @@ func TestPublishedTerminalOwnersRefuseBeforeAnyProviderObservation(t *testing.T)
 						}
 						return got, err
 					}
+					readSnapshot := func(path string) (WorktreeMergeReceipt, string, error) {
+						got, err := read(path)
+						if err != nil {
+							return WorktreeMergeReceipt{}, "", err
+						}
+						hash, hashErr := worktreeMergeReceiptSHA256(path)
+						return got, hash, hashErr
+					}
 					switch mode {
 					case "empty input":
 						input = ""
@@ -336,7 +348,7 @@ func TestPublishedTerminalOwnersRefuseBeforeAnyProviderObservation(t *testing.T)
 							t.Fatal(err)
 						}
 					case "retired missing candidate":
-						want = "required for read-only git object resolution"
+						want = "absent without a supported preserved retirement"
 					case "retired non-directory candidate":
 						if err := os.WriteFile(r.Candidate.Worktree, []byte("file"), 0o600); err != nil {
 							t.Fatal(err)
@@ -355,7 +367,10 @@ func TestPublishedTerminalOwnersRefuseBeforeAnyProviderObservation(t *testing.T)
 						return "", errors.New("selected initial provider refusal")
 					}
 					if kind == "retired" {
-						_, err = acknowledgeRetiredPublication(t.Context(), WorktreeMergeRetiredPublicationAcknowledgementOptions{ProjectsRoot: root, Receipt: input, Apply: apply, Actor: actor, Reason: "review"}, defaultRunner, read, worktreeMergeReceiptSHA256, persistRetiredPublicationAcknowledgement, readPR)
+						_, err = acknowledgeRetiredPublication(t.Context(), WorktreeMergeRetiredPublicationAcknowledgementOptions{ProjectsRoot: root, Receipt: input, Apply: apply, Actor: actor, Reason: "review"}, retiredPublicationPorts{run: defaultRunner, readReceipt: readSnapshot, persist: persistRetiredPublicationAcknowledgementBound, readPR: readPR,
+							proveRetirement: func(context.Context, worktrees.RetiredCheckoutProofOptions) (heldRetiredCheckout, error) {
+								return nil, errors.New("no supported retirement receipt")
+							}})
 					} else {
 						_, err = acknowledgeStrandedPullRequestLanding(t.Context(), WorktreeMergeStrandedLandingAcknowledgementOptions{ProjectsRoot: root, Receipt: input, Apply: apply, Actor: actor, Reason: "review"}, read, worktreeMergeReceiptSHA256, persistStrandedLandingAcknowledgement, readPR)
 					}

@@ -53,28 +53,30 @@ func TestE2ERetiredPublicationOwnerNativeStagesPreserveEvidenceAndRelease(t *tes
 			}
 			sentinel := errors.New("selected retired " + mode)
 			consumed := false
-			hash := worktreeMergeReceiptSHA256
-			persist := persistRetiredPublicationAcknowledgement
+			readReceipt := readWorktreeMergeReceiptSnapshot
+			persist := persistRetiredPublicationAcknowledgementBound
 			run := defaultRunner
 			want := ""
 			remoteRestored := false
 			switch mode {
 			case "hash":
-				hash = func(path string) (string, error) {
-					if path == r.ReceiptPath {
+				reads := 0
+				readReceipt = func(path string) (WorktreeMergeReceipt, string, error) {
+					reads++
+					if path == r.ReceiptPath && reads > 2 {
 						consumed = true
-						return "", sentinel
+						return WorktreeMergeReceipt{}, "", sentinel
 					}
-					return worktreeMergeReceiptSHA256(path)
+					return readWorktreeMergeReceiptSnapshot(path)
 				}
 				want = sentinel.Error()
 			case "persist":
-				persist = func(path string, ack WorktreeMergeRetiredPublicationAcknowledgement) error {
+				persist = func(namespace *publicationNamespace, path string, ack WorktreeMergeRetiredPublicationAcknowledgement) error {
 					if path == ackPath {
 						consumed = true
 						return sentinel
 					}
-					return persistRetiredPublicationAcknowledgement(path, ack)
+					return persistRetiredPublicationAcknowledgementBound(namespace, path, ack)
 				}
 				want = sentinel.Error()
 			case "publication read", "fetch", "ancestry":
@@ -121,11 +123,14 @@ func TestE2ERetiredPublicationOwnerNativeStagesPreserveEvidenceAndRelease(t *tes
 					ack.ID = retiredPublicationAcknowledgementID(ack)
 					want = "binds different immutable evidence"
 				}
+				if err := os.Remove(ackPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+					t.Fatal(err)
+				}
 				if err := persistRetiredPublicationAcknowledgement(ackPath, ack); err != nil {
 					t.Fatal(err)
 				}
 			}
-			ack, err := acknowledgeRetiredPublication(t.Context(), options, run, readWorktreeMergeReceipt, hash, persist, githubRead)
+			ack, err := acknowledgeRetiredPublication(t.Context(), options, retiredPublicationPorts{run: run, readReceipt: readReceipt, persist: persist, readPR: githubRead})
 			if want == "" {
 				if err != nil || ack.CurrentTargetSHA != target || ack.PullRequestState != "CLOSED" {
 					t.Fatalf("native %s=%+v %v", mode, ack, err)

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -187,5 +188,196 @@ func TestWorktreeRebindCommandPropagatesFactoryFailure(t *testing.T) {
 	output, err := executeCollaborationCommand(t, command, "/checkout", "--expected-root", "/retired")
 	if !errors.Is(err, failure) || output != "" || calls != 1 {
 		t.Fatalf("factory failure: output=%q err=%v calls=%d", output, err, calls)
+	}
+}
+
+// rebindRecoveryFixture binds one stale snapshot whose recorded owner is proven
+// inactive to a separately registered live caller, so the command-level proofs
+// exercise the same service contract the CLI ships.
+func rebindRecoveryFixture(t *testing.T) (collaborationServiceFactory, worktreecollab.Checkout, worktreecollab.Checkout) {
+	t.Helper()
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldCheckout := worktreecollab.Checkout{ID: "recovery-checkout", Root: filepath.Join(base, "retired"),
+		GitDir: filepath.Join(base, "repo", ".git", "worktrees", "checkout1"), CommonDir: filepath.Join(base, "repo", ".git")}
+	currentCheckout := oldCheckout
+	currentCheckout.Root = filepath.Join(base, "current")
+	if err := os.Mkdir(currentCheckout.Root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store := worktreecollab.NewStore(filepath.Join(base, ".wb"))
+	if _, err := store.WithLocked(context.Background(), oldCheckout, func(state *worktreecollab.State, found bool) error {
+		if found {
+			t.Fatal("unexpected fixture state")
+		}
+		return state.Take(worktreecollab.TakeRequest{Caller: "gone", ExpectedOwner: worktreecollab.NoOwner, At: time.Now()})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service := worktreecollab.Service{Store: store, Ports: worktreecollab.ServicePorts{
+		Resolve: func(context.Context, string) (worktreecollab.Checkout, error) { return currentCheckout, nil },
+		Caller:  func() (string, error) { return "successor", nil },
+		Live:    func(string) (bool, error) { return true, nil },
+		OwnerStatus: func(id string) (string, error) {
+			if id == "gone" {
+				return "inactive", nil
+			}
+			return "live", nil
+		},
+		ObserveLegacy: func(worktreecollab.Checkout) (worktreecollab.ObservedOwner, error) {
+			return worktreecollab.ObservedOwner{}, nil
+		},
+		ObserveLegacyForInspection: func(worktreecollab.Checkout) (worktreecollab.ObservedOwner, error) {
+			return worktreecollab.ObservedOwner{}, nil
+		},
+		Now: time.Now, NewMessageID: func() (string, error) { return "message", nil },
+	}}
+	return func() (worktreecollab.Service, error) { return service, nil }, oldCheckout, currentCheckout
+}
+
+func TestWorktreeRebindCommandRefusesTakeoverFieldsWithoutRecoveryMode(t *testing.T) {
+	t.Parallel()
+	for _, field := range []string{"--expected-owner=gone", "--expected-owner-epoch=1", "--expected-revision=1", "--reason=retired"} {
+		t.Run(field, func(t *testing.T) {
+			t.Parallel()
+			calls := 0
+			factory := func() (worktreecollab.Service, error) {
+				calls++
+				return worktreecollab.Service{}, errors.New("factory must not run")
+			}
+			out, err := executeCollaborationCommand(t, newWorktreeRebindCmd(factory), "/checkout", "--expected-root=/retired", field)
+			if err == nil || !strings.Contains(err.Error(), "--take-inactive-ownership") || out != "" || calls != 0 {
+				t.Fatalf("takeover field without mode: out=%q err=%v factoryCalls=%d", out, err, calls)
+			}
+		})
+	}
+	out, err := executeCollaborationCommand(t, newWorktreeRebindCmd(func() (worktreecollab.Service, error) {
+		return worktreecollab.Service{}, errors.New("factory must not run")
+	}), "/checkout", "--take-inactive-ownership=false", "--expected-owner=gone")
+	if err == nil || !strings.Contains(err.Error(), "--take-inactive-ownership") || out != "" {
+		t.Fatalf("explicitly disabled recovery mode accepted takeover fields: out=%q err=%v", out, err)
+	}
+}
+
+func TestWorktreeRebindCommandRequiresEveryExactRecoveryObservation(t *testing.T) {
+	t.Parallel()
+	all := map[string]string{"--expected-root": "/retired", "--expected-owner": "gone", "--expected-owner-epoch": "1",
+		"--expected-revision": "1", "--reason": "retired"}
+	for missing := range all {
+		t.Run("missing "+missing, func(t *testing.T) {
+			t.Parallel()
+			args := []string{"/checkout", "--take-inactive-ownership"}
+			for field, value := range all {
+				if field != missing {
+					args = append(args, field+"="+value)
+				}
+			}
+			out, err := executeCollaborationCommand(t, newWorktreeRebindCmd(func() (worktreecollab.Service, error) {
+				return worktreecollab.Service{}, errors.New("factory must not run")
+			}), args...)
+			if err == nil || !strings.Contains(err.Error(), missing) || out != "" {
+				t.Fatalf("missing %s: out=%q err=%v", missing, out, err)
+			}
+		})
+	}
+	for _, zero := range []struct{ field, value string }{{"--expected-owner-epoch", "0"}, {"--expected-revision", "0"}} {
+		args := []string{"/checkout", "--take-inactive-ownership"}
+		for field, value := range all {
+			if field == zero.field {
+				value = zero.value
+			}
+			args = append(args, field+"="+value)
+		}
+		out, err := executeCollaborationCommand(t, newWorktreeRebindCmd(func() (worktreecollab.Service, error) {
+			return worktreecollab.Service{}, errors.New("factory must not run")
+		}), args...)
+		if err == nil || !strings.Contains(err.Error(), "never zero") || out != "" {
+			t.Fatalf("%s=0: out=%q err=%v", zero.field, out, err)
+		}
+	}
+}
+
+func TestWorktreeRebindCommandRecoversInactiveOwnershipOnce(t *testing.T) {
+	t.Parallel()
+	factory, oldCheckout, currentCheckout := rebindRecoveryFixture(t)
+	args := []string{currentCheckout.Root, "--take-inactive-ownership", "--expected-root", oldCheckout.Root,
+		"--expected-owner", "gone", "--expected-owner-epoch", "1", "--expected-revision", "1",
+		"--reason", "recorded owner exited; Git reused the linked registration"}
+	out, err := executeCollaborationCommand(t, newWorktreeRebindCmd(factory), args...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fragment := range []string{"recovered " + currentCheckout.ID, oldCheckout.Root + " -> " + currentCheckout.Root,
+		"owner gone -> successor", "(epoch 2, revision 2)"} {
+		if !strings.Contains(out, fragment) {
+			t.Fatalf("recovery output %q missing %q", out, fragment)
+		}
+	}
+	service, err := factory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, found, err := service.Store.Load(currentCheckout)
+	if err != nil || !found {
+		t.Fatalf("recovered snapshot = %t, %v", found, err)
+	}
+	if state.Owner != "successor" || state.OwnerEpoch != 2 || len(state.OwnerChanges) != 2 || len(state.CheckoutRebinds) != 1 {
+		t.Fatalf("recovered snapshot = %+v", state)
+	}
+	var audited struct {
+		Reason   string `json:"reason"`
+		Expected struct {
+			Root     string `json:"root"`
+			Owner    string `json:"owner"`
+			Epoch    uint64 `json:"epoch"`
+			Revision uint64 `json:"revision"`
+		} `json:"expected"`
+		Resulting struct {
+			Root     string `json:"root"`
+			Owner    string `json:"owner"`
+			Epoch    uint64 `json:"epoch"`
+			Revision uint64 `json:"revision"`
+		} `json:"resulting"`
+	}
+	if err := json.Unmarshal([]byte(state.OwnerChanges[1].Reason), &audited); err != nil {
+		t.Fatalf("recovery audit is not reconstructible: %v (%q)", err, state.OwnerChanges[1].Reason)
+	}
+	if audited.Reason != "recorded owner exited; Git reused the linked registration" || state.OwnerChanges[1].At.IsZero() ||
+		audited.Expected.Root != oldCheckout.Root || audited.Expected.Owner != "gone" ||
+		audited.Expected.Epoch != 1 || audited.Expected.Revision != 1 ||
+		audited.Resulting.Root != currentCheckout.Root || audited.Resulting.Owner != "successor" ||
+		audited.Resulting.Epoch != 2 || audited.Resulting.Revision != 2 {
+		t.Fatalf("recovery audit = %+v", state.OwnerChanges[1])
+	}
+	out, err = executeCollaborationCommand(t, newWorktreeRebindCmd(factory), args...)
+	if err == nil || !strings.Contains(err.Error(), "already completed") || out != "" {
+		t.Fatalf("repeated recovery: out=%q err=%v", out, err)
+	}
+	repeated, found, err := service.Store.Load(currentCheckout)
+	if err != nil || !found || repeated.OwnerEpoch != 2 || repeated.Revision != 2 {
+		t.Fatalf("repeated recovery advanced the snapshot: %+v, %t, %v", repeated, found, err)
+	}
+}
+
+func TestWorktreeRebindCommandRefusesLiveOwnerRecovery(t *testing.T) {
+	t.Parallel()
+	factory, oldCheckout, currentCheckout := rebindRecoveryFixture(t)
+	service, err := factory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.Ports.OwnerStatus = func(string) (string, error) { return "live", nil }
+	live := func() (worktreecollab.Service, error) { return service, nil }
+	out, err := executeCollaborationCommand(t, newWorktreeRebindCmd(live), currentCheckout.Root, "--take-inactive-ownership",
+		"--expected-root", oldCheckout.Root, "--expected-owner", "gone", "--expected-owner-epoch", "1",
+		"--expected-revision", "1", "--reason", "retired")
+	if err == nil || !strings.Contains(err.Error(), "proven inactive") || out != "" {
+		t.Fatalf("live owner recovery: out=%q err=%v", out, err)
+	}
+	state, found, err := service.Store.Load(oldCheckout)
+	if err != nil || !found || state.Owner != "gone" || state.Revision != 1 {
+		t.Fatalf("refused live-owner recovery changed the snapshot: %+v, %t, %v", state, found, err)
 	}
 }

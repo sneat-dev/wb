@@ -1,3 +1,5 @@
+//go:build e2e
+
 package orchestrate
 
 import (
@@ -39,7 +41,7 @@ func unpublishedConflictFixture(t *testing.T) (engineFixture, WorktreeMergeRecei
 	return f, r, WorktreeMergeUnpublishedConflictOptions{ProjectsRoot: f.githubDir, Receipt: r.ReceiptPath, Actor: "test-operator", Reason: "preserve historical unpublished conflict"}
 }
 
-func TestUnpublishedConflictAcknowledgementPreservesWorkAndReleasesExactLane(t *testing.T) {
+func TestE2EUnpublishedConflictAcknowledgementPreservesWorkAndReleasesExactLane(t *testing.T) {
 	t.Parallel()
 	f, r, options := unpublishedConflictFixture(t)
 	original, err := os.ReadFile(r.ReceiptPath)
@@ -132,7 +134,7 @@ func TestUnpublishedConflictAcknowledgementPreservesWorkAndReleasesExactLane(t *
 	}
 }
 
-func TestUnpublishedConflictApplyRejectsDriftFromReviewedPreview(t *testing.T) {
+func TestE2EUnpublishedConflictApplyRejectsDriftFromReviewedPreview(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"target", "claim", "receipt", "native lock"} {
 		t.Run(kind, func(t *testing.T) {
@@ -187,7 +189,7 @@ func TestUnpublishedConflictApplyRejectsDriftFromReviewedPreview(t *testing.T) {
 	}
 }
 
-func TestUnpublishedConflictRecoveryRefusesChangedOrPublishedWork(t *testing.T) {
+func TestE2EUnpublishedConflictRecoveryRefusesChangedOrPublishedWork(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name   string
@@ -244,7 +246,7 @@ func TestUnpublishedConflictRecoveryRefusesChangedOrPublishedWork(t *testing.T) 
 	}
 }
 
-func TestUnpublishedConflictReceiptPolicyRefusesRecoverableAndIncompleteShapes(t *testing.T) {
+func TestE2EUnpublishedConflictReceiptPolicyRefusesRecoverableAndIncompleteShapes(t *testing.T) {
 	t.Parallel()
 	_, r, _ := unpublishedConflictFixture(t)
 	for _, change := range []func(*WorktreeMergeReceipt){
