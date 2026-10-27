@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -53,6 +54,71 @@ func TestAdoptedTerminalHistoryRequiresCompletedNativeCleanupAndPreservesEvidenc
 	backlogBytes, err := os.ReadFile(backlogPath)
 	if err != nil {
 		t.Fatal(err)
+	}
+	outboxPath := filepath.Join(fixture.home, "worklogs", claim.EffortID, "outbox", claim.RunID+"-"+claim.ClaimID+"-sealed.json")
+	evidencePaths := []string{claimPath, terminalPath, outboxPath, backlogPath}
+	originalEvidence := make(map[string][]byte, len(evidencePaths))
+	for _, evidencePath := range evidencePaths {
+		raw, err := os.ReadFile(evidencePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		originalEvidence[evidencePath] = raw
+	}
+	for _, kind := range []string{"pass-through", "run-disappears-after-relocation"} {
+		t.Run(kind, func(t *testing.T) {
+			history := terminalHistoryPorts()
+			realOpenRun := history.OpenRun
+			runRoot := filepath.Dir(filepath.Dir(terminalPath))
+			retained := runRoot + ".retained-race"
+			moved := false
+			t.Cleanup(func() {
+				if moved {
+					if err := os.Rename(retained, runRoot); err != nil {
+						t.Error(err)
+					}
+				}
+			})
+			calls := 0
+			history.OpenRun = func(home, effort, run string, create bool) (*os.File, string, error) {
+				calls++
+				if home != fixture.home || effort != claim.EffortID || run != claim.RunID || create {
+					t.Fatalf("changed native read identity: %q %q %q create=%t", home, effort, run, create)
+				}
+				if kind == "run-disappears-after-relocation" && calls == 1 {
+					if err := os.Rename(runRoot, retained); err != nil {
+						t.Fatal(err)
+					}
+					moved = true
+				}
+				return realOpenRun(home, effort, run, create)
+			}
+			completed, proofErr := completedAdoptedHistoryWithHistoryPorts(fixture.home, fixture.projectsRoot, claim, history)
+			if kind == "run-disappears-after-relocation" {
+				if completed || !errors.Is(proofErr, os.ErrNotExist) || calls != 1 {
+					t.Fatalf("real vanished run granted authority: completed=%t calls=%d err=%v", completed, calls, proofErr)
+				}
+				if _, err := os.Lstat(runRoot); !os.IsNotExist(err) {
+					t.Fatalf("read recreated private run: %v", err)
+				}
+				retainedClaim, err := os.ReadFile(filepath.Join(retained, "claims", claim.ClaimID+".json"))
+				if err != nil || !bytes.Equal(retainedClaim, before) {
+					t.Fatalf("retained immutable claim changed: %v", err)
+				}
+				if err := os.Rename(retained, runRoot); err != nil {
+					t.Fatal(err)
+				}
+				moved = false
+			} else if proofErr != nil || !completed || calls != 2 {
+				t.Fatalf("same native port did not cover reopen and history validation: completed=%t calls=%d err=%v", completed, calls, proofErr)
+			}
+			for _, evidencePath := range evidencePaths {
+				after, err := os.ReadFile(evidencePath)
+				if err != nil || !bytes.Equal(originalEvidence[evidencePath], after) {
+					t.Fatalf("native evidence changed at %s: %v", evidencePath, err)
+				}
+			}
+		})
 	}
 	for _, kind := range []string{"missing-terminal", "corrupt-terminal", "unfinished-backlog", "missing-outbox", "corrupt-outbox", "missing-backlog", "corrupt-backlog", "wrong-backlog-identity", "corrupt-relocation-journal", "enotdir-checkout-parent", "missing-backlog-directory", "inaccessible-checkout-parent", "ambiguous-canonical-stores"} {
 		t.Run(kind, func(t *testing.T) {
