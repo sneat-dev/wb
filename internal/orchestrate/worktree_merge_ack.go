@@ -474,13 +474,15 @@ func validatePreparedWorktreeMergeRebatch(ctx context.Context, projectsRoot, rec
 	if err != nil {
 		return nil, fmt.Errorf("validate prepared rebatch candidate: %w", err)
 	}
+	publication := receipt
 	if refreshedPublication {
-		if err := proveRefreshedPublicationRebatch(ctx, projectsRoot, receipt, sources, claim.BaseSHA); err != nil {
+		publication, err = proveRefreshedPublicationRebatch(ctx, projectsRoot, receipt, sources, claim.BaseSHA)
+		if err != nil {
 			return nil, err
 		}
 	}
 	if publishedUnlanded {
-		if err := validatePublishedUnlandedRebatch(ctx, projectsRoot, receipt, repository, target, sources); err != nil {
+		if err := validatePublishedUnlandedRebatch(ctx, projectsRoot, publication, repository, target, sources); err != nil {
 			return nil, err
 		}
 	}
