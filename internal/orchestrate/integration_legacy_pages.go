@@ -76,8 +76,16 @@ func legacyPageURL(raw, path string) (string, int, error) {
 }
 func legacyPageLinks(headers map[string]string, path string, current int) error {
 	next, last := 0, 0
+	linkSeen := false
 	for name, value := range headers {
-		if !strings.EqualFold(strings.TrimSpace(name), "link") || strings.TrimSpace(value) == "" {
+		if !strings.EqualFold(strings.TrimSpace(name), "link") {
+			continue
+		}
+		if linkSeen {
+			return fmt.Errorf("ambiguous duplicate legacy comment Link headers")
+		}
+		linkSeen = true
+		if strings.TrimSpace(value) == "" {
 			continue
 		}
 		for _, section := range strings.Split(value, ",") {
@@ -100,7 +108,11 @@ func legacyPageLinks(headers map[string]string, path string, current int) error 
 					return fmt.Errorf("unsupported legacy comment link relation")
 				}
 				relSeen = true
-				for _, rel := range strings.Fields(strings.Trim(value, "\"")) {
+				relations := strings.Fields(strings.Trim(value, "\""))
+				if len(relations) != 1 || value != "\""+relations[0]+"\"" {
+					return fmt.Errorf("unsupported legacy comment multi-relation link")
+				}
+				for _, rel := range relations {
 					switch rel {
 					case "next":
 						if next != 0 {
@@ -123,7 +135,7 @@ func legacyPageLinks(headers map[string]string, path string, current int) error 
 			}
 		}
 	}
-	if next != 0 && next != current+1 || last > current && next == 0 || last != 0 && next > last {
+	if next != 0 && next != current+1 || last > current && next == 0 || last != 0 && (next > last || last < current) {
 		return fmt.Errorf("incomplete legacy comment pagination sequence")
 	}
 	return nil

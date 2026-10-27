@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1566,6 +1567,12 @@ func TestSupersedeValidationFailedWorktreeMergeRefusesInvalidEvidence(t *testing
 			_, err := SupersedeValidationFailedWorktreeMerge(context.Background(), WorktreeMergeValidationFailureSupersessionOptions{ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, ReplacementWorktree: replacement.WorktreeDir, Apply: true, Actor: "reviewer", Reason: "unsafe evidence"})
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("supersession error = %v, want %q", err, test.want)
+			}
+			switch test.name {
+			case "missing original candidate claim", "missing replacement claim":
+				if !errors.Is(err, os.ErrNotExist) || !strings.Contains(err.Error(), "no projected Work Log claim in sanctioned homes") {
+					t.Fatalf("missing immutable proof lost typed refusal: %v", err)
+				}
 			}
 			if _, statErr := os.Stat(validationFailureSupersessionPath(receipt.ReceiptPath)); !os.IsNotExist(statErr) {
 				t.Fatalf("refusal wrote supersession: %v", statErr)

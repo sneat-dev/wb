@@ -156,7 +156,41 @@ func TestLegacyPageURLAndLinkPolicyRejectsIncompleteOrForeignInventory(t *testin
 	if err := legacyPageLinks(map[string]string{"X-Unrelated": "value", "Link": " "}, path, 1); err != nil {
 		t.Fatalf("complete empty inventory: %v", err)
 	}
+	if err := legacyPageLinks(map[string]string{"Link": link(1, "last")}, path, 2); err == nil {
+		t.Fatal("contradictory last-page inventory accepted")
+	}
 	if err := legacyPageLinks(map[string]string{"Link": link(1, "first") + ", " + link(1, "prev")}, path, 2); err != nil {
 		t.Fatalf("terminal backward links: %v", err)
+	}
+}
+
+func TestLegacyCommentsNeverClaimsCompleteInventoryForAmbiguousLinkRepresentation(t *testing.T) {
+	t.Parallel()
+	sha := strings.Repeat("a", 40)
+	next := "<https://api.github.com/repos/acme/app/commits/" + sha + "/comments?page=2&per_page=100>"
+	for _, kind := range []string{"multi-relation", "tab-relation", "duplicate-case-empty", "duplicate-case-prev"} {
+		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
+			calls := 0
+			ctx := githubobserver.WithReader(t.Context(), githubobserver.Reader{Get: func(context.Context, githubobserver.GetRequest) (githubobserver.Response, error) {
+				calls++
+				headers := map[string]string{"Link": next + "; rel=\"next\""}
+				switch kind {
+				case "multi-relation":
+					headers["Link"] = next + "; rel=\"next last\""
+				case "tab-relation":
+					headers["Link"] = next + "; rel=\"\tnext\""
+				case "duplicate-case-empty":
+					headers["link"] = ""
+				case "duplicate-case-prev":
+					headers["link"] = "<https://api.github.com/repos/acme/app/commits/" + sha + "/comments?page=1&per_page=100>; rel=\"prev\""
+				}
+				return githubobserver.Response{Body: []byte("[]"), Headers: headers}, nil
+			}})
+			bindings, err := (githubIntegration{}).LegacyComments(ctx, "acme/app", sha)
+			if err == nil || bindings != nil || calls != 1 {
+				t.Fatalf("ambiguous representation claimed complete or followed transport: calls=%d bindings=%v err=%v", calls, bindings, err)
+			}
+		})
 	}
 }

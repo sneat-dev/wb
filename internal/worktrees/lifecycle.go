@@ -1728,7 +1728,13 @@ func listTaskScopedClaimedRegistryWorktrees(
 	deferClassify := func() {
 		for _, problem := range problems {
 			matched := false
-			for task, root := range associated[problem.effort] {
+			selectedTasks := make([]string, 0, len(associated[problem.effort]))
+			for task := range associated[problem.effort] {
+				selectedTasks = append(selectedTasks, task)
+			}
+			sort.Strings(selectedTasks)
+			for _, task := range selectedTasks {
+				root := associated[problem.effort][task]
 				d := listDiagnostic(root, task, problem.path, problem.message)
 				d.DiscoveryScope = "selected-associated-effort"
 				diagnostics = append(diagnostics, d)
@@ -1750,7 +1756,9 @@ func listTaskScopedClaimedRegistryWorktrees(
 	// the directory name. runInspections still corroborates the live projection.
 	efforts, err := os.ReadDir(filepath.Join(home, "worklogs"))
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, []ListDiagnostic{listDiagnostic("", "", filepath.Join(home, "worklogs"), fmt.Sprintf("read Work Log efforts: %v", err))}
+		diagnostic := listDiagnostic("", "", filepath.Join(home, "worklogs"), fmt.Sprintf("read Work Log efforts: %v", err))
+		diagnostic.DiscoveryScope = "unattributed"
+		return nil, []ListDiagnostic{diagnostic}
 	}
 	for _, effort := range efforts {
 		if !effort.IsDir() || !validSafeSegment(effort.Name()) {
