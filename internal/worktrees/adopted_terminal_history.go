@@ -5,12 +5,18 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/sneat-dev/wb/internal/worktreeclaims"
 )
 
 // completedAdoptedHistory grants no live placement authority. It recognizes
 // only an absent checkout with native removed-terminal and completed cleanup
 // evidence, so retired external registration is not required for history.
 func completedAdoptedHistory(home, projectsRoot string, claim workLogClaim) (bool, error) {
+	return completedAdoptedHistoryWithHistoryPorts(home, projectsRoot, claim, terminalHistoryPorts())
+}
+
+func completedAdoptedHistoryWithHistoryPorts(home, projectsRoot string, claim workLogClaim, history worktreeclaims.HistoryPorts) (bool, error) {
 	adopted, err := claimLineageWasAdopted(home, claim)
 	if err != nil || !adopted {
 		return false, err
@@ -25,7 +31,7 @@ func completedAdoptedHistory(home, projectsRoot string, claim workLogClaim) (boo
 	if !errors.Is(err, os.ErrNotExist) {
 		return false, err
 	}
-	run, _, err := openWorkLogRun(home, claim.EffortID, claim.RunID, false)
+	run, _, err := history.OpenRun(home, claim.EffortID, claim.RunID, false)
 	if err != nil {
 		return false, err
 	}
@@ -35,7 +41,7 @@ func completedAdoptedHistory(home, projectsRoot string, claim workLogClaim) (boo
 		return false, err
 	}
 	expectation := TerminalWorkLogExpectation{Task: claim.Task, Repository: claim.Repository, Worktree: claim.Worktree, Branch: claim.Branch, Base: claim.Base, FinalCommit: terminal.FinalCommit}
-	if _, err = terminalHistoryPorts().ReadRemovedTerminalWorkLogClaimBase(home, expectation); err != nil {
+	if _, err = history.ReadRemovedTerminalWorkLogClaimBase(home, expectation); err != nil {
 		return false, err
 	}
 	canonical, err := CanonicalRepositoryPath(projectsRoot, relocated.repository)
