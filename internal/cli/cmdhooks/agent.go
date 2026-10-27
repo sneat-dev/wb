@@ -100,8 +100,6 @@ Policies (Bash/Write/Edit/MultiEdit/NotebookEdit, unless noted):
     drops the whole prefix. A main-thread call (no 'agent_id'), or a Bash
     command that chains 'wb' with anything else, is never stamped, and this
     never sets 'permissionDecision' either.
-  - Missing model (Agent/Task tool): refuses a subagent dispatch that names
-    no 'model'. See lesson l49.
   - Literal report path (Agent/Task tool): refuses a dispatch prompt that
     hand-writes a WB report path instead of deriving it from
     'wb worktree log finalize --report'. See lesson
