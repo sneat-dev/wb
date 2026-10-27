@@ -17876,7 +17876,7 @@
         },
         "tests": {
           "status": "Full",
-          "references": [{"path": "internal/orchestrate/worktree_merge_unpublished_conflict_test.go", "name": "TestUnpublishedConflictAcknowledgementPreservesWorkAndReleasesExactLane", "kind": "integration"}],
+          "references": [{"path": "internal/orchestrate/worktree_merge_unpublished_conflict_test.go", "name": "TestE2EUnpublishedConflictAcknowledgementPreservesWorkAndReleasesExactLane", "kind": "integration"}],
           "limitation": null
         }
       },
@@ -19215,12 +19215,19 @@
             {
               "path": "wb worktree rebind",
               "flags": [
-                "--expected-root"
+                "--expected-owner",
+                "--expected-owner-epoch",
+                "--expected-revision",
+                "--expected-root",
+                "--reason",
+                "--take-inactive-ownership"
               ],
               "modes": [
                 "Repairs a stale collaboration root only after the prior path was retired and Git reused the linked-worktree identity",
                 "Requires the exact recorded prior root, an absent old path, and matching GitDir and CommonDir",
-                "Requires a live admitted WB session and does not change ownership or infer a checkout identity"
+                "Requires a live admitted WB session and does not change ownership or infer a checkout identity",
+                "With --take-inactive-ownership it also replaces the recorded owner, but only when the exact prior root, owner, owner epoch, and coordination revision all match the stale snapshot",
+                "Recovery requires a separately corroborated live caller and a recorded owner proven inactive; live, unknown, ambiguous, or unreadable owners refuse, and a repeated request never advances the owner epoch twice"
               ]
             }
           ],
@@ -19235,7 +19242,9 @@
                 "prior worktree root",
                 "retired",
                 "--expected-root",
-                "live admitted WB session"
+                "live admitted WB session",
+                "--take-inactive-ownership",
+                "proven inactive"
               ]
             }
           ],
@@ -19261,12 +19270,22 @@
               "path": "cmd/wb/worktree_collaboration_test.go",
               "name": "TestWorktreeRebindCommandRequiresExpectedRootAndRecordsAudit",
               "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/worktree_collaboration_test.go",
+              "name": "TestWorktreeRebindCommandRecoversInactiveOwnershipOnce",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/worktree_rebind_recovery_e2e_test.go",
+              "name": "TestE2ECollaborationRebindRecoversReusedGitRegistrationWithInactiveOwner",
+              "kind": "e2e"
             }
           ],
           "limitation": null
         }
       },
-      "notes": "A narrow repair for a retired checkout root reused by Git; it is owner- and session-authorized, exact-root-bound, and append-only."
+      "notes": "A narrow repair for a retired checkout root reused by Git; it is owner- and session-authorized, exact-root-bound, and append-only. Its opt-in inactive-owner mode never infers a dead owner and publishes the root rebind and ownership change as one snapshot."
     },
     {
       "id": "wb.worktree.relocate",

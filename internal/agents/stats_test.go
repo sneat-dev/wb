@@ -3,6 +3,7 @@ package agents
 import "testing"
 
 func TestSummarizeRunsKeepsUnknownUsageAndCallerSeparate(t *testing.T) {
+	t.Parallel()
 	input, output, cache := 20, 7, 9
 	cost := 0.25
 	runs := []Result{
@@ -28,6 +29,7 @@ func TestSummarizeRunsKeepsUnknownUsageAndCallerSeparate(t *testing.T) {
 }
 
 func TestSummarizeRunsIncludesReportedCacheWriteAndReasoningTokens(t *testing.T) {
+	t.Parallel()
 	cacheWrite, reasoning := 13, 5
 	report := SummarizeRuns([]Result{{
 		Repository: "acme/app", Status: StatusCompleted,
@@ -39,6 +41,7 @@ func TestSummarizeRunsIncludesReportedCacheWriteAndReasoningTokens(t *testing.T)
 }
 
 func TestSummarizeRunsUsesKnownSessionNameAcrossRepositories(t *testing.T) {
+	t.Parallel()
 	report := SummarizeRuns([]Result{
 		{Caller: CallerSession{ID: "thread-one", Name: "builder"}, Repository: "acme/app", Status: StatusCompleted},
 		{Caller: CallerSession{ID: "thread-one"}, Repository: "acme/lib", Status: StatusCompleted},

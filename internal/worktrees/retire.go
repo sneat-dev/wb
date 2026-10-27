@@ -48,7 +48,7 @@ type retireEntryPorts struct {
 	absoluteRoot  func(string) (string, error)
 	resolve       func(string) (wbhome.Resolution, error)
 	inventory     func(context.Context, ListOptions) (ListOutcome, error)
-	checkOwner    func(ListResult) error
+	checkCustody  retireCustodyCheck
 	archivePlan   func(context.Context, string, RetiredArchiveInspector) (RetiredArchivePlan, error)
 	checkPR       func(context.Context, ListResult, RetireOptions) error
 	readClaim     func(string, string) (workLogClaim, workLogProjection, error)
@@ -67,7 +67,7 @@ type retireEntryPorts struct {
 func productionRetireEntryPorts() retireEntryPorts {
 	return retireEntryPorts{
 		absoluteRoot: absoluteProjectsRoot, resolve: wbhome.Resolve, inventory: ListWithDiagnostics,
-		checkOwner: retireCheckOwner, archivePlan: PlanRetiredArchivePreflight,
+		checkCustody: retireCheckCustody, archivePlan: PlanRetiredArchivePreflight,
 		checkPR: retireCheckPR, readClaim: retireReadClaim, checkIgnored: retireCheckIgnored,
 		remoteSHA: retireRemoteSHA, readReport: readRetireReport, checkAncestor: retireCheckRemoteAncestor,
 		acquireTask:  acquireCleanupTaskAtOrCreate,
@@ -105,7 +105,8 @@ func retireWithEntryPorts(ctx context.Context, options RetireOptions, ports reti
 	if resumeRemoved {
 		return retireResumeRemoved(ctx, resolution.Write.Home, options)
 	}
-	if err := ports.checkOwner(entry); err != nil {
+	fence, err := ports.checkCustody(ctx, root, resolution.Write.Home, entry)
+	if err != nil {
 		return RetireResult{}, err
 	}
 	archivePlan, err := ports.archivePlan(ctx, entry.Repository, options.Inspect)
@@ -188,8 +189,12 @@ func retireWithEntryPorts(ctx context.Context, options RetireOptions, ports reti
 		return RetireResult{}, err
 	}
 	entry.Owners = freshOwners
-	if err := ports.checkOwner(entry); err != nil {
+	lockedFence, err := ports.checkCustody(ctx, root, resolution.Write.Home, entry)
+	if err != nil {
 		return RetireResult{}, err
+	}
+	if !fence.same(lockedFence) {
+		return RetireResult{}, fmt.Errorf("retirement custody changed while acquiring the checkout lock")
 	}
 	// Recheck under the held task lock. The first observation is for dry-run and
 	// admission; all destructive steps use the second observation.
@@ -222,7 +227,7 @@ func retireWithEntryPorts(ctx context.Context, options RetireOptions, ports reti
 		}
 		result = prior
 	}
-	operation := retireTransactionOperation(options, resolution.Write.Home, entry, task, heldWorktree)
+	operation := retireTransactionOperation(options, root, resolution.Write.Home, entry, task, heldWorktree, lockedFence, ports.checkCustody)
 	return operation.ApplyTransaction(ctx, result, priorExists, current, options.Message)
 }
 
@@ -577,6 +582,13 @@ func retireRemoteSHA(ctx context.Context, directory, remote, ref string) (string
 	if err != nil {
 		return "", fmt.Errorf("inspect remote ref %s: %w", ref, err)
 	}
+	return parseRetiredRemoteSHA(output, ref)
+}
+
+// parseRetiredRemoteSHA validates one `git ls-remote` observation for exactly
+// ref. It is shared by the path-based retirement ports and the held
+// descriptor-bound proof session so both refuse the same ambiguous output.
+func parseRetiredRemoteSHA(output, ref string) (string, error) {
 	if output == "" {
 		return "", nil
 	}
@@ -726,7 +738,7 @@ func retireTransactionPorts() worktreeretire.TransactionPorts {
 	}
 }
 
-func retireTransactionOperation(options RetireOptions, home string, entry ListResult, task *cleanupTaskHandle, heldWorktree *cleanupWorktreeHandle) worktreeretire.Operation {
+func retireTransactionOperation(options RetireOptions, projectsRoot, home string, entry ListResult, task *cleanupTaskHandle, heldWorktree *cleanupWorktreeHandle, fence retireCustodyFence, checkCustody retireCustodyCheck) worktreeretire.Operation {
 	return worktreeretire.Operation{
 		Remote: retireTransactionPorts(), ArchiveRemote: options.ArchiveRemote,
 		Now: options.Now, AfterPhase: options.afterPhase, WriteReport: writeRetireReport,
@@ -756,9 +768,26 @@ func retireTransactionOperation(options RetireOptions, home string, entry ListRe
 				if err := options.RemoteOwnership(ctx, options.Task); err != nil {
 					return fmt.Errorf("retirement remote owner final recheck: %w", err)
 				}
-				return retireCheckIgnored(ctx, entry.WorktreeDir)
+				if err := retireCheckIgnored(ctx, entry.WorktreeDir); err != nil {
+					return err
+				}
+				current, err := checkCustody(ctx, projectsRoot, home, entry)
+				if err != nil {
+					return err
+				}
+				if !fence.same(current) {
+					return fmt.Errorf("retirement custody changed before deletion")
+				}
+				return nil
 			},
 			RemoveLocal: func(ctx context.Context, result *RetireResult) error {
+				current, err := checkCustody(ctx, projectsRoot, home, entry)
+				if err != nil {
+					return err
+				}
+				if !fence.same(current) {
+					return fmt.Errorf("retirement custody changed before local removal")
+				}
 				return retireRemoveLocal(ctx, task, entry, result, options.afterPhase)
 			},
 		},

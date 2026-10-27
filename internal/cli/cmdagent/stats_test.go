@@ -61,6 +61,7 @@ func (w *failAtStatsWrite) Write(p []byte) (int, error) {
 }
 
 func TestAgentStatsPropagatesListFailure(t *testing.T) {
+	t.Parallel()
 	deps := fakeDependencies()
 	deps.List = func(context.Context, agentrun.ListRequest) ([]agents.Result, error) {
 		return nil, errors.New("run store unavailable")
@@ -72,6 +73,7 @@ func TestAgentStatsPropagatesListFailure(t *testing.T) {
 }
 
 func TestAgentStatsPropagatesTextWriterFailure(t *testing.T) {
+	t.Parallel()
 	report := agents.SummarizeRuns([]agents.Result{{Repository: "acme/app", Status: agents.StatusCompleted}})
 	for _, failAt := range []int{1, 2, 3, 4} {
 		failure := errors.New("output closed")
@@ -88,6 +90,7 @@ func TestAgentStatsPropagatesTextWriterFailure(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // Mutates the process-global CODEX_THREAD_ID harness env to prove a remote dispatch carries the source harness session it was given.
 func TestRemoteDispatchCarriesTheSourceHarnessSession(t *testing.T) {
 	t.Setenv("CODEX_THREAD_ID", "thread-origin")
 	deps := fakeDependencies()

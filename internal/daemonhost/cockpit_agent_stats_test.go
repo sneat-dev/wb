@@ -124,6 +124,7 @@ func TestCockpitAgentSessionStatsReturnsGenericStoreAndEncodingErrors(t *testing
 		}, http.StatusInternalServerError, ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			request := httptest.NewRequest(http.MethodGet, agentSessionStatsPath, nil)
 			response := httptest.NewRecorder()
 			agentSessionStatsHandler("/projects", test.list)(response, request)
