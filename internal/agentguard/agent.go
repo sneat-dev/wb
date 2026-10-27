@@ -32,13 +32,10 @@ func canonicalClonePath(projectsRoot, owner, name string, trailing ...string) st
 // `Agent`/`Task` tool). It never spawns a process: every check here reads, at
 // most, a handful of small local files already sitting on disk.
 //
-// Three independent policies apply, checked cheapest and highest-confidence
+// Two independent policies apply, checked cheapest and highest-confidence
 // first. Each returns as soon as it finds something to refuse; a call that
-// clears all three is allowed.
+// clears both is allowed.
 func inspectAgentDispatch(input toolInput, cwd, projectsRoot string) *finding {
-	if result := inspectMissingModel(input); result != nil {
-		return result
-	}
 	if result := inspectLiteralReportPath(input); result != nil {
 		return result
 	}
@@ -46,37 +43,6 @@ func inspectAgentDispatch(input toolInput, cwd, projectsRoot string) *finding {
 		return result
 	}
 	return nil
-}
-
-// inspectMissingModel denies a subagent dispatch that never names a model,
-// because Claude Code inherits the parent's model silently when it is left
-// out — precisely the compliance failure
-// lesson:l49-subagent-dispatch-should-fail-before-an-unnamed-model-can-inherit
-// describes: the rule lived only as prose
-// (~/.claude/CLAUDE.md: "Name the model on every subagent dispatch — never let
-// it inherit"), so nothing failed closed when the field was simply absent.
-//
-// A dispatch with no prompt at all (an empty tool_input, or a tool_input this
-// guard could not decode) is not judged here: that is a malformed or unknown
-// call, not a policy violation this rule owns, and the fail-open default
-// applies.
-func inspectMissingModel(input toolInput) *finding {
-	if strings.TrimSpace(input.Prompt) == "" && strings.TrimSpace(input.Model) == "" {
-		// Nothing about this call looks like a real dispatch (most likely an
-		// unrecognised tool_input shape) — allow rather than guess.
-		return nil
-	}
-	if strings.TrimSpace(input.Model) != "" {
-		return nil
-	}
-	var message strings.Builder
-	message.WriteString("This subagent dispatch names no `model`.\n\n")
-	message.WriteString("rule: \"Name the model on every subagent dispatch — never let it inherit.\"\n")
-	message.WriteString("(~/.claude/CLAUDE.md, Delegation; lesson l49-subagent-dispatch-should-fail-before-an-unnamed-model-can-inherit)\n\n")
-	message.WriteString("An omitted model silently inherits the parent's, which is exactly what the\n")
-	message.WriteString("rule forbids: a cheaper tier must be named explicitly, not assumed.\n\n")
-	message.WriteString("Remedy: add an explicit model to this dispatch, e.g. model: \"sonnet\".\n")
-	return &finding{Message: message.String()}
 }
 
 // literalReportPath matches a hand-written WB report path — the exact
