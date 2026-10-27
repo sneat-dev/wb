@@ -39,6 +39,7 @@ func TestRelocationClaimHomesRetainCustodyAndRejectAmbiguousOrCorruptEvidence(t 
 		t.Fatal(err)
 	}
 	for _, kind := range []string{"duplicate", "corrupt", "blocked-run"} {
+		//nolint:paralleltest // subcases share process-wide Git/WB fixture state.
 		t.Run(kind, func(t *testing.T) {
 			other := t.TempDir()
 			run := filepath.Join(other, "worklogs", projection.EffortID, "runs", projection.RunID)

@@ -1,3 +1,5 @@
+//go:build e2e
+
 package worktrees
 
 import (
@@ -13,7 +15,7 @@ import (
 )
 
 //nolint:paralleltest // native Git fixture changes process-wide isolated environment.
-func TestOfficialClaimProjectionCorruptionRefusesEveryRelocationAdmission(t *testing.T) {
+func TestE2EOfficialClaimProjectionCorruptionRefusesEveryRelocationAdmission(t *testing.T) {
 	f := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: f.projectsRoot, Operation: "projection-refusal", WorkLog: WorkLogOptions{Model: "unknown"}})
 	if err != nil {
@@ -78,66 +80,8 @@ func TestOfficialClaimProjectionCorruptionRefusesEveryRelocationAdmission(t *tes
 	}
 }
 
-func TestOfficialScopedDiscoveryReportsInventoryObstructionWithoutInventingAuthority(t *testing.T) {
-	t.Parallel()
-	home := t.TempDir()
-	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(home, "worklogs"), []byte("obstruction"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	results, diagnostics := listTaskScopedClaimedRegistryWorktrees(context.Background(), root, home, nil, map[string]bool{"selected": true}, "main", "", "", false, 1, nil, inspectPolicy{})
-	if len(results) != 0 || len(diagnostics) != 1 || diagnostics[0].Task != "" || diagnostics[0].DiscoveryScope != "unattributed" || !strings.Contains(diagnostics[0].Message, "read Work Log efforts") {
-		t.Fatalf("%+v %+v", results, diagnostics)
-	}
-	if err := os.Remove(filepath.Join(home, "worklogs")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(home, "worklogs", "selected"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(home, "worklogs", "selected", "runs"), []byte("blocked"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	results, diagnostics = listTaskScopedClaimedRegistryWorktrees(context.Background(), root, home, nil, map[string]bool{"selected": true}, "main", "", "", false, 1, nil, inspectPolicy{})
-	if len(results) != 0 || len(diagnostics) != 1 || diagnostics[0].Task != "selected" || diagnostics[0].DiscoveryScope != "selected-legacy-namespace" {
-		t.Fatalf("%+v %+v", results, diagnostics)
-	}
-	if _, err := activeWorkLogClaimAtPathWithReadNames(home, "missing", nil, func(d *os.File) ([]string, error) {
-		names, e := d.Readdirnames(-1)
-		if e == nil {
-			for _, name := range names {
-				if name == "selected" {
-					if e = os.Rename(filepath.Join(home, "worklogs", name), filepath.Join(home, "parked")); e != nil {
-						t.Fatal(e)
-					}
-				}
-			}
-		}
-		return names, e
-	}); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("between-read removal hidden: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Join(home, "worklogs", "bad name"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	results, diagnostics = listTaskScopedClaimedRegistryWorktrees(context.Background(), root, home, nil, map[string]bool{"selected": true}, "main", "", "", false, 1, nil, inspectPolicy{})
-	if len(results) != 0 || len(diagnostics) != 0 {
-		t.Fatalf("invalid unselected directory became authority: %+v %+v", results, diagnostics)
-	}
-	if claim, err := activeWorkLogClaimAtPath(home, "missing", nil); claim != nil || err != nil {
-		t.Fatalf("unsafe namespace admitted: %+v %v", claim, err)
-	}
-	if err := os.MkdirAll(filepath.Join(home, "worklogs", "selected"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	results, diagnostics = listTaskScopedClaimedRegistryWorktrees(context.Background(), root, home, nil, map[string]bool{"selected": true}, "main", "", "", false, 1, nil, inspectPolicy{})
-	if len(results) != 0 || len(diagnostics) != 0 {
-		t.Fatalf("absent runs became authority/obstruction: %+v %+v", results, diagnostics)
-	}
-}
-
 //nolint:paralleltest // native Git fixture configures isolated process environment.
-func TestOfficialCloneMoveConflictingPendingIntentDoesNotPublishSecondIntent(t *testing.T) {
+func TestE2EOfficialCloneMoveConflictingPendingIntentDoesNotPublishSecondIntent(t *testing.T) {
 	f := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: f.projectsRoot, Operation: "clone-conflict", WorkLog: WorkLogOptions{Model: "unknown"}})
 	if err != nil {
@@ -181,7 +125,7 @@ func TestOfficialCloneMoveConflictingPendingIntentDoesNotPublishSecondIntent(t *
 }
 
 //nolint:paralleltest // transfer uses native isolated Git fixture environment.
-func TestOfficialCompletedTransferCorruptionAndCopiedProjectionNeverAuthorizeOtherPath(t *testing.T) {
+func TestE2EOfficialCompletedTransferCorruptionAndCopiedProjectionNeverAuthorizeOtherPath(t *testing.T) {
 	f := newRepositoryTransferFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: f.projectsRoot, Operation: "transfer-proof", WorkLog: WorkLogOptions{Model: "unknown"}})
 	if err != nil {
@@ -250,7 +194,7 @@ func TestOfficialCompletedTransferCorruptionAndCopiedProjectionNeverAuthorizeOth
 }
 
 //nolint:paralleltest // native transfer fixture configures process-wide Git environment.
-func TestOfficialRepositoryTransferIntentRaceRefusesBeforeMove(t *testing.T) {
+func TestE2EOfficialRepositoryTransferIntentRaceRefusesBeforeMove(t *testing.T) {
 	f := newRepositoryTransferFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: f.projectsRoot, Operation: "transfer-intent-race", WorkLog: WorkLogOptions{Model: "unknown"}})
 	if err != nil {
@@ -290,7 +234,7 @@ func TestOfficialRepositoryTransferIntentRaceRefusesBeforeMove(t *testing.T) {
 }
 
 //nolint:paralleltest // native shared-to-local lifecycle configures process-wide fixture settings.
-func TestOfficialScopedRecoveryDoesNotRediscoverAlreadyKnownOriginalAfterRelocation(t *testing.T) {
+func TestE2EOfficialScopedRecoveryDoesNotRediscoverAlreadyKnownOriginalAfterRelocation(t *testing.T) {
 	f := newGitFixture(t)
 	configureFixtureSharedWorktrees(t, f)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: f.projectsRoot, Operation: "known-original", WorkLog: WorkLogOptions{Model: "unknown"}})

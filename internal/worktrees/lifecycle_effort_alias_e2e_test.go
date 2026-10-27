@@ -35,7 +35,7 @@ func TestE2ETaskScopedRegistryAndMissingPathReadersKeepHelperTaskIdentity(t *tes
 	}
 }
 
-func TestTaskScopedRegistryFailsClosedOnUnreadableEffortInventory(t *testing.T) {
+func TestE2ETaskScopedRegistryFailsClosedOnUnreadableEffortInventory(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
 	if err := os.WriteFile(filepath.Join(home, "worklogs"), []byte("not a directory"), 0600); err != nil {

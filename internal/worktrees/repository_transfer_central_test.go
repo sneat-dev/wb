@@ -1,3 +1,5 @@
+//go:build e2e
+
 package worktrees
 
 import (
@@ -8,8 +10,9 @@ import (
 )
 
 //nolint:paralleltest // native fixture uses isolated process-wide Git/WB configuration.
-func TestRepositoryTransferPreservedCentralPathResolvesCompletedIdentity(t *testing.T) {
+func TestE2ERepositoryTransferPreservedCentralPathResolvesCompletedIdentity(t *testing.T) {
 	for _, hosted := range []bool{false, true} {
+		//nolint:paralleltest // subcase shares process-wide Git/WB fixture environment and custody.
 		t.Run(map[bool]string{false: "legacy canonical", true: "literal forge canonical"}[hosted], func(t *testing.T) {
 			f := newRepositoryTransferFixture(t)
 			if hosted {
@@ -91,8 +94,9 @@ func TestRepositoryTransferPreservedCentralPathResolvesCompletedIdentity(t *test
 }
 
 //nolint:paralleltest // native fixture uses isolated process-wide Git/WB configuration.
-func TestRepositoryTransferCentralEvidenceCannotBeReplacedByOriginOrBrokenReceipt(t *testing.T) {
+func TestE2ERepositoryTransferCentralEvidenceCannotBeReplacedByOriginOrBrokenReceipt(t *testing.T) {
 	for _, kind := range []string{"missing receipt", "broken receipt", "wrong origin", "same slug other forge", "foreign push origin"} {
+		//nolint:paralleltest // subcase shares process-wide Git/WB fixture environment and custody.
 		t.Run(kind, func(t *testing.T) {
 			f := newRepositoryTransferFixture(t)
 			mustWriteBranchConfig(t, filepath.Join(filepath.Dir(f.projectsRoot), "config", "wb", "worktrees.yaml"), "version: 1\nworktrees:\n  store: central\n")
@@ -136,7 +140,7 @@ func TestRepositoryTransferCentralEvidenceCannotBeReplacedByOriginOrBrokenReceip
 }
 
 //nolint:paralleltest // adoption fixture has isolated process-wide Git/WB configuration.
-func TestRepositoryTransferProofDoesNotTurnAdoptedExternalPathIntoManagedGeometry(t *testing.T) {
+func TestE2ERepositoryTransferProofDoesNotTurnAdoptedExternalPathIntoManagedGeometry(t *testing.T) {
 	f := newRepositoryTransferFixture(t)
 	path := filepath.Join(filepath.Dir(f.projectsRoot), "external", "adopted-app")
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -166,7 +170,7 @@ func TestRepositoryTransferProofDoesNotTurnAdoptedExternalPathIntoManagedGeometr
 }
 
 //nolint:paralleltest // native fixture uses isolated process-wide Git/WB configuration.
-func TestRepositoryTransferRemoteBindingSurvivesLaterLayoutRelocation(t *testing.T) {
+func TestE2ERepositoryTransferRemoteBindingSurvivesLaterLayoutRelocation(t *testing.T) {
 	f := newRepositoryTransferFixture(t)
 	mustWriteBranchConfig(t, filepath.Join(filepath.Dir(f.projectsRoot), "config", "wb", "worktrees.yaml"), "version: 1\nworktrees:\n  store: central\n")
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: f.projectsRoot, Operation: "transfer-then-layout", WorkLog: WorkLogOptions{Model: "unknown"}})

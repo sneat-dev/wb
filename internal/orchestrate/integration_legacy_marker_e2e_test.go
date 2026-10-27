@@ -11,6 +11,7 @@ import (
 //nolint:paralleltest // Existing complete Land fixture installs process-global GH/PATH and WB_PROJECTS_ROOT; each subcase is isolated sequentially.
 func TestE2ELegacyMarkerLossRefusesBeforeOrdinaryReviewOrArming(t *testing.T) {
 	for _, kind := range []string{"inventory", "durable", "source read failure"} {
+		//nolint:paralleltest // subcases share process-wide Git/WB fixture state.
 		t.Run(kind, func(t *testing.T) {
 			fixture, options := landPromotionFixture(t)
 			body := legacyInventoryPrefix + "malformed -->"

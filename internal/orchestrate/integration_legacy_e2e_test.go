@@ -240,7 +240,7 @@ func TestE2ELegacyAdoptionRejectsCorruptAndUnpublishedReceipt(t *testing.T) {
 	}
 }
 
-func TestLegacyInventoryInputsNeverReplaceStoredBindingSilently(t *testing.T) {
+func TestE2ELegacyInventoryInputsNeverReplaceStoredBindingSilently(t *testing.T) {
 	t.Parallel()
 	r := legacyTestRecord()
 	binding, _ := legacyTestBinding(r)

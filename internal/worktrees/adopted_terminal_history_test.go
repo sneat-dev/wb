@@ -1,3 +1,5 @@
+//go:build e2e
+
 package worktrees
 
 import (
@@ -13,7 +15,7 @@ import (
 )
 
 //nolint:paralleltest // native Git/WB fixture owns process-wide environment.
-func TestAdoptedTerminalHistoryRequiresCompletedNativeCleanupAndPreservesEvidence(t *testing.T) {
+func TestE2EAdoptedTerminalHistoryRequiresCompletedNativeCleanupAndPreservesEvidence(t *testing.T) {
 	fixture := newGitFixture(t)
 	task, path := adoptAndCommit(t, fixture, "feature/adopt-terminal-history", "feature.txt")
 	claim, _, _, err := activeWorkLogClaimReadOnly(fixture.home, path)
@@ -66,6 +68,7 @@ func TestAdoptedTerminalHistoryRequiresCompletedNativeCleanupAndPreservesEvidenc
 		originalEvidence[evidencePath] = raw
 	}
 	for _, kind := range []string{"pass-through", "run-disappears-after-relocation"} {
+		//nolint:paralleltest // subcase shares process-wide Git/WB fixture environment and custody.
 		t.Run(kind, func(t *testing.T) {
 			history := terminalHistoryPorts()
 			realOpenRun := history.OpenRun
@@ -121,6 +124,7 @@ func TestAdoptedTerminalHistoryRequiresCompletedNativeCleanupAndPreservesEvidenc
 		})
 	}
 	for _, kind := range []string{"missing-terminal", "corrupt-terminal", "unfinished-backlog", "missing-outbox", "corrupt-outbox", "missing-backlog", "corrupt-backlog", "wrong-backlog-identity", "corrupt-relocation-journal", "enotdir-checkout-parent", "missing-backlog-directory", "inaccessible-checkout-parent", "ambiguous-canonical-stores"} {
+		//nolint:paralleltest // subcase shares process-wide Git/WB fixture environment and custody.
 		t.Run(kind, func(t *testing.T) {
 			switch kind {
 			case "ambiguous-canonical-stores":
@@ -265,7 +269,7 @@ func TestAdoptedTerminalHistoryRequiresCompletedNativeCleanupAndPreservesEvidenc
 }
 
 //nolint:paralleltest // native fixture owns process-wide Git/WB settings.
-func TestAbsentActiveAdoptedCheckoutCannotBecomeCompletedHistory(t *testing.T) {
+func TestE2EAbsentActiveAdoptedCheckoutCannotBecomeCompletedHistory(t *testing.T) {
 	fixture := newGitFixture(t)
 	task, path := adoptAndCommit(t, fixture, "feature/unsealed-adopted-history", "feature.txt")
 	claim, _, _, err := activeWorkLogClaimReadOnly(fixture.home, path)

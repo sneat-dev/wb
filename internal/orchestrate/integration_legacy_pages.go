@@ -75,10 +75,6 @@ func legacyPageURL(raw, path string) (string, int, error) {
 	}
 	return u.String(), page, nil
 }
-func legacyPageLinks(headers map[string]string, path string, current int) error {
-	announcedLast := 0
-	return legacyPageLinksThrough(headers, path, current, &announcedLast)
-}
 
 // A later response may extend the boundary, but cannot erase or shrink an
 // earlier promise of more inventory. State belongs to this one complete walk.

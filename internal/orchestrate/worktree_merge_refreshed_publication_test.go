@@ -92,7 +92,7 @@ esac
 			case "wrong PR":
 				candidate.PullRequest = "8"
 			case "wrong live head":
-				t.Setenv("WB_TEST_PR_SHA", predecessor)
+				t.Setenv("WB_TEST_PR_SHA", r.TargetSHA)
 			case "lost published ancestor":
 				candidate.PublishedCandidateSHA = strings.Repeat("c", 40)
 			case "lost historical root":
@@ -147,7 +147,7 @@ esac
 		})
 	}
 	current.SHA = strings.TrimSpace(runEngineGit(t, source.WorktreeDir, "rev-parse", "HEAD"))
-	if err := proveRefreshedPublicationRebatch(t.Context(), f.githubDir, r, []WorktreeMergeSource{current}, strings.Repeat("f", 40)); err == nil || !strings.Contains(err.Error(), "lost captured root") {
+	if _, err := proveRefreshedPublicationRebatch(t.Context(), f.githubDir, r, []WorktreeMergeSource{current}, strings.Repeat("f", 40)); err == nil || !strings.Contains(err.Error(), "lost captured root") {
 		t.Fatalf("unrelated immutable claim base accepted: %v", err)
 	}
 	draft, err := validatePreparedWorktreeMergeRebatch(context.Background(), f.githubDir, r.ReceiptPath, r.Repository, r.Target, []WorktreeMergeSource{current}, r.TargetSHA)
@@ -281,9 +281,124 @@ esac
 		candidate.Candidate.SHA = strings.TrimSpace(runEngineGit(t, r.Candidate.Worktree, "rev-parse", "HEAD"))
 		runEngineGit(t, r.Candidate.Worktree, "push", "origin", candidate.Candidate.SHA+":refs/heads/"+r.Candidate.Branch)
 		t.Setenv("WB_TEST_PR_SHA", candidate.Candidate.SHA)
-		if err := proveRefreshedPublicationRebatch(t.Context(), f.githubDir, candidate, []WorktreeMergeSource{current}, r.TargetSHA); err == nil || !strings.Contains(err.Error(), "advanced source lost captured root") {
+		if _, err := proveRefreshedPublicationRebatch(t.Context(), f.githubDir, candidate, []WorktreeMergeSource{current}, r.TargetSHA); err == nil || !strings.Contains(err.Error(), "advanced source lost captured root") {
 			t.Fatalf("lost candidate work accepted: %v", err)
 		}
 	})
 
+}
+
+//nolint:paralleltest // fixture and subcases set process-wide PATH and WB test environment.
+func TestE2ERefreshedPublicationRebatchRecognizesRecordedRepair(t *testing.T) {
+	f := newEngineFixture(t)
+	source := createMergeSource(t, f, "recorded-repair", "feature/recorded-repair", "source.txt", "source\n")
+	opts := WorktreeMergePrepareOptions{ProjectsRoot: f.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test"}
+	r, err := PrepareWorktreeMerge(t.Context(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	published := r.Candidate.SHA
+	runEngineGit(t, r.Candidate.Worktree, "push", "origin", published+":refs/heads/"+r.Candidate.Branch)
+	runEngineGit(t, source.WorktreeDir, "merge", "--no-edit", r.Candidate.Branch)
+	writeEngineFile(t, filepath.Join(source.WorktreeDir, "repair.txt"), "repair\n")
+	runEngineGit(t, source.WorktreeDir, "add", "repair.txt")
+	runEngineGit(t, source.WorktreeDir, "commit", "-m", "fix: forward repair")
+	runEngineGit(t, r.Candidate.Worktree, "merge", "--no-edit", source.Branch)
+	r.Candidate.SHA = strings.TrimSpace(runEngineGit(t, r.Candidate.Worktree, "rev-parse", "HEAD"))
+	r.SourceRefreshes = []WorktreeMergeSourceRefresh{{RecordedAt: r.CreatedAt, Sources: append([]WorktreeMergeSource(nil), r.Sources...)}}
+	r.Sources[0].SHA = strings.TrimSpace(runEngineGit(t, source.WorktreeDir, "rev-parse", "HEAD"))
+	r.Phase, r.Status, r.PullRequest, r.PublishedCandidateSHA = WorktreeMergePhasePrepare, WorktreeMergeConflict, "7", published
+	bin := t.TempDir()
+	script := `#!/bin/sh
+set -eu
+case "$*" in
+ 'api repos/acme/app/pulls/7 --include'|'api repos/acme/app/pulls/7')
+ state=open; if [ -f "$WB_TEST_CLOSED" ]; then state=closed; fi
+ printf '{"number":7,"state":"%s","head":{"ref":"%s","sha":"%s","repo":{"full_name":"acme/app"}},"base":{"ref":"main","repo":{"full_name":"acme/app"}}}\n' "$state" "$WB_TEST_PR_BRANCH" "$WB_TEST_PR_SHA" ;;
+ 'api --method PATCH repos/acme/app/pulls/7 -f state=closed') touch "$WB_TEST_CLOSED"; printf '{}\n' ;;
+ *) echo "unexpected gh: $*" >&2; exit 2 ;;
+esac
+`
+	if err := testenv.WriteExecutableFile(filepath.Join(bin, "gh"), []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("WB_TEST_PR_BRANCH", r.Candidate.Branch)
+	t.Setenv("WB_TEST_PR_SHA", published)
+	closed := filepath.Join(t.TempDir(), "closed")
+	t.Setenv("WB_TEST_CLOSED", closed)
+	unrecorded := r
+	unrecorded.Sources = append([]WorktreeMergeSource(nil), r.SourceRefreshes[0].Sources...)
+	publication, err := proveRefreshedPublicationRebatch(t.Context(), f.githubDir, unrecorded, r.Sources, r.TargetSHA)
+	if err != nil || publication.Candidate.SHA != published {
+		t.Fatalf("unrecorded forward repair lost its exact publication: head=%s err=%v", publication.Candidate.SHA, err)
+	}
+	for _, mode := range []string{"missing history", "unchanged history", "changed history custody", "changed current custody", "unrelated history", "wrong published head", "wrong PR head", "canceled history proof"} {
+		//nolint:paralleltest // subcase sets WB_TEST_PR_SHA in the shared process environment.
+		t.Run(mode, func(t *testing.T) {
+			probe := r
+			probe.SourceRefreshes = append([]WorktreeMergeSourceRefresh(nil), r.SourceRefreshes...)
+			next := append([]WorktreeMergeSource(nil), r.Sources...)
+			ctx := t.Context()
+			switch mode {
+			case "missing history":
+				probe.SourceRefreshes = nil
+			case "unchanged history":
+				probe.SourceRefreshes[0].Sources = append([]WorktreeMergeSource(nil), r.Sources...)
+			case "changed history custody":
+				probe.SourceRefreshes[0].Sources = append([]WorktreeMergeSource(nil), r.SourceRefreshes[0].Sources...)
+				probe.SourceRefreshes[0].Sources[0].Task = "other"
+			case "changed current custody":
+				next[0].Task = "other"
+			case "unrelated history":
+				probe.SourceRefreshes[0].Sources = append([]WorktreeMergeSource(nil), r.SourceRefreshes[0].Sources...)
+				probe.SourceRefreshes[0].Sources[0].SHA = strings.Repeat("d", 40)
+			case "wrong published head":
+				probe.PublishedCandidateSHA = strings.Repeat("e", 40)
+			case "wrong PR head":
+				t.Setenv("WB_TEST_PR_SHA", r.TargetSHA)
+			case "canceled history proof":
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
+			if _, err := proveRefreshedPublicationRebatch(ctx, f.githubDir, probe, next, r.TargetSHA); err == nil {
+				t.Fatal("accepted unproved recorded repair")
+			}
+		})
+	}
+	if err := persistWorktreeMergeReceipt(r); err != nil {
+		t.Fatal(err)
+	}
+	original, err := os.ReadFile(r.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts.RebatchReceipt, opts.RebatchPublishedTargetSHA, opts.RebatchAuditOnly = r.ReceiptPath, r.TargetSHA, true
+	audit, err := PrepareWorktreeMerge(t.Context(), opts)
+	if err != nil || audit.Status != "rebatch_audited" {
+		t.Fatalf("recorded repair audit: status=%s err=%v", audit.Status, err)
+	}
+	if _, err := os.Stat(closed); !os.IsNotExist(err) {
+		t.Fatalf("audit closed publication: %v", err)
+	}
+	opts.RebatchAuditOnly = false
+	replacement, err := PrepareWorktreeMerge(t.Context(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replacement.RebatchOf != r.ReceiptPath || !sameWorktreeMergeSources(replacement.Sources, r.Sources) {
+		t.Fatalf("replacement lost recorded repair: %+v", replacement)
+	}
+	after, err := os.ReadFile(r.ReceiptPath)
+	if err != nil || !bytes.Equal(original, after) {
+		t.Fatalf("original receipt changed: %v", err)
+	}
+	if _, err := os.Stat(closed); err != nil {
+		t.Fatalf("original publication was not retired: %v", err)
+	}
+	if _, err := readPreparedWorktreeMergeRebatch(rebatchPath(r.ReceiptPath), r); err != nil {
+		t.Fatalf("recorded repair acknowledgement: %v", err)
+	}
 }
