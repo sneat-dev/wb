@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -53,9 +54,94 @@ func TestAdoptedTerminalHistoryRequiresCompletedNativeCleanupAndPreservesEvidenc
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, kind := range []string{"missing-terminal", "corrupt-terminal", "unfinished-backlog"} {
+	for _, kind := range []string{"missing-terminal", "corrupt-terminal", "unfinished-backlog", "missing-outbox", "corrupt-outbox", "missing-backlog", "corrupt-backlog", "wrong-backlog-identity", "corrupt-relocation-journal", "enotdir-checkout-parent", "missing-backlog-directory", "inaccessible-checkout-parent", "ambiguous-canonical-stores"} {
 		t.Run(kind, func(t *testing.T) {
 			switch kind {
+			case "ambiguous-canonical-stores":
+				// Two genuine native clones make the unqualified coordinate
+				// ambiguous at the owning repository-path boundary.
+				for _, host := range []string{"github.com", "gitlab.example.com"} {
+					clone := filepath.Join(fixture.projectsRoot, host, "acme", "app")
+					if err := os.MkdirAll(filepath.Dir(clone), 0700); err != nil {
+						t.Fatal(err)
+					}
+					gitTest(t, fixture.projectsRoot, "clone", fixture.remote, clone)
+					t.Cleanup(func() {
+						if err := os.RemoveAll(filepath.Join(fixture.projectsRoot, host)); err != nil {
+							t.Error(err)
+						}
+					})
+				}
+
+			case "missing-outbox", "corrupt-outbox":
+				out := filepath.Join(fixture.home, "worklogs", claim.EffortID, "outbox", claim.RunID+"-"+claim.ClaimID+"-sealed.json")
+				raw, e := os.ReadFile(out)
+				if e != nil {
+					t.Fatal(e)
+				}
+				t.Cleanup(func() { _ = os.WriteFile(out, raw, 0600) })
+				if kind == "missing-outbox" {
+					e = os.Remove(out)
+				} else {
+					e = os.WriteFile(out, []byte("{"), 0600)
+				}
+				if e != nil {
+					t.Fatal(e)
+				}
+			case "missing-backlog-directory":
+				d := filepath.Dir(backlogPath)
+				saved := d + ".review-saved"
+				if e := os.Rename(d, saved); e != nil {
+					t.Fatal(e)
+				}
+				t.Cleanup(func() { _ = os.Rename(saved, d) })
+			case "inaccessible-checkout-parent":
+				parent := filepath.Dir(path)
+				if e := os.Chmod(parent, 0000); e != nil {
+					t.Fatal(e)
+				}
+				t.Cleanup(func() { _ = os.Chmod(parent, 0700) })
+			case "missing-backlog":
+				if e := os.Remove(backlogPath); e != nil {
+					t.Fatal(e)
+				}
+			case "corrupt-backlog":
+				if e := os.WriteFile(backlogPath, []byte("{"), 0600); e != nil {
+					t.Fatal(e)
+				}
+			case "wrong-backlog-identity":
+				var b lifecycleBacklogRecord
+				if e := json.Unmarshal(backlogBytes, &b); e != nil {
+					t.Fatal(e)
+				}
+				b.HeadSHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+				raw, e := json.Marshal(b)
+				if e != nil {
+					t.Fatal(e)
+				}
+				if e = os.WriteFile(backlogPath, raw, 0600); e != nil {
+					t.Fatal(e)
+				}
+			case "corrupt-relocation-journal":
+				journal := filepath.Join(fixture.home, "worklogs", claim.EffortID, "runs", claim.RunID, "relocations")
+				if e := os.MkdirAll(journal, 0700); e != nil {
+					t.Fatal(e)
+				}
+				bad := filepath.Join(journal, claim.ClaimID+"-review-corrupt.intent.json")
+				if e := os.WriteFile(bad, []byte("{"), 0600); e != nil {
+					t.Fatal(e)
+				}
+				t.Cleanup(func() { _ = os.Remove(bad) })
+			case "enotdir-checkout-parent":
+				parent := filepath.Dir(path)
+				saved := parent + ".review-saved"
+				if e := os.Rename(parent, saved); e != nil {
+					t.Fatal(e)
+				}
+				if e := os.WriteFile(parent, []byte("obstruction"), 0600); e != nil {
+					t.Fatal(e)
+				}
+				t.Cleanup(func() { _ = os.Remove(parent); _ = os.Rename(saved, parent) })
 			case "missing-terminal":
 				if err := os.Remove(terminalPath); err != nil {
 					t.Fatal(err)
@@ -79,21 +165,33 @@ func TestAdoptedTerminalHistoryRequiresCompletedNativeCleanupAndPreservesEvidenc
 				}
 			}
 			completed, proofErr := completedAdoptedHistory(fixture.home, fixture.projectsRoot, claim)
-			listed, listErr := ListWithDiagnostics(context.Background(), ListOptions{ProjectsRoot: fixture.projectsRoot, Task: task})
+			var listed ListOutcome
+			var listErr error
+			if kind == "ambiguous-canonical-stores" {
+				results, diagnostics := listTaskScopedClaimedRegistryWorktrees(context.Background(), fixture.projectsRoot, fixture.home, nil, map[string]bool{task: true}, "main", "", "", false, 1, nil, inspectPolicy{})
+				listed.Results, listed.Diagnostics = results, diagnostics
+				if proofErr == nil || !strings.Contains(proofErr.Error(), "more than one host") {
+					t.Fatalf("canonical ambiguity lost exact refusal: %v", proofErr)
+				}
+			} else {
+				listed, listErr = ListWithDiagnostics(context.Background(), ListOptions{ProjectsRoot: fixture.projectsRoot, Task: task})
+			}
 			if completed || proofErr == nil || listErr != nil || len(listed.Results) != 0 || len(listed.Diagnostics) != 1 || listed.Diagnostics[0].DiscoveryScope != "selected-proof" || listed.Diagnostics[0].Task != task {
 				t.Fatalf("invalid terminal acquired authority: %t %v %+v %v", completed, proofErr, listed, listErr)
 			}
 			if err := os.WriteFile(terminalPath, terminalBytes, 0600); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(backlogPath, backlogBytes, 0600); err != nil {
-				t.Fatal(err)
+			if kind != "missing-backlog-directory" {
+				if err := os.WriteFile(backlogPath, backlogBytes, 0600); err != nil {
+					t.Fatal(err)
+				}
 			}
 			after, err := os.ReadFile(claimPath)
 			if err != nil || !bytes.Equal(before, after) {
 				t.Fatalf("immutable claim changed: %v", err)
 			}
-			if _, err := os.Stat(path); !os.IsNotExist(err) {
+			if _, err := os.Stat(path); kind != "enotdir-checkout-parent" && kind != "inaccessible-checkout-parent" && !os.IsNotExist(err) {
 				t.Fatalf("history recreated checkout: %v", err)
 			}
 		})
