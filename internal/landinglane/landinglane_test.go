@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -243,6 +244,234 @@ func TestAcquireTakesOverDeadOwnerRegardlessOfHeartbeatFreshness(t *testing.T) {
 	}
 	if !record.TakenOver || record.Owner.WBSessionID != "wbs-b" {
 		t.Fatalf("expected an automatic takeover, got %+v", record)
+	}
+}
+
+func TestAcquireTakesOverDeadOperationWhenHeartbeatIsStale(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	if _, err := Acquire(home, AcquireRequest{
+		Repository:      "sneat-dev/wb",
+		Target:          "main",
+		Self:            Owner{WBSessionID: "wbs-a", PID: 111, OperationPID: 55555, Command: "wb worktree merge land"},
+		IsOwnerLive:     func(Owner) bool { return true },
+		IsOperationLive: func(int) bool { return false },
+		Now:             fixedNow(time.Unix(1000, 0)),
+	}); err != nil {
+		t.Fatalf("first Acquire: %v", err)
+	}
+
+	// Session harness is still alive, but operation PID 55555 has terminated and
+	// 6 minutes have passed (exceeding DefaultDeadOperationStaleAfter of 5m).
+	record, err := Acquire(home, AcquireRequest{
+		Repository:      "sneat-dev/wb",
+		Target:          "main",
+		Self:            Owner{WBSessionID: "wbs-b", PID: 222, OperationPID: 66666},
+		IsOwnerLive:     func(Owner) bool { return true },
+		IsOperationLive: func(int) bool { return false },
+		Now:             fixedNow(time.Unix(1000, 0).Add(6 * time.Minute)),
+	})
+	if err != nil {
+		t.Fatalf("takeover of dead operation: %v", err)
+	}
+	if !record.TakenOver || record.Owner.WBSessionID != "wbs-b" {
+		t.Fatalf("expected automatic takeover of dead operation, got %+v", record)
+	}
+	if !strings.Contains(record.TakeoverNote, "prior owner's landing operation (PID 55555) exited and heartbeat is stale") {
+		t.Fatalf("expected note about dead operation, got %q", record.TakeoverNote)
+	}
+}
+
+func TestAcquireRefusesDeadOperationWithinGracePeriod(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	if _, err := Acquire(home, AcquireRequest{
+		Repository:      "sneat-dev/wb",
+		Target:          "main",
+		Self:            Owner{WBSessionID: "wbs-a", PID: 111, OperationPID: 55555, Command: "wb worktree merge land"},
+		IsOwnerLive:     func(Owner) bool { return true },
+		IsOperationLive: func(int) bool { return false },
+		Now:             fixedNow(time.Unix(1000, 0)),
+	}); err != nil {
+		t.Fatalf("first Acquire: %v", err)
+	}
+
+	// Only 2 minutes elapsed; still within 5 minute dead-operation grace period.
+	_, err := Acquire(home, AcquireRequest{
+		Repository:      "sneat-dev/wb",
+		Target:          "main",
+		Self:            Owner{WBSessionID: "wbs-b", PID: 222},
+		IsOwnerLive:     func(Owner) bool { return true },
+		IsOperationLive: func(int) bool { return false },
+		Now:             fixedNow(time.Unix(1000, 0).Add(2 * time.Minute)),
+	})
+	var conflict *ConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("expected ConflictError, got %v", err)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "prior command wb worktree merge land (operation PID 55555 exited)") {
+		t.Fatalf("expected refusal to mention exited operation PID, got %q", msg)
+	}
+}
+
+func TestAcquireRefusesRunningOperationEvenIfHeartbeatStale(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	if _, err := Acquire(home, AcquireRequest{
+		Repository:      "sneat-dev/wb",
+		Target:          "main",
+		Self:            Owner{WBSessionID: "wbs-a", PID: 111, OperationPID: 55555, Command: "wb pr land"},
+		IsOwnerLive:     func(Owner) bool { return true },
+		IsOperationLive: func(pid int) bool { return pid == 55555 },
+		Now:             fixedNow(time.Unix(1000, 0)),
+	}); err != nil {
+		t.Fatalf("first Acquire: %v", err)
+	}
+
+	// 40 minutes elapsed, but operation 55555 is still running.
+	_, err := Acquire(home, AcquireRequest{
+		Repository:      "sneat-dev/wb",
+		Target:          "main",
+		Self:            Owner{WBSessionID: "wbs-b", PID: 222},
+		IsOwnerLive:     func(Owner) bool { return true },
+		IsOperationLive: func(pid int) bool { return pid == 55555 },
+		Now:             fixedNow(time.Unix(1000, 0).Add(40 * time.Minute)),
+	})
+	var conflict *ConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("expected ConflictError, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "running wb pr land") {
+		t.Fatalf("expected refusal to report running command, got %q", err.Error())
+	}
+}
+
+func TestAcquireCustomDeadOperationStaleAfter(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	if _, err := Acquire(home, AcquireRequest{
+		Repository:      "sneat-dev/wb",
+		Target:          "main",
+		Self:            Owner{WBSessionID: "wbs-a", PID: 111, OperationPID: 55555},
+		IsOwnerLive:     func(Owner) bool { return true },
+		IsOperationLive: func(int) bool { return false },
+		Now:             fixedNow(time.Unix(1000, 0)),
+	}); err != nil {
+		t.Fatalf("first Acquire: %v", err)
+	}
+
+	// Custom DeadOperationStaleAfter of 2 minutes. At 2m30s, takeover succeeds.
+	record, err := Acquire(home, AcquireRequest{
+		Repository:              "sneat-dev/wb",
+		Target:                  "main",
+		Self:                    Owner{WBSessionID: "wbs-b", PID: 222},
+		IsOwnerLive:             func(Owner) bool { return true },
+		IsOperationLive:         func(int) bool { return false },
+		DeadOperationStaleAfter: 2 * time.Minute,
+		Now:                     fixedNow(time.Unix(1000, 0).Add(150 * time.Second)),
+	})
+	if err != nil {
+		t.Fatalf("takeover with custom dead op timeout: %v", err)
+	}
+	if !record.TakenOver {
+		t.Fatalf("expected takeover, got %+v", record)
+	}
+
+	// Also test StaleAfter < DefaultDeadOperationStaleAfter fallback:
+	home2 := t.TempDir()
+	if _, err := Acquire(home2, AcquireRequest{
+		Repository:      "sneat-dev/wb",
+		Target:          "main",
+		Self:            Owner{WBSessionID: "wbs-a", PID: 111, OperationPID: 55555},
+		IsOwnerLive:     func(Owner) bool { return true },
+		IsOperationLive: func(int) bool { return false },
+		Now:             fixedNow(time.Unix(1000, 0)),
+	}); err != nil {
+		t.Fatalf("first Acquire home2: %v", err)
+	}
+
+	record2, err := Acquire(home2, AcquireRequest{
+		Repository:      "sneat-dev/wb",
+		Target:          "main",
+		Self:            Owner{WBSessionID: "wbs-b", PID: 222},
+		IsOwnerLive:     func(Owner) bool { return true },
+		IsOperationLive: func(int) bool { return false },
+		StaleAfter:      1 * time.Minute, // less than DefaultDeadOperationStaleAfter
+		Now:             fixedNow(time.Unix(1000, 0).Add(70 * time.Second)),
+	})
+	if err != nil {
+		t.Fatalf("takeover with smaller StaleAfter: %v", err)
+	}
+	if !record2.TakenOver {
+		t.Fatalf("expected takeover, got %+v", record2)
+	}
+}
+
+func TestAcquireExplicitTakeoverOverridesDeadOperationDuringGracePeriod(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	if _, err := Acquire(home, AcquireRequest{
+		Repository:      "sneat-dev/wb",
+		Target:          "main",
+		Self:            Owner{WBSessionID: "wbs-a", PID: 111, OperationPID: 55555},
+		IsOwnerLive:     func(Owner) bool { return true },
+		IsOperationLive: func(int) bool { return false },
+		Now:             fixedNow(time.Unix(1000, 0)),
+	}); err != nil {
+		t.Fatalf("first Acquire: %v", err)
+	}
+
+	record, err := Acquire(home, AcquireRequest{
+		Repository:      "sneat-dev/wb",
+		Target:          "main",
+		Self:            Owner{WBSessionID: "wbs-b", PID: 222},
+		IsOwnerLive:     func(Owner) bool { return true },
+		IsOperationLive: func(int) bool { return false },
+		TakeOver:        true,
+		TakeoverReason:  "taking over dead operation within grace period",
+		Now:             fixedNow(time.Unix(1000, 0).Add(1 * time.Minute)),
+	})
+	if err != nil {
+		t.Fatalf("explicit takeover failed: %v", err)
+	}
+	if !record.TakenOver || record.TakeoverReason != "taking over dead operation within grace period" {
+		t.Fatalf("explicit takeover not recorded: %+v", record)
+	}
+}
+
+func TestConflictErrorFormattingWithNilIsOperationLive(t *testing.T) {
+	t.Parallel()
+	recordDead := Record{
+		Lane:       "lane-acme-app-main-1234",
+		Repository: "acme/app",
+		Target:     "main",
+		Owner: Owner{
+			WBSessionID:  "wbs-dead",
+			PID:          1000,
+			OperationPID: 999999999, // non-existent PID
+			Command:      "wb worktree merge land",
+		},
+	}
+	msgDead := (&ConflictError{Record: recordDead}).Error()
+	if !strings.Contains(msgDead, "operation PID 999999999 exited") {
+		t.Errorf("expected dead operation in ConflictError, got %q", msgDead)
+	}
+
+	recordLive := Record{
+		Lane:       "lane-acme-app-main-1234",
+		Repository: "acme/app",
+		Target:     "main",
+		Owner: Owner{
+			WBSessionID:  "wbs-live",
+			PID:          1000,
+			OperationPID: os.Getpid(), // alive process
+			Command:      "wb worktree merge land",
+		},
+	}
+	msgLive := (&ConflictError{Record: recordLive}).Error()
+	if !strings.Contains(msgLive, "running wb worktree merge land") {
+		t.Errorf("expected running command in ConflictError, got %q", msgLive)
 	}
 }
 

@@ -64,11 +64,18 @@ can rebase onto that SHA while Phase 2 waits for GitHub.
 
 ## Recovery
 
+A merge is terminal only when WB exits code 0 with a terminal receipt (`status: complete` or
+`status: landed`). Never jump forward based on GitHub PR `MERGED` state while WB is still
+pending (`checks_pending`). Resume pending slices immediately with `wb worktree merge resume <receipt>`.
+
 If an interrupted landing command has exited but its session still holds the
 landing lane, run `wb lane release owner/repository --target main`. This only
 releases your idle lane claim; preserve the receipt and source worktree for a
 later resume. See [release lifecycle](lifecycle.md#release-an-idle-landing-lane)
-for active-operation and legacy-process refusals.
+for active-operation and legacy-process refusals. Terminated operations idle for
+longer than 5 minutes (`DefaultDeadOperationStaleAfter`) are automatically taken
+over on subsequent landing commands. If an incoming agent is blocked by a terminated
+operation, override immediately with `--take-over-lane --lane-reason "<reason>"`.
 
 ```sh
 wb worktree merge resume <candidate-worktree-or-receipt> --progress --format json
