@@ -194,3 +194,86 @@ func TestLegacyCommentsNeverClaimsCompleteInventoryForAmbiguousLinkRepresentatio
 		})
 	}
 }
+
+func TestLegacyCommentsRetainsAnnouncedLastPageAcrossCompleteWalk(t *testing.T) {
+	t.Parallel()
+	record := legacyTestRecord()
+	binding, body := legacyTestBinding(record)
+	sha := record.CandidateSHA
+	page := func(n int) string {
+		return fmt.Sprintf("https://api.github.com/repos/acme/app/commits/%s/comments?page=%d&per_page=100", sha, n)
+	}
+	link := func(next, last int) map[string]string {
+		return map[string]string{"Link": "<" + page(next) + ">; rel=\"next\", <" + page(last) + ">; rel=\"last\""}
+	}
+	for _, kind := range []string{"missing-next", "shrunk-last", "stable-three", "growing-four", "growing-without-last", "empty-terminal-two", "record-on-third"} {
+		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
+			calls := 0
+			ctx := githubobserver.WithReader(t.Context(), githubobserver.Reader{Get: func(_ context.Context, request githubobserver.GetRequest) (githubobserver.Response, error) {
+				calls++
+				if request.Endpoint != page(calls) || request.Repository != "acme/app" {
+					t.Fatalf("unexpected transport: %+v", request)
+				}
+				response := githubobserver.Response{Body: []byte("[]")}
+				switch calls {
+				case 1:
+					last := 3
+					if kind == "empty-terminal-two" {
+						last = 2
+					}
+					response.Headers = link(2, last)
+				case 2:
+					switch kind {
+					case "missing-next", "empty-terminal-two":
+					case "shrunk-last":
+						response.Headers = map[string]string{"Link": "<" + page(2) + ">; rel=\"last\""}
+					case "growing-four":
+						response.Headers = link(3, 4)
+					default:
+						response.Headers = link(3, 3)
+					}
+				case 3:
+					switch kind {
+					case "growing-four":
+						response.Headers = link(4, 4)
+					case "growing-without-last":
+						response.Headers = map[string]string{"Link": "<" + page(4) + ">; rel=\"next\""}
+					case "record-on-third":
+						response.Body = []byte(legacyJSON([]map[string]string{{"html_url": binding.URL, "commit_id": sha, "body": body}}))
+					}
+				}
+				return response, nil
+			}})
+			got, err := (githubIntegration{}).LegacyComments(ctx, "acme/app", sha)
+			switch kind {
+			case "missing-next", "shrunk-last":
+				want := "ended before its announced last page"
+				if kind == "shrunk-last" {
+					want = "last page shrank"
+				}
+				if err == nil || !strings.Contains(err.Error(), want) || got != nil || calls != 2 {
+					t.Fatalf("premature inventory accepted: calls=%d got=%v err=%v", calls, got, err)
+				}
+			default:
+				expectedCalls := 3
+				if strings.HasPrefix(kind, "growing") {
+					expectedCalls = 4
+				}
+				if kind == "empty-terminal-two" {
+					expectedCalls = 2
+				}
+				if err != nil || calls != expectedCalls {
+					t.Fatalf("complete inventory rejected: calls=%d got=%v err=%v", calls, got, err)
+				}
+				if kind == "record-on-third" {
+					if len(got) != 1 || got[0] != binding {
+						t.Fatalf("third-page provenance lost: %+v", got)
+					}
+				} else if len(got) != 0 {
+					t.Fatalf("empty complete inventory fabricated records: %+v", got)
+				}
+			}
+		})
+	}
+}

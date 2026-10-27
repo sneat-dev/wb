@@ -21,6 +21,7 @@ func legacyCommentPages(ctx context.Context, repository, candidate string) ([]gi
 func legacyCommentPageReader(ctx context.Context, repository, path string) githubobserver.Reader {
 	prior := ctx
 	nextPage := 1
+	announcedLast := 0
 	return githubobserver.Reader{Get: func(call context.Context, r githubobserver.GetRequest) (githubobserver.Response, error) {
 		if e := call.Err(); e != nil {
 			return githubobserver.Response{}, e
@@ -40,7 +41,7 @@ func legacyCommentPageReader(ctx context.Context, repository, path string) githu
 		if e = call.Err(); e != nil {
 			return githubobserver.Response{}, e
 		}
-		if e = legacyPageLinks(response.Headers, path, page); e != nil {
+		if e = legacyPageLinksThrough(response.Headers, path, page, &announcedLast); e != nil {
 			return githubobserver.Response{}, e
 		}
 		nextPage++
@@ -75,6 +76,13 @@ func legacyPageURL(raw, path string) (string, int, error) {
 	return u.String(), page, nil
 }
 func legacyPageLinks(headers map[string]string, path string, current int) error {
+	announcedLast := 0
+	return legacyPageLinksThrough(headers, path, current, &announcedLast)
+}
+
+// A later response may extend the boundary, but cannot erase or shrink an
+// earlier promise of more inventory. State belongs to this one complete walk.
+func legacyPageLinksThrough(headers map[string]string, path string, current int, announcedLast *int) error {
 	next, last := 0, 0
 	linkSeen := false
 	for name, value := range headers {
@@ -137,6 +145,15 @@ func legacyPageLinks(headers map[string]string, path string, current int) error 
 	}
 	if next != 0 && next != current+1 || last > current && next == 0 || last != 0 && (next > last || last < current) {
 		return fmt.Errorf("incomplete legacy comment pagination sequence")
+	}
+	if last != 0 && last < *announcedLast {
+		return fmt.Errorf("legacy comment last page shrank during complete inventory")
+	}
+	if last > *announcedLast {
+		*announcedLast = last
+	}
+	if next == 0 && current < *announcedLast {
+		return fmt.Errorf("legacy comment inventory ended before its announced last page")
 	}
 	return nil
 }
