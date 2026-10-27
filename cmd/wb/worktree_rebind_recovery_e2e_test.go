@@ -229,10 +229,23 @@ func TestE2ECollaborationRebindRecoversReusedGitRegistrationWithInactiveOwner(t 
 	if _, err := service.Join(context.Background(), currentRoot); err != nil {
 		t.Fatalf("join after recovery: %v", err)
 	}
-	if view, err := service.Inspect(context.Background(), currentRoot); err != nil || view.Owner != live.WBSessionID || len(view.Joined) != 2 {
+	view, err := service.Inspect(context.Background(), currentRoot)
+	if err != nil || view.Owner != live.WBSessionID || len(view.Joined) != 2 {
 		t.Fatalf("inspect after recovery = %+v, %v", view, err)
-	} else if view.Joined[0].SessionID != retiredOwner.WBSessionID || view.Joined[0].Live {
+	}
+	// Inspect orders members by session ID, which is unrelated to the history
+	// the recovery preserved. Identify both exact identities and their
+	// corroborated liveness instead of assuming the retired owner sorts first;
+	// the exact count above still rejects a duplicated or missing member.
+	members := make(map[string]bool, len(view.Joined))
+	for _, member := range view.Joined {
+		members[member.SessionID] = member.Live
+	}
+	if retiredLive, found := members[retiredOwner.WBSessionID]; !found || retiredLive {
 		t.Fatalf("recovery did not retain the inactive member history: %+v", view.Joined)
+	}
+	if callerLive, found := members[live.WBSessionID]; !found || !callerLive {
+		t.Fatalf("recovery did not retain the live member: %+v", view.Joined)
 	}
 
 	// A repeated request returns a clear conflict and never advances the epoch.
