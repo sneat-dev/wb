@@ -1845,6 +1845,16 @@ func listTaskScopedClaimedRegistryWorktrees(
 					diagnostics = append(diagnostics, d)
 					continue
 				}
+				completed, historyErr := completedAdoptedHistory(home, projectsRoot, claim)
+				if historyErr != nil {
+					d := listDiagnostic("", claim.Task, claim.Worktree, fmt.Sprintf("corroborate selected adopted terminal history: %v", historyErr))
+					d.DiscoveryScope = "selected-proof"
+					diagnostics = append(diagnostics, d)
+					continue
+				}
+				if completed {
+					continue
+				}
 				layout, err := claimedSharedWorktreeLayoutFromClaim(home, claim.Worktree, claim)
 				if err != nil {
 					// Canonical-local discovery owns this legitimate shape and
