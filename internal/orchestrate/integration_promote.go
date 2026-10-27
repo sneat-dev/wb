@@ -45,10 +45,12 @@ type integrationCommit struct {
 
 // provenance is the verdict on one first-parent walk.
 type provenance struct {
-	Lanes      []LaneMerge
-	Unrecorded []string
-	Fixes      []string
-	Merges     []integrationCommit
+	Legacy         []LegacyProvenance
+	LegacyBindings []LegacyBinding
+	Lanes          []LaneMerge
+	Unrecorded     []string
+	Fixes          []string
+	Merges         []integrationCommit
 	// MergedBy are the sessions that made the recorded lane merges; none of
 	// them may review the promotion.
 	MergedBy []string
@@ -119,8 +121,9 @@ type PromoteOptions struct {
 	// Overlap adds each lane's own diff of every file more than one lane
 	// changed: the cheap place to look for a semantic conflict that produced
 	// no textual one.
-	Overlap bool
-	GitHub  PromoteGitHub
+	Overlap       bool
+	LegacyRecords []string
+	GitHub        PromoteGitHub
 
 	verb     string
 	run      runner.Runner
@@ -140,20 +143,22 @@ type PromoteGitHub interface {
 // PromoteResult is the envelope `wb pr batch delta` and `wb integration
 // promote` return.
 type PromoteResult struct {
-	SchemaVersion int          `json:"v"`
-	Verb          string       `json:"verb"`
-	Outcome       LandOutcome  `json:"outcome"`
-	RefusalCode   string       `json:"refusal_code,omitempty"`
-	Reason        string       `json:"reason,omitempty"`
-	Command       string       `json:"sanctioned_command,omitempty"`
-	Integration   string       `json:"integration"`
-	To            string       `json:"to"`
-	Head          string       `json:"head,omitempty"`
-	Lanes         []LaneMerge  `json:"lanes,omitempty"`
-	Unrecorded    []string     `json:"unrecorded,omitempty"`
-	Delta         []BatchDelta `json:"delta,omitempty"`
-	PullRequest   string       `json:"pull_request,omitempty"`
-	Changed       bool         `json:"changed"`
+	SchemaVersion         int                `json:"v"`
+	Verb                  string             `json:"verb"`
+	Outcome               LandOutcome        `json:"outcome"`
+	RefusalCode           string             `json:"refusal_code,omitempty"`
+	Reason                string             `json:"reason,omitempty"`
+	Command               string             `json:"sanctioned_command,omitempty"`
+	Integration           string             `json:"integration"`
+	To                    string             `json:"to"`
+	Head                  string             `json:"head,omitempty"`
+	Lanes                 []LaneMerge        `json:"lanes,omitempty"`
+	Legacy                []LegacyProvenance `json:"legacy,omitempty"`
+	LegacyInventoryDigest string             `json:"legacy_inventory_digest,omitempty"`
+	Unrecorded            []string           `json:"unrecorded,omitempty"`
+	Delta                 []BatchDelta       `json:"delta,omitempty"`
+	PullRequest           string             `json:"pull_request,omitempty"`
+	Changed               bool               `json:"changed"`
 }
 
 // ExitCode maps the outcome onto WB's exit contract.
@@ -178,6 +183,9 @@ func PromoteText(result PromoteResult) string {
 	}
 	if result.Head != "" {
 		fmt.Fprintf(&text, "head: %s (a review of this delta ends Reviewed-Head: %s)\n", result.Head, result.Head)
+	}
+	if result.LegacyInventoryDigest != "" {
+		fmt.Fprintf(&text, "Legacy provenance inventory (not review): %s\n", result.LegacyInventoryDigest)
 	}
 	for _, lane := range result.Lanes {
 		fmt.Fprintf(&text, "  lane %s@%s reviewed by %s\n", lane.Branch, shortMergeRevision(lane.SHA), lane.Reviewer)
@@ -287,10 +295,26 @@ func DeltaBatch(ctx context.Context, options PromoteOptions) (PromoteResult, err
 	if err != nil {
 		return result, err
 	}
+	bindings, err := legacyRecordBindings(ctx, options)
+	if err != nil {
+		return result, err
+	}
+	if err = verifyLegacyProvenance(ctx, options.resolveGitHub(), options.Repository, options.Integration, options.To, walk, &verdict, bindings); err != nil {
+		return result, err
+	}
 	result.Lanes, result.Unrecorded = verdict.Lanes, verdict.Unrecorded
+	result.Legacy = verdict.Legacy
+	if len(verdict.LegacyBindings) > 0 {
+		result.LegacyInventoryDigest = legacyInventoryDigest(verdict.LegacyBindings)
+	}
 	unrecorded := map[string]bool{}
 	for _, commit := range verdict.Unrecorded {
 		unrecorded[commit] = true
+	}
+	for _, record := range verdict.Legacy {
+		for _, merge := range record.Merges {
+			unrecorded[merge.SHA] = true
+		}
 	}
 	for _, merge := range verdict.Merges {
 		part, err := mergeDelta(ctx, git, merge, unrecorded[merge.SHA])
@@ -419,6 +443,10 @@ func promoteBody(options PromoteOptions, verdict provenance) string {
 	var body strings.Builder
 	body.WriteString(promoteMarker + "\n")
 	fmt.Fprintf(&body, "Promotes `%s` into `%s`. Every lane below was reviewed at its exact commit and merged with its own merge commit.\n\n", options.Integration, options.To)
+	if len(verdict.LegacyBindings) > 0 {
+		body.WriteString(legacyInventoryPrefix + legacyJSON(verdict.LegacyBindings) + " -->\n")
+		fmt.Fprintf(&body, "Legacy provenance is not historical review approval. All legacy merge diffs remain visible. Independent current-head review must also end `Reviewed-Legacy-Provenance: %s`.\n\n", legacyInventoryDigest(verdict.LegacyBindings))
+	}
 	body.WriteString("| Lane | Commit | Review | Reviewer |\n|---|---|---|---|\n")
 	for _, lane := range verdict.Lanes {
 		fmt.Fprintf(&body, "| `%s` | `%s` | %s | %s |\n", lane.Branch, lane.SHA, lane.Review, lane.Reviewer)
@@ -448,7 +476,18 @@ func PromoteIntegration(ctx context.Context, options PromoteOptions) (PromoteRes
 	if err != nil {
 		return result, err
 	}
+	bindings, err := legacyRecordBindings(ctx, options)
+	if err != nil {
+		return result, err
+	}
+	if err = verifyLegacyProvenance(ctx, options.resolveGitHub(), options.Repository, options.Integration, options.To, walk, &verdict, bindings); err != nil {
+		return result, err
+	}
 	result.Lanes = verdict.Lanes
+	result.Legacy = verdict.Legacy
+	if len(verdict.LegacyBindings) > 0 {
+		result.LegacyInventoryDigest = legacyInventoryDigest(verdict.LegacyBindings)
+	}
 	if len(verdict.Unrecorded) > 0 {
 		result.Unrecorded = verdict.Unrecorded
 		return result.refuse(BatchRefusalUnrecordedMerge,

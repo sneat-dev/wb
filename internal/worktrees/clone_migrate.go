@@ -355,19 +355,18 @@ func RecordCloneMoveRelocationIntents(projectsRoot string, moves []CloneMoveWork
 		if filepath.Clean(move.Source) == filepath.Clean(move.Destination) {
 			continue
 		}
-		for _, layout := range resolution.Read {
-			home := filepath.Clean(layout.Home)
-			claim, _, claimErr := claimForRelocation(home, move.Source)
-			if claimErr != nil {
-				continue
-			}
-			intent, _, intentErr := appendRelocationIntent(home, claim, move.Source, move.Destination, "local", move.Head, relocationPlacementRecord{}, now)
-			if intentErr != nil {
-				return entries, fmt.Errorf("record clone-move relocation intent for %s: %w", move.Source, intentErr)
-			}
-			entries = append(entries, cloneMoveRelocationEntry{home: home, claim: claim, intent: intent, destination: move.Destination})
-			break
+		claim, _, home, claimErr := claimForRelocationAcrossHomes(resolution, move.Source)
+		if errors.Is(claimErr, errRelocationClaimAbsent) {
+			continue
 		}
+		if claimErr != nil {
+			return entries, fmt.Errorf("corroborate clone-move claim for %s: %w", move.Source, claimErr)
+		}
+		intent, _, intentErr := appendRelocationIntent(home, claim, move.Source, move.Destination, "local", move.Head, relocationPlacementRecord{}, now)
+		if intentErr != nil {
+			return entries, fmt.Errorf("record clone-move relocation intent for %s: %w", move.Source, intentErr)
+		}
+		entries = append(entries, cloneMoveRelocationEntry{home: home, claim: claim, intent: intent, destination: move.Destination})
 	}
 	return entries, nil
 }

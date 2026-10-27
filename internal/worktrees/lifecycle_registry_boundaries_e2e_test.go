@@ -246,8 +246,15 @@ func TestE2ELifecycleRegistryClaimAndMissingCheckoutBoundaries(t *testing.T) {
 	if err := os.WriteFile(badTaskRuns, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if results, diagnostics := inspect(map[string]bool{}, map[string]bool{"bad-task": true}, ""); len(results) != 0 || len(diagnostics) != 1 || !strings.Contains(diagnostics[0].Message, "read task Work Log runs") {
+	results, diagnostics = inspect(map[string]bool{}, map[string]bool{"bad-task": true}, "")
+	if len(results) != 0 || len(diagnostics) != 2 {
 		t.Fatalf("scoped file-shaped runs = results=%+v diagnostics=%+v", results, diagnostics)
+	}
+	if diagnostics[0].Task != "bad-task" || diagnostics[0].DiscoveryScope != "selected-legacy-namespace" || diagnostics[0].Path != filepath.Dir(badTaskRuns) || !strings.Contains(diagnostics[0].Message, "read task Work Log runs") {
+		t.Fatalf("selected negative namespace obstruction lost: %+v", diagnostics[0])
+	}
+	if diagnostics[1].Task != "" || diagnostics[1].DiscoveryScope != "unattributed" || diagnostics[1].Path != badClaims || !strings.Contains(diagnostics[1].Message, "read task Work Log claims") {
+		t.Fatalf("unattributed fleet uncertainty acquired task authority: %+v", diagnostics[1])
 	}
 	if err := os.RemoveAll(badRuns); err != nil {
 		t.Fatal(err)

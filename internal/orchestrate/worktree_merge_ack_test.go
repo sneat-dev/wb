@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -995,7 +996,7 @@ func TestSupersedeValidationFailedWorktreeMergeAcceptsOnlyRecordedSourceDescenda
 			ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, ReplacementWorktree: replacement.WorktreeDir,
 			Apply: true, Actor: "reviewer", Reason: "altered source claim evidence must refuse",
 		})
-		if err == nil || !strings.Contains(err.Error(), "no matching active Work Log claim") {
+		if err == nil || !strings.Contains(err.Error(), "guard receipted source") || !strings.Contains(err.Error(), "immutable Work Log claim digest mismatch") {
 			t.Fatalf("altered source claim evidence error = %v", err)
 		}
 		if _, statErr := os.Stat(validationFailureSupersessionPath(receipt.ReceiptPath)); !os.IsNotExist(statErr) {
@@ -1480,7 +1481,7 @@ func TestSupersedeValidationFailedWorktreeMergeRefusesInvalidEvidence(t *testing
 					t.Fatal(err)
 				}
 			},
-			want: "candidate has no active Work Log claim matching the immutable receipt target and identity",
+			want: "validate failed candidate: guard candidate",
 		},
 		{
 			name: "identity mismatched original candidate claim",
@@ -1497,7 +1498,7 @@ func TestSupersedeValidationFailedWorktreeMergeRefusesInvalidEvidence(t *testing
 					t.Fatal(err)
 				}
 			},
-			want: "matching the immutable receipt target and identity",
+			want: "immutable Work Log claim identity metadata is invalid",
 		},
 		{
 			name: "dirty old candidate",
@@ -1545,7 +1546,7 @@ func TestSupersedeValidationFailedWorktreeMergeRefusesInvalidEvidence(t *testing
 					t.Fatal(err)
 				}
 			},
-			want: "replacement has no authoritative active Work Log claim matching its identity",
+			want: "guard replacement worktree",
 		},
 		{
 			name: "remote target moved outside replacement",
@@ -1566,6 +1567,12 @@ func TestSupersedeValidationFailedWorktreeMergeRefusesInvalidEvidence(t *testing
 			_, err := SupersedeValidationFailedWorktreeMerge(context.Background(), WorktreeMergeValidationFailureSupersessionOptions{ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, ReplacementWorktree: replacement.WorktreeDir, Apply: true, Actor: "reviewer", Reason: "unsafe evidence"})
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("supersession error = %v, want %q", err, test.want)
+			}
+			switch test.name {
+			case "missing original candidate claim", "missing replacement claim":
+				if !errors.Is(err, os.ErrNotExist) || !strings.Contains(err.Error(), "no projected Work Log claim in sanctioned homes") {
+					t.Fatalf("missing immutable proof lost typed refusal: %v", err)
+				}
 			}
 			if _, statErr := os.Stat(validationFailureSupersessionPath(receipt.ReceiptPath)); !os.IsNotExist(statErr) {
 				t.Fatalf("refusal wrote supersession: %v", statErr)

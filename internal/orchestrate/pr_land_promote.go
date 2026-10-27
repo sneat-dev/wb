@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -43,10 +44,11 @@ type IssueComment struct {
 
 // promoteLandingPorts are the GitHub reads promotion landing makes.
 type promoteLandingPorts struct {
-	comment  func(ctx context.Context, repository string, id int64) (IssueComment, error)
-	review   commitCommentReader
-	contains func(ctx context.Context, repository, ancestor, descendant string) (bool, string)
-	operator func() ReviewerIdentity
+	comment        func(ctx context.Context, repository string, id int64) (IssueComment, error)
+	review         commitCommentReader
+	legacyComments func(context.Context, string, string) ([]LegacyBinding, error)
+	contains       func(ctx context.Context, repository, ancestor, descendant string) (bool, string)
+	operator       func() ReviewerIdentity
 	// mergeMethod is the repository's preferred enabled method: a merge
 	// commit when allowed, so the integration branch stays an ancestor of
 	// the target and needs no refresh.
@@ -55,7 +57,7 @@ type promoteLandingPorts struct {
 
 func defaultPromoteLandingPorts() promoteLandingPorts {
 	return promoteLandingPorts{comment: readIssueComment, review: DefaultIntegrationGitHub(), contains: githubchecks.ContainsTarget,
-		operator: currentSessionIdentity, mergeMethod: repositoryPullRequestMergeMethod}
+		operator: currentSessionIdentity, mergeMethod: repositoryPullRequestMergeMethod, legacyComments: newGitHubIntegration().LegacyComments}
 }
 
 func (options PullRequestLandOptions) resolvePromotePorts() promoteLandingPorts {
@@ -93,8 +95,9 @@ func decodeIssueComment(raw []byte, err error, repository string, id int64) (Iss
 
 // PromotionReceipt is what landing a promotion verified.
 type PromotionReceipt struct {
-	Lanes    []LaneMerge `json:"lanes"`
-	Reviewer string      `json:"reviewer"`
+	Lanes    []LaneMerge        `json:"lanes"`
+	Legacy   []LegacyProvenance `json:"legacy,omitempty"`
+	Reviewer string             `json:"reviewer"`
 }
 
 func promoteRefusal(code, reason, command string) *landRefusal {
@@ -117,10 +120,37 @@ func promotionLandingGate(ctx context.Context, options *PullRequestLandOptions, 
 	promote := "wb integration promote " + options.Repository + " " + shellSingleQuote(view.Head.Ref) + " --to " + shellSingleQuote(view.Base.Ref)
 	ports := options.resolvePromotePorts()
 	if !strings.Contains(view.Body, promoteMarker) {
+		if strings.Contains(view.Body, legacyInventoryPrefix) {
+			options.NoUpdateBranch, options.NoAutoMerge = true, true
+			return nil, promoteRefusal(LandRefusalBatchBlockInvalid, "legacy provenance inventory requires the promotion marker", promote), nil
+		}
 		for _, commit := range commits {
 			if carriesLaneTrailer(commit) {
 				return nil, promoteRefusal(LandRefusalBatchBlockInvalid,
 					fmt.Sprintf("commit %s is a WB lane merge but the body lacks the promotion marker", shortMergeRevision(commit.SHA)), promote), nil
+			}
+		}
+		// Removing both body markers cannot downgrade a still-discoverable archive.
+		// Read every complete comment inventory on an unmarked merge. Records are
+		// evidence of required classification, never approval. Missing/deleted ALL
+		// remote evidence is unprovable; no new hidden authority list is invented.
+		if ports.legacyComments != nil {
+			for _, commit := range commits {
+				if len(commit.Parents) < 2 {
+					continue
+				}
+				if !legacyRepositoryPattern.MatchString(options.Repository) || !legacySHA.MatchString(commit.SHA) {
+					return nil, promoteRefusal(LandRefusalBatchBlockInvalid, "invalid legacy classification endpoint", promote), nil
+				}
+				records, err := ports.legacyComments(ctx, options.Repository, commit.SHA)
+				if err != nil {
+					options.NoUpdateBranch, options.NoAutoMerge = true, true
+					return nil, nil, fmt.Errorf("inspect durable legacy provenance: %w", err)
+				}
+				if len(records) > 0 {
+					options.NoUpdateBranch, options.NoAutoMerge = true, true
+					return nil, promoteRefusal(LandRefusalBatchBlockInvalid, "durable legacy provenance requires promotion and its inventory", promote), nil
+				}
 			}
 		}
 		// GitHub lists at most maxListedPullRequestCommits; a longer branch
@@ -151,7 +181,12 @@ func promotionLandingGate(ctx context.Context, options *PullRequestLandOptions, 
 		return nil, promoteRefusal(LandRefusalBatchBehindTarget, "the promotion does not contain "+view.Base.Ref+"; refresh it with a recorded merge, then promote again",
 			"wb integration merge "+options.Repository+" "+shellSingleQuote(view.Head.Ref)+" --to "+shellSingleQuote(view.Base.Ref)), nil
 	}
-	reviewer, refusal := promotionReview(ctx, *options, ports, view, number, delta)
+	bindings, err := parseLegacyInventory(view.Body)
+	if err != nil {
+		return nil, promoteRefusal(LandRefusalBatchBlockInvalid, err.Error(), delta), nil
+	}
+	sort.Slice(bindings, func(i, j int) bool { return bindings[i].URL < bindings[j].URL })
+	reviewer, refusal := promotionReview(ctx, *options, ports, view, number, delta, bindings)
 	if refusal != nil {
 		return nil, refusal, nil
 	}
@@ -179,6 +214,9 @@ func promotionLandingGate(ctx context.Context, options *PullRequestLandOptions, 
 	if err != nil {
 		return nil, nil, err
 	}
+	if err = verifyLegacyProvenance(ctx, ports.review, options.Repository, view.Head.Ref, view.Base.Ref, walk, &verdict, bindings); err != nil {
+		return nil, promoteRefusal(LandRefusalBatchBlockInvalid, err.Error(), delta), nil
+	}
 	if len(verdict.Unrecorded) > 0 {
 		return nil, promoteRefusal(BatchRefusalUnrecordedMerge,
 			fmt.Sprintf("merge %s brings in commits no still-valid review covers", shortMergeRevision(verdict.Unrecorded[0])), delta), nil
@@ -186,22 +224,7 @@ func promotionLandingGate(ctx context.Context, options *PullRequestLandOptions, 
 	if verdict.mergedBy(reviewer.Session) {
 		return nil, promoteRefusal(LandRefusalBatchDeltaSelfReview, fmt.Sprintf("reviewer session %s made a lane merge in this promotion", reviewer.Session), delta), nil
 	}
-	return &PromotionReceipt{Lanes: verdict.Lanes, Reviewer: reviewer.String()}, nil, nil
-}
-
-// promotionApprovalForm refuses, before any review comment is posted, a
-// promotion whose --approved-by is not a comment URL on it.
-func promotionApprovalForm(options PullRequestLandOptions, view githubchecks.PullRequestView, number string) *landRefusal {
-	if !strings.Contains(view.Body, promoteMarker) {
-		return nil
-	}
-	match := issueCommentURLPattern.FindStringSubmatch(strings.TrimSpace(options.ApprovedBy))
-	if match != nil && strings.EqualFold(match[1], options.Repository) && match[2] == number {
-		return nil
-	}
-	return promoteRefusal(LandRefusalBatchDeltaUnreviewed,
-		"a promotion lands only with --approved-by naming an existing review comment on this pull request whose Reviewed-Head is its head",
-		promotionDeltaCommand(options.Repository, view))
+	return &PromotionReceipt{Lanes: verdict.Lanes, Legacy: verdict.Legacy, Reviewer: reviewer.String()}, nil, nil
 }
 
 func promotionDeltaCommand(repository string, view githubchecks.PullRequestView) string {
@@ -210,7 +233,7 @@ func promotionDeltaCommand(repository string, view githubchecks.PullRequestView)
 
 // promotionReview reads the --approved-by comment on this pull request and
 // requires it to name the current head from an independent identity.
-func promotionReview(ctx context.Context, options PullRequestLandOptions, ports promoteLandingPorts, view githubchecks.PullRequestView, number, delta string) (ReviewerIdentity, *landRefusal) {
+func promotionReview(ctx context.Context, options PullRequestLandOptions, ports promoteLandingPorts, view githubchecks.PullRequestView, number, delta string, bindings []LegacyBinding) (ReviewerIdentity, *landRefusal) {
 	unreviewed := func(reason string) (ReviewerIdentity, *landRefusal) {
 		return ReviewerIdentity{}, promoteRefusal(LandRefusalBatchDeltaUnreviewed, reason, delta)
 	}
@@ -228,6 +251,9 @@ func promotionReview(ctx context.Context, options PullRequestLandOptions, ports 
 	}
 	if reviewed, err := parseReviewedHeadLine(comment.Body); err != nil || !strings.EqualFold(reviewed, view.Head.SHA) {
 		return unreviewed(fmt.Sprintf("the review does not name the current head %s", shortMergeRevision(view.Head.SHA)))
+	}
+	if len(bindings) > 0 && !legacyReviewBinds(comment.Body, legacyInventoryDigest(bindings)) {
+		return unreviewed("review does not bind the current legacy provenance inventory")
 	}
 	reviewer := declaredReviewer(comment.Body)
 	if !identityComplete(reviewer) || strings.EqualFold(reviewer.Session, ports.operator().Session) {

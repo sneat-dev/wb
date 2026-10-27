@@ -229,7 +229,7 @@ func TestE2ECloneMoveIntentAndReceiptRefuseChangedPrivateEvidence(t *testing.T) 
 		t.Fatal(err)
 	}
 	move := CloneMoveWorktree{Source: linked, Destination: filepath.Join(t.TempDir(), "moved"), Head: head}
-	if _, err := RecordCloneMoveRelocationIntents(fixture.projectsRoot, []CloneMoveWorktree{move}, time.Now().UTC()); err == nil || !strings.Contains(err.Error(), "record clone-move relocation intent") {
+	if _, err := RecordCloneMoveRelocationIntents(fixture.projectsRoot, []CloneMoveWorktree{move}, time.Now().UTC()); err == nil || !strings.Contains(err.Error(), "corroborate clone-move claim") || !errors.Is(err, syscall.ENOTDIR) {
 		t.Fatalf("blocked relocation intent publication = %v", err)
 	}
 	if got, err := os.ReadFile(relocations); err != nil || string(got) != "blocking private evidence" {

@@ -31,6 +31,7 @@ type landOwnerProtocol struct {
 	files, commits                             []byte
 	draft, required, policyUnavailable, merged bool
 	failEndpoint                               string
+	allowPriorReviewChecks                     bool
 	failure                                    error
 	beforeGet                                  func(githubobserver.GetRequest)
 	parentBody                                 func(string) []byte
@@ -106,7 +107,7 @@ func (p *landOwnerProtocol) get(_ context.Context, request githubobserver.GetReq
 				body = []byte(fmt.Sprintf(`{"status":"ahead","base_commit":{"sha":%q},"merge_base_commit":{"sha":%q}}`, p.target, p.target))
 			}
 		case strings.HasSuffix(request.Endpoint, "/check-runs?per_page=100"):
-			if request.Head != p.head {
+			if request.Head != p.head && (!p.allowPriorReviewChecks || request.Head != landOwnerBase) {
 				p.t.Fatalf("check identity %+v, head=%s", request, p.head)
 			}
 			p.checkReads++
@@ -169,7 +170,8 @@ func TestLandOwnedLaneAndReviewStageRefusalsPreserveOrdering(t *testing.T) {
 		{name: "review file unreadable", errorText: "read --review-comment-file", nonmechanical: true},
 		{name: "review post fail", errorText: "post review comment on acme/app#7", nonmechanical: true},
 		{name: "commits fail", errorText: "owned provider failure", failEndpoint: "repos/acme/app/pulls/7/commits?per_page=100"},
-		{name: "prearm unverifiable review", errorText: "owned provider failure", failEndpoint: "repos/acme/app/pulls/7/commits?per_page=100", nonmechanical: true},
+		{name: "review source commits fail", errorText: "owned provider failure", failEndpoint: "repos/acme/app/pulls/7/commits?per_page=100", nonmechanical: true},
+		{name: "prearm unverifiable review", code: LandRefusalChecksFailed, failEndpoint: "repos/acme/app/commits/" + landOwnerHead + "/check-runs?per_page=100", nonmechanical: true},
 	}
 	for _, row := range tests {
 		t.Run(row.name, func(t *testing.T) {
@@ -180,6 +182,7 @@ func TestLandOwnedLaneAndReviewStageRefusalsPreserveOrdering(t *testing.T) {
 			options.NoUpdateBranch = true
 			p := newLandOwnerProtocol(t)
 			p.failEndpoint = row.failEndpoint
+			p.allowPriorReviewChecks = row.name == "prearm unverifiable review"
 			if row.nonmechanical {
 				p.files = []byte(`[{"filename":"app.go","status":"modified","patch":"@@ -1 +1 @@\n-old\n+new\n"}]`)
 			}
@@ -244,7 +247,7 @@ func TestLandOwnedLaneAndReviewStageRefusalsPreserveOrdering(t *testing.T) {
 				p.mutation = func([]string) githubobserver.CommandResponse {
 					return githubobserver.CommandResponse{ExitCode: 1, Err: p.failure, Stderr: []byte(p.failure.Error())}
 				}
-			case "prearm unverifiable review":
+			case "prearm unverifiable review", "review source commits fail":
 				review := filepath.Join(root, "review.txt")
 				if err := os.WriteFile(review, []byte("Reviewed-Head: "+landOwnerBase+"\n"), 0600); err != nil {
 					t.Fatal(err)
@@ -256,13 +259,21 @@ func TestLandOwnedLaneAndReviewStageRefusalsPreserveOrdering(t *testing.T) {
 				if err == nil || !strings.Contains(err.Error(), row.errorText) {
 					t.Fatalf("partial result %+v, error %v", result, err)
 				}
+			} else if row.name == "prearm unverifiable review" {
+				if err != nil || result.Outcome != LandFindings || result.RefusalCode != row.code || result.Reason != p.failure.Error() {
+					t.Fatalf("later checks refusal %+v err=%v", result, err)
+				}
 			} else if err != nil || result.Outcome != LandRefused || result.RefusalCode != row.code {
 				t.Fatalf("refusal %+v, err %v", result, err)
 			}
 			if result.HeadSHA != landOwnerHead || result.Repository != "acme/app" || result.PullRequest != 7 {
 				t.Fatalf("partial identity %+v", result)
 			}
-			if p.merges != 0 || p.arms != 0 || p.checkReads != 0 {
+			wantCheckReads := 0
+			if row.name == "prearm unverifiable review" {
+				wantCheckReads = 1
+			}
+			if p.merges != 0 || p.arms != 0 || p.checkReads != wantCheckReads {
 				t.Fatalf("early refusal crossed publication/wait: %v", p.calls)
 			}
 			wantComments := 0
@@ -292,14 +303,31 @@ func TestLandOwnedLaneAndReviewStageRefusalsPreserveOrdering(t *testing.T) {
 					t.Fatalf("competitor changed %+v %t %v result %+v", record, found, err, result)
 				}
 			}
+			if row.name == "review source commits fail" && (result.ReviewBound != nil || result.Evidence["review"] != "" || result.AutoMergeArmed) {
+				t.Fatalf("early commits failure fabricated review evidence: %+v", result)
+			}
 			if row.name == "prearm unverifiable review" {
 				if result.ReviewBound == nil || *result.ReviewBound || !strings.Contains(result.Evidence["review"], "review-unverified:") || result.AutoMergeArmed {
 					t.Fatalf("prearm review note %+v", result)
 				}
 			}
+			if row.name == "prearm unverifiable review" {
+				commits, failed := -1, -1
+				for i, endpoint := range p.calls {
+					if endpoint == "repos/acme/app/pulls/7/commits?per_page=100" {
+						commits = i
+					}
+					if endpoint == row.failEndpoint {
+						failed = i
+					}
+				}
+				if commits < 0 || failed <= commits || result.Checks == nil {
+					t.Fatalf("later review/checks stage not reached: %+v calls=%v", result, p.calls)
+				}
+			}
 			// Hosted reads must stop at the failing stage; each row's last observation
 			// names the real first refusal rather than a later fabricated failure.
-			if row.failEndpoint != "" && p.calls[len(p.calls)-1] != row.failEndpoint {
+			if row.failEndpoint != "" && row.name != "prearm unverifiable review" && p.calls[len(p.calls)-1] != row.failEndpoint {
 				t.Fatalf("read ordering %v", p.calls)
 			}
 		})

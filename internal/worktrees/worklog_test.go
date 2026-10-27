@@ -958,6 +958,14 @@ func TestWorkLogProjectionCannotEscapePrivateArchiveOrAuthorizeCleanup(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
+	view, err := LoadWorkLogView(context.Background(), LoadWorkLogOptions{ProjectsRoot: fixture.projectsRoot, Worktree: created[0].WorktreeDir})
+	if err != nil || view.Claim == nil {
+		t.Fatalf("native claim: %+v %v", view, err)
+	}
+	claimBefore, err := os.ReadFile(view.Claim.ClaimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	projection, err := readWorkLogProjection(created[0].WorktreeDir)
 	if err != nil {
 		t.Fatal(err)
@@ -977,8 +985,22 @@ func TestWorkLogProjectionCannotEscapePrivateArchiveOrAuthorizeCleanup(t *testin
 		DeleteRemote: true,
 		Apply:        true,
 	})
-	if err == nil || !strings.Contains(err.Error(), "invalid work-log projection identity") {
+	if err == nil || !strings.Contains(err.Error(), "cannot be aborted safely: task has malformed worktree candidate:") {
 		t.Fatalf("malicious projection error = %v", err)
+	}
+	listed, listErr := ListWithDiagnostics(context.Background(), ListOptions{ProjectsRoot: fixture.projectsRoot, Task: "projection-trust"})
+	found := false
+	for _, d := range listed.Diagnostics {
+		if d.Task == "projection-trust" && d.Path == created[0].WorktreeDir && d.DiscoveryScope == "selected-proof" && d.Message == "corroborate selected current projection: invalid work-log projection identity" {
+			found = true
+		}
+	}
+	if listErr != nil || !found {
+		t.Fatalf("precise projection refusal lost: %+v %v", listed.Diagnostics, listErr)
+	}
+	claimAfter, readErr := os.ReadFile(view.Claim.ClaimPath)
+	if readErr != nil || !bytes.Equal(claimBefore, claimAfter) {
+		t.Fatalf("private claim changed: %v", readErr)
 	}
 	if _, err := os.Stat(created[0].WorktreeDir); err != nil {
 		t.Fatalf("untrusted projection authorized cleanup: %v", err)

@@ -415,10 +415,12 @@ type ListResult struct {
 // more than one resolver-recognized layout is being read at once (see
 // wbhome.Resolve) — Task name alone is not always unique across layouts.
 type ListDiagnostic struct {
-	Task          string `json:"task,omitempty"`
-	WorktreesRoot string `json:"worktrees_root,omitempty"`
-	Path          string `json:"path"`
-	Message       string `json:"message"`
+	// DiscoveryScope distinguishes selected authority obstructions from unattributed fleet uncertainty.
+	DiscoveryScope string `json:"discovery_scope,omitempty"`
+	Task           string `json:"task,omitempty"`
+	WorktreesRoot  string `json:"worktrees_root,omitempty"`
+	Path           string `json:"path"`
+	Message        string `json:"message"`
 	// NonBlocking identifies visible foreign filesystem debris that has no
 	// corresponding canonical repository. It is never a validated WB asset
 	// and must not prevent a real sibling from reaching its own safe terminal
@@ -1676,7 +1678,7 @@ func listClaimedRegistryWorktreesWithClaimReader(
 				diagnostics = append(diagnostics, listDiagnostic("", claim.Task, path, layoutErr.Error()))
 				continue
 			}
-			if !filterMatches(filter, claim.Repository, path) {
+			if !filterMatchesClaimRepository(home, filter, path, claim) {
 				continue
 			}
 			locked, lockErr := inspectLifecycleTaskLock(home, layout, claim.Task)
@@ -1720,13 +1722,55 @@ func listTaskScopedClaimedRegistryWorktrees(
 ) ([]ListResult, []ListDiagnostic) {
 	results := make([]ListResult, 0)
 	diagnostics := make([]ListDiagnostic, 0)
-	for task := range tasks {
+	type discoveryProblem struct{ effort, path, message string }
+	var problems []discoveryProblem
+	associated := map[string]map[string]string{}
+	deferClassify := func() {
+		for _, problem := range problems {
+			matched := false
+			selectedTasks := make([]string, 0, len(associated[problem.effort]))
+			for task := range associated[problem.effort] {
+				selectedTasks = append(selectedTasks, task)
+			}
+			sort.Strings(selectedTasks)
+			for _, task := range selectedTasks {
+				root := associated[problem.effort][task]
+				d := listDiagnostic(root, task, problem.path, problem.message)
+				d.DiscoveryScope = "selected-associated-effort"
+				diagnostics = append(diagnostics, d)
+				matched = true
+			}
+			if !matched {
+				task, scope := "", "unattributed"
+				if tasks[problem.effort] {
+					task, scope = problem.effort, "selected-legacy-namespace"
+				}
+				d := listDiagnostic("", task, problem.path, problem.message)
+				d.DiscoveryScope = scope
+				diagnostics = append(diagnostics, d)
+			}
+		}
+	}
+	// Effort namespaces can contain several independently named helper tasks.
+	// Discover their immutable claims, selecting by claim.Task rather than by
+	// the directory name. runInspections still corroborates the live projection.
+	efforts, err := os.ReadDir(filepath.Join(home, "worklogs"))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		diagnostic := listDiagnostic("", "", filepath.Join(home, "worklogs"), fmt.Sprintf("read Work Log efforts: %v", err))
+		diagnostic.DiscoveryScope = "unattributed"
+		return nil, []ListDiagnostic{diagnostic}
+	}
+	for _, effort := range efforts {
+		if !effort.IsDir() || !validSafeSegment(effort.Name()) {
+			continue
+		}
+		task := effort.Name()
 		runs, err := os.ReadDir(filepath.Join(home, "worklogs", task, "runs"))
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
-			diagnostics = append(diagnostics, listDiagnostic("", task, filepath.Join(home, "worklogs", task), fmt.Sprintf("read task Work Log runs: %v", err)))
+			problems = append(problems, discoveryProblem{task, filepath.Join(home, "worklogs", task), fmt.Sprintf("read task Work Log runs: %v", err)})
 			continue
 		}
 		for _, run := range runs {
@@ -1739,7 +1783,7 @@ func listTaskScopedClaimedRegistryWorktrees(
 				if errors.Is(err, os.ErrNotExist) {
 					continue
 				}
-				diagnostics = append(diagnostics, listDiagnostic("", task, claimsRoot, fmt.Sprintf("read task Work Log claims: %v", err)))
+				problems = append(problems, discoveryProblem{task, claimsRoot, fmt.Sprintf("read task Work Log claims: %v", err)})
 				continue
 			}
 			for _, entry := range claims {
@@ -1752,51 +1796,118 @@ func listTaskScopedClaimedRegistryWorktrees(
 				}
 				runDirectory, _, err := openWorkLogRun(home, task, run.Name(), false)
 				if err != nil {
+					problems = append(problems, discoveryProblem{task, claimsRoot, fmt.Sprintf("open task Work Log run: %v", err)})
 					continue
 				}
 				claim, readErr := readWorkLogClaimAt(runDirectory, claimID)
 				_ = runDirectory.Close()
-				if readErr != nil ||
-					claim.EffortID != task || claim.RunID != run.Name() || claim.ClaimID != claimID ||
-					claim.Lifecycle != "active" || claim.Task != task || claim.Worktree == "" || known[filepath.Clean(claim.Worktree)] {
+				if readErr == nil {
+					readErr = validateStaticWorkLogClaim(claim, task, run.Name())
+				}
+				if readErr == nil && claim.ClaimID != claimID {
+					readErr = fmt.Errorf("immutable claim ID differs from filename")
+				}
+				if readErr != nil {
+					problems = append(problems, discoveryProblem{task, filepath.Join(claimsRoot, entry.Name()), fmt.Sprintf("read task Work Log claim: %v", readErr)})
+					continue
+				}
+				if !taskSelectionMatches(tasks, claim.Task) || claim.Worktree == "" {
+					continue
+				}
+				// A previously inspected asset may now live at a completed
+				// repository-relocation destination or use a sanctioned legacy
+				// projection. Bind association to that current exact projection,
+				// never reinterpret its immutable original path as a new asset.
+				relocated, relocationErr := resolveRelocationChain(home, claim)
+				if relocationErr != nil {
+					d := listDiagnostic("", claim.Task, claim.Worktree, fmt.Sprintf("resolve selected claim relocation: %v", relocationErr))
+					d.DiscoveryScope = "selected-proof"
+					diagnostics = append(diagnostics, d)
+					continue
+				}
+				if known[filepath.Clean(relocated.worktree)] {
+					projection, projectionErr := readWorkLogProjectionForReadOnlyClaim(relocated.worktree)
+					if projectionErr == nil && projection.EffortID == claim.EffortID && projection.RunID == claim.RunID && projection.ClaimID == claim.ClaimID {
+						projectionErr = corroborateProjectionWithPrivateClaim(home, relocated.worktree, projection)
+						if projectionErr == nil {
+							if associated[task] == nil {
+								associated[task] = map[string]string{}
+							}
+							associated[task][claim.Task] = ""
+							continue
+						}
+					} else if projectionErr == nil {
+						// A retained historical claim is not the current owner.
+						continue
+					}
+					d := listDiagnostic("", claim.Task, relocated.worktree, fmt.Sprintf("corroborate selected current projection: %v", projectionErr))
+					d.DiscoveryScope = "selected-proof"
+					diagnostics = append(diagnostics, d)
+					continue
+				}
+				completed, historyErr := completedAdoptedHistory(home, projectsRoot, claim)
+				if historyErr != nil {
+					d := listDiagnostic("", claim.Task, claim.Worktree, fmt.Sprintf("corroborate selected adopted terminal history: %v", historyErr))
+					d.DiscoveryScope = "selected-proof"
+					diagnostics = append(diagnostics, d)
+					continue
+				}
+				if completed {
 					continue
 				}
 				layout, err := claimedSharedWorktreeLayoutFromClaim(home, claim.Worktree, claim)
 				if err != nil {
+					// Canonical-local discovery owns this legitimate shape and
+					// independently validates Git identity; shared recovery must
+					// not turn it into malformed shared-layout evidence.
+					if _, localErr := claimedLocalWorktreeLayout(projectsRoot, claim.Worktree, claim); localErr == nil {
+						continue
+					}
+					d := listDiagnostic("", claim.Task, claim.Worktree, fmt.Sprintf("corroborate selected claim layout: %v", err))
+					d.DiscoveryScope = "selected-proof"
+					diagnostics = append(diagnostics, d)
 					continue
 				}
-				if !filterMatches(filter, claim.Repository, claim.Worktree) {
+				if associated[task] == nil {
+					associated[task] = map[string]string{}
+				}
+				associated[task][claim.Task] = layout.WorktreesRoot
+				if claim.Lifecycle != "active" || known[filepath.Clean(claim.Worktree)] {
+					continue
+				}
+				if !filterMatchesClaimRepository(home, filter, claim.Worktree, claim) {
 					continue
 				}
 				if _, statErr := os.Stat(claim.Worktree); statErr != nil {
 					if hasExistingWorkLogTerminal(home, workLogProjection{EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID}) {
 						continue
 					}
-					diagnostics = append(diagnostics, listDiagnostic(layout.WorktreesRoot, task, claim.Worktree, "Git still registers this active WB-managed worktree but its working tree is missing; preserve the claim and recover or prune it explicitly"))
+					diagnostics = append(diagnostics, listDiagnostic(layout.WorktreesRoot, claim.Task, claim.Worktree, "Git still registers this active WB-managed worktree but its working tree is missing; preserve the claim and recover or prune it explicitly"))
 					continue
 				}
 				if !hasGitMetadata(claim.Worktree) || !isGitRoot(ctx, claim.Worktree) {
 					continue
 				}
-				locked, err := inspectLifecycleTaskLock(home, layout, task)
+				locked, err := inspectLifecycleTaskLock(home, layout, claim.Task)
 				if err != nil {
-					diagnostics = append(diagnostics, listDiagnostic(layout.WorktreesRoot, task, claim.Worktree, fmt.Sprintf("inspect authoritative task lock: %v", err)))
+					diagnostics = append(diagnostics, listDiagnostic(layout.WorktreesRoot, claim.Task, claim.Worktree, fmt.Sprintf("inspect authoritative task lock: %v", err)))
 					continue
 				}
-				inspected, inspectedDiagnostics := runInspections(ctx, []pendingInspect{{task: task, path: claim.Worktree, slug: claim.Repository, locked: locked, commonDir: gitCommonDir(ctx, claim.Worktree)}}, projectsRoot, home, layout, base, filter, absorbedBy, withGitHub, workers, reporter, policy)
+				inspected, inspectedDiagnostics := runInspections(ctx, []pendingInspect{{task: claim.Task, path: claim.Worktree, slug: claim.Repository, locked: locked, commonDir: gitCommonDir(ctx, claim.Worktree)}}, projectsRoot, home, layout, base, filter, absorbedBy, withGitHub, workers, reporter, policy)
 				results = append(results, inspected...)
 				diagnostics = append(diagnostics, inspectedDiagnostics...)
 				known[filepath.Clean(claim.Worktree)] = true
 			}
 		}
 	}
+	deferClassify()
 	return results, diagnostics
 }
 
 // activeWorkLogClaimAtPath finds the immutable active claim for a registered
 // worktree whose directory is already gone, so its editable projection can no
-// longer be read. It is deliberately task-scoped before opening private claim
-// runs: one named cleanup must neither report nor act on another task.
+// longer be read. It selects the exact claim task after resolving effort namespaces: one
+// named cleanup must neither report nor act on another task.
 func activeWorkLogClaimAtPath(home, worktree string, tasks map[string]bool) (*workLogClaim, error) {
 	return activeWorkLogClaimAtPathWithReadNames(home, worktree, tasks,
 		func(directory *os.File) ([]string, error) { return directory.Readdirnames(-1) })
@@ -1818,7 +1929,7 @@ func activeWorkLogClaimAtPathWithReadNames(home, worktree string, tasks map[stri
 	}
 	sort.Strings(efforts)
 	for _, effort := range efforts {
-		if !validSafeSegment(effort) || !taskSelectionMatches(tasks, effort) {
+		if !validSafeSegment(effort) {
 			continue
 		}
 		effortDirectory, openErr := openPrivateChild(worklogs, effort, false)
@@ -1886,7 +1997,7 @@ func activeWorkLogClaimAtPathWithReadNames(home, worktree string, tasks map[stri
 					_ = runs.Close()
 					return nil, readErr
 				}
-				if claim.Lifecycle == "active" && claim.Task == effort && filepath.Clean(claim.Worktree) == filepath.Clean(worktree) {
+				if claim.Lifecycle == "active" && validSafeSegment(claim.Task) && taskSelectionMatches(tasks, claim.Task) && filepath.Clean(claim.Worktree) == filepath.Clean(worktree) {
 					_ = claims.Close()
 					_ = runs.Close()
 					if claim.EffortID != effort || claim.RunID != run || claim.ClaimID != claimID {
@@ -2537,6 +2648,16 @@ func inspectErrorFilterCandidates(owner, path, slug string, err error) []string 
 // path, a bare repository name, or an "owner/repository" slug — whatever
 // identity is available at the point of the check; a malformed candidate
 // often cannot offer more than that.
+// Repository identity may change without moving a central checkout. Keep the
+// immutable claim for placement; use only completed evidence to widen a filter.
+func filterMatchesClaimRepository(home, filter, path string, claim workLogClaim) bool {
+	if filterMatches(filter, claim.Repository, path) {
+		return true
+	}
+	resolved, err := latestRelocationResolution(home, claim, path)
+	return err == nil && resolved.receipt != nil && filterMatches(filter, resolved.repository)
+}
+
 func filterMatches(filter string, candidates ...string) bool {
 	if filter == "" {
 		return true
@@ -2792,6 +2913,11 @@ func (run *cleanupRun) verifyTasksFound() error {
 			found = cleanupTaskWasFound(task, unfiltered, nil)
 		}
 		if !found {
+			for _, diagnostic := range run.listed.Diagnostics {
+				if diagnostic.DiscoveryScope == "unattributed" {
+					return fmt.Errorf("WB worktree task %q has incomplete scoped discovery; cannot prove absence while %s: %s", task, diagnostic.Path, diagnostic.Message)
+				}
+			}
 			return fmt.Errorf("WB worktree task %q was not found", task)
 		}
 	}
@@ -4562,6 +4688,9 @@ func blockDiagnosedTasks(results []CleanupResult, diagnostics []ListDiagnostic, 
 		if backlogPaths[filepath.Clean(diagnostic.Path)] {
 			continue
 		}
+		if diagnostic.Task == "" {
+			continue
+		}
 		key := cleanupTaskKey(diagnostic.WorktreesRoot, diagnostic.Task)
 		if reasonByTask[key] == "" {
 			reasonByTask[key] = diagnostic.Path + ": " + diagnostic.Message
@@ -4569,7 +4698,11 @@ func blockDiagnosedTasks(results []CleanupResult, diagnostics []ListDiagnostic, 
 	}
 	for index := range results {
 		key := cleanupTaskKey(results[index].WorktreesRoot, results[index].Task)
-		if reason, blocked := reasonByTask[key]; blocked && results[index].Eligible {
+		reason, blocked := reasonByTask[key]
+		if !blocked {
+			reason, blocked = reasonByTask[cleanupTaskKey("", results[index].Task)]
+		}
+		if blocked && results[index].Eligible {
 			results[index].Eligible = false
 			results[index].Reason = "coordinated task blocked by malformed candidate " + reason
 		}

@@ -3,6 +3,7 @@ package orchestrate
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -167,7 +168,7 @@ func TestAcknowledgeUnpublishedValidationFailureFreesLane(t *testing.T) {
 	if err := os.Rename(hiddenClaim, view.Claim.ClaimPath); err != nil {
 		t.Fatal(err)
 	}
-	if unclaimedErr == nil || !strings.Contains(unclaimedErr.Error(), "no matching active Work Log claim") {
+	if unclaimedErr == nil || !errors.Is(unclaimedErr, os.ErrNotExist) || !strings.Contains(unclaimedErr.Error(), "guard receipted source") {
 		t.Fatalf("unclaimed descendant was accepted: %v", unclaimedErr)
 	}
 	if _, err := os.Stat(dryRun.AcknowledgementPath); !os.IsNotExist(err) {
