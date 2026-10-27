@@ -1,6 +1,7 @@
 package worktreeretire
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
@@ -100,16 +101,73 @@ func TestReadReportSnapshotRejectsGrowthDuringRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	receipt := snapshotTestReceipt(t, root)
-	ops := reportReadOps{stat: (*os.File).Stat, read: func(io.Reader) ([]byte, error) {
-		return make([]byte, maxReportBytes+1), nil
-	}}
-	if _, err := readReportSnapshotWithOps(receipt.ReportPath, ops); err == nil || !strings.Contains(err.Error(), "invalid retirement receipt file") {
-		t.Fatalf("growth during read = %v, want bounded-read refusal", err)
+	original, err := os.ReadFile(receipt.ReportPath)
+	if err != nil {
+		t.Fatal(err)
 	}
-	// The same file and the same stat pass the real bounded reader, proving the
-	// refusal above is the post-stat read bound rather than admission.
-	snapshot, err := ReadReportSnapshot(receipt.ReportPath)
-	if err != nil || snapshot.Transaction.SourceSHA != receipt.SourceSHA {
-		t.Fatalf("unchanged receipt snapshot = %+v, %v", snapshot, err)
+	originalSum := sha256.Sum256(original)
+	originalDigest := hex.EncodeToString(originalSum[:])
+	statSeamRan, readSeamRan := false, false
+	observedRead := -1
+	ops := reportReadOps{stat: func(file *os.File) (os.FileInfo, error) {
+		info, err := file.Stat()
+		if err != nil {
+			return nil, err
+		}
+		// Admission must observe the real, small, valid receipt before growth.
+		if !info.Mode().IsRegular() || info.Size() > maxReportBytes {
+			t.Fatalf("growth seam admitted %d bytes of mode %v", info.Size(), info.Mode())
+		}
+		statSeamRan = true
+		writer, err := os.OpenFile(receipt.ReportPath, os.O_WRONLY|os.O_APPEND, 0)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := writer.Write(bytes.Repeat([]byte("z"), maxReportBytes+2)); err != nil {
+			_ = writer.Close()
+			return nil, err
+		}
+		if err := writer.Close(); err != nil {
+			return nil, err
+		}
+		grown, err := file.Stat()
+		if err != nil {
+			return nil, err
+		}
+		if !os.SameFile(info, grown) || grown.Size() <= maxReportBytes+1 {
+			t.Fatalf("growth after admission = same inode %v, size %d", os.SameFile(info, grown), grown.Size())
+		}
+		return info, nil
+	}, read: func(reader io.Reader) ([]byte, error) {
+		readSeamRan = true
+		body, err := io.ReadAll(reader)
+		observedRead = len(body)
+		return body, err
+	}}
+	snapshot, err := readReportSnapshotWithOps(receipt.ReportPath, ops)
+	if !statSeamRan || !readSeamRan {
+		t.Fatalf("growth seams executed = stat:%v read:%v", statSeamRan, readSeamRan)
+	}
+	if err == nil || !strings.Contains(err.Error(), "invalid retirement receipt file") {
+		t.Fatalf("growth during read = %v, want bounded-read cap refusal", err)
+	}
+	if observedRead != maxReportBytes+1 {
+		t.Fatalf("bounded read observed %d bytes, want the supplied limit %d", observedRead, maxReportBytes+1)
+	}
+	if snapshot.SHA256 != "" || len(snapshot.Bytes) != 0 || snapshot.Transaction != (Transaction{}) {
+		t.Fatalf("refused growth accepted snapshot = %+v", snapshot)
+	}
+	// Restore the exact admitted bytes: the same small file passes the real
+	// bounded reader, so the refusal above was the post-stat growth bound and
+	// not admission or a broken read path.
+	if err := os.WriteFile(receipt.ReportPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	control, err := ReadReportSnapshot(receipt.ReportPath)
+	if err != nil {
+		t.Fatalf("restored receipt snapshot = %v", err)
+	}
+	if control.SHA256 != originalDigest || control.Transaction.SourceSHA != receipt.SourceSHA || !bytes.Equal(control.Bytes, original) {
+		t.Fatalf("restored receipt snapshot = %s, %q", control.SHA256, control.Transaction.SourceSHA)
 	}
 }
