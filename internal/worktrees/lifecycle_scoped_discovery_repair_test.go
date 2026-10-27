@@ -1,3 +1,5 @@
+//go:build e2e
+
 package worktrees
 
 import (
@@ -11,13 +13,14 @@ import (
 
 // Native fixtures own process-wide Git/WB environment.
 //
-//nolint:paralleltest
-func TestCleanupScopedDiscoveryPreservesUnattributedEvidenceAndSelectedCustody(t *testing.T) {
+//nolint:paralleltest // native fixture owns process-wide Git/WB environment.
+func TestE2ECleanupScopedDiscoveryPreservesUnattributedEvidenceAndSelectedCustody(t *testing.T) {
 	for _, associated := range []bool{false, true} {
 		name := "unrelated uncertainty permits guarded cleanup"
 		if associated {
 			name = "selected associated effort blocks cleanup"
 		}
+		//nolint:paralleltest // subcase shares process-wide Git/WB fixture environment and custody.
 		t.Run(name, func(t *testing.T) {
 			fixture := newGitFixture(t)
 			configureFixtureSharedWorktrees(t, fixture)
@@ -106,7 +109,7 @@ func TestCleanupScopedDiscoveryPreservesUnattributedEvidenceAndSelectedCustody(t
 }
 
 //nolint:paralleltest // native fixture scopes process-wide WB configuration.
-func TestCleanupMissingSelectionWithUnknownDiscoveryDoesNotClaimAbsence(t *testing.T) {
+func TestE2ECleanupMissingSelectionWithUnknownDiscoveryDoesNotClaimAbsence(t *testing.T) {
 	fixture := newGitFixture(t)
 	configureFixtureSharedWorktrees(t, fixture)
 	obstruction := filepath.Join(fixture.home, "worklogs", "unknown-effort", "runs")
