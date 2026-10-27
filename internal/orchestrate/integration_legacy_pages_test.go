@@ -10,6 +10,11 @@ import (
 	"github.com/sneat-dev/wb/internal/githubobserver"
 )
 
+func legacyPageLinks(headers map[string]string, path string, current int) error {
+	announcedLast := 0
+	return legacyPageLinksThrough(headers, path, current, &announcedLast)
+}
+
 func TestLegacyPaginationChecksEveryTransportAndCancellation(t *testing.T) {
 	t.Parallel()
 	sha := strings.Repeat("a", 40)
