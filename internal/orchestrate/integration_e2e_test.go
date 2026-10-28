@@ -231,6 +231,94 @@ func TestE2EBatchAddGivesAPinUnderAnEarlierPinNoMergeOfItsOwn(t *testing.T) {
 	}
 }
 
+func TestE2EUnknownMergerModelCreatesResumableReviewedProvenance(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	fixture := newIntegrationFixture(t)
+	pin, sha := fixture.lane(fixture.base, "b.go", "package a\n", "reviewer")
+	options := fixture.options(pin)
+	options.operator = func() ReviewerIdentity {
+		return ReviewerIdentity{Model: "unknown", Harness: "codex", Session: "operator"}
+	}
+	added := mustIntegration(t, LandSuccess)(AddToBatch(ctx, options))
+	message := igit(t, fixture.work, "log", "-1", "--format=%B")
+	if !strings.Contains(message, "Wb-Merged-By: unknown@codex@operator") || added.Pushed {
+		t.Fatalf("unknown merger was misrecorded: %+v\n%s", added, message)
+	}
+	again := mustIntegration(t, LandSuccess)(AddToBatch(ctx, options))
+	if again.Changed || again.Head != added.Head || again.Lanes[0].State != LaneStateAlreadyMerged {
+		t.Fatalf("record was not resumable: %+v", again)
+	}
+	options.Pins = nil
+	merged := mustIntegration(t, LandSuccess)(MergeIntegration(ctx, options))
+	if !merged.Pushed || merged.Head != added.Head || fixture.verified != 1 {
+		t.Fatalf("record did not survive pinless resume: %+v", merged)
+	}
+	github := &fakePromoteGitHub{fakeIntegrationGitHub: fixture.gh}
+	mustPromote(t, LandSuccess)(PromoteIntegration(ctx, fixture.promoteOptions(github)))
+	if github.creates != 1 || !strings.Contains(github.body, sha) {
+		t.Fatalf("reviewed provenance was not promoted: %+v", github)
+	}
+	// Promotion must fetch the comment again, rather than trust the old record.
+	delete(fixture.gh.comments, 101)
+	refused := mustPromote(t, LandRefused)(PromoteIntegration(ctx, fixture.promoteOptions(github)))
+	if refused.RefusalCode != BatchRefusalUnrecordedMerge || github.creates != 1 {
+		t.Fatalf("missing fresh review was accepted: %+v", refused)
+	}
+}
+
+func TestE2EBatchRefusesIncompleteMergerBeforeChangingHistory(t *testing.T) {
+	t.Parallel()
+	for name, operator := range map[string]ReviewerIdentity{
+		"missing model":   {Harness: "codex", Session: "operator"},
+		"missing harness": {Model: "unknown", Session: "operator"},
+		"unknown harness": {Model: "unknown", Harness: "unknown", Session: "operator"},
+		"missing session": {Model: "unknown", Harness: "codex"},
+		"unknown session": {Model: "unknown", Harness: "codex", Session: "unknown"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			fixture := newIntegrationFixture(t)
+			pin, _ := fixture.lane(fixture.base, "b.go", "package a\n", "reviewer")
+			options := fixture.options(pin)
+			options.operator = func() ReviewerIdentity { return operator }
+			result := mustIntegration(t, LandRefused)(AddToBatch(context.Background(), options))
+			if result.Changed || result.Pushed || igit(t, fixture.work, "rev-parse", "HEAD") != fixture.base || igit(t, fixture.work, "status", "--porcelain") != "" {
+				t.Fatalf("incomplete merger changed history: %+v", result)
+			}
+			// A pinless invocation must also refuse before refreshing from main.
+			fixture.advance("main", "main.go", "package a\n")
+			options.Pins = nil
+			mustIntegration(t, LandRefused)(MergeIntegration(context.Background(), options))
+			if igit(t, fixture.work, "rev-parse", "HEAD") != fixture.base || fixture.verified != 0 {
+				t.Fatal("incomplete merger refreshed or verified the integration branch")
+			}
+		})
+	}
+}
+
+func TestE2EUnknownMergerModelStillRequiresKnownIndependentReviewer(t *testing.T) {
+	t.Parallel()
+	for name, reviewer := range map[string]string{"unknown model": "unknown@codex@reviewer", "operator session": "opus@codex@operator"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			fixture := newIntegrationFixture(t)
+			pin, sha := fixture.lane(fixture.base, "b.go", "package a\n", "reviewer")
+			comment := fixture.gh.comments[101]
+			comment.Body = "**Review by " + reviewer + "**\nReviewed-Head: " + sha + "\n"
+			fixture.gh.comments[101] = comment
+			options := fixture.options(pin)
+			options.operator = func() ReviewerIdentity {
+				return ReviewerIdentity{Model: "unknown", Harness: "codex", Session: "operator"}
+			}
+			result := mustIntegration(t, LandRefused)(AddToBatch(context.Background(), options))
+			if result.RefusalCode != BatchRefusalSourceSelfReview || igit(t, fixture.work, "rev-parse", "HEAD") != fixture.base {
+				t.Fatalf("invalid reviewer was accepted: %+v", result)
+			}
+		})
+	}
+}
+
 func TestE2EBatchRerunRefusesAResolutionThatLostItsTrailers(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

@@ -149,15 +149,50 @@ func TestParseLaneTrailersNeedsEveryTrailer(t *testing.T) {
 	if !ok || record.Branch != "feat/x" || record.SHA != sha || record.CommentID != 7 || record.MergedBy.Session != "m" {
 		t.Fatalf("record = %+v ok = %v", record, ok)
 	}
+	unknownModel := strings.Replace(good, "opus@claude-code@m", "unknown@claude-code@m", 1)
+	if record, ok := parseLaneTrailers(unknownModel); !ok || record.MergedBy.Model != "unknown" {
+		t.Fatalf("truthful unknown merger model was lost: record = %+v ok = %v", record, ok)
+	}
 	for name, message := range map[string]string{
 		"no lane":           strings.Replace(good, "Wb-Lane: feat/x@"+sha, "Wb-Lane: feat/x", 1),
 		"short sha":         strings.Replace(good, "@"+sha+"\n", "@abc\n", 1),
 		"issue comment":     strings.Replace(good, "commit/"+sha+"#commitcomment-7", "pull/1#issuecomment-7", 1),
 		"no digest":         strings.Replace(good, "Wb-Review-Digest: d1\n", "", 1),
 		"incomplete merger": strings.Replace(good, "opus@claude-code@m", "opus@unknown@m", 1),
+		"missing model":     strings.Replace(good, "opus@claude-code@m", "@claude-code@m", 1),
+		"missing session":   strings.Replace(good, "opus@claude-code@m", "unknown@codex@", 1),
+		"unknown session":   strings.Replace(good, "opus@claude-code@m", "unknown@codex@unknown", 1),
 	} {
 		if _, ok := parseLaneTrailers(message); ok {
 			t.Errorf("%s: parsed", name)
+		}
+	}
+}
+
+// TestOperatorIdentityMustNameKnownHarnessAndSession pins the merger rule: an
+// unknown model is recorded truthfully, but a guessed harness or session is
+// refused before any merge exists.
+func TestOperatorIdentityMustNameKnownHarnessAndSession(t *testing.T) {
+	t.Parallel()
+	for name, operator := range map[string]ReviewerIdentity{
+		"missing model":   {Harness: "codex", Session: "operator"},
+		"missing harness": {Model: "unknown", Session: "operator"},
+		"unknown harness": {Model: "unknown", Harness: "unknown", Session: "operator"},
+		"missing session": {Model: "unknown", Harness: "codex"},
+		"unknown session": {Model: "opus", Harness: "codex", Session: "unknown"},
+	} {
+		options := IntegrationOptions{operator: func() ReviewerIdentity { return operator }}
+		if issue := options.checkOperatorIdentity(); issue == nil || issue.Code != BatchRefusalOperatorIdentityIncomplete {
+			t.Errorf("%s: issue = %+v", name, issue)
+		}
+	}
+	for _, operator := range []ReviewerIdentity{
+		{Model: "unknown", Harness: "codex", Session: "operator"},
+		{Model: "opus", Harness: "claude-code", Session: "operator"},
+	} {
+		options := IntegrationOptions{operator: func() ReviewerIdentity { return operator }}
+		if issue := options.checkOperatorIdentity(); issue != nil {
+			t.Errorf("%s was refused: %+v", operator.String(), issue)
 		}
 	}
 }

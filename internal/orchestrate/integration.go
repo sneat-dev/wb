@@ -33,6 +33,9 @@ const (
 	// BatchRefusalSourceSelfReview: the review identity is incomplete or is
 	// the lane author's or the operator's own session.
 	BatchRefusalSourceSelfReview = "batch-source-self-review"
+	// BatchRefusalOperatorIdentityIncomplete: the invoking operator has no
+	// known session or harness, so a merge could not record who made it.
+	BatchRefusalOperatorIdentityIncomplete = "batch-operator-identity-incomplete"
 	// BatchRefusalWorktree: the integration worktree is missing, foreign,
 	// dirty, or does not contain origin/<integration>.
 	BatchRefusalWorktree = "batch-worktree-invalid"
@@ -361,6 +364,24 @@ func identityComplete(identity ReviewerIdentity) bool {
 	return true
 }
 
+// mergerIdentityComplete reports whether an identity may be recorded as the
+// merger of a lane. Unlike a reviewer identity, the model may be the literal
+// "unknown": that is the truthful record when the invoking model is not
+// exposed, and it does not make the merge itself unverifiable. The harness and
+// session must be present and known, because they are what identify the
+// operator, and a merge with guessed provenance must never be created.
+func mergerIdentityComplete(identity ReviewerIdentity) bool {
+	if identity.Model == "" {
+		return false
+	}
+	for _, part := range []string{identity.Harness, identity.Session} {
+		if part == "" || strings.EqualFold(part, unknownIdentityPart) {
+			return false
+		}
+	}
+	return true
+}
+
 func (options IntegrationOptions) command(verb string) string {
 	return fmt.Sprintf("wb %s %s %s --worktree %s", verb, options.Repository, options.integrationArg(verb), shellSingleQuote(options.Worktree))
 }
@@ -387,6 +408,19 @@ func (options IntegrationOptions) rerunCommand() string {
 
 func (options IntegrationOptions) remoteRef() string {
 	return "refs/remotes/origin/" + options.Integration
+}
+
+// checkOperatorIdentity refuses an operator whose provenance cannot be
+// recorded truthfully. It runs before any source merge or target refresh, so a
+// refused run leaves the integration branch exactly as it was rather than
+// creating a merge whose Wb-Merged-By nobody can read or resume.
+func (options IntegrationOptions) checkOperatorIdentity() *BatchIssue {
+	operator := options.resolveOperator()
+	if mergerIdentityComplete(operator) {
+		return nil
+	}
+	return &BatchIssue{Code: BatchRefusalOperatorIdentityIncomplete,
+		Reason: fmt.Sprintf("merger identity %q has no known harness and session; the model may be %q when it is not exposed, but WB never guesses the harness or session: record both and rerun", operator.String(), unknownIdentityPart)}
 }
 
 // checkWorktree applies REQ batch-construction's worktree rule and fetches
@@ -636,7 +670,7 @@ func parseLaneTrailers(message string) (laneRecord, bool) {
 	record := laneRecord{Branch: lane[:at], SHA: strings.ToLower(lane[at+1:]), Review: values[trailerReview],
 		Digest: values[trailerDigest], Reviewer: values[trailerReviewer], MergedBy: ParseReviewerIdentity(values[trailerMergedBy])}
 	comment := commitCommentURLPattern.FindStringSubmatch(record.Review)
-	if !fullSHAPattern.MatchString(record.SHA) || comment == nil || record.Digest == "" || !identityComplete(record.MergedBy) {
+	if !fullSHAPattern.MatchString(record.SHA) || comment == nil || record.Digest == "" || !mergerIdentityComplete(record.MergedBy) {
 		return laneRecord{}, false
 	}
 	record.CommentID, _ = strconv.ParseInt(comment[3], 10, 64) // the pattern admits digits only
@@ -696,6 +730,9 @@ func AddToBatch(ctx context.Context, options IntegrationOptions) (IntegrationRes
 	if issue != nil {
 		return result.refuse(issue.Code, issue.Reason, ""), nil
 	}
+	if issue := options.checkOperatorIdentity(); issue != nil {
+		return result.refuse(issue.Code, issue.Reason, ""), nil
+	}
 	git := options.checkoutGit()
 	if issue := options.checkWorktree(ctx, git); issue != nil {
 		return result.refuse(issue.Code, issue.Reason, ""), nil
@@ -752,6 +789,15 @@ func AddToBatch(ctx context.Context, options IntegrationOptions) (IntegrationRes
 func MergeIntegration(ctx context.Context, options IntegrationOptions) (IntegrationResult, error) {
 	options.verb = "integration merge"
 	result := options.newResult()
+	if !validBranchName(options.Integration) {
+		return result.refuse(BatchRefusalPinInvalid, fmt.Sprintf("%q is not a branch name WB accepts", options.Integration), ""), nil
+	}
+	// Refuse unrecordable operator provenance before any source merge or
+	// target refresh, including a pinless run: a merge WB cannot attribute is
+	// worse than a refusal.
+	if issue := options.checkOperatorIdentity(); issue != nil {
+		return result.refuse(issue.Code, issue.Reason, ""), nil
+	}
 	git := options.checkoutGit()
 	if len(options.Pins) > 0 {
 		added, err := AddToBatch(ctx, options)
@@ -760,9 +806,6 @@ func MergeIntegration(ctx context.Context, options IntegrationOptions) (Integrat
 		}
 		result = added
 	} else {
-		if !validBranchName(options.Integration) {
-			return result.refuse(BatchRefusalPinInvalid, fmt.Sprintf("%q is not a branch name WB accepts", options.Integration), ""), nil
-		}
 		if issue := options.checkWorktree(ctx, git); issue != nil {
 			return result.refuse(issue.Code, issue.Reason, ""), nil
 		}
