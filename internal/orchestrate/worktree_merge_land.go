@@ -234,7 +234,15 @@ func landWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions, sa
 		checkTimeout, shardAttemptTimeout := receiptWorktreeMergeValidationTimeouts(receipt)
 		plan, planErr := planHolder.resolve(ctx, receipt.Repository, receipt.Target, options.Route, options.ValidateLocally, options.AllowUnfenced || receipt.AllowUnfenced, options.DirectCIPullRequest)
 		if planErr != nil {
-			return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, planErr, save)
+			// This failure is route/validation planning, not candidate
+			// evidence: the recorded head has already been guarded above but
+			// not validated yet. Keeping the truthful preparing status leaves
+			// this exact head resumable through this same block; recording a
+			// conflict would strand a published candidate that already
+			// contains every source (no recovery path re-proves it) behind
+			// stale predecessor/repair validation that the publish guard
+			// refuses.
+			return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergePreparing, planErr, save)
 		}
 		validationContext := ctx
 		cancelValidation := func() {}

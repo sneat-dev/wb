@@ -236,6 +236,111 @@ func TestE2EPublishedPrepareConflictRecoveryResumesAfterPlanResolutionFailure(t 
 	}
 }
 
+// TestE2EOrdinaryPreparingPlanFailureResumesNormalJourney is the ordinary
+// preparing validation-block retry regression. A managed exact preparing
+// candidate H already contains the recorded repair Q, every current source, and
+// the recorded target, while the predecessor/repair validation is still
+// recorded at Q. A route/validation-plan failure on the first resume is
+// pre-validation planning, not candidate evidence: the stored status must stay
+// preparing (never conflict), because a conflict for a head that already
+// contains every source has no recovery path that re-proves it, and the
+// publication guard would then refuse the stale Q validation forever.
+//
+// Removing only that planning failure (the route this target's policy permits)
+// must let the SAME ordinary resume validate exact H and land it through the
+// existing pull request onto the real target. StopBeforeMerge stays false
+// explicitly: the optional publish-only guard must not mask a stale-validation
+// defect by stopping before the actual merge.
+//
+//nolint:paralleltest // the scripted provider changes PATH/XDG and the private lane is shared
+func TestE2EOrdinaryPreparingPlanFailureResumesNormalJourney(t *testing.T) {
+	fixture, receipt, published, repair, advanced := newPublishedPrepareRepairConflictFixture(t)
+	resolved := resolvePublishedRepairMerge(t, receipt.Candidate.Worktree, repair, advanced, "a-advanced\nb\n")
+	gh := installWorktreeMergeEngineGH(t, fixture, published, receipt.Candidate.Branch)
+	// The receipt already owns this open publication, so the provider must
+	// report it as existing: adopting it is the only correct continuation and
+	// any `pr create` would be a replacement pull request.
+	gh.writeState(t, "pr-created", "1")
+	target := receipt.TargetSHA
+
+	// The durable ordinary preparing shape: exact guarded H recorded as the
+	// interrupted candidate, the open pull request still at P, and the prior
+	// validation still recorded at Q.
+	receipt.Phase, receipt.Status = WorktreeMergePhasePrepare, WorktreeMergePreparing
+	receipt.Candidate.SHA = resolved
+	receipt.Failure = ""
+	if err := persistWorktreeMergeReceipt(receipt); err != nil {
+		t.Fatal(err)
+	}
+
+	options := wmEngineLandOptions(fixture, receipt.ReceiptPath)
+	options.Route, options.ValidateLocally = WorktreeMergeRouteDirect, true
+	options.StopBeforeMerge = false
+	failed, planErr := ResumeWorktreeMerge(context.Background(), options)
+	if planErr == nil || !strings.Contains(planErr.Error(), "direct route is not authoritatively permitted") {
+		t.Fatalf("preparing plan refusal=%+v error=%v", failed, planErr)
+	}
+	// The failure stays a preparing receipt: the exact head, the recorded
+	// repair validation, the publication, and the target are unchanged, and
+	// nothing was pushed or written to the pull request.
+	if failed.Status != WorktreeMergePreparing || failed.Candidate.SHA != resolved ||
+		failed.PublishedCandidateSHA != published || failed.PullRequest != gh.pr ||
+		failed.TargetSHA != target || failed.LandingSHA != "" || failed.Validation.Revision != repair {
+		t.Fatalf("preparing plan refusal changed recorded identity: %+v", failed)
+	}
+	stored, err := readWorktreeMergeReceipt(receipt.ReceiptPath)
+	if err != nil || stored.Status != WorktreeMergePreparing || stored.Candidate.SHA != resolved ||
+		stored.PublishedCandidateSHA != published || stored.PullRequest != gh.pr ||
+		stored.TargetSHA != target || stored.LandingSHA != "" || stored.Validation.Revision != repair {
+		t.Fatalf("durable preparing plan refusal=%+v error=%v", stored, err)
+	}
+	if head := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD")); head != resolved {
+		t.Fatalf("preparing plan refusal moved the guarded head from %s to %s", resolved, head)
+	}
+	if remote := strings.TrimSpace(runEngineGit(t, fixture.repository.CloneURL, "rev-parse", "refs/heads/"+receipt.Candidate.Branch)); remote != published {
+		t.Fatalf("preparing plan refusal pushed the candidate branch to %s, want %s", remote, published)
+	}
+	if live := strings.TrimSpace(runEngineGit(t, fixture.repository.CloneURL, "rev-parse", "refs/heads/main")); live != target {
+		t.Fatalf("preparing plan refusal moved the target to %s, want %s", live, target)
+	}
+	if log := gh.ghLog(t); strings.Contains(log, "pr create") || strings.Contains(log, "pulls/41/merge") || strings.Contains(log, "update-branch") {
+		t.Fatalf("preparing plan refusal performed a pull-request write:\n%s", log)
+	}
+
+	// Removing only the planning failure lets the same ordinary resume adopt
+	// the existing pull request, validate exact H, fast-forward the published
+	// branch, and merge H onto the real target.
+	options.Route = WorktreeMergeRoutePullRequest
+	options.StopBeforeMerge = false
+	landed, err := ResumeWorktreeMerge(context.Background(), options)
+	if err != nil || landed.Status != WorktreeMergeLanded || landed.Candidate.SHA != resolved ||
+		landed.PublishedCandidateSHA != resolved || landed.PullRequest != gh.pr ||
+		landed.LandingSHA != resolved || landed.Failure != "" ||
+		landed.Validation.Revision != resolved || landed.Validation.Status != quality.StatusPassed {
+		t.Fatalf("normal preparing resume=%+v error=%v", landed, err)
+	}
+	if remote := strings.TrimSpace(runEngineGit(t, fixture.repository.CloneURL, "rev-parse", "refs/heads/"+receipt.Candidate.Branch)); remote != resolved {
+		t.Fatalf("normal resume published branch=%s, want %s", remote, resolved)
+	}
+	if live := strings.TrimSpace(runEngineGit(t, fixture.repository.CloneURL, "rev-parse", "refs/heads/main")); live != resolved {
+		t.Fatalf("normal resume landed target=%s, want %s", live, resolved)
+	}
+	if got := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD")); got != resolved {
+		t.Fatalf("normal resume canonical target=%s, want %s", got, resolved)
+	}
+	assertNativeAncestor(t, fixture.repository.CloneURL, published, resolved)
+	if log := gh.ghLog(t); strings.Contains(log, "pr create") ||
+		!strings.Contains(log, "api --method PUT repos/acme/app/pulls/41/merge") || !strings.Contains(log, "sha="+resolved) {
+		t.Fatalf("normal resume did not merge the same existing pull request:\n%s", log)
+	}
+	stored, err = readWorktreeMergeReceipt(receipt.ReceiptPath)
+	if err != nil || stored.Status != WorktreeMergeLanded || stored.Candidate.SHA != resolved ||
+		stored.PublishedCandidateSHA != resolved || stored.PullRequest != gh.pr ||
+		stored.LandingSHA != resolved || stored.Validation.Revision != resolved {
+		t.Fatalf("durable normal resume=%+v error=%v", stored, err)
+	}
+}
+
 // TestE2EPublishedPrepareConflictRecoveryResumesExistingPullRequest drives the
 // legacy empty-SHA published prepare conflict through the ordinary
 // ResumeWorktreeMerge entry point: fresh private-Git and hosted proofs, the
