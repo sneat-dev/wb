@@ -38,7 +38,7 @@ const datatugShapedRules = `[{"type":"required_status_checks","ruleset_id":25200
 
 func TestTargetMergeQueueReadsTheQueueRuleItsMethodAndGrouping(t *testing.T) {
 	t.Parallel()
-	policy, err := TargetMergeQueue(mergeQueueRulesReader(t, datatugShapedRules, nil), "acme/app", "main")
+	policy, _, err := TargetMergeQueue(mergeQueueRulesReader(t, datatugShapedRules, nil), "acme/app", "main")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestTargetMergeQueueReadsTheQueueRuleItsMethodAndGrouping(t *testing.T) {
 
 func TestTargetMergeQueueReportsNoQueueWhenNoRuleRequiresOne(t *testing.T) {
 	t.Parallel()
-	policy, err := TargetMergeQueue(mergeQueueRulesReader(t, `[{"type":"pull_request"}]`, nil), "acme/app", "main")
+	policy, _, err := TargetMergeQueue(mergeQueueRulesReader(t, `[{"type":"pull_request"}]`, nil), "acme/app", "main")
 	if err != nil || policy != nil {
 		t.Fatalf("policy = %+v, err = %v; want no queue", policy, err)
 	}
@@ -58,7 +58,7 @@ func TestTargetMergeQueueReportsNoQueueWhenNoRuleRequiresOne(t *testing.T) {
 
 func TestTargetMergeQueueNeverReadsAnUnreadableRuleSetAsNoQueue(t *testing.T) {
 	t.Parallel()
-	_, err := TargetMergeQueue(mergeQueueRulesReader(t, "", errors.New("HTTP 502")), "acme/app", "main")
+	_, _, err := TargetMergeQueue(mergeQueueRulesReader(t, "", errors.New("HTTP 502")), "acme/app", "main")
 	if err == nil || !strings.Contains(err.Error(), "read active branch rules for target main: HTTP 502") {
 		t.Fatalf("err = %v", err)
 	}
@@ -66,7 +66,7 @@ func TestTargetMergeQueueNeverReadsAnUnreadableRuleSetAsNoQueue(t *testing.T) {
 
 func TestTargetMergeQueueRefusesAMergeMethodItDoesNotRecognise(t *testing.T) {
 	t.Parallel()
-	_, err := TargetMergeQueue(mergeQueueRulesReader(t, `[{"type":"merge_queue","ruleset_id":4,"parameters":{"merge_method":"FAST_FORWARD"}}]`, nil), "acme/app", "main")
+	_, _, err := TargetMergeQueue(mergeQueueRulesReader(t, `[{"type":"merge_queue","ruleset_id":4,"parameters":{"merge_method":"FAST_FORWARD"}}]`, nil), "acme/app", "main")
 	if err == nil || !strings.Contains(err.Error(), `merge queue ruleset 4 on main names merge method "FAST_FORWARD"`) {
 		t.Fatalf("err = %v", err)
 	}

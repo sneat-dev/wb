@@ -239,8 +239,12 @@ case "$*" in
       printf '[]'
     fi ;;
   'api repos/acme/app/branches/main --include'|'api repos/acme/app/branches/main')
+    # free-plan: a private repository whose plan offers neither classic
+    # protection nor rulesets reports an empty, unenforced block.
+    if [ -f "$S/free-plan" ]; then printf '%s\n' '{"protected":false,"protection":{"enabled":false,"required_status_checks":{"checks":[],"contexts":[],"enforcement_level":"off"}}}'; exit 0; fi
     printf '%s\n' '{"protected":true,"protection":{"required_status_checks":{"checks":[{"context":"CI","app_id":42}]}}}' ;;
   'api repos/acme/app/branches/main/protection/required_status_checks --include'|'api repos/acme/app/branches/main/protection/required_status_checks')
+    if [ -f "$S/free-plan" ]; then echo 'gh: Upgrade to GitHub Pro or make this repository public to enable this feature. (HTTP 403)' >&2; exit 1; fi
     if [ -f "$S/unfenced" ]; then strict=false; else strict=true; fi
     printf '{"strict":%s,"contexts":[],"checks":[{"context":"CI","app_id":42}]}\n' "$strict" ;;
   'api repos/acme/app/rules/branches/main?per_page=100 --include'|'api repos/acme/app/rules/branches/main?per_page=100')

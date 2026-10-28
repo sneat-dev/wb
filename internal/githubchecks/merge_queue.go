@@ -24,13 +24,20 @@ type MergeQueuePolicy struct {
 
 // TargetMergeQueue reports the merge queue the target's active rules require,
 // or nil when none does. An unreadable rule set is an error, never "no
-// queue": a caller that guessed wrong would merge around the queue.
-func TargetMergeQueue(ctx context.Context, repository, target string) (*MergeQueuePolicy, error) {
+// queue": a caller that guessed wrong would merge around the queue. The one
+// exception is a repository whose plan offers no rulesets
+// (IsBranchPolicyUnavailableByPlan): no queue can apply there, so it returns no
+// queue and GitHub's refusal as rulesetsUnavailable for the caller's receipt.
+func TargetMergeQueue(ctx context.Context, repository, target string) (policy *MergeQueuePolicy, rulesetsUnavailable string, err error) {
 	pages, err := ActiveRules(ctx, repository, target)
-	if err != nil {
-		return nil, fmt.Errorf("read active branch rules for target %s: %w", target, err)
+	if IsBranchPolicyUnavailableByPlan(err) {
+		return nil, err.Error(), nil
 	}
-	return mergeQueueFromRules(pages, target)
+	if err != nil {
+		return nil, "", fmt.Errorf("read active branch rules for target %s: %w", target, err)
+	}
+	policy, err = mergeQueueFromRules(pages, target)
+	return policy, "", err
 }
 
 // IsPolicyUnavailableByPlan reports a target-policy read GitHub refused with
@@ -40,6 +47,25 @@ func TargetMergeQueue(ctx context.Context, repository, target string) (*MergeQue
 // around a queue does not pass it.
 func IsPolicyUnavailableByPlan(err error) bool {
 	return err != nil && isGitHubPolicyPlan403(err.Error())
+}
+
+// githubBranchPolicyPlanGateMessage is GitHub's exact refusal of a rulesets
+// or classic branch-protection read on a private repository whose plan offers
+// neither (a free organisation or personal account).
+const githubBranchPolicyPlanGateMessage = "Upgrade to GitHub Pro or make this repository public to enable this feature."
+
+// IsBranchPolicyUnavailableByPlan reports the one 403 GitHub answers a
+// branch-policy read with when the repository's plan cannot have that policy.
+// None of it can then apply to the target, so it is "no rules", not an
+// unreadable policy. Every other 403 — a missing scope, an integration without
+// access — leaves policy that may exist unread and must still fail closed.
+func IsBranchPolicyUnavailableByPlan(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "gh: "+githubBranchPolicyPlanGateMessage+" (HTTP 403)") ||
+		(strings.Contains(message, "HTTP 403") && strings.Contains(message, `"message":"`+githubBranchPolicyPlanGateMessage+`"`))
 }
 
 func mergeQueueFromRules(pages [][]ActiveBranchRule, target string) (*MergeQueuePolicy, error) {

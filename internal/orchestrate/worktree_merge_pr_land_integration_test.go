@@ -96,11 +96,16 @@ merge_sha=""
 if [ "$merged" = true ]; then merge_sha=$(git --git-dir="$WB_TEST_REMOTE" rev-parse refs/heads/main); fi
 case "$*" in
   'api repos/acme/app/branches/main --include'|'api repos/acme/app/branches/main')
+    # free-plan: a private repository whose plan offers neither classic
+    # protection nor rulesets; GitHub refuses both policy reads with a 403.
+    if [ -f "$S/free-plan" ]; then printf '%s\n' '{"protected":false,"protection":{"enabled":false,"required_status_checks":{"checks":[],"contexts":[],"enforcement_level":"off"}}}'; exit 0; fi
     printf '%s\n' '{"protected":true,"protection":{"required_status_checks":{"checks":[{"context":"CI","app_id":42}]}}}' ;;
   'api repos/acme/app/branches/main/protection/required_status_checks --include'|'api repos/acme/app/branches/main/protection/required_status_checks')
+    if [ -f "$S/free-plan" ]; then echo 'gh: Upgrade to GitHub Pro or make this repository public to enable this feature. (HTTP 403)' >&2; exit 1; fi
     if [ -f "$S/unfenced" ]; then strict=false; else strict=true; fi
     printf '{"strict":%s,"contexts":[],"checks":[{"context":"CI","app_id":42}]}\n' "$strict" ;;
   'api repos/acme/app/rules/branches/main?per_page=100 --include'|'api repos/acme/app/rules/branches/main?per_page=100')
+    if [ -f "$S/free-plan" ]; then echo 'gh: Upgrade to GitHub Pro or make this repository public to enable this feature. (HTTP 403)' >&2; exit 1; fi
     if [ -f "$S/rules" ]; then cat "$S/rules"; else printf '%s\n' '[]'; fi ;;
   'pr list --head '*' --base main --state open --json url --jq .[0].url')
     # Once this fixture's own 'pr create' has answered once, the PR genuinely
@@ -404,6 +409,33 @@ func TestLandWorktreeMergePullRequestRouteDelegatesToTheSharedEngine(t *testing.
 	}
 	if gh.readState(t, "auto-merge") != "armed" {
 		t.Fatalf("auto-merge was never armed")
+	}
+}
+
+// TestLandWorktreeMergePullRequestOnAFreePlanPrivateRepositoryLandsUnderAllowUnfenced
+// reproduces meaninggraph/meaninggraph (2026-10-28): GitHub refuses the
+// rulesets read with its plan gate, which means no ruleset applies, so the
+// landing proceeds and the receipt records the gap instead of aborting.
+func TestLandWorktreeMergePullRequestOnAFreePlanPrivateRepositoryLandsUnderAllowUnfenced(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "free-plan-source", "feature/free-plan", "free-plan.txt", "free plan\n")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gh := installWorktreeMergeEngineGH(t, fixture, receipt.Candidate.SHA, receipt.Candidate.Branch)
+	gh.writeState(t, "free-plan", "1")
+
+	options := wmEngineLandOptions(fixture, receipt.ReceiptPath)
+	options.AllowUnfenced, options.Cleanup = true, true
+	landed, err := ResumeWorktreeMerge(context.Background(), options)
+	if err != nil || landed.Status != WorktreeMergeComplete {
+		t.Fatalf("landing on a free-plan repository: status = %s, failure = %q, err = %v", landed.Status, landed.Failure, err)
+	}
+	if !strings.Contains(landed.Checks.RequiredChecksAuthority, "rulesets-unavailable-by-plan") {
+		t.Fatalf("receipt checks authority = %q, want the plan-gated rulesets recorded", landed.Checks.RequiredChecksAuthority)
 	}
 }
 
