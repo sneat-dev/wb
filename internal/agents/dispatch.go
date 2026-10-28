@@ -682,7 +682,19 @@ func managedWorktreeEntry(ctx context.Context, target Target, deps DispatchDeps)
 	if deps.ListWorktrees == nil {
 		return worktrees.ListResult{}, fmt.Errorf("resolve the managed worktree inventory for %s: no inventory reader is available", target.Dir)
 	}
-	results, err := deps.ListWorktrees(ctx, worktrees.ListOptions{ProjectsRoot: deps.ProjectsRoot})
+	// Narrow the inventory to this exact target before the walk starts. These
+	// selectors only shorten the search: an entry is still admitted below only
+	// when its real path and repository match exactly. An unresolved fact stays
+	// unset rather than guessed, so an unknown task never falls back to the
+	// directory basename, and a wrong selector can only exclude the target.
+	options := worktrees.ListOptions{ProjectsRoot: deps.ProjectsRoot}
+	if repository := strings.TrimSpace(target.Repository); repository != "" {
+		options.Filter = repository
+	}
+	if task := strings.TrimSpace(target.WorktreeName); task != "" {
+		options.Task = task
+	}
+	results, err := deps.ListWorktrees(ctx, options)
 	if err != nil {
 		return worktrees.ListResult{}, fmt.Errorf("resolve the managed worktree inventory for %s: %w", target.Dir, err)
 	}

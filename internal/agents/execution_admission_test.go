@@ -148,6 +148,105 @@ func TestMandatoryPathTargetRefusesCanonicalEvenWithTheLegacyOverride(t *testing
 	}
 }
 
+func TestMandatoryTargetInventorySelectorsNarrowTheSearchWithoutInventingATask(t *testing.T) {
+	t.Parallel()
+	const canonical = "/fleet/repo"
+	cases := map[string]struct {
+		target     Target
+		wantFilter string
+		wantTask   string
+	}{
+		"known repository and task select both": {
+			target:     Target{Repository: "acme/app", Dir: "/fleet/repo/.worktrees/task-one", WorktreeName: "task-one"},
+			wantFilter: "acme/app", wantTask: "task-one",
+		},
+		"unknown task is never invented from the directory basename": {
+			target:     Target{Repository: "acme/app", Dir: "/fleet/repo/.worktrees/task-one"},
+			wantFilter: "acme/app", wantTask: "",
+		},
+		"selectors are trimmed before the search": {
+			target:     Target{Repository: " acme/app ", Dir: "/fleet/repo/.worktrees/task-one", WorktreeName: " task-one "},
+			wantFilter: "acme/app", wantTask: "task-one",
+		},
+	}
+	for name, testCase := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			entry := worktrees.ListResult{
+				Task: "task-one", Repository: "acme/app",
+				WorktreeDir: testCase.target.Dir, CanonicalDir: canonical,
+			}
+			calls := 0
+			var captured worktrees.ListOptions
+			deps := DispatchDeps{
+				ProjectsRoot: "/fleet",
+				ListWorktrees: func(_ context.Context, options worktrees.ListOptions) ([]worktrees.ListResult, error) {
+					calls++
+					captured = options
+					return []worktrees.ListResult{entry}, nil
+				},
+			}
+			if _, err := resolveMandatoryTarget(context.Background(), testCase.target, deps); err != nil {
+				t.Fatalf("a matching managed entry must resolve: %v", err)
+			}
+			if calls != 1 {
+				t.Fatalf("inventory calls = %d, want exactly one", calls)
+			}
+			if captured.ProjectsRoot != "/fleet" {
+				t.Fatalf("projects root = %q, want /fleet", captured.ProjectsRoot)
+			}
+			if captured.Filter != testCase.wantFilter {
+				t.Fatalf("filter = %q, want %q", captured.Filter, testCase.wantFilter)
+			}
+			if captured.Task != testCase.wantTask {
+				t.Fatalf("task = %q, want %q", captured.Task, testCase.wantTask)
+			}
+		})
+	}
+}
+
+func TestMandatoryTargetRefusesWhenTheNarrowedInventoryHasNoExactEntry(t *testing.T) {
+	t.Parallel()
+	const (
+		worktreeDir = "/fleet/repo/.worktrees/task-one"
+		canonical   = "/fleet/repo"
+	)
+	entry := worktrees.ListResult{
+		Task: "task-one", Repository: "acme/app", WorktreeDir: worktreeDir, CanonicalDir: canonical,
+	}
+	// A fake inventory that honours the selectors the way List does: they can
+	// only exclude, never widen, so a wrong selector must yield no entry.
+	honouringSelectors := func(results []worktrees.ListResult) func(context.Context, worktrees.ListOptions) ([]worktrees.ListResult, error) {
+		return func(_ context.Context, options worktrees.ListOptions) ([]worktrees.ListResult, error) {
+			selected := make([]worktrees.ListResult, 0, len(results))
+			for _, result := range results {
+				if filter := strings.TrimSpace(options.Filter); filter != "" && !strings.Contains(strings.ToLower(result.Repository), strings.ToLower(filter)) {
+					continue
+				}
+				if task := strings.TrimSpace(options.Task); task != "" && result.Task != task {
+					continue
+				}
+				selected = append(selected, result)
+			}
+			return selected, nil
+		}
+	}
+	cases := map[string]Target{
+		"wrong repository": {Repository: "acme/other", Dir: worktreeDir, WorktreeName: "task-one"},
+		"wrong task":       {Repository: "acme/app", Dir: worktreeDir, WorktreeName: "task-two"},
+	}
+	for name, target := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			deps := DispatchDeps{ListWorktrees: honouringSelectors([]worktrees.ListResult{entry})}
+			_, err := resolveMandatoryTarget(context.Background(), target, deps)
+			if err == nil || !strings.Contains(err.Error(), "not an entry in WB's managed worktree inventory") {
+				t.Fatalf("a selector that excludes the only entry must refuse, error = %v", err)
+			}
+		})
+	}
+}
+
 func TestExecutionWorkspaceSnapshotUsesOnlyTheTrustedCanonicalGitDirectory(t *testing.T) {
 	t.Parallel()
 	target := worktreeResolution{Dir: "/fleet/repo/.worktrees/task-one", CanonicalDir: "/fleet/repo"}
