@@ -3,12 +3,14 @@ package orchestrate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/quality"
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -377,6 +379,98 @@ func TestPrepareLegacyPublishedAdvanceValidationFailureRetainsHPrimeAndIntent(t 
 // target and hosted pull-request identity, and every recorded root. A refusal
 // must leave the receipt, the resolved head, and the publication untouched.
 //
+// TestRecoverLegacyPublishedPrepareAdvanceAdmitsOnlyTheAdvancedEmptyShapeUnit
+// pins the bridge's own admission boundary and its locked source re-read at the
+// shared proof seam: nil, non-prepare-conflict, and recorded-candidate receipts
+// never enter, while a dirty current source is refused before H is adopted.
+//
+//nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
+func TestRecoverLegacyPublishedPrepareAdvanceAdmitsOnlyTheAdvancedEmptyShapeUnit(t *testing.T) {
+	fixture := newLegacyPublishedAdvanceFixture(t)
+	current := []WorktreeMergeSource{{Task: fixture.receipt.Sources[0].Task, Worktree: fixture.source, Branch: fixture.receipt.Sources[0].Branch, SHA: fixture.currentSource}}
+
+	if changed, err := recoverLegacyPublishedPrepareAdvanceWithRunner(t.Context(), runner.New(), fixture.githubDir, nil, current, 0, 0); changed || err != nil {
+		t.Fatalf("nil receipt changed=%v error=%v", changed, err)
+	}
+	landPhase := fixture.receipt
+	landPhase.Phase = WorktreeMergePhaseLand
+	if changed, err := recoverLegacyPublishedPrepareAdvanceWithRunner(t.Context(), runner.New(), fixture.githubDir, &landPhase, current, 0, 0); changed || err != nil {
+		t.Fatalf("land-phase receipt changed=%v error=%v", changed, err)
+	}
+	recorded := fixture.receipt
+	recorded.Candidate.SHA = fixture.resolvedHead
+	before := recorded
+	if changed, err := recoverLegacyPublishedPrepareAdvanceWithRunner(t.Context(), runner.New(), fixture.githubDir, &recorded, current, 0, 0); changed || err != nil || recorded.Candidate.SHA != before.Candidate.SHA {
+		t.Fatalf("recorded-candidate receipt changed=%v error=%v receipt=%+v", changed, err, recorded)
+	}
+
+	dirty := fixture.receipt
+	writeEngineFile(t, filepath.Join(fixture.source, "dirty.txt"), "dirty\n")
+	beforeDirty := dirty
+	changed, err := recoverLegacyPublishedPrepareAdvanceWithRunner(t.Context(), runner.New(), fixture.githubDir, &dirty, current, 0, 0)
+	if changed || err == nil || !strings.Contains(err.Error(), "worktree is dirty") || dirty.Candidate.SHA != "" {
+		t.Fatalf("dirty current source changed=%v error=%v receipt=%+v", changed, err, dirty)
+	}
+	if dirty.Candidate.SHA != beforeDirty.Candidate.SHA || dirty.Status != beforeDirty.Status || dirty.Failure != beforeDirty.Failure {
+		t.Fatalf("dirty current source mutated the receipt: %+v", dirty)
+	}
+
+	sentinel := errors.New("controlled source ancestry read refused")
+	run := conflictNegativeRunner{Runner: runner.New(), dir: fixture.source, argv: "merge-base " + fixture.oldSource + " " + fixture.currentSource, err: sentinel}
+	negative := fixture.receipt
+	beforeNegative := negative
+	changed, err = recoverLegacyPublishedPrepareAdvanceWithRunner(t.Context(), run, fixture.githubDir, &negative, current, 0, 0)
+	if changed || !errors.Is(err, sentinel) || negative.Candidate.SHA != beforeNegative.Candidate.SHA {
+		t.Fatalf("negative ancestry changed=%v error=%v receipt=%+v", changed, err, negative)
+	}
+}
+
+// TestPrepareLegacyPublishedAdvanceReProvesUnderTheLaneLock covers the
+// post-lock re-proof: a receipt that changes between the pre-lock decision and
+// the locked re-read must be refused before any source is integrated.
+//
+//nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
+func TestPrepareLegacyPublishedAdvanceReProvesUnderTheLaneLock(t *testing.T) {
+	fixture := newLegacyPublishedAdvanceFixture(t)
+	gh := installWorktreeMergeEngineGH(t, fixture.engineFixture, fixture.published, fixture.receipt.Candidate.Branch)
+	receiptPath := fixture.receipt.ReceiptPath
+	unrelated := unrelatedLegacyRoot(t, fixture.engineFixture, "post-lock-unrelated-root")
+	mutated := false
+	read := func(path string) (WorktreeMergeReceipt, error) {
+		receipt, err := readWorktreeMergeReceipt(path)
+		if err == nil && path == receiptPath && !mutated {
+			// Only the locked re-read sees a publication identity that the
+			// earlier pre-lock proof could not have accepted.
+			mutated = true
+			receipt.PublishedCandidateSHA = unrelated
+		}
+		return receipt, err
+	}
+	_, err := prepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{fixture.source}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	}, read, persistWorktreeMergeReceipt)
+	if err == nil || !strings.Contains(err.Error(), "does not contain required immutable root") {
+		t.Fatalf("post-lock re-proof error=%v", err)
+	}
+	if !mutated {
+		t.Fatal("post-lock re-read was never exercised")
+	}
+	stored, readErr := readWorktreeMergeReceipt(receiptPath)
+	if readErr != nil || stored.Candidate.SHA != "" || stored.Status != WorktreeMergeConflict ||
+		stored.PublishedCandidateSHA != fixture.published || stored.Sources[0].SHA != fixture.oldSource {
+		t.Fatalf("post-lock refusal mutated the durable receipt=%+v error=%v", stored, readErr)
+	}
+	if head := strings.TrimSpace(runEngineGit(t, fixture.receipt.Candidate.Worktree, "rev-parse", "HEAD")); head != fixture.resolvedHead {
+		t.Fatalf("post-lock refusal moved the resolved head from %s to %s", fixture.resolvedHead, head)
+	}
+	if remote := strings.TrimSpace(runEngineGit(t, fixture.repository.CloneURL, "rev-parse", "refs/heads/"+fixture.candidateBranch)); remote != fixture.published {
+		t.Fatalf("post-lock refusal moved the published branch to %s, want %s", remote, fixture.published)
+	}
+	if log := gh.ghLog(t); strings.Contains(log, "pr create") || strings.Contains(log, "pulls/41/merge") || strings.Contains(log, "update-branch") {
+		t.Fatalf("post-lock refusal performed a pull-request write:\n%s", log)
+	}
+}
+
 // TestPrepareLegacyPublishedAdvanceRefusesUnprovenCustodyAndRoots drives the
 // new normal-prepare entry point over every evidence class the shared 938
 // proof owns: source custody and ancestry, candidate/canonical/claim custody,

@@ -218,8 +218,37 @@ func recoverPublishedPrepareConflictCandidateProvedWithRunner(ctx context.Contex
 	return true, nil
 }
 
-// recoverLegacyPublishedPrepareAdvanceWithRunner is the one prepare-only bridge
-// for a legacy published prepare conflict whose candidate snapshot is empty
+// requireCapturedLegacyPublishedPrepareCandidateWithRunner re-reads the managed
+// candidate's physical head and requires the exact captured H. The shared proof
+// already re-proved that a head contains every recorded root; this is the
+// operation's own immutable identity, so it refuses even a strict descendant
+// that would silently replace H and its candidate-only repair.
+func requireCapturedLegacyPublishedPrepareCandidateWithRunner(ctx context.Context, run runner.Runner, worktree, captured string) error {
+	head, err := mergeRevision(ctx, run, worktree, "HEAD")
+	if err != nil {
+		return fmt.Errorf("read captured legacy published prepare candidate: %w", err)
+	}
+	if head != captured {
+		return fmt.Errorf("legacy published prepare candidate head drifted from captured %s to %s", captured, head)
+	}
+	return nil
+}
+
+// requireLegacyPublishedPrepareRetainsCapturedWithRunner proves an integrated
+// checkpoint still descends the captured H before any receipt records it as the
+// new candidate identity.
+func requireLegacyPublishedPrepareRetainsCapturedWithRunner(ctx context.Context, run runner.Runner, worktree, captured, head string) error {
+	contains, err := isMergeAncestorWithRunner(ctx, run, worktree, captured, head)
+	if err != nil {
+		return fmt.Errorf("prove integrated candidate retains the captured legacy published prepare candidate: %w", err)
+	}
+	if !contains {
+		return fmt.Errorf("integrated candidate %s does not retain captured legacy published prepare candidate %s", head, captured)
+	}
+	return nil
+}
+
+// recoverLegacyPublishedPrepareAdvanceWithRunner is the one prepare-only bridge// for a legacy published prepare conflict whose candidate snapshot is empty
 // while the same ordered source custody strictly advanced. Ordinary prepare
 // cannot refresh such a receipt (its refresh owner requires local HEAD ==
 // Candidate.SHA) and exact-source resume rightly refuses the advanced source.
@@ -244,19 +273,12 @@ func recoverLegacyPublishedPrepareAdvanceWithRunner(ctx context.Context, run run
 	}
 	return recoverPublishedPrepareConflictCandidateProvedWithRunner(ctx, run, projectsRoot, receipt, timeout, retry,
 		func(ctx context.Context, run runner.Runner, receipt WorktreeMergeReceipt) error {
-			// Re-prove the exact compaction at the shared proof's own source
-			// re-read point: the new source heads must still be the same
-			// ordered custody, each a strict descendant of its recorded old
-			// snapshot, and exactly what the current worktrees contain. The old
-			// snapshot stays an ancestry proof; physical source HEAD is never
-			// rewound to it.
-			advanced, err := worktreeMergeSourcesAdvanced(ctx, run, receipt.Sources, current)
-			if err != nil {
-				return err
-			}
-			if !advanced {
-				return errors.New("current source snapshots no longer strictly advance the receipted custody")
-			}
+			// The strict same-custody advance was proved immediately above on
+			// this same locked snapshot, and the old source snapshots stay
+			// ancestry proofs rather than a demand to rewind physical source
+			// HEAD. Re-read the exact current source heads here so a source
+			// that moves while the rest of the proof runs is refused before H
+			// is adopted.
 			return recheckWorktreeMergeSourcesWithRunner(ctx, run, current)
 		})
 }
