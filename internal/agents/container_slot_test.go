@@ -18,13 +18,19 @@ const (
 	testContainerNonce  = "0123456789abcdef0123456789abcdef"
 	testContainerID     = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	testContainerID2    = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+	// testContainerDaemonID is the Docker Engine identity the common fake
+	// fixtures report. A reservation binds it before create.
+	testContainerDaemonID  = "1111111111111111111111111111111111111111111111111111111111111111"
+	testContainerDaemonID2 = "2222222222222222222222222222222222222222222222222222222222222222"
+	testContainerContext   = "default"
 )
 
 func testContainerReservation() ContainerReservation {
 	return ContainerReservation{
-		RunID: testContainerRunID,
-		Name:  testContainerName,
-		Nonce: testContainerNonce,
+		RunID:    testContainerRunID,
+		Name:     testContainerName,
+		Nonce:    testContainerNonce,
+		DaemonID: testContainerDaemonID,
 	}
 }
 
@@ -56,20 +62,37 @@ func openTestContainerSlot(t *testing.T, stateDir string) *ContainerSlot {
 
 func TestContainerSlotDefaultStateDirIsIndependentOfProject(t *testing.T) {
 	t.Parallel()
-	configDir, err := os.UserConfigDir()
+	home, err := os.UserHomeDir()
 	if err != nil {
-		t.Skipf("this environment has no user configuration directory: %v", err)
+		t.Skipf("this environment has no user home directory: %v", err)
 	}
 	got, err := ContainerSlotStateDir()
 	if err != nil {
 		t.Fatalf("ContainerSlotStateDir: %v", err)
 	}
-	want := filepath.Join(configDir, "wb", "linux-execution")
+	want := filepath.Join(home, ".config", "wb", "linux-execution")
 	if got != want {
 		t.Fatalf("default state directory = %s, want %s", got, want)
 	}
 	if cwd, err := os.Getwd(); err == nil && strings.HasPrefix(got, cwd+string(filepath.Separator)) {
 		t.Fatalf("default state directory %s is inside the project %s", got, cwd)
+	}
+}
+
+func TestContainerSlotDefaultStateDirIgnoresXDGConfigHome(t *testing.T) {
+	baseline, err := ContainerSlotStateDir()
+	if err != nil {
+		t.Skipf("this environment has no user home directory: %v", err)
+	}
+	for _, xdg := range []string{"/tmp/wb-xdg-one", "/tmp/wb-xdg-two"} {
+		t.Setenv("XDG_CONFIG_HOME", xdg)
+		got, err := ContainerSlotStateDir()
+		if err != nil {
+			t.Fatalf("ContainerSlotStateDir with XDG_CONFIG_HOME=%s: %v", xdg, err)
+		}
+		if got != baseline {
+			t.Fatalf("XDG_CONFIG_HOME=%s moved the single-user slot to %s, want the fixed %s", xdg, got, baseline)
+		}
 	}
 }
 
@@ -307,6 +330,10 @@ func TestContainerSlotReserveValidatesTheReservationIdentity(t *testing.T) {
 		{"uppercase nonce", func(r *ContainerReservation) { r.Nonce = strings.ToUpper(testContainerNonce) }},
 		{"short nonce", func(r *ContainerReservation) { r.Nonce = "abcd" }},
 		{"container ID at reserve", func(r *ContainerReservation) { r.ContainerID = testContainerID }},
+		{"missing daemon identity", func(r *ContainerReservation) { r.DaemonID = "" }},
+		{"option-shaped daemon identity", func(r *ContainerReservation) { r.DaemonID = "--host" }},
+		{"daemon identity with whitespace", func(r *ContainerReservation) { r.DaemonID = "daemon one" }},
+		{"oversized daemon identity", func(r *ContainerReservation) { r.DaemonID = strings.Repeat("a", 129) }},
 	}
 	for _, testCase := range cases {
 		reservation := testContainerReservation()
@@ -372,6 +399,15 @@ func TestContainerSlotRefusesMalformedOversizedOrInsecureReservations(t *testing
 		{"invalid container ID", func(t *testing.T, dir string) {
 			reservation := testContainerReservation()
 			reservation.ContainerID = "deadbeef"
+			raw, err := json.Marshal(reservation)
+			if err != nil {
+				t.Fatalf("marshal reservation: %v", err)
+			}
+			writeContainerSlotFile(t, filepath.Join(dir, "reservation.json"), raw, 0o600)
+		}},
+		{"invalid daemon identity", func(t *testing.T, dir string) {
+			reservation := testContainerReservation()
+			reservation.DaemonID = "daemon one"
 			raw, err := json.Marshal(reservation)
 			if err != nil {
 				t.Fatalf("marshal reservation: %v", err)

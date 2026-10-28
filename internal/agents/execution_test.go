@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/worktrees"
 	"gopkg.in/yaml.v3"
 )
 
@@ -517,7 +518,7 @@ func TestDryRunPlanDocumentCarriesTheMandatoryPolicy(t *testing.T) {
 	}
 }
 
-func TestDispatchRefusesToRunOutsideAConfiguredMandatorySandbox(t *testing.T) {
+func TestDispatchRefusesAnUnsupportedHarnessUnderAConfiguredMandatorySandbox(t *testing.T) {
 	// Not parallel: the dispatch fixture pins environment variables.
 	fixture := newDispatchFixture(t)
 	body := executionYAML(ExecutionModeLinuxContainer, executionTestImage, 8589934592, 8589934592, 2, 128, 1) + `  profiles:
@@ -535,8 +536,8 @@ func TestDispatchRefusesToRunOutsideAConfiguredMandatorySandbox(t *testing.T) {
 	if err == nil {
 		t.Fatal("a mandatory sandbox this build cannot enforce must refuse the dispatch")
 	}
-	if !strings.Contains(err.Error(), "refusing to run it outside the mandatory sandbox") {
-		t.Fatalf("error = %v", err)
+	if !strings.Contains(err.Error(), "can execute only the") || !strings.Contains(err.Error(), HarnessDSH) {
+		t.Fatalf("error = %v, want the unsupported-harness refusal naming %q", err, HarnessDSH)
 	}
 	if probes != 0 || versions != 0 {
 		t.Fatalf("a refused dispatch probed the host: preflight=%d detect-version=%d", probes, versions)
@@ -551,6 +552,121 @@ func TestDispatchRefusesToRunOutsideAConfiguredMandatorySandbox(t *testing.T) {
 	}
 	if len(records) != 0 {
 		t.Fatalf("a refused dispatch persisted a run: %#v", records)
+	}
+}
+
+func TestDispatchAdmitsMatchingContainedDshWithoutHostProbes(t *testing.T) {
+	// Not parallel: the dispatch fixture pins environment variables.
+	fixture := newDispatchFixture(t)
+	body := executionYAML(ExecutionModeLinuxContainer, executionTestImage, 8589934592, 8589934592, 2, 128, 1) + `  providers:
+    deepseek-official:
+      base_url: https://api.deepseek.com
+      credential_env: WB_TEST_DEEPSEEK_OFFICIAL_KEY
+      wire_api: chat
+  profiles:
+    ds: { harness: dsh, model: deepseek-flash }
+`
+	fixture.deps.LoadConfig = func() (Config, error) {
+		return LoadConfigFile(writeConfig(t, body))
+	}
+	fixture.deps.CreateWorktree = func(_ context.Context, _ []string, _ worktrees.CreateOptions) ([]worktrees.CreateResult, error) {
+		fixture.createCalls++
+		return []worktrees.CreateResult{{
+			Repository: "acme/app", CanonicalDir: "/fleet/acme/app",
+			WorktreeDir: "/fleet/.worktrees/task-one", Branch: "task-one",
+			Base: "main", BaseSHA: "abc123", Action: "created",
+		}}, nil
+	}
+	probes, versions := 0, 0
+	fixture.deps.Preflight = func(context.Context, Resolved) error { probes++; return nil }
+	fixture.deps.DetectVersion = func(context.Context, string) string { versions++; return "host-version" }
+	request := newRequest()
+	request.Profile = "ds"
+	record, err := fixture.dispatch(t, request)
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if probes != 0 || versions != 0 {
+		t.Fatalf("a contained dispatch reached a host probe: preflight=%d detect-version=%d", probes, versions)
+	}
+	if fixture.createCalls != 1 || fixture.spawnedAgentID == "" {
+		t.Fatalf("a contained dispatch did not admit and start: create=%d spawn=%q", fixture.createCalls, fixture.spawnedAgentID)
+	}
+	if record.Execution == nil || record.ExecutionWorkspace == nil || record.ExecutionWorkspace.InputDir != "" {
+		t.Fatalf("contained admission = %#v / %#v", record.Execution, record.ExecutionWorkspace)
+	}
+	if record.ExecutionWorkspace.WorktreeDir != "/fleet/.worktrees/task-one" ||
+		record.ExecutionWorkspace.GitCommonDir != "/fleet/acme/app/.git" {
+		t.Fatalf("trusted workspace = %#v", record.ExecutionWorkspace)
+	}
+	if record.HarnessCapabilities.Version != "" {
+		t.Fatalf("a contained dispatch recorded a host harness version %q", record.HarnessCapabilities.Version)
+	}
+	// A contained dsh run injects its one credential and isolates the worker in
+	// the container; the record must not keep the adapter's host claim.
+	if record.HarnessCapabilities.Credential != CredentialWBInjected {
+		t.Fatalf("credential capability = %q, want %q", record.HarnessCapabilities.Credential, CredentialWBInjected)
+	}
+	if record.HarnessCapabilities.Isolation != IsolationLinuxContainer {
+		t.Fatalf("isolation capability = %q, want %q", record.HarnessCapabilities.Isolation, IsolationLinuxContainer)
+	}
+}
+
+func TestDispatchKeepsLegacyDshCapabilitiesWithoutAMandatoryPolicy(t *testing.T) {
+	// Not parallel: the dispatch fixture pins environment variables.
+	fixture := newDispatchFixture(t)
+	body := `agents:
+  providers:
+    deepseek-official:
+      base_url: https://api.deepseek.com
+      credential_env: WB_TEST_DEEPSEEK_OFFICIAL_KEY
+      wire_api: chat
+  profiles:
+    ds: { harness: dsh, model: deepseek-flash }
+`
+	fixture.deps.LoadConfig = func() (Config, error) {
+		return LoadConfigFile(writeConfig(t, body))
+	}
+	request := newRequest()
+	request.Profile = "ds"
+	record, err := fixture.dispatch(t, request)
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if record.Execution != nil {
+		t.Fatalf("a host dispatch grew a mandatory policy: %#v", record.Execution)
+	}
+	if record.HarnessCapabilities.Credential != CredentialHarnessStore {
+		t.Fatalf("credential capability = %q, want the legacy %q", record.HarnessCapabilities.Credential, CredentialHarnessStore)
+	}
+	if record.HarnessCapabilities.Isolation != IsolationUserHome {
+		t.Fatalf("isolation capability = %q, want the legacy %q", record.HarnessCapabilities.Isolation, IsolationUserHome)
+	}
+}
+
+func TestDispatchRefusesAContainedLifetimeBeyondTheMaximumBeforeCreatingAWorktree(t *testing.T) {
+	// Not parallel: the dispatch fixture pins environment variables.
+	fixture := newDispatchFixture(t)
+	body := executionYAML(ExecutionModeLinuxContainer, executionTestImage, 8589934592, 8589934592, 2, 128, 1) + `  providers:
+    deepseek-official:
+      base_url: https://api.deepseek.com
+      credential_env: WB_TEST_DEEPSEEK_OFFICIAL_KEY
+      wire_api: chat
+  profiles:
+    ds: { harness: dsh, model: deepseek-flash }
+`
+	fixture.deps.LoadConfig = func() (Config, error) {
+		return LoadConfigFile(writeConfig(t, body))
+	}
+	request := newRequest()
+	request.Profile = "ds"
+	request.Timeout = maxContainerLifetime + time.Hour
+	_, err := fixture.dispatch(t, request)
+	if err == nil || !strings.Contains(err.Error(), "contained execution") {
+		t.Fatalf("error = %v, want the contained lifetime refusal", err)
+	}
+	if fixture.createCalls != 0 || fixture.spawnedAgentID != "" {
+		t.Fatalf("an over-long contained run created side effects: create=%d spawn=%q", fixture.createCalls, fixture.spawnedAgentID)
 	}
 }
 

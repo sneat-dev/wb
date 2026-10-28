@@ -71,6 +71,7 @@ func ownedRunWithHarness(t *testing.T, harnessName, script string, mutate func(*
 		t.Fatal(err)
 	}
 	deps := DefaultOwnerDeps()
+	deps.LoadExecutionPolicy = noMandatoryExecutionPolicy
 	deps.LookPath = func(name string) (string, error) {
 		if name != harnessName {
 			t.Fatalf("owner looked up %q, want %q", name, harnessName)

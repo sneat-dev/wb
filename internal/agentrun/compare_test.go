@@ -248,9 +248,15 @@ func TestCompareKeepsTheMandatoryExecutionPolicyOnAFailedAttempt(t *testing.T) {
 		MemoryBytes: 8589934592, MemorySwapBytes: 8589934592, CPUCount: 2, PIDsLimit: 128, MaxParallel: 1,
 	}
 	fixture.config.Execution = policy
+	// Only the contained harness is admitted under a mandatory policy, so this
+	// comparison uses dsh and repeats it rather than mixing harnesses.
+	fixture.config.Profiles["cheap"] = agents.Profile{Harness: agents.HarnessDSH, Model: "m"}
+	fixture.config.Providers[agents.ProviderDshDefault] = agents.Provider{
+		BaseURL: "https://api.deepseek.com", CredentialEnv: "WB_TEST_DEEPSEEK_OFFICIAL_KEY", WireAPI: agents.WireAPIChat,
+	}
 	fixture.prepareErrAt = 1
 	report, err := fixture.service().Compare(context.Background(), CompareRequest{
-		ProjectsRoot: fixture.root, Task: "compare this", Profiles: []string{"cheap", "op"}, Repeat: 1, Concurrency: 1,
+		ProjectsRoot: fixture.root, Task: "compare this", Profiles: []string{"cheap"}, Repeat: 2, Concurrency: 1,
 	})
 	if err != nil {
 		t.Fatalf("Compare: %v", err)
@@ -265,6 +271,46 @@ func TestCompareKeepsTheMandatoryExecutionPolicyOnAFailedAttempt(t *testing.T) {
 	}
 	if record.Execution == nil || *record.Execution != *policy {
 		t.Fatalf("failed attempt lost the mandatory policy: %#v", record.Execution)
+	}
+}
+
+func TestCompareRefusesAConcurrentContainedComparisonBeforeCreatingAnything(t *testing.T) {
+	t.Parallel()
+	fixture := newCompareFixture(t)
+	policy := serviceExecutionPolicy()
+	fixture.config.Execution = &policy
+	fixture.config.Profiles["cheap"] = agents.Profile{Harness: agents.HarnessDSH, Model: "m"}
+	fixture.config.Providers[agents.ProviderDshDefault] = agents.Provider{
+		BaseURL: "https://api.deepseek.com", CredentialEnv: "WB_TEST_DEEPSEEK_OFFICIAL_KEY", WireAPI: agents.WireAPIChat,
+	}
+	_, err := fixture.service().Compare(context.Background(), CompareRequest{
+		ProjectsRoot: fixture.root, Task: "compare this", Profiles: []string{"cheap"}, Repeat: 1, Concurrency: 2,
+	})
+	if err == nil || !strings.Contains(err.Error(), "--concurrency") {
+		t.Fatalf("error = %v, want the serial containment refusal", err)
+	}
+	if fixture.prepareCalls != 0 || fixture.startCalls != 0 {
+		t.Fatalf("a refused concurrent comparison prepared %d and started %d attempts", fixture.prepareCalls, fixture.startCalls)
+	}
+}
+
+func TestCompareChecksEveryPlanInASerialContainedComparison(t *testing.T) {
+	t.Parallel()
+	fixture := newCompareFixture(t)
+	policy := serviceExecutionPolicy()
+	fixture.config.Execution = &policy
+	fixture.config.Profiles["cheap"] = agents.Profile{Harness: agents.HarnessDSH, Model: "m"}
+	fixture.config.Providers[agents.ProviderDshDefault] = agents.Provider{
+		BaseURL: "https://api.deepseek.com", CredentialEnv: "WB_TEST_DEEPSEEK_OFFICIAL_KEY", WireAPI: agents.WireAPIChat,
+	}
+	_, err := fixture.service().Compare(context.Background(), CompareRequest{
+		ProjectsRoot: fixture.root, Task: "compare this", Profiles: []string{"cheap", "op"}, Repeat: 1, Concurrency: 1,
+	})
+	if err == nil || !strings.Contains(err.Error(), "can execute only the") {
+		t.Fatalf("error = %v, want the unsupported-harness refusal for the second plan", err)
+	}
+	if fixture.prepareCalls != 0 || fixture.startCalls != 0 {
+		t.Fatalf("a refused comparison prepared %d and started %d attempts", fixture.prepareCalls, fixture.startCalls)
 	}
 }
 

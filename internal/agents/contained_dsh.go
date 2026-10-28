@@ -10,11 +10,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// This file owns the bounded preparation of one contained dsh launch. It is a
-// preparation primitive, not an execution path: it writes exactly one private
-// input directory below the run, never the whole run store and never the host
-// harness home. The owner that consumes it is wired in a later stage, so the
-// existing mandatory-policy refusal and host execution path are unchanged.
+// This file owns the bounded preparation of one contained dsh launch. It writes
+// exactly one private input directory below the run, never the whole run store
+// and never the host harness home. The contained owner consumes it only after
+// the fresh configuration has re-admitted the record's mandatory policy.
 //
 // The launch carries only public launch fields and a resolved credential
 // *name*. There is deliberately no field for a credential value: the value

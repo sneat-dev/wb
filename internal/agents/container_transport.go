@@ -25,13 +25,17 @@ const (
 	// containerWorkerHomeDir is the private HOME the unprivileged worker owns.
 	// It is created inside the container, never mounted from the host.
 	containerWorkerHomeDir = "/tmp/wb-agent-home"
+	// containerWorkerDshHomeDir is the private DSH_HOME. The image ships the
+	// profile *contents* at containerProfileTemplate, while dsh --profile
+	// headless resolves $DSH_HOME/profiles/headless (default HOME/.dsh).
+	containerWorkerDshHomeDir = "/tmp/wb-dsh-home"
 	// containerWorkerTmpDir is the only tmp location handed to the worker.
 	containerWorkerTmpDir = "/tmp/wb-tmp"
 	// containerWorkerToolWrapperDir is the fixed p1 tool-wrapper location.
 	containerWorkerToolWrapperDir = "/tmp/wb-bin"
 	// containerWorkerPath is the static Linux PATH. It never contains a host
 	// directory and never depends on how the controller exported PATH.
-	containerWorkerPath = containerWorkerToolWrapperDir + ":/opt/agent/node_modules/.bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+	containerWorkerPath = containerWorkerToolWrapperDir + ":/opt/agent:/opt/agent/node_modules/.bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 	// containerProfileTemplate is the keyless public profile template shipped
 	// in the image. Its node_modules is a symlink to the image tool tree.
 	containerProfileTemplate = "/opt/wb-dsh-profile"
@@ -66,6 +70,7 @@ func containerWorkerEnvironment() []string {
 	return []string{
 		"PATH=" + containerWorkerPath,
 		"HOME=" + containerWorkerHomeDir,
+		"DSH_HOME=" + containerWorkerDshHomeDir,
 		"TMPDIR=" + containerWorkerTmpDir,
 		"TMP=" + containerWorkerTmpDir,
 		"TEMP=" + containerWorkerTmpDir,
@@ -314,6 +319,7 @@ func (runtime *ContainerRuntime) PrepareWorkerHome(ctx context.Context) error {
 	args := []string{"exec", "--user", ownerUser, "--workdir", "/tmp"}
 	for _, entry := range []string{
 		"HOME=" + containerWorkerHomeDir,
+		"DSH_HOME=" + containerWorkerDshHomeDir,
 		"TMPDIR=" + containerWorkerTmpDir,
 		"PATH=" + containerWorkerPath,
 	} {
@@ -331,22 +337,31 @@ func (runtime *ContainerRuntime) PrepareWorkerHome(ctx context.Context) error {
 // it never uses an ownership-preserving copy that would require root
 // capabilities.
 func containerPrepareScript() string {
-	return fmt.Sprintf(containerPrepareScriptTemplate, containerWorkerHomeDir, containerWorkerTmpDir, containerWorkerToolWrapperDir, containerProfileTemplate, containerProfileNodeModules)
+	return fmt.Sprintf(containerPrepareScriptTemplate,
+		containerWorkerHomeDir, containerWorkerDshHomeDir, containerWorkerTmpDir,
+		containerWorkerToolWrapperDir, containerProfileTemplate, containerProfileNodeModules)
 }
 
+// The template at containerProfileTemplate is the profile *contents*, not a
+// complete .dsh tree. dsh --profile headless resolves
+// $DSH_HOME/profiles/headless, so the copy target is that exact directory. The
+// copy is a plain recursive copy that does not preserve host ownership and no
+// host home, session or credential is ever copied.
 const containerPrepareScriptTemplate = `set -eu
 umask 077
-if [ -L %[1]s ]; then
-  echo "the private worker home is a symlink" >&2
-  exit 64
-fi
-test -d %[4]s
+for path in %[1]s %[2]s %[2]s/profiles %[2]s/profiles/headless; do
+  if [ -L "$path" ]; then
+    echo "the private worker path $path is a symlink" >&2
+    exit 64
+  fi
+done
 test -d %[5]s
+test -d %[6]s
 command -v dsh >/dev/null 2>&1
-mkdir -p %[1]s %[2]s %[3]s /tmp/wb-config /tmp/wb-cache /tmp/wb-state /tmp/wb-data /tmp/wb-gocache /tmp/wb-gomodcache /tmp/wb-gopath /tmp/wb-npm-cache /tmp/wb-pnpm-store
-chmod 700 %[1]s
-if [ ! -f %[1]s/.wb-prepared ]; then
-  cp -R %[4]s/. %[1]s/
-  : > %[1]s/.wb-prepared
+mkdir -p %[1]s %[2]s/profiles/headless %[3]s %[4]s /tmp/wb-config /tmp/wb-cache /tmp/wb-state /tmp/wb-data /tmp/wb-gocache /tmp/wb-gomodcache /tmp/wb-gopath /tmp/wb-npm-cache /tmp/wb-pnpm-store
+chmod 700 %[1]s %[2]s
+if [ ! -f %[2]s/.wb-prepared ]; then
+  cp -R %[5]s/. %[2]s/profiles/headless/
+  : > %[2]s/.wb-prepared
 fi
 `

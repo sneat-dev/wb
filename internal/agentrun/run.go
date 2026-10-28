@@ -127,7 +127,10 @@ func (s *Service) awaitWithFailover(ctx context.Context, r RunRequest, plan agen
 		if err := agents.RequireRunnableExecution(resolved.Execution, plan.Execution, "fallback plan", nextProfile.Harness); err != nil {
 			return awaited, err
 		}
-		if s.deps.Preflight != nil {
+		// A contained fallback is proved inside the owner's container. A host
+		// preflight here would be exactly the host harness probe the mandatory
+		// policy forbids.
+		if resolved.Execution == nil && s.deps.Preflight != nil {
 			if err := s.deps.Preflight(ctx, nextProfile); err != nil {
 				s.logFallback(r, next, awaited, err)
 				continue
@@ -218,7 +221,10 @@ func (s *Service) Profiles(_ context.Context, r DiscoveryRequest) (ProfilesCatal
 		DefaultProfile: config.Defaults.Profile,
 	}
 	for _, name := range agents.AllHarnesses() {
-		// Every name in the closed harness list has an adapter.
+		// Every name in the closed harness list has an adapter. This discovery
+		// catalog is generic adapter metadata, independent of any run: it never
+		// claims every dsh run is contained, which only a record with an
+		// admitted mandatory policy does.
 		adapter, _ := agents.HarnessFor(name)
 		catalog.Harnesses = append(catalog.Harnesses, adapter.Capabilities())
 	}

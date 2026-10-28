@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -32,6 +33,10 @@ type fakeContainerDocker struct {
 	calls            [][]string
 	imageInspect     []byte
 	imageErr         error
+	contextName      string
+	contextErr       error
+	daemonID         string
+	daemonErr        error
 	inspectDocuments map[string][]byte
 	inspectErrors    map[string]error
 	createID         string
@@ -52,6 +57,8 @@ func newFakeContainerDocker() *fakeContainerDocker {
 	return &fakeContainerDocker{
 		inspectDocuments: map[string][]byte{},
 		inspectErrors:    map[string]error{},
+		contextName:      testContainerContext,
+		daemonID:         testContainerDaemonID,
 	}
 }
 
@@ -63,6 +70,14 @@ func (fake *fakeContainerDocker) run(_ context.Context, args []string) ([]byte, 
 	fake.mutex.Lock()
 	fake.calls = append(fake.calls, append([]string(nil), args...))
 	switch args[0] {
+	case "context":
+		output, failure := fake.contextName, fake.contextErr
+		fake.mutex.Unlock()
+		return []byte(output + "\n"), failure
+	case "info":
+		output, failure := fake.daemonID, fake.daemonErr
+		fake.mutex.Unlock()
+		return []byte(output + "\n"), failure
 	case "image":
 		output, failure := fake.imageInspect, fake.imageErr
 		fake.mutex.Unlock()
@@ -185,6 +200,18 @@ func (fake *fakeContainerDocker) createCount() int {
 	return count
 }
 
+func (fake *fakeContainerDocker) callCount(verb string) int {
+	fake.mutex.Lock()
+	defer fake.mutex.Unlock()
+	count := 0
+	for _, call := range fake.calls {
+		if call[0] == verb {
+			count++
+		}
+	}
+	return count
+}
+
 func (fake *fakeContainerDocker) removedIDs() []string {
 	fake.mutex.Lock()
 	defer fake.mutex.Unlock()
@@ -290,6 +317,7 @@ func testContainerRuntimeDocument(t *testing.T, containerID, name, runID, nonce,
 		"Id":   containerID,
 		"Name": "/" + name,
 		"Config": map[string]any{
+			"User": "0:0",
 			"Labels": map[string]string{
 				containerLabelRunID: runID,
 				containerLabelNonce: nonce,
@@ -390,6 +418,26 @@ func seedTestContainerRuntimeReservation(t *testing.T, stateDir string, reservat
 	}
 }
 
+// seedLegacyTestContainerRuntimeReservation writes the on-disk shape produced
+// before reservations were bound to a Docker Engine identity. The slot itself
+// accepts such a file so the runtime can refuse it actionably rather than
+// treating it as stale.
+func seedLegacyTestContainerRuntimeReservation(t *testing.T, stateDir string, reservation ContainerReservation) {
+	t.Helper()
+	reservation.DaemonID = ""
+	raw, err := json.Marshal(reservation)
+	if err != nil {
+		t.Fatalf("marshal legacy reservation: %v", err)
+	}
+	path := filepath.Join(stateDir, containerSlotReservationFileName)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatalf("write legacy reservation: %v", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatalf("protect legacy reservation: %v", err)
+	}
+}
+
 func testContainerNoSuchObject(identity string) error {
 	return &containerDockerError{
 		Args:   []string{"inspect", identity},
@@ -461,6 +509,15 @@ func TestContainerRuntimeCreatesVerifiedContainedExecution(t *testing.T) {
 	requireContainerArgSequence(t, createArgs, fmt.Sprintf("%d", policy.MemoryBytes), fmt.Sprintf("%d", policy.MemorySwapBytes),
 		fmt.Sprintf("%d", policy.CPUCount), fmt.Sprintf("%d", policy.PIDsLimit), "no", "ALL", "no-new-privileges", "/bin/sh", "wb-pid1",
 		"3600s", testContainerRuntimeImageID)
+	pid1User := false
+	for index := 0; index+1 < len(createArgs); index++ {
+		if createArgs[index] == "--user" && createArgs[index+1] == "0:0" {
+			pid1User = true
+		}
+	}
+	if !pid1User {
+		t.Fatalf("docker create must force PID1 to root: %v", createArgs)
+	}
 	if strings.Contains(strings.Join(createArgs, " "), executionTestImage) {
 		t.Fatalf("create must use the resolved immutable config ID, not the policy reference: %v", createArgs)
 	}
@@ -502,6 +559,19 @@ func TestContainerRuntimeCreatesVerifiedContainedExecution(t *testing.T) {
 	if got := fake.attachedIDs(); !reflect.DeepEqual(got, []string{testContainerID}) {
 		t.Fatalf("attach client IDs = %v, want the exact created container", got)
 	}
+	// The durable reservation binds the exact created container to the Engine
+	// identity captured before create; nothing else from docker info is stored.
+	durableRaw, err := os.ReadFile(filepath.Join(stateDir, containerSlotReservationFileName))
+	if err != nil {
+		t.Fatalf("read the durable reservation: %v", err)
+	}
+	var durable ContainerReservation
+	if err := json.Unmarshal(durableRaw, &durable); err != nil {
+		t.Fatalf("decode the durable reservation: %v", err)
+	}
+	if durable.ContainerID != testContainerID || durable.DaemonID != testContainerDaemonID {
+		t.Fatalf("durable reservation = %#v, want container %s owned by daemon %s", durable, testContainerID, testContainerDaemonID)
+	}
 
 	execArgv, err := runtime.ExecArgv([]string{"/usr/local/bin/dsh", "--version"})
 	if err != nil {
@@ -534,6 +604,207 @@ func TestContainerRuntimeCreatesVerifiedContainedExecution(t *testing.T) {
 	if _, err := runtime.ExecArgv([]string{"true"}); err == nil {
 		t.Fatal("ExecArgv must refuse a closed runtime")
 	}
+}
+
+func TestContainerRuntimePinsTheResolvedDockerContextForItsLifetime(t *testing.T) {
+	t.Parallel()
+	policy := executionTestPolicy()
+	stateDir := testContainerSlotStateDir(t)
+	worktree, gitCommon, _ := testContainerWorkspaceDirs(t)
+	workspace := &ContainerWorkspace{WorktreeDir: worktree, GitCommonDir: gitCommon}
+	options := testContainerWorkspaceOptions(stateDir, newFakeContainerDocker(), workspace)
+	plan := testContainerWorkspacePlan(t, options, workspace)
+	fake := newContainerWorkspaceReadyFake(t, policy, plan)
+	fake.contextName = "pinned-profile"
+	options.commands = fake.commands()
+	// Keep the host's own Docker variables out of this fixture so the resolved
+	// context is the only authority being proved.
+	options.host.lookupEnv = func(name string) (string, bool) {
+		if name == "PATH" {
+			return "/test/bin", true
+		}
+		return "", false
+	}
+
+	runtime, err := OpenContainerRuntime(context.Background(), options)
+	if err != nil {
+		t.Fatalf("OpenContainerRuntime: %v", err)
+	}
+	if got := fake.callCount("context"); got != 1 {
+		t.Fatalf("context resolutions = %d, want exactly one", got)
+	}
+	// A context change elsewhere must not redirect the worker command: the
+	// pinned transport still names the context resolved at open.
+	fake.contextName = "switched-elsewhere"
+	command, err := runtime.WorkerCommand(context.Background(), Credential{}, []string{"/bin/true"})
+	if err != nil {
+		t.Fatalf("WorkerCommand: %v", err)
+	}
+	if got := environmentMap(command.Env)["DOCKER_CONTEXT"]; got != "pinned-profile" {
+		t.Fatalf("worker DOCKER_CONTEXT = %q, want the pinned %q", got, "pinned-profile")
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := fake.callCount("context"); got != 1 {
+		t.Fatalf("context was resolved again during later exec/cleanup: %d resolutions", got)
+	}
+}
+
+func TestContainerRuntimeKeepsAnExplicitDockerHostTransportInsteadOfAContext(t *testing.T) {
+	t.Parallel()
+	policy := executionTestPolicy()
+	stateDir := testContainerSlotStateDir(t)
+	worktree, gitCommon, _ := testContainerWorkspaceDirs(t)
+	workspace := &ContainerWorkspace{WorktreeDir: worktree, GitCommonDir: gitCommon}
+	options := testContainerWorkspaceOptions(stateDir, newFakeContainerDocker(), workspace)
+	plan := testContainerWorkspacePlan(t, options, workspace)
+	fake := newContainerWorkspaceReadyFake(t, policy, plan)
+	options.commands = fake.commands()
+	options.host.lookupEnv = func(name string) (string, bool) {
+		switch name {
+		case "DOCKER_HOST":
+			return "tcp://docker.example:2376", true
+		case "DOCKER_TLS_VERIFY":
+			return "1", true
+		case "DOCKER_CERT_PATH":
+			return "/host/docker-certs", true
+		case "PATH":
+			return "/test/bin", true
+		}
+		return "", false
+	}
+
+	runtime, err := OpenContainerRuntime(context.Background(), options)
+	if err != nil {
+		t.Fatalf("OpenContainerRuntime: %v", err)
+	}
+	if got := fake.callCount("context"); got != 0 {
+		t.Fatalf("an explicit DOCKER_HOST must not be replaced by a resolved context: %d context probes", got)
+	}
+	command, err := runtime.WorkerCommand(context.Background(), Credential{}, []string{"/bin/true"})
+	if err != nil {
+		t.Fatalf("WorkerCommand: %v", err)
+	}
+	environment := environmentMap(command.Env)
+	if environment["DOCKER_HOST"] != "tcp://docker.example:2376" ||
+		environment["DOCKER_TLS_VERIFY"] != "1" ||
+		environment["DOCKER_CERT_PATH"] != "/host/docker-certs" {
+		t.Fatalf("explicit DockerHost transport and TLS settings were not preserved: %#v", command.Env)
+	}
+	if _, present := environment["DOCKER_CONTEXT"]; present {
+		t.Fatalf("an explicit DOCKER_HOST fixture must not gain a context override: %#v", command.Env)
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+func TestContainerRuntimeRefusesAnUnresolvableDockerContext(t *testing.T) {
+	t.Parallel()
+	policy := executionTestPolicy()
+	cases := map[string]func(*fakeContainerDocker){
+		"context command fails": func(fake *fakeContainerDocker) {
+			fake.contextErr = errors.New("docker context transport failed")
+		},
+		"invalid context name": func(fake *fakeContainerDocker) {
+			fake.contextName = "--host"
+		},
+	}
+	for name, configure := range cases {
+		name, configure := name, configure
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			stateDir := testContainerSlotStateDir(t)
+			fake := newReadyFake(t, policy)
+			configure(fake)
+			options := testContainerRuntimeOptions(stateDir, fake)
+			options.host.lookupEnv = func(string) (string, bool) { return "", false }
+
+			runtime, err := OpenContainerRuntime(context.Background(), options)
+			if err == nil {
+				_ = runtime.Close()
+				t.Fatalf("%s must refuse the execution", name)
+			}
+			if !strings.Contains(err.Error(), "context") {
+				t.Fatalf("error = %v, want the unresolved Docker context named", err)
+			}
+			if fake.createCount() != 0 {
+				t.Fatal("an unresolved context must block before create")
+			}
+			slot, openErr := OpenContainerSlot(stateDir)
+			if openErr != nil {
+				t.Fatalf("OpenContainerSlot: %v", openErr)
+			}
+			if _, ok := slot.Reservation(); ok {
+				t.Fatal("a refusal before Reserve must not leave a reservation")
+			}
+			_ = slot.Close()
+		})
+	}
+}
+
+func TestContainerRuntimeRefusesCleanupWhenTheDaemonIdentityChanged(t *testing.T) {
+	t.Parallel()
+	policy := executionTestPolicy()
+	stateDir := testContainerSlotStateDir(t)
+	fake := newReadyFake(t, policy)
+	runtime, err := OpenContainerRuntime(context.Background(), testContainerRuntimeOptions(stateDir, fake))
+	if err != nil {
+		t.Fatalf("OpenContainerRuntime: %v", err)
+	}
+	// The daemon is replaced after the container was created. Cleanup must not
+	// mistake the new daemon's view for an absence proof on the owner.
+	fake.daemonID = testContainerDaemonID2
+	closeErr := runtime.Close()
+	if closeErr == nil {
+		t.Fatal("Close must refuse cleanup on a different daemon")
+	}
+	if !strings.Contains(closeErr.Error(), "daemon") {
+		t.Fatalf("Close error = %v, want an actionable daemon mismatch", closeErr)
+	}
+	if removed := fake.removedIDs(); len(removed) != 0 {
+		t.Fatalf("a changed daemon must not remove anything: %v", removed)
+	}
+	slot, openErr := OpenContainerSlot(stateDir)
+	if openErr != nil {
+		t.Fatalf("OpenContainerSlot: %v", openErr)
+	}
+	reservation, ok := slot.Reservation()
+	if !ok {
+		t.Fatal("a changed daemon must retain the durable reservation")
+	}
+	if reservation.DaemonID != testContainerDaemonID {
+		t.Fatalf("retained reservation daemon ID = %q, want the original %q", reservation.DaemonID, testContainerDaemonID)
+	}
+	_ = slot.Close()
+}
+
+func TestContainerRuntimeRefusesCleanupWhenTheDaemonIdentityCannotBeRead(t *testing.T) {
+	t.Parallel()
+	policy := executionTestPolicy()
+	stateDir := testContainerSlotStateDir(t)
+	fake := newReadyFake(t, policy)
+	runtime, err := OpenContainerRuntime(context.Background(), testContainerRuntimeOptions(stateDir, fake))
+	if err != nil {
+		t.Fatalf("OpenContainerRuntime: %v", err)
+	}
+	fake.daemonErr = errors.New("docker info transport failed")
+	closeErr := runtime.Close()
+	if closeErr == nil {
+		t.Fatal("Close must refuse cleanup when the daemon identity cannot be confirmed")
+	}
+	if removed := fake.removedIDs(); len(removed) != 0 {
+		t.Fatalf("an unreadable daemon must not remove anything: %v", removed)
+	}
+	slot, openErr := OpenContainerSlot(stateDir)
+	if openErr != nil {
+		t.Fatalf("OpenContainerSlot: %v", openErr)
+	}
+	if _, ok := slot.Reservation(); !ok {
+		t.Fatal("an unreadable daemon during cleanup must retain the durable reservation")
+	}
+	_ = slot.Close()
 }
 
 func TestContainerRuntimeRefusesABusyGlobalSlotBeforeProbes(t *testing.T) {
@@ -710,6 +981,137 @@ func TestContainerRuntimeRecoversOnlyAStoppedExactOwnedPriorContainer(t *testing
 		}
 		if _, ok := slot.Reservation(); !ok {
 			t.Fatal("an uncertain prior inspect must retain the reservation")
+		}
+		_ = slot.Close()
+	})
+
+	t.Run("a different daemon blocks without inspecting, removing or clearing", func(t *testing.T) {
+		t.Parallel()
+		stateDir := testContainerSlotStateDir(t)
+		prior := testContainerReservation()
+		prior.ContainerID = testContainerID2
+		seedTestContainerRuntimeReservation(t, stateDir, prior)
+		fake := newReadyFake(t, policy)
+		fake.daemonID = testContainerDaemonID2
+
+		runtime, err := OpenContainerRuntime(context.Background(), testContainerRuntimeOptions(stateDir, fake))
+		if err == nil {
+			_ = runtime.Close()
+			t.Fatal("a reservation bound to another daemon must block")
+		}
+		if !strings.Contains(err.Error(), "daemon") {
+			t.Fatalf("error = %v, want an actionable daemon mismatch refusal", err)
+		}
+		if fake.callCount("inspect") != 0 {
+			t.Fatalf("a daemon mismatch must not inspect the prior container: %v", fake.calls)
+		}
+		if fake.createCount() != 0 {
+			t.Fatal("a daemon mismatch must block before create")
+		}
+		if removed := fake.removedIDs(); len(removed) != 0 {
+			t.Fatalf("a daemon mismatch must not remove anything: %v", removed)
+		}
+		slot, openErr := OpenContainerSlot(stateDir)
+		if openErr != nil {
+			t.Fatalf("OpenContainerSlot: %v", openErr)
+		}
+		if _, ok := slot.Reservation(); !ok {
+			t.Fatal("a daemon mismatch must retain the reservation")
+		}
+		_ = slot.Close()
+	})
+
+	t.Run("a legacy reservation with no daemon identity blocks", func(t *testing.T) {
+		t.Parallel()
+		stateDir := testContainerSlotStateDir(t)
+		prior := testContainerReservation()
+		prior.ContainerID = testContainerID2
+		seedLegacyTestContainerRuntimeReservation(t, stateDir, prior)
+		fake := newReadyFake(t, policy)
+
+		runtime, err := OpenContainerRuntime(context.Background(), testContainerRuntimeOptions(stateDir, fake))
+		if err == nil {
+			_ = runtime.Close()
+			t.Fatal("a legacy reservation without a daemon identity must block")
+		}
+		if !strings.Contains(err.Error(), "daemon identity") {
+			t.Fatalf("error = %v, want an actionable legacy-daemon refusal", err)
+		}
+		if fake.callCount("inspect") != 0 {
+			t.Fatalf("a legacy reservation must not be inspected: %v", fake.calls)
+		}
+		if fake.createCount() != 0 {
+			t.Fatal("a legacy reservation must block before create")
+		}
+		if removed := fake.removedIDs(); len(removed) != 0 {
+			t.Fatalf("a legacy reservation must not be removed: %v", removed)
+		}
+		slot, openErr := OpenContainerSlot(stateDir)
+		if openErr != nil {
+			t.Fatalf("OpenContainerSlot: %v", openErr)
+		}
+		if _, ok := slot.Reservation(); !ok {
+			t.Fatal("a legacy reservation must be retained for an explicit operator resolution")
+		}
+		_ = slot.Close()
+	})
+
+	t.Run("an unreadable daemon identity blocks before any reconciliation", func(t *testing.T) {
+		t.Parallel()
+		stateDir := testContainerSlotStateDir(t)
+		prior := testContainerReservation()
+		prior.ContainerID = testContainerID2
+		seedTestContainerRuntimeReservation(t, stateDir, prior)
+		fake := newReadyFake(t, policy)
+		fake.daemonErr = errors.New("docker info transport failed")
+
+		runtime, err := OpenContainerRuntime(context.Background(), testContainerRuntimeOptions(stateDir, fake))
+		if err == nil {
+			_ = runtime.Close()
+			t.Fatal("an unreadable daemon identity must block")
+		}
+		if !strings.Contains(err.Error(), "Docker Engine") {
+			t.Fatalf("error = %v, want the failed daemon identity named", err)
+		}
+		if fake.callCount("inspect") != 0 {
+			t.Fatalf("an unreadable daemon must not reconcile: %v", fake.calls)
+		}
+		if fake.createCount() != 0 {
+			t.Fatal("an unreadable daemon must block before create")
+		}
+		slot, openErr := OpenContainerSlot(stateDir)
+		if openErr != nil {
+			t.Fatalf("OpenContainerSlot: %v", openErr)
+		}
+		if _, ok := slot.Reservation(); !ok {
+			t.Fatal("an unreadable daemon must retain the reservation")
+		}
+		_ = slot.Close()
+	})
+
+	t.Run("an empty daemon identity blocks before any reconciliation", func(t *testing.T) {
+		t.Parallel()
+		stateDir := testContainerSlotStateDir(t)
+		fake := newReadyFake(t, policy)
+		fake.daemonID = ""
+
+		runtime, err := OpenContainerRuntime(context.Background(), testContainerRuntimeOptions(stateDir, fake))
+		if err == nil {
+			_ = runtime.Close()
+			t.Fatal("an empty daemon identity must block")
+		}
+		if fake.createCount() != 0 {
+			t.Fatal("an empty daemon identity must block before create")
+		}
+		if removed := fake.removedIDs(); len(removed) != 0 {
+			t.Fatalf("an empty daemon identity must not remove anything: %v", removed)
+		}
+		slot, openErr := OpenContainerSlot(stateDir)
+		if openErr != nil {
+			t.Fatalf("OpenContainerSlot: %v", openErr)
+		}
+		if _, ok := slot.Reservation(); ok {
+			t.Fatal("a refusal before Reserve must not leave a reservation")
 		}
 		_ = slot.Close()
 	})
@@ -1201,5 +1603,28 @@ func TestContainerRuntimeAttachCommandDelegatesWaitAndKill(t *testing.T) {
 	})
 	if err := (&containerAttachCommand{}).Kill(); err == nil {
 		t.Fatal("Kill must refuse an adapter with no started process")
+	}
+}
+
+func TestContainerRuntimeRequiresRootPID1RegardlessOfImageUser(t *testing.T) {
+	t.Parallel()
+	policy := executionTestPolicy()
+	raw := testContainerRuntimeDocument(t, testContainerID, "wb-agent-"+testContainerRunID[len(IDPrefix):len(IDPrefix)+12]+"-0123456789abcdef", testContainerRunID, "0123456789abcdef0123456789abcdef", testContainerRuntimeOwner, policy, true)
+	var documents []containerInspectDocument
+	if err := json.Unmarshal(raw, &documents); err != nil {
+		t.Fatal(err)
+	}
+	document := documents[0]
+	document.Config.User = containerPID1User
+	if err := verifyContainerPID1User(document); err != nil {
+		t.Fatalf("root PID1 must verify: %v", err)
+	}
+	document.Config.User = "501:20"
+	if err := verifyContainerPID1User(document); err == nil {
+		t.Fatal("an image USER must not be allowed to run the PID1 watchdog")
+	}
+	document.Config.User = ""
+	if err := verifyContainerPID1User(document); err == nil {
+		t.Fatal("an empty Config.User must not stand in for the forced root PID1")
 	}
 }

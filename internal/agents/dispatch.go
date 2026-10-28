@@ -148,16 +148,25 @@ func PrepareRun(ctx context.Context, request DispatchRequest, deps DispatchDeps)
 	}
 	// Enforce a declared mandatory sandbox before anything is created. The
 	// loaded configuration is the authority: a plan whose snapshot disagrees is
-	// refused, and while container execution is unimplemented a matching policy
-	// means "refuse", never "run it on the host anyway".
+	// refused, and a matching policy admits only the contained dsh path, never a
+	// host launch.
 	if err := RequireRunnableExecution(config.Execution, plan.Execution, "plan", plan.Profile.Harness); err != nil {
 		return nil, err
+	}
+	if config.Execution != nil {
+		// A contained plan's whole execution is finite by construction. Validate
+		// that before a worktree exists, so a plan that could never satisfy the
+		// four-hour ceiling leaves nothing behind.
+		if _, err := ContainedLifetime(plan.TimeoutMS, plan.ValidationSteps); err != nil {
+			return nil, requestErrorf("contained execution: %v", err)
+		}
 	}
 	// A Codex run authenticates with a credential WB injects; refuse a dispatch
 	// that cannot authenticate before a worktree exists. This check is
 	// independent of the injected preflight seam so a direct caller cannot skip
-	// it.
-	if plan.Profile.Harness == HarnessCodex {
+	// it. A contained run resolves its one explicit provider credential inside
+	// the owner, after the policy has been re-admitted.
+	if config.Execution == nil && plan.Profile.Harness == HarnessCodex {
 		if _, err := ResolveCredential(plan.Profile.Routing); err != nil {
 			// A missing credential is an environment problem, not a malformed
 			// invocation: it stays a finding, as it was before this feature.
@@ -166,7 +175,9 @@ func PrepareRun(ctx context.Context, request DispatchRequest, deps DispatchDeps)
 	}
 	// Prove the harness can start before creating a worktree: a dispatch that
 	// cannot authenticate must fail without leaving an unused checkout behind.
-	if deps.Preflight != nil && (request.Plan == nil || !request.Plan.probed) {
+	// A contained plan must never reach a host harness probe: its proof happens
+	// inside the verified container after the owner has opened it.
+	if config.Execution == nil && deps.Preflight != nil && (request.Plan == nil || !request.Plan.probed) {
 		if err := deps.Preflight(ctx, plan.Profile); err != nil {
 			return nil, err
 		}
@@ -220,8 +231,18 @@ func PrepareRun(ctx context.Context, request DispatchRequest, deps DispatchDeps)
 	}
 
 	capabilities := adapter.Capabilities()
-	if deps.DetectVersion != nil {
+	// A contained run records the version its own container reports after the
+	// in-container proof, never a host probe.
+	if config.Execution == nil && deps.DetectVersion != nil {
 		capabilities.Version = deps.DetectVersion(ctx, plan.Profile.Harness)
+	}
+	if config.Execution != nil {
+		// The adapter's default capability claims describe a host run. This
+		// admitted execution injects its one provider credential and isolates
+		// the worker in the verified Linux container, so the record must carry
+		// that truthful projection on the existing axes. Without a policy the
+		// adapter default (legacy host capabilities) is recorded unchanged.
+		capabilities = containedHarnessCapabilities(capabilities)
 	}
 	taskDigest, taskBytes := TaskIdentity(request.Task)
 	// The mandatory policy is snapshotted beside the profile facts, so a

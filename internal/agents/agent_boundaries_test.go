@@ -289,6 +289,7 @@ func TestStopRunReportsAnUnwritableCancellationSentinel(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(store.Dir(record.AgentID), 0o700) })
 	deps := DefaultOwnerDeps()
+	deps.LoadExecutionPolicy = noMandatoryExecutionPolicy
 	deps.Now = func() time.Time { return time.Unix(1, 0) }
 	if _, err := stopRunWithSignal(store, record.AgentID, deps, func(int, syscall.Signal) error { return nil }); err == nil {
 		t.Fatal("an unwritable sentinel must be reported")

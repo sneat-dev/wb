@@ -550,11 +550,12 @@ func TestContainerRuntimePrepareWorkerHomeIsUnprivilegedAndBounded(t *testing.T)
 	script := prepareCall[scriptIndex]
 	for _, required := range []string{
 		"umask 077",
-		"mkdir -p /tmp/wb-agent-home",
-		"chmod 700 /tmp/wb-agent-home",
-		"cp -R /opt/wb-dsh-profile/. /tmp/wb-agent-home/",
+		"mkdir -p /tmp/wb-agent-home /tmp/wb-dsh-home/profiles/headless",
+		"chmod 700 /tmp/wb-agent-home /tmp/wb-dsh-home",
+		"cp -R /opt/wb-dsh-profile/. /tmp/wb-dsh-home/profiles/headless/",
 		"test -d /opt/wb-dsh-profile",
 		"test -d /opt/agent/node_modules",
+		"if [ -L \"$path\" ]",
 		"command -v dsh",
 	} {
 		if !strings.Contains(script, required) {
@@ -566,8 +567,10 @@ func TestContainerRuntimePrepareWorkerHomeIsUnprivilegedAndBounded(t *testing.T)
 			t.Fatalf("prepare script contains forbidden ownership-preserving or host operation %q:\n%s", forbidden, script)
 		}
 	}
-	if !strings.Contains(strings.Join(prepareCall, "\x00"), "\x00--env\x00HOME=/tmp/wb-agent-home\x00") {
-		t.Fatalf("prepare exec does not set the private HOME: %#v", prepareCall)
+	for _, entry := range []string{"HOME=/tmp/wb-agent-home", "DSH_HOME=/tmp/wb-dsh-home"} {
+		if !strings.Contains(strings.Join(prepareCall, "\x00"), "\x00--env\x00"+entry+"\x00") {
+			t.Fatalf("prepare exec does not set %s: %#v", entry, prepareCall)
+		}
 	}
 
 	// An image that lacks the template/tool must surface as a closed failure.
@@ -651,6 +654,7 @@ func TestContainerWorkerEnvironmentIsStaticLinuxAndCacheFree(t *testing.T) {
 	values := environmentMap(containerWorkerEnvironment())
 	for name, want := range map[string]string{
 		"HOME":               containerWorkerHomeDir,
+		"DSH_HOME":           containerWorkerDshHomeDir,
 		"TMPDIR":             containerWorkerTmpDir,
 		"NX_DAEMON":          "false",
 		"RAYON_NUM_THREADS":  "1",

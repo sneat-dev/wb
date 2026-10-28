@@ -267,9 +267,11 @@ func LoadDefaultExecutionPolicy() (*ExecutionPolicy, error) {
 // The subject names the document being admitted so a refusal points at the
 // right one.
 //
-// While container execution is unimplemented, a matching policy also refuses:
-// the operator marked the sandbox mandatory, and running the harness on the host
-// instead would silently weaken it.
+// A matching, valid policy now admits exactly the one harness this build can
+// execute inside the sandbox. Any other harness still refuses: the operator
+// marked the sandbox mandatory, and running a different harness on the host
+// instead would silently weaken it. A fallback profile goes through this same
+// gate, so it cannot become a way around the policy.
 func RequireRunnableExecution(configured, snapshot *ExecutionPolicy, subject, harness string) error {
 	switch {
 	case configured == nil && snapshot == nil:
@@ -280,7 +282,12 @@ func RequireRunnableExecution(configured, snapshot *ExecutionPolicy, subject, ha
 		return fmt.Errorf("this %s was resolved under a mandatory agents.execution policy that the user configuration no longer declares; resolve it again before running", subject)
 	case *configured != *snapshot:
 		return fmt.Errorf("agents.execution changed after this %s was resolved; resolve it again before running", subject)
-	default:
-		return fmt.Errorf("agents.execution mode %q is configured but this WB build cannot execute the %q harness inside that sandbox yet; refusing to run it outside the mandatory sandbox", configured.Mode, harness)
 	}
+	if err := validateExecutionPolicy(*configured); err != nil {
+		return fmt.Errorf("agents.execution cannot be enforced exactly as written: %w", err)
+	}
+	if harness != HarnessDSH {
+		return fmt.Errorf("agents.execution mode %q is configured but this WB build can execute only the %q harness inside that sandbox; refusing to run the %q harness outside the mandatory sandbox", configured.Mode, HarnessDSH, harness)
+	}
+	return nil
 }

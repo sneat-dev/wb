@@ -28,7 +28,22 @@ const (
 
 	IsolationPrivateHome = "private-home"
 	IsolationUserHome    = "user-home"
+	// IsolationLinuxContainer is the isolation a contained execution actually
+	// provides: the worker runs inside the verified Linux container, not in the
+	// host user's home.
+	IsolationLinuxContainer = "linux-container"
 )
+
+// containedHarnessCapabilities projects the adapter's host capabilities onto
+// the one contained execution this build runs. It touches only the existing
+// record/result axes, so no new record field is introduced, and it is applied
+// only when a mandatory execution policy actually admits a contained run. An
+// adapter's default (legacy host) capabilities stay untouched without a policy.
+func containedHarnessCapabilities(base HarnessCapabilities) HarnessCapabilities {
+	base.Credential = CredentialWBInjected
+	base.Isolation = IsolationLinuxContainer
+	return base
+}
 
 // HarnessCapabilities is what WB can prove about one adapter. It is recorded on
 // every run so a comparison can state which differences were not controlled.

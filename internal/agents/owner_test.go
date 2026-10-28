@@ -64,6 +64,11 @@ fi
 exit 0
 `
 
+// noMandatoryExecutionPolicy is the explicit empty loader a test injects when
+// it deliberately wants the historical host path. Tests must never depend on
+// whatever mandatory policy the ambient user configuration happens to declare.
+func noMandatoryExecutionPolicy() (*ExecutionPolicy, error) { return nil, nil }
+
 func writeFakeHarness(t *testing.T) (path string, deps OwnerDeps) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -75,6 +80,7 @@ func writeFakeHarness(t *testing.T) (path string, deps OwnerDeps) {
 		t.Fatal(err)
 	}
 	deps = DefaultOwnerDeps()
+	deps.LoadExecutionPolicy = noMandatoryExecutionPolicy
 	deps.LookPath = func(name string) (string, error) {
 		if name != HarnessCodex {
 			t.Errorf("owner looked up %q, want the resolved harness %q", name, HarnessCodex)
@@ -146,7 +152,7 @@ func containedOwnerRun(t *testing.T, policy *ExecutionPolicy) (Store, Record) {
 	return store, record
 }
 
-func TestRunOwnerRefusesAHostLaunchWhenTheMandatoryPolicyRequiresIt(t *testing.T) {
+func TestRunOwnerRefusesAPolicyItCannotHonour(t *testing.T) {
 	t.Parallel()
 	recorded := executionTestPolicy()
 	changed := recorded
@@ -156,18 +162,13 @@ func TestRunOwnerRefusesAHostLaunchWhenTheMandatoryPolicyRequiresIt(t *testing.T
 		loader   func() (*ExecutionPolicy, error)
 		want     string
 	}{
-		"contained record": {
+		"matching policy for an unsupported harness": {
 			recorded: &recorded,
 			loader: func() (*ExecutionPolicy, error) {
 				policy := recorded
 				return &policy, nil
 			},
-			want: "refusing to run it outside the mandatory sandbox",
-		},
-		"contained record without a loader": {
-			recorded: &recorded,
-			loader:   nil,
-			want:     "no longer declares",
+			want: "can execute only the",
 		},
 		"stale host record after policy was configured": {
 			recorded: nil,
@@ -245,7 +246,7 @@ func TestRunOwnerKeepsHistoricalHostRunsWhenConfigurationDeclaresNoPolicy(t *tes
 	t.Parallel()
 	store, record := containedOwnerRun(t, nil)
 	deps := DefaultOwnerDeps()
-	deps.LoadExecutionPolicy = func() (*ExecutionPolicy, error) { return nil, nil }
+	deps.LoadExecutionPolicy = noMandatoryExecutionPolicy
 	lookups := 0
 	deps.LookPath = func(string) (string, error) {
 		lookups++
@@ -408,6 +409,7 @@ sleep 600
 		t.Fatal(err)
 	}
 	deps := DefaultOwnerDeps()
+	deps.LoadExecutionPolicy = noMandatoryExecutionPolicy
 	deps.LookPath = func(string) (string, error) { return path, nil }
 
 	// Expire the caller only after the real harness and grandchild installed
@@ -504,6 +506,7 @@ func TestRunOwnerFailsActionablyWithoutAHarnessOrCredential(t *testing.T) {
 	store, record, _ := ownedRun(t, "anything", time.Minute)
 
 	missing := DefaultOwnerDeps()
+	missing.LoadExecutionPolicy = noMandatoryExecutionPolicy
 	missing.LookPath = func(string) (string, error) { return "", os.ErrNotExist }
 	if err := RunOwner(context.Background(), store, record.AgentID, missing); err != nil {
 		t.Fatalf("RunOwner: %v", err)
@@ -742,6 +745,7 @@ func TestStopRunEscalatesPastAWorkerThatIgnoresTermination(t *testing.T) {
 		t.Fatal(err)
 	}
 	deps := DefaultOwnerDeps()
+	deps.LoadExecutionPolicy = noMandatoryExecutionPolicy
 	deps.LookPath = func(string) (string, error) { return path, nil }
 	// The real StopGrace exists to give a well-behaved worker time to exit
 	// on its own; this test's whole point is a worker that never will, so

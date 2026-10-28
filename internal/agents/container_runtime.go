@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	goruntime "runtime"
 	"strconv"
 	"strings"
@@ -70,6 +71,11 @@ const (
 	// nanosPerCPU is the Docker NanoCpus representation of one CPU.
 	nanosPerCPU int64 = 1_000_000_000
 )
+
+// containerDockerContextPattern bounds the context name Docker itself reports.
+// A context name is used as an environment value only, but it still must not be
+// empty, option-shaped or able to smuggle whitespace into the transport.
+var containerDockerContextPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 
 // Container labels are the durable identity a recovery or cleanup must see
 // before touching a container. They are fixed here and never supplied by a
@@ -245,16 +251,21 @@ type ContainerRuntime struct {
 	slot              *ContainerSlot
 	policy            ExecutionPolicy
 	runID             string
+	daemonID          string
 	containerLifetime time.Duration
 	reservation       ContainerReservation
 	reserved          bool
 	ownerUser         string
 
-	dockerPath   string
-	commands     *containerCommands
-	host         *containerHost
-	transportEnv []string
-	workspace    containerWorkspacePlan
+	dockerPath string
+	commands   *containerCommands
+	// commandsInjected records that a focused test supplied the Docker seam.
+	// Production leaves it false so the context pin can rebuild the command
+	// closures with the pinned transport.
+	commandsInjected bool
+	host             *containerHost
+	transportEnv     []string
+	workspace        containerWorkspacePlan
 
 	containerID string
 	imageID     string
@@ -342,6 +353,7 @@ func newContainerRuntime(options ContainerRuntimeOptions) (*ContainerRuntime, er
 		containerLifetime: options.Lifetime,
 		ownerUser:         fmt.Sprintf("%d:%d", ownerUID, ownerGID),
 		commands:          options.commands,
+		commandsInjected:  options.commands != nil,
 		host:              host,
 		transportEnv:      transport,
 		workspace:         workspace,
@@ -359,6 +371,20 @@ func (runtime *ContainerRuntime) open(ctx context.Context) error {
 	}
 	if runtime.commands == nil {
 		runtime.commands = defaultContainerCommands(runtime.dockerPath, runtime.transportEnv)
+	}
+	// The resolved context is pinned before any command that reads or writes the
+	// daemon, so a `docker context use` elsewhere cannot redirect a later exec,
+	// reconcile or cleanup. An explicit DOCKER_HOST transport is already the
+	// authority and is respected instead of being replaced by a context.
+	injectedCommands := runtime.commands != nil && runtime.commandsInjected
+	if err := runtime.pinDockerContext(ctx); err != nil {
+		return err
+	}
+	if !injectedCommands {
+		runtime.commands = defaultContainerCommands(runtime.dockerPath, runtime.transportEnv)
+	}
+	if err := runtime.captureDaemonIdentity(ctx); err != nil {
+		return err
 	}
 	if err := runtime.recoverPriorReservation(ctx); err != nil {
 		return err
@@ -421,6 +447,79 @@ func (runtime *ContainerRuntime) probeDocker() error {
 	return nil
 }
 
+// pinDockerContext resolves the current Docker context once and pins it into
+// the captured transport. An explicit DOCKER_HOST or DOCKER_CONTEXT already
+// pins the client and is left untouched, as are the TLS settings beside it.
+// A resolution failure is a refusal: guessing a context could reach a daemon
+// that does not own the durable reservation.
+func (runtime *ContainerRuntime) pinDockerContext(ctx context.Context) error {
+	if environmentHas(runtime.transportEnv, "DOCKER_HOST") || environmentHas(runtime.transportEnv, "DOCKER_CONTEXT") {
+		return nil
+	}
+	raw, err := runtime.commands.command(ctx, []string{"context", "show"})
+	if err != nil {
+		return fmt.Errorf("resolve the current Docker context: %w; refusing to touch the container slot without a pinned daemon", err)
+	}
+	name := strings.TrimSpace(string(raw))
+	if !containerDockerContextPattern.MatchString(name) {
+		return fmt.Errorf("the resolved Docker context %q is not a bounded safe context name; refusing to touch the container slot without a pinned daemon", name)
+	}
+	runtime.transportEnv = append(runtime.transportEnv, "DOCKER_CONTEXT="+name)
+	return nil
+}
+
+// captureDaemonIdentity reads and validates the actual Docker Engine ID from a
+// bounded `docker info`. It is captured before reconciliation and before the
+// durable reservation so the reservation can name the exact daemon that owns
+// the container.
+func (runtime *ContainerRuntime) captureDaemonIdentity(ctx context.Context) error {
+	identity, err := runtime.readDaemonIdentity(ctx)
+	if err != nil {
+		return err
+	}
+	runtime.daemonID = identity
+	return nil
+}
+
+func (runtime *ContainerRuntime) readDaemonIdentity(ctx context.Context) (string, error) {
+	raw, err := runtime.commands.command(ctx, []string{"info", "--format", "{{.ID}}"})
+	if err != nil {
+		return "", fmt.Errorf("read the Docker Engine identity: %w; refusing to touch the container slot without a known daemon", err)
+	}
+	identity := strings.TrimSpace(string(raw))
+	if !containerDaemonIDPattern.MatchString(identity) {
+		return "", fmt.Errorf("docker info reported %q, not a bounded Docker Engine identity; refusing to touch the container slot", identity)
+	}
+	return identity, nil
+}
+
+// confirmDaemonIdentity re-reads the current Engine ID and requires it to match
+// the daemon bound to the reservation. Every removal or stale-absence clear
+// passes through here: absence on a different daemon proves nothing.
+func (runtime *ContainerRuntime) confirmDaemonIdentity(ctx context.Context, reservation ContainerReservation) error {
+	if reservation.DaemonID == "" {
+		return fmt.Errorf("the container reservation for run %s has no Docker Engine identity; refusing to remove or clear it, because the container may belong to a different daemon", reservation.RunID)
+	}
+	identity, err := runtime.readDaemonIdentity(ctx)
+	if err != nil {
+		return err
+	}
+	if identity != reservation.DaemonID {
+		return fmt.Errorf("the current Docker Engine %s does not match the daemon %s that owns the container reservation for run %s; refusing to remove or clear it", identity, reservation.DaemonID, reservation.RunID)
+	}
+	return nil
+}
+
+func environmentHas(environment []string, name string) bool {
+	prefix := name + "="
+	for _, entry := range environment {
+		if strings.HasPrefix(entry, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func (runtime *ContainerRuntime) inspectImage(ctx context.Context) (string, error) {
 	raw, err := runtime.commands.command(ctx, []string{"image", "inspect", runtime.policy.Image})
 	if err != nil {
@@ -439,9 +538,10 @@ func (runtime *ContainerRuntime) newReservation() (ContainerReservation, error) 
 	// characters, so this slice is always in range.
 	runSuffix := strings.TrimPrefix(runtime.runID, IDPrefix)
 	reservation := ContainerReservation{
-		RunID: runtime.runID,
-		Name:  containerNamePrefix + runSuffix[:12] + "-" + nonceHex[:16],
-		Nonce: nonceHex,
+		RunID:    runtime.runID,
+		Name:     containerNamePrefix + runSuffix[:12] + "-" + nonceHex[:16],
+		Nonce:    nonceHex,
+		DaemonID: runtime.daemonID,
 	}
 	if err := validateContainerReservation(reservation, false); err != nil {
 		return ContainerReservation{}, err
@@ -485,6 +585,11 @@ func (runtime *ContainerRuntime) containerCreateArgs(reservation ContainerReserv
 		"--label", containerLabelNonce + "=" + reservation.Nonce,
 		"--label", containerLabelUser + "=" + runtime.ownerUser,
 		"--init",
+		// PID1 is the watchdog, not the worker. It must always run as root so
+		// an image whose default USER is the unprivileged worker cannot let a
+		// compromised worker signal its own supervisor. The worker itself is
+		// always executed with the caller's positive numeric UID/GID.
+		"--user", "0:0",
 		"--interactive",
 		"--attach", "stdin",
 		"--attach", "stdout",
@@ -610,6 +715,7 @@ type containerInspectDocument struct {
 	ID     string `json:"Id"`
 	Name   string `json:"Name"`
 	Config struct {
+		User   string            `json:"User"`
 		Labels map[string]string `json:"Labels"`
 	} `json:"Config"`
 	HostConfig struct {
@@ -673,7 +779,24 @@ func (runtime *ContainerRuntime) verifyInspect(document containerInspectDocument
 	if err := verifyContainerOwnership(document, runtime.reservation, runtime.ownerUser); err != nil {
 		return err
 	}
+	if err := verifyContainerPID1User(document); err != nil {
+		return err
+	}
 	return verifyContainerHostConfig(runtime.policy, document, runtime.workspace.mounts)
+}
+
+// containerPID1User is the only accepted container PID1 identity. The image's
+// own USER must never decide whether the worker can signal its watchdog.
+const containerPID1User = "0:0"
+
+// verifyContainerPID1User refuses a container whose PID1 would run as anyone
+// but root. Docker reports the create --user value here, so an image's own USER
+// can never substitute for the forced watchdog identity.
+func verifyContainerPID1User(document containerInspectDocument) error {
+	if user := strings.TrimSpace(document.Config.User); user != containerPID1User {
+		return fmt.Errorf("container %s runs PID1 as %q; the watchdog must run as %q so the unprivileged worker cannot signal it", document.ID, document.Config.User, containerPID1User)
+	}
+	return nil
 }
 
 // verifyContainerOwnership checks only durable identity: full ID, exact name,
@@ -785,6 +908,15 @@ func (runtime *ContainerRuntime) recoverPriorReservation(ctx context.Context) er
 	if !ok {
 		return nil
 	}
+	// A reservation without a daemon binding (legacy) or one bound to another
+	// Engine is never treated as stale: NoSuchObject from a different daemon is
+	// not evidence that the owning daemon stopped the container.
+	if prior.DaemonID == "" {
+		return fmt.Errorf("a previous container reservation for run %s predates Docker Engine binding and has no daemon identity; refusing to inspect, remove or clear it, because the container may still be running on the daemon that owns it", prior.RunID)
+	}
+	if prior.DaemonID != runtime.daemonID {
+		return fmt.Errorf("a previous container reservation for run %s is bound to Docker Engine %s, but the current daemon is %s; refusing to inspect, remove or clear it, because absence on another daemon proves nothing", prior.RunID, prior.DaemonID, runtime.daemonID)
+	}
 	identity := prior.ContainerID
 	switch {
 	case identity != "":
@@ -797,6 +929,9 @@ func (runtime *ContainerRuntime) recoverPriorReservation(ctx context.Context) er
 	if err != nil {
 		if containerNoSuchObject(err, identity) {
 			if clearErr := runtime.slot.ClearReservation(func(ContainerReservation) error {
+				if err := runtime.confirmDaemonIdentity(ctx, prior); err != nil {
+					return err
+				}
 				return runtime.proveAbsent(ctx, identity)
 			}); clearErr != nil {
 				return fmt.Errorf("clear the stale container reservation for run %s: %w", prior.RunID, clearErr)
@@ -811,6 +946,9 @@ func (runtime *ContainerRuntime) recoverPriorReservation(ctx context.Context) er
 	if document.State.Running || document.State.Pid != 0 {
 		return fmt.Errorf("a previous container execution for run %s is still running (container %s); wait for its lifetime to expire or stop it before starting another", prior.RunID, document.ID)
 	}
+	if err := runtime.confirmDaemonIdentity(ctx, prior); err != nil {
+		return fmt.Errorf("confirm the daemon that owns the stopped prior container %s for run %s: %w", document.ID, prior.RunID, err)
+	}
 	if err := runtime.removeContainer(ctx, document.ID); err != nil {
 		return fmt.Errorf("remove the stopped prior container %s for run %s: %w", document.ID, prior.RunID, err)
 	}
@@ -818,6 +956,9 @@ func (runtime *ContainerRuntime) recoverPriorReservation(ctx context.Context) er
 		return fmt.Errorf("prove the stopped prior container %s absent: %w", document.ID, err)
 	}
 	if err := runtime.slot.ClearReservation(func(ContainerReservation) error {
+		if err := runtime.confirmDaemonIdentity(ctx, prior); err != nil {
+			return err
+		}
 		return runtime.proveAbsent(ctx, document.ID)
 	}); err != nil {
 		return fmt.Errorf("clear the recovered container reservation for run %s: %w", prior.RunID, err)
@@ -1009,6 +1150,12 @@ func (runtime *ContainerRuntime) removeOwnedContainerLocked(ctx context.Context)
 	if identity == "" {
 		return "", errors.New("clean up the contained execution: no reserved identity is available to prove absence")
 	}
+	// The daemon binding is checked against the live Engine before any removal.
+	// A switched, missing or unreadable daemon retains the reservation because
+	// the container may still be running on the original one.
+	if err := runtime.confirmDaemonIdentity(ctx, reservation); err != nil {
+		return "", err
+	}
 	provenIdentity := ""
 	document, err := runtime.inspectContainer(ctx, identity)
 	switch {
@@ -1037,6 +1184,11 @@ func (runtime *ContainerRuntime) removeOwnedContainerLocked(ctx context.Context)
 // the retained slot lock before the durable reservation is removed.
 func (runtime *ContainerRuntime) clearProvenReservationLocked(ctx context.Context, proofIdentity string) error {
 	if err := runtime.slot.ClearReservation(func(prior ContainerReservation) error {
+		// Presence/absence is meaningful only on the daemon bound to the
+		// reservation, so the same check precedes the second proof.
+		if err := runtime.confirmDaemonIdentity(ctx, prior); err != nil {
+			return err
+		}
 		identity := prior.ContainerID
 		if identity == "" {
 			identity = proofIdentity

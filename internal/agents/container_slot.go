@@ -31,16 +31,24 @@ var (
 	// The name cannot start with "-", so it cannot become a runtime option.
 	containerSlotNamePattern  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$`)
 	containerSlotNoncePattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
+	// containerDaemonIDPattern bounds the Docker Engine ID. Docker has printed
+	// both plain hex and colon-separated forms, so the accepted alphabet is the
+	// safe shared subset rather than one version's exact shape.
+	containerDaemonIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$`)
 )
 
 // ContainerReservation is the durable identity of the one container the slot
-// is about to create, or has created. It carries no credentials and no argv.
-// ContainerID is empty until RecordContainerID records what the runtime returned.
+// is about to create, or has created. It carries no credentials, no argv and no
+// raw Docker output. ContainerID is empty until RecordContainerID records what
+// the runtime returned. DaemonID binds the reservation to the exact Docker
+// Engine that owns the container, so absence on a different daemon can never
+// clear it.
 type ContainerReservation struct {
 	RunID       string `json:"run_id"`
 	Name        string `json:"name"`
 	Nonce       string `json:"nonce"`
 	ContainerID string `json:"container_id,omitempty"`
+	DaemonID    string `json:"daemon_id,omitempty"`
 }
 
 // ContainerSlotBusyError reports that another live holder owns the slot. It is
@@ -68,18 +76,20 @@ type ContainerSlot struct {
 }
 
 // ContainerSlotStateDir resolves the fixed per-user default state directory.
-// It depends only on the user configuration directory, never on a worktree,
-// profile, image, project root or policy.
+// It is anchored to the trusted owner home, never to XDG_CONFIG_HOME, a
+// worktree, profile, image, project root or policy: a variable configuration
+// directory must not create several independent single-container slots for one
+// user.
 func ContainerSlotStateDir() (string, error) {
-	configDir, err := os.UserConfigDir()
+	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", fmt.Errorf("resolve the user configuration directory for the container slot: %w", err)
+		return "", fmt.Errorf("resolve the user home directory for the container slot: %w", err)
 	}
-	configDir = strings.TrimSpace(configDir)
-	if configDir == "" {
-		return "", errors.New("resolve the user configuration directory for the container slot: empty path")
+	home = strings.TrimSpace(home)
+	if home == "" {
+		return "", errors.New("resolve the user home directory for the container slot: empty path")
 	}
-	return filepath.Join(configDir, "wb", containerSlotDirName), nil
+	return filepath.Join(home, ".config", "wb", containerSlotDirName), nil
 }
 
 // OpenContainerSlot takes the durable slot under stateDir. An empty stateDir
@@ -370,6 +380,12 @@ func syncContainerSlotDir(path string) error {
 func validateContainerReservation(reservation ContainerReservation, loaded bool) error {
 	if reservation.ContainerID != "" && !imageDigestHashPattern.MatchString(reservation.ContainerID) {
 		return fmt.Errorf("container ID %q is not a full 64-character lowercase hex ID", reservation.ContainerID)
+	}
+	if reservation.DaemonID != "" && !containerDaemonIDPattern.MatchString(reservation.DaemonID) {
+		return fmt.Errorf("Docker Engine ID %q is not a bounded safe identity", reservation.DaemonID)
+	}
+	if !loaded && reservation.DaemonID == "" {
+		return errors.New("a new container reservation must bind the Docker Engine identity that will own the container")
 	}
 	if !loaded && reservation.ContainerID != "" {
 		return errors.New("a new container reservation must have an empty container ID; record it after the runtime creates the container")

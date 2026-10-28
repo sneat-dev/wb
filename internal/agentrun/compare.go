@@ -59,6 +59,20 @@ func (s *Service) Compare(ctx context.Context, r CompareRequest) (agents.Experim
 		}
 		plans[profile] = plan
 	}
+	// A mandatory sandbox admits only one contained execution at a time. Refuse
+	// a concurrent comparison before any worktree exists; a serial comparison
+	// still validates every plan's snapshot and supported harness.
+	if config.Execution != nil {
+		if r.Concurrency > 1 {
+			return agents.ExperimentReport{}, agents.NewRequestError(fmt.Sprintf("--concurrency %d is not available under agents.execution max_parallel %d; a contained comparison must run serially", r.Concurrency, config.Execution.MaxParallel))
+		}
+		for _, profile := range r.Profiles {
+			plan := plans[profile]
+			if err := agents.RequireRunnableExecution(config.Execution, plan.Execution, "comparison plan", plan.Profile.Harness); err != nil {
+				return agents.ExperimentReport{}, err
+			}
+		}
+	}
 	// Allocate every attempt identity before anything runs, so the plan is
 	// durable and a crash still leaves an inspectable experiment.
 	for _, profile := range r.Profiles {

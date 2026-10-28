@@ -23,8 +23,7 @@ const containerSetupCleanupAllowance = containerMetadataTimeout +
 //
 // The addition is overflow-safe by construction: the maximum is subtracted as
 // each component is admitted, so no intermediate value can exceed
-// maxContainerLifetime. Legacy host timeout semantics are untouched; this helper
-// is only for a contained owner to use when it is wired in a later stage.
+// maxContainerLifetime. Legacy host timeout semantics are untouched.
 func ContainedLifetime(runTimeoutMS int64, steps []ValidationStep) (time.Duration, error) {
 	runTimeout, err := containedRunTimeout(runTimeoutMS)
 	if err != nil {

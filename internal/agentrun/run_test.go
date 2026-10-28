@@ -122,7 +122,7 @@ func serviceExecutionPolicy() agents.ExecutionPolicy {
 	}
 }
 
-func TestRunRefusesMandatoryPolicyBeforeHostPreflightOrPreparation(t *testing.T) {
+func TestRunRefusesAnUnsupportedHarnessBeforeHostPreflightOrPreparation(t *testing.T) {
 	t.Parallel()
 	fixture := newServiceFixture(t)
 	policy := serviceExecutionPolicy()
@@ -139,8 +139,8 @@ func TestRunRefusesMandatoryPolicyBeforeHostPreflightOrPreparation(t *testing.T)
 		ProjectsRoot: fixture.root,
 		Request:      agents.RunRequest{Task: "do it", TaskType: "coding", WorktreeMode: agents.ModeAuto, Worktree: "op"},
 	})
-	if err == nil || !strings.Contains(err.Error(), "refusing to run it outside the mandatory sandbox") {
-		t.Fatalf("error = %v, want a mandatory-sandbox refusal", err)
+	if err == nil || !strings.Contains(err.Error(), "can execute only the") {
+		t.Fatalf("error = %v, want the unsupported-harness refusal", err)
 	}
 	if probes != 0 || versions != 0 || prepares != 0 || len(fixture.started) != 0 {
 		t.Fatalf("a contained run reached the host: preflight=%d detect-version=%d prepare=%d started=%d",
@@ -148,7 +148,36 @@ func TestRunRefusesMandatoryPolicyBeforeHostPreflightOrPreparation(t *testing.T)
 	}
 }
 
-func TestRunFallbackRefusesMandatoryPolicyBeforeHostPreflight(t *testing.T) {
+func TestRunAdmitsMatchingContainedDshWithoutAHostProbe(t *testing.T) {
+	t.Parallel()
+	fixture := newServiceFixture(t)
+	policy := serviceExecutionPolicy()
+	fixture.config.Execution = &policy
+	fixture.config.Profiles["cheap"] = agents.Profile{Harness: agents.HarnessDSH, Model: "deepseek-flash"}
+	fixture.config.Providers[agents.ProviderDshDefault] = agents.Provider{
+		BaseURL: "https://api.deepseek.com", CredentialEnv: "WB_TEST_DEEPSEEK_OFFICIAL_KEY", WireAPI: agents.WireAPIChat,
+	}
+	probes := 0
+	fixture.deps.Preflight = func(context.Context, agents.Resolved) error { probes++; return nil }
+	result, err := fixture.service().Run(context.Background(), RunRequest{
+		ProjectsRoot: fixture.root,
+		Request:      agents.RunRequest{Task: "do it", TaskType: "coding", WorktreeMode: agents.ModeAuto, Worktree: "op"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if probes != 0 {
+		t.Fatalf("a contained run reached the host preflight %d times", probes)
+	}
+	if len(fixture.started) != 1 {
+		t.Fatalf("started = %#v, want the admitted contained run", fixture.started)
+	}
+	if result.AgentID == "" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestRunFallbackRefusesAnUnsupportedHarnessBeforeHostPreflight(t *testing.T) {
 	t.Parallel()
 	fixture := newServiceFixture(t)
 	policy := serviceExecutionPolicy()
@@ -181,8 +210,8 @@ func TestRunFallbackRefusesMandatoryPolicyBeforeHostPreflight(t *testing.T) {
 		ProjectsRoot: fixture.root, Wait: time.Second,
 		Request: agents.RunRequest{Task: "do it", TaskType: "coding"},
 	}, plan, agents.DispatchDeps{}, store, store.Render(current))
-	if err == nil || !strings.Contains(err.Error(), "refusing to run it outside the mandatory sandbox") {
-		t.Fatalf("error = %v, want a mandatory-sandbox refusal", err)
+	if err == nil || !strings.Contains(err.Error(), "can execute only the") {
+		t.Fatalf("error = %v, want the unsupported-harness refusal", err)
 	}
 	if probes != 0 || prepares != 0 || len(fixture.started) != 0 {
 		t.Fatalf("a contained fallback reached the host: preflight=%d prepare=%d started=%d",
