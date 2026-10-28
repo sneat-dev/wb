@@ -123,6 +123,20 @@ func recoverPublishedPrepareConflictCandidate(ctx context.Context, projectsRoot 
 }
 
 func recoverPublishedPrepareConflictCandidateWithRunner(ctx context.Context, run runner.Runner, projectsRoot string, receipt *WorktreeMergeReceipt, timeout time.Duration, retry int) (bool, error) {
+	return recoverPublishedPrepareConflictCandidateProvedWithRunner(ctx, run, projectsRoot, receipt, timeout, retry,
+		func(ctx context.Context, run runner.Runner, receipt WorktreeMergeReceipt) error {
+			return recheckWorktreeMergeSourcesWithRunner(ctx, run, receipt.Sources)
+		})
+}
+
+// publishedPrepareConflictSourceProof re-reads exactly the source custody the
+// caller's continuation owns. The shared proof invokes it at the same point
+// the legacy owner rechecked its recorded sources, so a caller that admits a
+// strictly advanced same-custody snapshot must still prove its own exact
+// source heads instead of weakening the unchanged-source path.
+type publishedPrepareConflictSourceProof func(context.Context, runner.Runner, WorktreeMergeReceipt) error
+
+func recoverPublishedPrepareConflictCandidateProvedWithRunner(ctx context.Context, run runner.Runner, projectsRoot string, receipt *WorktreeMergeReceipt, timeout time.Duration, retry int, proveSources publishedPrepareConflictSourceProof) (bool, error) {
 	if receipt == nil || !publishedPrepareConflictShaped(*receipt) {
 		return false, nil
 	}
@@ -163,7 +177,7 @@ func recoverPublishedPrepareConflictCandidateWithRunner(ctx context.Context, run
 	if err := requireCleanMergeWorktreeWithRunner(ctx, run, guard.Path); err != nil {
 		return false, fmt.Errorf("published prepare candidate: %w", err)
 	}
-	if err := recheckWorktreeMergeSourcesWithRunner(ctx, run, receipt.Sources); err != nil {
+	if err := proveSources(ctx, run, *receipt); err != nil {
 		return false, err
 	}
 	head, err := mergeRevision(ctx, run, guard.Path, "HEAD")
@@ -202,4 +216,119 @@ func recoverPublishedPrepareConflictCandidateWithRunner(ctx context.Context, run
 
 	recordRecoveredMergeCandidate(receipt, head)
 	return true, nil
+}
+
+// requireCapturedLegacyPublishedPrepareCandidateWithRunner re-reads the managed
+// candidate's physical head and requires the exact captured H. The shared proof
+// already re-proved that a head contains every recorded root; this is the
+// operation's own immutable identity, so it refuses even a strict descendant
+// that would silently replace H and its candidate-only repair.
+func requireCapturedLegacyPublishedPrepareCandidateWithRunner(ctx context.Context, run runner.Runner, worktree, captured string) error {
+	head, err := mergeRevision(ctx, run, worktree, "HEAD")
+	if err != nil {
+		return fmt.Errorf("read captured legacy published prepare candidate: %w", err)
+	}
+	if head != captured {
+		return fmt.Errorf("legacy published prepare candidate head drifted from captured %s to %s", captured, head)
+	}
+	return nil
+}
+
+// requireLegacyPublishedPrepareRetainsCapturedWithRunner proves an integrated
+// checkpoint still descends the captured H before any receipt records it as the
+// new candidate identity.
+func requireLegacyPublishedPrepareRetainsCapturedWithRunner(ctx context.Context, run runner.Runner, worktree, captured, head string) error {
+	contains, err := isMergeAncestorWithRunner(ctx, run, worktree, captured, head)
+	if err != nil {
+		return fmt.Errorf("prove integrated candidate retains the captured legacy published prepare candidate: %w", err)
+	}
+	if !contains {
+		return fmt.Errorf("integrated candidate %s does not retain captured legacy published prepare candidate %s", head, captured)
+	}
+	return nil
+}
+
+// requireLegacyPublishedPrepareReDerivedCaptured refuses a held-lock proof whose
+// freshly re-derived receipt identity is not the exact captured H. Re-proving
+// every recorded root and candidate ancestry admits any clean head that still
+// contains them, so a proof that read a different head there - and returned to
+// H before the later physical read - would otherwise persist that head as the
+// preparing candidate while H is the operation's captured identity.
+func requireLegacyPublishedPrepareReDerivedCaptured(receipt WorktreeMergeReceipt, captured string) error {
+	if receipt.Candidate.SHA != captured {
+		return fmt.Errorf("legacy published prepare re-derived receipt candidate %q instead of the captured %s", receipt.Candidate.SHA, captured)
+	}
+	return nil
+}
+
+// requireLegacyPublishedPrepareIntegratedGraphWithRunner proves one accepted
+// integration or validation checkpoint still descends every identity the bridge
+// has already proved: the last accepted candidate head, the source snapshot just
+// accepted, and each source root accepted before it. Ancestry of the last
+// accepted head normally implies the earlier roots, but the contract is proved
+// explicitly so a later head can never silently drop an earlier merged source.
+// A head that misses any of them is never recorded as merged or prepared.
+func requireLegacyPublishedPrepareIntegratedGraphWithRunner(ctx context.Context, run runner.Runner, worktree, head, provenCandidate string, acceptedRoots ...string) error {
+	roots := make([]string, 0, 1+len(acceptedRoots))
+	if provenCandidate != "" {
+		roots = append(roots, provenCandidate)
+	}
+	roots = append(roots, acceptedRoots...)
+	for _, root := range roots {
+		contains, err := isMergeAncestorWithRunner(ctx, run, worktree, root, head)
+		if err != nil {
+			return fmt.Errorf("prove integrated candidate retains %s: %w", root, err)
+		}
+		if !contains {
+			return fmt.Errorf("integrated candidate %s does not retain %s", head, root)
+		}
+	}
+	return nil
+}
+
+// acceptedWorktreeMergeSourceRoots returns the source snapshots this operation
+// has already accepted into the candidate, in receipt order.
+func acceptedWorktreeMergeSourceRoots(sources []WorktreeMergeSource) []string {
+	roots := make([]string, 0, len(sources))
+	for _, source := range sources {
+		if source.Merged && source.SHA != "" {
+			roots = append(roots, source.SHA)
+		}
+	}
+	return roots
+}
+
+// recoverLegacyPublishedPrepareAdvanceWithRunner is the one prepare-only bridge// for a legacy published prepare conflict whose candidate snapshot is empty
+// while the same ordered source custody strictly advanced. Ordinary prepare
+// cannot refresh such a receipt (its refresh owner requires local HEAD ==
+// Candidate.SHA) and exact-source resume rightly refuses the advanced source.
+// Only after the shared published-conflict proof has adopted the clean resolved
+// head H - using the recorded old source roots and every recorded candidate,
+// validation, and refresh root, the fresh exact target, the guarded active
+// claim, and the exact open unmerged pull request at its remote predecessor -
+// may ordinary prepare integrate the new source snapshots into H through its
+// existing validation and persistence owners. Nothing is persisted here.
+func recoverLegacyPublishedPrepareAdvanceWithRunner(ctx context.Context, run runner.Runner, projectsRoot string, receipt *WorktreeMergeReceipt, current []WorktreeMergeSource, timeout time.Duration, retry int) (bool, error) {
+	if receipt == nil || receipt.Candidate.SHA != "" || !publishedPrepareConflictShaped(*receipt) {
+		return false, nil
+	}
+	advanced, err := worktreeMergeSourcesAdvanced(ctx, run, receipt.Sources, current)
+	if err != nil {
+		return false, err
+	}
+	if !advanced {
+		// An unchanged source remains the exact-source resume owner's case and
+		// must never acquire this advanced-source preparation permission.
+		return false, nil
+	}
+	return recoverPublishedPrepareConflictCandidateProvedWithRunner(ctx, run, projectsRoot, receipt, timeout, retry,
+		func(ctx context.Context, run runner.Runner, receipt WorktreeMergeReceipt) error {
+			// The strict same-custody advance was proved immediately above on
+			// this same locked snapshot, and the old source snapshots stay
+			// ancestry proofs rather than a demand to rewind physical source
+			// HEAD. Re-read the exact current source heads here so a source
+			// that moves while the rest of the proof runs is refused before H
+			// is adopted.
+			return recheckWorktreeMergeSourcesWithRunner(ctx, run, current)
+		})
 }

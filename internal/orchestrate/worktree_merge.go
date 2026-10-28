@@ -599,6 +599,15 @@ func prepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 	reportsDir := filepath.Join(home, "reports", "worktree-merge")
 	receiptPath := filepath.Join(reportsDir, operation+".json")
 	var prior *WorktreeMergeReceipt
+	// capturedLegacyPrepareHead is the exact resolved candidate H proved by the
+	// legacy published prepare bridge before the lane lock was held. It is an
+	// immutable operation guard for the rest of this prepare, never a value to
+	// re-derive: a later recovery that observes a different clean head - even
+	// one that still contains every recorded predecessor, validation, and
+	// refresh root - must be refused instead of silently replacing the
+	// captured identity and dropping a candidate-only repair that only H
+	// records.
+	var capturedLegacyPrepareHead string
 	for {
 		existing, readErr := read(receiptPath)
 		if errors.Is(readErr, os.ErrNotExist) {
@@ -774,6 +783,21 @@ func prepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		if continuationErr != nil {
 			return *active, continuationErr
 		}
+		if continuation != prepareRefresh && continuation != prepareForwardRepair {
+			// The exact legacy empty-candidate published conflict has no
+			// ordinary refresh owner: its local head is the resolved candidate
+			// H, not the empty recorded snapshot. Re-prove that H in memory
+			// once here, then again under the lane lock below, and let ordinary
+			// prepare integrate the strictly advanced sources into it.
+			bridged, bridgeErr := recoverLegacyPublishedPrepareAdvanceWithRunner(ctx, run, projectsRoot, active, sources, options.Timeout, options.Retry)
+			if bridgeErr != nil {
+				return *active, bridgeErr
+			}
+			if bridged {
+				continuation = prepareRefresh
+				capturedLegacyPrepareHead = active.Candidate.SHA
+			}
+		}
 		if continuation != prepareRefresh {
 			if continuation != prepareForwardRepair {
 				if active.Status == WorktreeMergeValidationFailed {
@@ -833,6 +857,44 @@ func prepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		continuation, continuationErr := choosePrepareContinuation(ctx, run, current, sources)
 		if continuationErr != nil {
 			return current, continuationErr
+		}
+		heldRead := current
+		if continuation != prepareRefresh && continuation != prepareForwardRepair {
+			// Re-prove the legacy empty-candidate published advance under the
+			// lane lock. A race that moved the source, candidate, target, claim,
+			// remote predecessor, or pull request since the pre-lock decision is
+			// refused here, before ordinary prepare records or integrates
+			// anything.
+			bridged, bridgeErr := recoverLegacyPublishedPrepareAdvanceWithRunner(ctx, run, projectsRoot, &current, sources, options.Timeout, options.Retry)
+			if bridgeErr != nil {
+				return current, bridgeErr
+			}
+			if bridged {
+				continuation = prepareRefresh
+			}
+		}
+		if capturedLegacyPrepareHead != "" {
+			// The held re-read re-proved every fact above from private Git, but
+			// that proof alone admits any clean head that still contains the
+			// recorded roots. The captured H is the operation's identity: the
+			// physical head must be exactly it, whether or not the locked
+			// attempt re-entered the bridge, and no other continuation may
+			// replace it. A refusal returns the receipt exactly as it was
+			// durably read, not the rejected bridge's in-memory adoption.
+			if headErr := requireCapturedLegacyPublishedPrepareCandidateWithRunner(ctx, run, current.Candidate.Worktree, capturedLegacyPrepareHead); headErr != nil {
+				return heldRead, headErr
+			}
+			// The physical head alone is not the whole identity: the shared
+			// proof re-derives candidate H from its own read, so a race that
+			// exposed a different clean head H1 during that proof and returned
+			// physical HEAD to H before this point would otherwise persist H1 as
+			// the preparing candidate. Both witnesses must be the captured H.
+			if identityErr := requireLegacyPublishedPrepareReDerivedCaptured(current, capturedLegacyPrepareHead); identityErr != nil {
+				return heldRead, identityErr
+			}
+			if continuation == prepareForwardRepair {
+				return heldRead, fmt.Errorf("legacy published prepare captured candidate %s cannot continue as a post-target repair", capturedLegacyPrepareHead)
+			}
 		}
 		if continuation != prepareRefresh {
 			if continuation != prepareForwardRepair {
@@ -941,6 +1003,15 @@ func prepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 	if err := save(receipt); err != nil {
 		return receipt, err
 	}
+	if capturedLegacyPrepareHead != "" {
+		// The preparing receipt just recorded the captured H as the candidate
+		// identity. Re-read the physical head: a clean replacement that
+		// happened after the locked proof must not be carried into the
+		// integration below as if it were still H.
+		if headErr := requireCapturedLegacyPublishedPrepareCandidateWithRunner(ctx, run, candidate.WorktreeDir, capturedLegacyPrepareHead); headErr != nil {
+			return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, headErr, save)
+		}
+	}
 	if rebatch != nil && candidate.BaseSHA != rebatch.CurrentTargetSHA {
 		// Creation already owns a durable worktree and claim. Preserve its exact
 		// identity in a failed receipt so the target race cannot orphan them.
@@ -977,6 +1048,10 @@ func prepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 
 	for index := range receipt.Sources {
 		source := &receipt.Sources[index]
+		// provenCandidate is the last candidate identity this operation accepted
+		// before this source checkpoint. It is read here, not after the merge, so
+		// a refusal can never keep a head this source did not prove.
+		provenCandidate := receipt.Candidate.SHA
 		ancestor, ancestorErr := isMergeAncestorWithRunner(ctx, run, candidate.WorktreeDir, source.SHA, "HEAD")
 		if ancestorErr != nil {
 			return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, ancestorErr, save)
@@ -988,13 +1063,37 @@ func prepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 				return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, conflict, save)
 			}
 		}
-		source.Merged = true
+		// This stage event reports an in-flight integration checkpoint; it does
+		// not certify a durable Merged receipt, which stays after every accepted
+		// head and graph check below.
 		progress.Report(options.Progress, progress.Event{Operation: "worktree_merge", Phase: "integrate_sources", Repository: repository,
 			State: progress.Running, Completed: index + 1, Total: len(receipt.Sources), Detail: source.Branch + "@" + shortMergeRevision(source.SHA)})
-		receipt.Candidate.SHA, err = mergeRevision(ctx, run, candidate.WorktreeDir, "HEAD")
-		if err != nil {
-			return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, err, save)
+		head, headErr := mergeRevision(ctx, run, candidate.WorktreeDir, "HEAD")
+		if headErr != nil {
+			return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, headErr, save)
 		}
+		if capturedLegacyPrepareHead != "" {
+			// Every source integration checkpoint must still descend the
+			// captured H. A clean head that lost H - and the candidate-only
+			// repair only H records - is never recorded as the integrated
+			// candidate; the receipt keeps the last head this operation proved.
+			if retainsErr := requireLegacyPublishedPrepareRetainsCapturedWithRunner(ctx, run, candidate.WorktreeDir, capturedLegacyPrepareHead, head); retainsErr != nil {
+				return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, retainsErr, save)
+			}
+			// The accepted head must also still contain the last proven
+			// candidate identity, this source, and every source accepted before
+			// it. Resetting a post-merge candidate back to an earlier head
+			// retains H but silently drops this source, and a later source head
+			// can drop an earlier merged one, so each checkpoint proves the whole
+			// integrated graph before this source is recorded as merged.
+			graphErr := requireLegacyPublishedPrepareIntegratedGraphWithRunner(ctx, run, candidate.WorktreeDir, head, provenCandidate,
+				append([]string{source.SHA}, acceptedWorktreeMergeSourceRoots(receipt.Sources[:index])...)...)
+			if graphErr != nil {
+				return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, graphErr, save)
+			}
+		}
+		source.Merged = true
+		receipt.Candidate.SHA = head
 		receipt.UpdatedAt = time.Now().UTC()
 		if err := save(receipt); err != nil {
 			return receipt, err
@@ -1022,6 +1121,18 @@ func prepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 	reportWorktreeMergeProgress(options.Progress, "validate_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
 	plan, planErr := resolveWorktreeMergeValidationPlan(ctx, repository, target, options.Route, options.ValidateLocally, false, options.DirectCIPullRequest)
 	if planErr != nil {
+		if capturedLegacyPrepareHead != "" {
+			// Route/validation planning is not candidate evidence. The captured
+			// H and the integrated H-prime are already recorded and still
+			// unvalidated, so keep the truthful preparing status: a later
+			// ordinary resume validates this exact head and lands it through
+			// the same open publication. Recording a conflict here would leave
+			// a candidate that already contains every source with no recovery
+			// owner (the published recovery only owns an empty or
+			// source-missing candidate) and strand it behind stale
+			// predecessor validation.
+			return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergePreparing, planErr, save)
+		}
 		return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, planErr, save)
 	}
 	// Round 4, minor 2: cmd/wb's combined `wb worktree land`/`wb land`
@@ -1047,11 +1158,41 @@ func prepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeValidationFailed, validationErr, save)
 	}
 	reportWorktreeMergeProgress(options.Progress, "validate_candidate", progress.Completed, string(receipt.Validation.Status))
-	receipt.Status = WorktreeMergePrepared
-	receipt.Candidate.SHA, err = mergeRevision(ctx, options.resolveRunner(), candidate.WorktreeDir, "HEAD")
-	if err != nil {
-		return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, err, save)
+	preparedHead, preparedHeadErr := mergeRevision(ctx, options.resolveRunner(), candidate.WorktreeDir, "HEAD")
+	if preparedHeadErr != nil {
+		return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, preparedHeadErr, save)
 	}
+	if capturedLegacyPrepareHead != "" {
+		// The prepared record is the last chance to keep the captured identity
+		// truthful: the head that validation just covered must still descend
+		// the captured H, never a clean replacement that dropped it.
+		if retainsErr := requireLegacyPublishedPrepareRetainsCapturedWithRunner(ctx, run, candidate.WorktreeDir, capturedLegacyPrepareHead, preparedHead); retainsErr != nil {
+			return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, retainsErr, save)
+		}
+		// The validated head is the identity the prepared record is about to
+		// claim, so it must still contain the last integrated candidate this
+		// operation proved and every source it accepted. Keeping only H would
+		// record a head that silently dropped an integrated source.
+		graphErr := requireLegacyPublishedPrepareIntegratedGraphWithRunner(ctx, run, candidate.WorktreeDir, preparedHead, receipt.Candidate.SHA,
+			acceptedWorktreeMergeSourceRoots(receipt.Sources)...)
+		if graphErr != nil {
+			return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, graphErr, save)
+		}
+		// Everything above proves ancestry, which any clean descendant of the
+		// validated head also satisfies. The prepared record, though, may only
+		// claim the exact head validation just covered: saving a newer
+		// descendant here would name it Candidate.SHA while
+		// Validation.Revision and ValidationDeferral.CandidateSHA still name
+		// the head validation actually ran on. Compare the preparedHead value
+		// about to be saved, not a further physical read that could disagree
+		// with it.
+		if preparedHead != receipt.Candidate.SHA {
+			return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict,
+				fmt.Errorf("legacy published prepare head %s is not the validated candidate %s", preparedHead, receipt.Candidate.SHA), save)
+		}
+	}
+	receipt.Status = WorktreeMergePrepared
+	receipt.Candidate.SHA = preparedHead
 	receipt.Failure = ""
 	receipt.UpdatedAt = time.Now().UTC()
 	if err := save(receipt); err != nil {
