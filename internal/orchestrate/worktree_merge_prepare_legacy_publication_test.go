@@ -31,7 +31,11 @@ type legacyPublishedAdvanceFixture struct {
 
 func newLegacyPublishedAdvanceFixture(t *testing.T) legacyPublishedAdvanceFixture {
 	t.Helper()
-	fixture := newEngineFixture(t)
+	return newLegacyPublishedAdvanceFixtureFrom(t, newEngineFixture(t))
+}
+
+func newLegacyPublishedAdvanceFixtureFrom(t *testing.T, fixture engineFixture) legacyPublishedAdvanceFixture {
+	t.Helper()
 	source := createMergeSource(t, fixture, "legacy-published-source", "feature/legacy-published", "source.txt", "source\n")
 	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
 		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
@@ -240,12 +244,146 @@ func unrelatedLegacyRoot(t *testing.T, fixture engineFixture, name string) strin
 	return strings.TrimSpace(runEngineGit(t, source.WorktreeDir, "rev-parse", "HEAD"))
 }
 
+// TestPrepareLegacyPublishedAdvanceMergeFailureKeepsResolvedHeadAndIntent
+// proves the bridge captures the proven H before integration: a conflicting
+// S-prime must leave a truthful conflict receipt naming H, the new source, and
+// the old refresh history, with the publication, remote predecessor, and
+// target untouched. A repeated attempt must not erase that intent.
+//
+//nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
+func TestPrepareLegacyPublishedAdvanceMergeFailureKeepsResolvedHeadAndIntent(t *testing.T) {
+	fixture := newLegacyPublishedAdvanceFixture(t)
+	gh := installWorktreeMergeEngineGH(t, fixture.engineFixture, fixture.published, fixture.receipt.Candidate.Branch)
+	target := fixture.receipt.TargetSHA
+	writeEngineFile(t, filepath.Join(fixture.source, "local-repair.txt"), "source-side repair that conflicts\n")
+	runEngineGit(t, fixture.source, "add", "local-repair.txt")
+	runEngineGit(t, fixture.source, "commit", "-m", "feat: conflict with the resolved local repair")
+	conflictingSource := strings.TrimSpace(runEngineGit(t, fixture.source, "rev-parse", "HEAD"))
+
+	failed, err := prepareLegacyPublishedAdvance(t, fixture)
+	if err == nil || !strings.Contains(err.Error(), "merge conflict while integrating") {
+		t.Fatalf("conflicting legacy prepare=%+v error=%v", failed, err)
+	}
+	if failed.Status != WorktreeMergeConflict || failed.Candidate.SHA != fixture.resolvedHead ||
+		failed.PublishedCandidateSHA != fixture.published || failed.PullRequest != gh.pr ||
+		failed.TargetSHA != target || failed.LandingSHA != "" ||
+		len(failed.Sources) != 1 || failed.Sources[0].SHA != conflictingSource {
+		t.Fatalf("merge failure lost the proven resolved head: %+v", failed)
+	}
+	if len(failed.SourceRefreshes) != 2 ||
+		failed.SourceRefreshes[0].Sources[0].SHA != fixture.initialSource ||
+		failed.SourceRefreshes[1].Sources[0].SHA != fixture.oldSource {
+		t.Fatalf("merge failure lost source history: %+v", failed.SourceRefreshes)
+	}
+	if head := strings.TrimSpace(runEngineGit(t, failed.Candidate.Worktree, "rev-parse", "HEAD")); head != fixture.resolvedHead {
+		t.Fatalf("merge failure moved the resolved head from %s to %s", fixture.resolvedHead, head)
+	}
+	if remote := strings.TrimSpace(runEngineGit(t, fixture.repository.CloneURL, "rev-parse", "refs/heads/"+fixture.candidateBranch)); remote != fixture.published {
+		t.Fatalf("merge failure moved the published branch to %s, want %s", remote, fixture.published)
+	}
+	if live := strings.TrimSpace(runEngineGit(t, fixture.repository.CloneURL, "rev-parse", "refs/heads/main")); live != target {
+		t.Fatalf("merge failure moved the target to %s, want %s", live, target)
+	}
+	before := failed
+	repeated, repeatErr := prepareLegacyPublishedAdvance(t, fixture)
+	if repeatErr == nil {
+		t.Fatalf("repeated merge failure unexpectedly succeeded: %+v", repeated)
+	}
+	stored, readErr := readWorktreeMergeReceipt(failed.ReceiptPath)
+	if readErr != nil || stored.Status != WorktreeMergeConflict || stored.Candidate.SHA != before.Candidate.SHA ||
+		stored.PublishedCandidateSHA != fixture.published || stored.PullRequest != gh.pr ||
+		stored.Sources[0].SHA != conflictingSource || len(stored.SourceRefreshes) != 2 {
+		t.Fatalf("repeated merge failure erased intent=%+v error=%v", stored, readErr)
+	}
+	if log := gh.ghLog(t); strings.Contains(log, "pr create") || strings.Contains(log, "pulls/41/merge") || strings.Contains(log, "update-branch") {
+		t.Fatalf("merge failure performed a pull-request write:\n%s", log)
+	}
+}
+
+// TestPrepareLegacyPublishedAdvanceValidationFailureRetainsHPrimeAndIntent
+// proves the bridge persists the integrated H-prime before validation: a real
+// validation failure must keep the exact head, H, the advanced source, every
+// old source snapshot, the same open publication, and an unmoved target.
+//
+//nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
+func TestPrepareLegacyPublishedAdvanceValidationFailureRetainsHPrimeAndIntent(t *testing.T) {
+	fixture := newEngineFixture(t)
+	writeEngineGoModule(t, fixture.canonical, "package app\n")
+	runEngineGit(t, fixture.canonical, "add", "go.mod", "app.go")
+	runEngineGit(t, fixture.canonical, "commit", "-m", "test: native validation baseline")
+	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+	advance := newLegacyPublishedAdvanceFixtureFrom(t, fixture)
+	gh := installWorktreeMergeEngineGH(t, advance.engineFixture, advance.published, advance.receipt.Candidate.Branch)
+	target := advance.receipt.TargetSHA
+
+	writeEngineFile(t, filepath.Join(advance.source, "failing.go"), "package app\n\nfunc Broken() { missingLegacySymbol }\n")
+	runEngineGit(t, advance.source, "add", "failing.go")
+	runEngineGit(t, advance.source, "commit", "-m", "feat: add a real validation failure")
+	advanced := strings.TrimSpace(runEngineGit(t, advance.source, "rev-parse", "HEAD"))
+
+	failed, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: advance.githubDir, Sources: []string{advance.source}, Target: "main",
+		Model: "test-model", AgentRuntime: "test", ValidateLocally: true,
+	})
+	if err == nil || failed.Status != WorktreeMergeValidationFailed || failed.Candidate.SHA == "" {
+		t.Fatalf("failing legacy prepare=%+v error=%v", failed, err)
+	}
+	head := failed.Candidate.SHA
+	if head == advance.resolvedHead {
+		t.Fatalf("validation failure did not record the integrated H-prime: %+v", failed)
+	}
+	for _, root := range []string{advance.resolvedHead, advance.published, advance.oldSource, advance.currentSource, advanced, target} {
+		assertNativeAncestor(t, failed.Candidate.Worktree, root, head)
+	}
+	if failed.PublishedCandidateSHA != advance.published || failed.PullRequest != gh.pr ||
+		failed.TargetSHA != target || failed.LandingSHA != "" ||
+		failed.Validation.Revision != head || failed.Validation.Status != quality.StatusFailed {
+		t.Fatalf("validation failure lost publication or head evidence: %+v", failed)
+	}
+	if len(failed.SourceRefreshes) != 2 ||
+		failed.SourceRefreshes[0].Sources[0].SHA != advance.initialSource ||
+		failed.SourceRefreshes[1].Sources[0].SHA != advance.oldSource {
+		t.Fatalf("validation failure lost source history: %+v", failed.SourceRefreshes)
+	}
+	if remote := strings.TrimSpace(runEngineGit(t, advance.repository.CloneURL, "rev-parse", "refs/heads/"+advance.candidateBranch)); remote != advance.published {
+		t.Fatalf("validation failure moved the published branch to %s, want %s", remote, advance.published)
+	}
+	if live := strings.TrimSpace(runEngineGit(t, advance.repository.CloneURL, "rev-parse", "refs/heads/main")); live != target {
+		t.Fatalf("validation failure moved the target to %s, want %s", live, target)
+	}
+	if log := gh.ghLog(t); strings.Contains(log, "pr create") || strings.Contains(log, "pulls/41/merge") || strings.Contains(log, "update-branch") {
+		t.Fatalf("validation failure performed a pull-request write:\n%s", log)
+	}
+
+	stored, readErr := readWorktreeMergeReceipt(failed.ReceiptPath)
+	if readErr != nil || stored.Status != WorktreeMergeValidationFailed || stored.Candidate.SHA != head ||
+		stored.PublishedCandidateSHA != advance.published || stored.PullRequest != gh.pr ||
+		stored.Sources[0].SHA != advanced || len(stored.SourceRefreshes) != 2 {
+		t.Fatalf("durable validation failure=%+v error=%v", stored, readErr)
+	}
+	repeated, repeatedErr := prepareLegacyPublishedAdvance(t, advance)
+	if repeatedErr == nil && repeated.Candidate.SHA != head {
+		t.Fatalf("repeated validation attempt replaced the recorded head: %+v", repeated)
+	}
+	stored, readErr = readWorktreeMergeReceipt(failed.ReceiptPath)
+	if readErr != nil || stored.Status != WorktreeMergeValidationFailed || stored.Candidate.SHA != head ||
+		stored.PublishedCandidateSHA != advance.published || stored.Sources[0].SHA != advanced {
+		t.Fatalf("repeated validation attempt erased intent=%+v error=%v", stored, readErr)
+	}
+}
+
+// new normal-prepare entry point over every evidence class the shared 938
+// proof owns: source custody and ancestry, candidate/canonical/claim custody,
+// target and hosted pull-request identity, and every recorded root. A refusal
+// must leave the receipt, the resolved head, and the publication untouched.
+//
 // TestPrepareLegacyPublishedAdvanceRefusesUnprovenCustodyAndRoots drives the
 // new normal-prepare entry point over every evidence class the shared 938
 // proof owns: source custody and ancestry, candidate/canonical/claim custody,
 // target and hosted pull-request identity, and every recorded root. A refusal
 // must leave the receipt, the resolved head, and the publication untouched.
 //
+//nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
 //nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
 func TestPrepareLegacyPublishedAdvanceRefusesUnprovenCustodyAndRoots(t *testing.T) {
 	for _, tc := range []struct {
