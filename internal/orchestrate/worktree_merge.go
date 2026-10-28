@@ -1175,6 +1175,18 @@ func prepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		if graphErr != nil {
 			return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, graphErr, save)
 		}
+		// Everything above proves ancestry, which any clean descendant of the
+		// validated head also satisfies. The prepared record, though, may only
+		// claim the exact head validation just covered: saving a newer
+		// descendant here would name it Candidate.SHA while
+		// Validation.Revision and ValidationDeferral.CandidateSHA still name
+		// the head validation actually ran on. Compare the preparedHead value
+		// about to be saved, not a further physical read that could disagree
+		// with it.
+		if preparedHead != receipt.Candidate.SHA {
+			return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict,
+				fmt.Errorf("legacy published prepare head %s is not the validated candidate %s", preparedHead, receipt.Candidate.SHA), save)
+		}
 	}
 	receipt.Status = WorktreeMergePrepared
 	receipt.Candidate.SHA = preparedHead

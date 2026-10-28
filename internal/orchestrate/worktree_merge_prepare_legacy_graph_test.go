@@ -280,6 +280,89 @@ func TestPrepareLegacyPublishedAdvanceRefusesPreparedCheckpointThatLostIntegrate
 	}
 }
 
+// TestPrepareLegacyPublishedAdvanceRefusesPreparedCleanDescendantBeyondValidatedHead
+// commits a fresh clean descendant H2 of the integrated H-prime at the final
+// prepared-head read, after validation already covered H-prime. H2 keeps the
+// captured H, H-prime itself, the accepted source and every recorded root, so
+// both ancestry guards admit it; only the exact validated identity can tell that
+// recording H2 would stamp an unvalidated head as the candidate validation
+// covered. Prepare must refuse and keep H-prime with its truthful validation.
+//
+//nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
+func TestPrepareLegacyPublishedAdvanceRefusesPreparedCleanDescendantBeyondValidatedHead(t *testing.T) {
+	fixture := newLegacyPublishedAdvanceFixture(t)
+	gh := installWorktreeMergeEngineGH(t, fixture.engineFixture, fixture.published, fixture.receipt.Candidate.Branch)
+	before := fixture.receipt
+	var integrated, descendant string
+	save := func(receipt WorktreeMergeReceipt) error {
+		if integrated == "" && receipt.Status == WorktreeMergePreparing && receipt.Sources[0].Merged {
+			integrated = receipt.Candidate.SHA
+		}
+		return persistWorktreeMergeReceipt(receipt)
+	}
+	// The eighth exact head read is the prepared checkpoint, after validation.
+	run := &legacyCutpointRunner{
+		Runner: runner.New(), dir: before.Candidate.Worktree, headRead: 8,
+		move: func() {
+			writeEngineFile(t, filepath.Join(before.Candidate.Worktree, "clean-descendant.txt"), "clean descendant\n")
+			runEngineGit(t, before.Candidate.Worktree, "add", "clean-descendant.txt")
+			runEngineGit(t, before.Candidate.Worktree, "commit", "-m", "test: clean descendant after validation")
+			descendant = strings.TrimSpace(runEngineGit(t, before.Candidate.Worktree, "rev-parse", "HEAD"))
+		},
+	}
+	failed, err := prepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{fixture.source}, Target: "main", Model: "test-model", AgentRuntime: "test", run: run,
+	}, readWorktreeMergeReceipt, save)
+	if err == nil || !strings.Contains(err.Error(), "is not the validated candidate "+integrated) {
+		t.Fatalf("clean prepared descendant=%+v error=%v integrated=%q descendant=%q", failed, err, integrated, descendant)
+	}
+	if !run.triggered || integrated == "" || descendant == "" || descendant == integrated || descendant == fixture.resolvedHead {
+		t.Fatalf("prepared descendant cutpoints triggered=%v integrated=%q descendant=%q", run.triggered, integrated, descendant)
+	}
+	// H2 is a strict clean descendant that dropped nothing: the captured H, the
+	// validated H-prime, the accepted source and every recorded root remain.
+	assertNativeAncestor(t, before.Candidate.Worktree, integrated, descendant)
+	for _, root := range []string{fixture.published, fixture.resolvedHead, fixture.oldSource, fixture.currentSource, before.TargetSHA} {
+		assertNativeAncestor(t, before.Candidate.Worktree, root, descendant)
+	}
+	if failed.Status != WorktreeMergeConflict || failed.Candidate.SHA != integrated ||
+		failed.Validation.Revision != integrated || failed.Validation.Status != quality.StatusSkipped ||
+		failed.PublishedCandidateSHA != fixture.published || failed.PullRequest != gh.pr ||
+		failed.TargetSHA != before.TargetSHA || failed.LandingSHA != "" ||
+		len(failed.Sources) != 1 || !failed.Sources[0].Merged || failed.Sources[0].SHA != fixture.currentSource ||
+		len(failed.SourceRefreshes) != 2 {
+		t.Fatalf("prepared descendant lost the validated identity: %+v", failed)
+	}
+	// This fixture's normal prepare defers local validation to the fenced
+	// required-check policy, so the deferral is the identity that must keep
+	// naming H-prime rather than the unvalidated descendant.
+	if failed.ValidationDeferral == nil || failed.ValidationDeferral.CandidateSHA != integrated {
+		t.Fatalf("prepared descendant relabelled the validation deferral: %+v", failed.ValidationDeferral)
+	}
+	stored, readErr := readWorktreeMergeReceipt(before.ReceiptPath)
+	if readErr != nil || stored.Status != WorktreeMergeConflict || stored.Candidate.SHA != integrated ||
+		stored.Validation.Revision != integrated || stored.PublishedCandidateSHA != fixture.published ||
+		stored.PullRequest != gh.pr || stored.TargetSHA != before.TargetSHA || stored.LandingSHA != "" ||
+		!stored.Sources[0].Merged || stored.Sources[0].SHA != fixture.currentSource || len(stored.SourceRefreshes) != 2 {
+		t.Fatalf("durable prepared descendant=%+v error=%v", stored, readErr)
+	}
+	if head := strings.TrimSpace(runEngineGit(t, before.Candidate.Worktree, "rev-parse", "HEAD")); head != descendant {
+		t.Fatalf("prepared descendant moved the candidate head to %s, want the untouched physical %s", head, descendant)
+	}
+	if status := strings.TrimSpace(runEngineGit(t, before.Candidate.Worktree, "status", "--porcelain=v1")); status != "" {
+		t.Fatalf("prepared descendant left the candidate worktree dirty: %s", status)
+	}
+	if remote := strings.TrimSpace(runEngineGit(t, fixture.repository.CloneURL, "rev-parse", "refs/heads/"+before.Candidate.Branch)); remote != fixture.published {
+		t.Fatalf("prepared descendant published %s, want %s", remote, fixture.published)
+	}
+	if live := strings.TrimSpace(runEngineGit(t, fixture.repository.CloneURL, "rev-parse", "refs/heads/main")); live != before.TargetSHA {
+		t.Fatalf("prepared descendant moved the target to %s", live)
+	}
+	if log := gh.ghLog(t); strings.Contains(log, "pr create") || strings.Contains(log, "pulls/41/merge") || strings.Contains(log, "update-branch") {
+		t.Fatalf("prepared descendant performed a pull-request write:\n%s", log)
+	}
+}
+
 // TestPrepareLegacyPublishedAdvanceRefusesIntegratedGraphReadFailure keeps the
 // accepted-graph guards non-inventive: when the private-Git read that proves one
 // accepted source root fails, prepare refuses with that error and keeps the last
