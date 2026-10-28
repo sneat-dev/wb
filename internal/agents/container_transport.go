@@ -266,6 +266,17 @@ func (runtime *ContainerRuntime) WorkerCommand(ctx context.Context, credential C
 	return command, nil
 }
 
+// ValidationTransport returns the credential-free command factory a contained
+// validation run uses. The factory receives only the step argv, targets the same
+// verified container and worktree as the harness, and keeps the bounded Docker
+// client transport captured by this runtime. It cannot fall back to a host
+// command: a runtime that cannot build the command returns the error instead.
+func (runtime *ContainerRuntime) ValidationTransport() ValidationCommandFactory {
+	return func(ctx context.Context, argv []string) (*exec.Cmd, error) {
+		return runtime.WorkerCommand(ctx, Credential{}, argv)
+	}
+}
+
 // PrepareWorkerHome creates the private worker HOME and every fixed /tmp cache
 // directory inside the already verified container, as the unprivileged owner.
 // The template is copied with a plain recursive copy, which does not attempt to
