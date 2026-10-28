@@ -12,6 +12,7 @@ package agents
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path"
 	"sort"
@@ -392,8 +393,9 @@ type Resolved struct {
 	// still resolve an effort after the configuration file changes.
 	EffortVariants map[string]string `json:"effort_variants,omitempty"`
 	// Routing is the provider registry entry a Codex run will be configured
-	// with. It carries no credential, only the name of the variable holding it,
-	// and is absent for harnesses that use their own auth store.
+	// with, or the explicit official entry a contained dsh run needs. It carries
+	// no credential, only the name of the variable holding it, and is absent for
+	// a host harness that uses its own auth store.
 	Routing Provider `json:"routing,omitempty"`
 	// TimeoutMS is the profile's own bound, when configured.
 	TimeoutMS int64 `json:"timeout_ms,omitempty"`
@@ -505,8 +507,65 @@ func (config Config) resolveProfile(requested string, profile Profile) (Resolved
 			return Resolved{}, requestErrorf("agent profile %q names provider %q; the %q harness supports only %q in this build", requested, named, HarnessDSH, ProviderDshDefault)
 		}
 		resolved.Provider = ProviderDshDefault
+		if config.Execution != nil {
+			// A contained dsh run cannot borrow the host harness credential
+			// store or another provider's override. The operator must name the
+			// official provider explicitly, and WB records only its routing
+			// metadata: resolving it here never reads a credential value.
+			routing, routingErr := config.mandatoryDshRouting()
+			if routingErr != nil {
+				return Resolved{}, routingErr
+			}
+			resolved.Routing = routing
+		}
 	}
 	return resolved, nil
+}
+
+// mandatoryDshRouting resolves the one explicit provider entry a contained dsh
+// execution may use. It returns configuration metadata only; the credential
+// value is resolved by the owner that injects it, never here.
+func (config Config) mandatoryDshRouting() (Provider, error) {
+	provider, ok := config.Providers[ProviderDshDefault]
+	if !ok {
+		return Provider{}, requestErrorf("the %q harness requires an explicit agents.providers.%s entry while agents.execution is configured; add base_url %q, exactly one credential_env or credential_file, and wire_api %q", HarnessDSH, ProviderDshDefault, "https://api.deepseek.com", WireAPIChat)
+	}
+	if err := validateProvider(ProviderDshDefault, provider); err != nil {
+		return Provider{}, requestErrorf("agents.providers.%s: %v", ProviderDshDefault, err)
+	}
+	if !officialDeepSeekEndpoint(provider.BaseURL) {
+		return Provider{}, requestErrorf("agents.providers.%s base_url %q is not the official HTTPS DeepSeek endpoint https://api.deepseek.com", ProviderDshDefault, provider.BaseURL)
+	}
+	if provider.WireAPI != WireAPIChat {
+		return Provider{}, requestErrorf("agents.providers.%s wire_api %q is not truthful for the %q harness, which speaks the DeepSeek native chat API; use %q", ProviderDshDefault, provider.WireAPI, HarnessDSH, WireAPIChat)
+	}
+	return provider, nil
+}
+
+// officialDeepSeekEndpoint accepts only the public HTTPS DeepSeek API base.
+// The provider label is fixed, so an arbitrary endpoint cannot silently borrow
+// it, and userinfo, a non-default port, a query or a fragment is refused.
+func officialDeepSeekEndpoint(raw string) bool {
+	value := strings.TrimSpace(raw)
+	if value != raw {
+		return false
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "https" || parsed.User != nil || parsed.Host == "" {
+		return false
+	}
+	if !strings.EqualFold(parsed.Hostname(), "api.deepseek.com") || parsed.Port() != "" {
+		return false
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return false
+	}
+	switch strings.TrimSuffix(parsed.Path, "/") {
+	case "", "/v1":
+		return true
+	default:
+		return false
+	}
 }
 
 func (config Config) profileNames() string {

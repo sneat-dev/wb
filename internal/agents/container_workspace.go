@@ -50,9 +50,20 @@ const (
 // this run, mounted read-only at the fixed /wb-input target. Empty InputDir
 // means no input mount.
 type ContainerWorkspace struct {
-	WorktreeDir  string
-	GitCommonDir string
-	InputDir     string
+	WorktreeDir  string `json:"worktree_dir"`
+	GitCommonDir string `json:"git_common_dir"`
+	InputDir     string `json:"input_dir,omitempty"`
+}
+
+// SnapshotExecutionWorkspace copies a workspace by value. Admission snapshots
+// the trusted paths into the durable record, so a later mutation of the source
+// value cannot rewrite what a run was required to mount.
+func SnapshotExecutionWorkspace(workspace *ContainerWorkspace) *ContainerWorkspace {
+	if workspace == nil {
+		return nil
+	}
+	snapshot := *workspace
+	return &snapshot
 }
 
 // containerMountKind is the only two mount kinds a contained execution may

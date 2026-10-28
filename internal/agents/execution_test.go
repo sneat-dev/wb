@@ -370,7 +370,12 @@ agents:
 
 func TestPlanSnapshotsTheMandatoryPolicyForEveryRoute(t *testing.T) {
 	t.Parallel()
-	body := executionYAML(ExecutionModeLinuxContainer, executionTestImage, 8589934592, 8589934592, 2, 128, 1) + `  profiles:
+	body := executionYAML(ExecutionModeLinuxContainer, executionTestImage, 8589934592, 8589934592, 2, 128, 1) + `  providers:
+    deepseek-official:
+      base_url: https://api.deepseek.com
+      credential_env: WB_TEST_DEEPSEEK_OFFICIAL_KEY
+      wire_api: chat
+  profiles:
     coder: { harness: codex, provider: deepseek, model: m }
     alt: { harness: dsh, model: deepseek-v4-flash }
   task_types:
