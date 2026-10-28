@@ -64,7 +64,8 @@ func TestOnlyGitHubsPlanGateReadsAsBranchPolicyUnavailableByPlan(t *testing.T) {
 
 func TestTargetMergeQueueReadsAPlanWithoutRulesetsAsNoQueueAndSaysWhy(t *testing.T) {
 	t.Parallel()
-	policy, unavailable, err := TargetMergeQueue(mergeQueueRulesReader(t, "", errPlanGate403), "acme/app", "main")
+	ctx, _ := branchPolicyReader(t, freePlanBranch, nil, errPlanGate403)
+	policy, unavailable, err := TargetMergeQueue(ctx, "acme/app", "main")
 	if err != nil || policy != nil {
 		t.Fatalf("policy = %+v, err = %v; want no queue", policy, err)
 	}
@@ -129,5 +130,55 @@ func TestRequiredChecksStillFailClosedWhenAProtectedBranchsDetailIsPlanGated(t *
 	_, _, reason := RequiredChecks(ctx, "acme/app", "main", true)
 	if !strings.Contains(reason, "read authoritative required-status-check policy for main") {
 		t.Fatalf("reason = %q, want a fail-closed refusal", reason)
+	}
+}
+
+// A merge-queue read and a required-checks read of the same protected,
+// plan-gated target must reach one verdict: neither may read "no rules" where
+// the other fails closed, or a receipt records both at once.
+func TestTargetMergeQueueAndRequiredChecksAgreeAPlanGateClassicProtectionContradictsIsNotCorroborated(t *testing.T) {
+	t.Parallel()
+	ctx, _ := branchPolicyReader(t, `{"protected":true,"protection":{}}`, nil, errPlanGate403)
+	policy, unavailable, err := TargetMergeQueue(ctx, "acme/app", "main")
+	if err == nil || policy != nil || unavailable != "" || !strings.Contains(err.Error(), "so the plan gate is not corroborated") {
+		t.Fatalf("policy = %+v, unavailable = %q, err = %v; want the uncorroborated gate refused", policy, unavailable, err)
+	}
+	if !IsTargetPolicyRead403(err) {
+		t.Fatalf("err = %v must stay in the class --allow-unfenced records as unknown policy", err)
+	}
+	options := PullRequestWaitOptions{Repository: "acme/app", PullRequest: "7", Target: "main", AllowUnfenced: true}
+	_, authority, _, policyUnavailable, reason := requiredChecksReceipt(ctx, options, nil)
+	if reason != "" || policyUnavailable != err.Error() || authority != "github-branch-policy-unavailable-under-allow-unfenced+pr-base-verified" {
+		t.Fatalf("authority = %q, policyUnavailable = %q, reason = %q; want the same uncorroborated gate %q", authority, policyUnavailable, reason, err)
+	}
+}
+
+func TestTargetMergeQueueFailsClosedWhenThePlanGateCannotBeCorroborated(t *testing.T) {
+	t.Parallel()
+	for name, branch := range map[string]string{
+		"undecodable":      `{`,
+		"protected absent": `{"protection":{}}`,
+	} {
+		ctx, _ := branchPolicyReader(t, branch, nil, errPlanGate403)
+		policy, unavailable, err := TargetMergeQueue(ctx, "acme/app", "main")
+		if err == nil || policy != nil || unavailable != "" || !strings.Contains(err.Error(), "target branch protection for main") {
+			t.Errorf("%s: policy = %+v, unavailable = %q, err = %v; want a fail-closed error", name, policy, unavailable, err)
+		}
+	}
+}
+
+func TestTargetMergeQueueFailsClosedWhenTheBranchReadBehindAPlanGateFails(t *testing.T) {
+	t.Parallel()
+	ctx := githubobserver.WithReader(context.Background(), githubobserver.Reader{
+		Get: func(_ context.Context, request githubobserver.GetRequest) (githubobserver.Response, error) {
+			if request.Endpoint == "repos/acme/app/branches/main" {
+				return githubobserver.Response{}, errors.New("HTTP 502")
+			}
+			return githubobserver.Response{}, errPlanGate403
+		},
+	})
+	_, unavailable, err := TargetMergeQueue(ctx, "acme/app", "main")
+	if err == nil || unavailable != "" || !strings.Contains(err.Error(), "read target branch protection for main: HTTP 502") {
+		t.Fatalf("unavailable = %q, err = %v; want a fail-closed error", unavailable, err)
 	}
 }
