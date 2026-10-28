@@ -197,9 +197,19 @@ func TestRecordAndResultSnapshotWorkspaceAndRuntimeFactsWithoutAliasing(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
+	const credentialEnvName = "DEEPSEEK_API_KEY"
 	record := Record{
 		AgentID: agentID, State: StateRunning, ExecutionStatus: StatusRunning,
 		Execution: &policy, ExecutionWorkspace: workspace, ExecutionRuntime: facts,
+		Resolved: Resolved{
+			Profile: "flash", Harness: HarnessDSH, Provider: ProviderDshDefault, Model: "deepseek-v4-flash",
+			Routing: Provider{BaseURL: "https://api.deepseek.com", CredentialEnv: credentialEnvName, WireAPI: "chat"},
+		},
+		HarnessCapabilities: HarnessCapabilities{
+			Harness: HarnessDSH, TaskDelivery: TaskDeliveryStdin, TokenUsage: UsageFromEvents,
+			Cost: CostUnavailable, Effort: EffortUnsupported,
+			Credential: CredentialWBInjected, Isolation: IsolationLinuxContainer,
+		},
 		StartedAt: time.Unix(1700000000, 0).UTC(),
 	}
 	if err := store.Create(record); err != nil {
@@ -223,19 +233,73 @@ func TestRecordAndResultSnapshotWorkspaceAndRuntimeFactsWithoutAliasing(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{
-		`"execution_workspace"`, `"worktree_dir"`, `"git_common_dir"`,
-		`"execution_runtime"`, `"container_id"`, `"resolved_image_id"`,
-		`"verified_limits"`, `"cleanup_pending": true`,
-	} {
-		if !strings.Contains(string(raw), want) {
-			t.Fatalf("record %s is missing %q", raw, want)
+	var document map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &document); err != nil {
+		t.Fatal(err)
+	}
+
+	// The record legitimately carries credential-source metadata: the routing
+	// credential *name* and the adapter's declared credential capability. Those
+	// are what the runtime and workspace subobjects must not duplicate.
+	var recordedResolved Resolved
+	if err := json.Unmarshal(document["resolved"], &recordedResolved); err != nil {
+		t.Fatal(err)
+	}
+	if recordedResolved.Routing.CredentialEnv != credentialEnvName || recordedResolved.Routing.CredentialFile != "" {
+		t.Fatalf("recorded routing must keep the credential name and no value or file: %#v", recordedResolved.Routing)
+	}
+	var recordedCapabilities HarnessCapabilities
+	if err := json.Unmarshal(document["harness_capabilities"], &recordedCapabilities); err != nil {
+		t.Fatal(err)
+	}
+	if recordedCapabilities.Credential != CredentialWBInjected {
+		t.Fatalf("recorded credential source = %q", recordedCapabilities.Credential)
+	}
+
+	// The public facts are the closed field sets of their own subobjects. Assert
+	// privacy there rather than over the whole record: legitimate credential
+	// metadata elsewhere must not make the runtime or workspace facts leak.
+	publicSubobjects := map[string]map[string]bool{
+		"execution_runtime": {
+			"container_id": true, "resolved_image_id": true, "verified_limits": true,
+			"cleanup_pending": true, "cleanup_verified": true, "cleanup_failed": true, "cleanup_failure": true,
+		},
+		"execution_workspace": {"worktree_dir": true, "git_common_dir": true, "input_dir": true},
+	}
+	for name, allowed := range publicSubobjects {
+		subobject, ok := document[name]
+		if !ok {
+			t.Fatalf("record %s is missing the public subobject %q", raw, name)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(subobject, &fields); err != nil {
+			t.Fatalf("%s is not a JSON object: %v", name, err)
+		}
+		for field := range fields {
+			if !allowed[field] {
+				t.Fatalf("%s carries the unexpected field %q: %s", name, field, subobject)
+			}
+		}
+		for _, forbidden := range []string{"credential", credentialEnvName, "argv"} {
+			if strings.Contains(string(subobject), forbidden) {
+				t.Fatalf("%s must not carry %q: %s", name, forbidden, subobject)
+			}
 		}
 	}
-	for _, forbidden := range []string{"credential", "DEEPSEEK_API_KEY", "argv"} {
-		if strings.Contains(string(raw), forbidden) {
-			t.Fatalf("public runtime facts must not carry %q: %s", forbidden, raw)
-		}
+	var recordedRuntime ExecutionRuntimeFacts
+	if err := json.Unmarshal(document["execution_runtime"], &recordedRuntime); err != nil {
+		t.Fatal(err)
+	}
+	if recordedRuntime.ContainerID != facts.ContainerID || recordedRuntime.ResolvedImageID != facts.ResolvedImageID ||
+		recordedRuntime.VerifiedLimits == nil || *recordedRuntime.VerifiedLimits != limits || !recordedRuntime.CleanupPending {
+		t.Fatalf("recorded public runtime facts = %#v", recordedRuntime)
+	}
+	var recordedWorkspace ContainerWorkspace
+	if err := json.Unmarshal(document["execution_workspace"], &recordedWorkspace); err != nil {
+		t.Fatal(err)
+	}
+	if recordedWorkspace != *workspace {
+		t.Fatalf("recorded public workspace = %#v", recordedWorkspace)
 	}
 
 	rendered := store.Render(loaded)
