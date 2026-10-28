@@ -774,6 +774,20 @@ func prepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		if continuationErr != nil {
 			return *active, continuationErr
 		}
+		if continuation != prepareRefresh && continuation != prepareForwardRepair {
+			// The exact legacy empty-candidate published conflict has no
+			// ordinary refresh owner: its local head is the resolved candidate
+			// H, not the empty recorded snapshot. Re-prove that H in memory
+			// once here, then again under the lane lock below, and let ordinary
+			// prepare integrate the strictly advanced sources into it.
+			bridged, bridgeErr := recoverLegacyPublishedPrepareAdvanceWithRunner(ctx, run, projectsRoot, active, sources, options.Timeout, options.Retry)
+			if bridgeErr != nil {
+				return *active, bridgeErr
+			}
+			if bridged {
+				continuation = prepareRefresh
+			}
+		}
 		if continuation != prepareRefresh {
 			if continuation != prepareForwardRepair {
 				if active.Status == WorktreeMergeValidationFailed {
@@ -833,6 +847,20 @@ func prepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		continuation, continuationErr := choosePrepareContinuation(ctx, run, current, sources)
 		if continuationErr != nil {
 			return current, continuationErr
+		}
+		if continuation != prepareRefresh && continuation != prepareForwardRepair {
+			// Re-prove the legacy empty-candidate published advance under the
+			// lane lock. A race that moved the source, candidate, target, claim,
+			// remote predecessor, or pull request since the pre-lock decision is
+			// refused here, before ordinary prepare records or integrates
+			// anything.
+			bridged, bridgeErr := recoverLegacyPublishedPrepareAdvanceWithRunner(ctx, run, projectsRoot, &current, sources, options.Timeout, options.Retry)
+			if bridgeErr != nil {
+				return current, bridgeErr
+			}
+			if bridged {
+				continuation = prepareRefresh
+			}
 		}
 		if continuation != prepareRefresh {
 			if continuation != prepareForwardRepair {

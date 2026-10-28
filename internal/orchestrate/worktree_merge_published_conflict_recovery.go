@@ -123,6 +123,20 @@ func recoverPublishedPrepareConflictCandidate(ctx context.Context, projectsRoot 
 }
 
 func recoverPublishedPrepareConflictCandidateWithRunner(ctx context.Context, run runner.Runner, projectsRoot string, receipt *WorktreeMergeReceipt, timeout time.Duration, retry int) (bool, error) {
+	return recoverPublishedPrepareConflictCandidateProvedWithRunner(ctx, run, projectsRoot, receipt, timeout, retry,
+		func(ctx context.Context, run runner.Runner, receipt WorktreeMergeReceipt) error {
+			return recheckWorktreeMergeSourcesWithRunner(ctx, run, receipt.Sources)
+		})
+}
+
+// publishedPrepareConflictSourceProof re-reads exactly the source custody the
+// caller's continuation owns. The shared proof invokes it at the same point
+// the legacy owner rechecked its recorded sources, so a caller that admits a
+// strictly advanced same-custody snapshot must still prove its own exact
+// source heads instead of weakening the unchanged-source path.
+type publishedPrepareConflictSourceProof func(context.Context, runner.Runner, WorktreeMergeReceipt) error
+
+func recoverPublishedPrepareConflictCandidateProvedWithRunner(ctx context.Context, run runner.Runner, projectsRoot string, receipt *WorktreeMergeReceipt, timeout time.Duration, retry int, proveSources publishedPrepareConflictSourceProof) (bool, error) {
 	if receipt == nil || !publishedPrepareConflictShaped(*receipt) {
 		return false, nil
 	}
@@ -163,7 +177,7 @@ func recoverPublishedPrepareConflictCandidateWithRunner(ctx context.Context, run
 	if err := requireCleanMergeWorktreeWithRunner(ctx, run, guard.Path); err != nil {
 		return false, fmt.Errorf("published prepare candidate: %w", err)
 	}
-	if err := recheckWorktreeMergeSourcesWithRunner(ctx, run, receipt.Sources); err != nil {
+	if err := proveSources(ctx, run, *receipt); err != nil {
 		return false, err
 	}
 	head, err := mergeRevision(ctx, run, guard.Path, "HEAD")
@@ -202,4 +216,47 @@ func recoverPublishedPrepareConflictCandidateWithRunner(ctx context.Context, run
 
 	recordRecoveredMergeCandidate(receipt, head)
 	return true, nil
+}
+
+// recoverLegacyPublishedPrepareAdvanceWithRunner is the one prepare-only bridge
+// for a legacy published prepare conflict whose candidate snapshot is empty
+// while the same ordered source custody strictly advanced. Ordinary prepare
+// cannot refresh such a receipt (its refresh owner requires local HEAD ==
+// Candidate.SHA) and exact-source resume rightly refuses the advanced source.
+// Only after the shared published-conflict proof has adopted the clean resolved
+// head H - using the recorded old source roots and every recorded candidate,
+// validation, and refresh root, the fresh exact target, the guarded active
+// claim, and the exact open unmerged pull request at its remote predecessor -
+// may ordinary prepare integrate the new source snapshots into H through its
+// existing validation and persistence owners. Nothing is persisted here.
+func recoverLegacyPublishedPrepareAdvanceWithRunner(ctx context.Context, run runner.Runner, projectsRoot string, receipt *WorktreeMergeReceipt, current []WorktreeMergeSource, timeout time.Duration, retry int) (bool, error) {
+	if receipt == nil || receipt.Candidate.SHA != "" || !publishedPrepareConflictShaped(*receipt) {
+		return false, nil
+	}
+	advanced, err := worktreeMergeSourcesAdvanced(ctx, run, receipt.Sources, current)
+	if err != nil {
+		return false, err
+	}
+	if !advanced {
+		// An unchanged source remains the exact-source resume owner's case and
+		// must never acquire this advanced-source preparation permission.
+		return false, nil
+	}
+	return recoverPublishedPrepareConflictCandidateProvedWithRunner(ctx, run, projectsRoot, receipt, timeout, retry,
+		func(ctx context.Context, run runner.Runner, receipt WorktreeMergeReceipt) error {
+			// Re-prove the exact compaction at the shared proof's own source
+			// re-read point: the new source heads must still be the same
+			// ordered custody, each a strict descendant of its recorded old
+			// snapshot, and exactly what the current worktrees contain. The old
+			// snapshot stays an ancestry proof; physical source HEAD is never
+			// rewound to it.
+			advanced, err := worktreeMergeSourcesAdvanced(ctx, run, receipt.Sources, current)
+			if err != nil {
+				return err
+			}
+			if !advanced {
+				return errors.New("current source snapshots no longer strictly advance the receipted custody")
+			}
+			return recheckWorktreeMergeSourcesWithRunner(ctx, run, current)
+		})
 }
