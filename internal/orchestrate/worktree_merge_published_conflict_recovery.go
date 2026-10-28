@@ -248,6 +248,56 @@ func requireLegacyPublishedPrepareRetainsCapturedWithRunner(ctx context.Context,
 	return nil
 }
 
+// requireLegacyPublishedPrepareReDerivedCaptured refuses a held-lock proof whose
+// freshly re-derived receipt identity is not the exact captured H. Re-proving
+// every recorded root and candidate ancestry admits any clean head that still
+// contains them, so a proof that read a different head there - and returned to
+// H before the later physical read - would otherwise persist that head as the
+// preparing candidate while H is the operation's captured identity.
+func requireLegacyPublishedPrepareReDerivedCaptured(receipt WorktreeMergeReceipt, captured string) error {
+	if receipt.Candidate.SHA != captured {
+		return fmt.Errorf("legacy published prepare re-derived receipt candidate %q instead of the captured %s", receipt.Candidate.SHA, captured)
+	}
+	return nil
+}
+
+// requireLegacyPublishedPrepareIntegratedGraphWithRunner proves one accepted
+// integration or validation checkpoint still descends every identity the bridge
+// has already proved: the last accepted candidate head, the source snapshot just
+// accepted, and each source root accepted before it. Ancestry of the last
+// accepted head normally implies the earlier roots, but the contract is proved
+// explicitly so a later head can never silently drop an earlier merged source.
+// A head that misses any of them is never recorded as merged or prepared.
+func requireLegacyPublishedPrepareIntegratedGraphWithRunner(ctx context.Context, run runner.Runner, worktree, head, provenCandidate string, acceptedRoots ...string) error {
+	roots := make([]string, 0, 1+len(acceptedRoots))
+	if provenCandidate != "" {
+		roots = append(roots, provenCandidate)
+	}
+	roots = append(roots, acceptedRoots...)
+	for _, root := range roots {
+		contains, err := isMergeAncestorWithRunner(ctx, run, worktree, root, head)
+		if err != nil {
+			return fmt.Errorf("prove integrated candidate retains %s: %w", root, err)
+		}
+		if !contains {
+			return fmt.Errorf("integrated candidate %s does not retain %s", head, root)
+		}
+	}
+	return nil
+}
+
+// acceptedWorktreeMergeSourceRoots returns the source snapshots this operation
+// has already accepted into the candidate, in receipt order.
+func acceptedWorktreeMergeSourceRoots(sources []WorktreeMergeSource) []string {
+	roots := make([]string, 0, len(sources))
+	for _, source := range sources {
+		if source.Merged && source.SHA != "" {
+			roots = append(roots, source.SHA)
+		}
+	}
+	return roots
+}
+
 // recoverLegacyPublishedPrepareAdvanceWithRunner is the one prepare-only bridge// for a legacy published prepare conflict whose candidate snapshot is empty
 // while the same ordered source custody strictly advanced. Ordinary prepare
 // cannot refresh such a receipt (its refresh owner requires local HEAD ==
