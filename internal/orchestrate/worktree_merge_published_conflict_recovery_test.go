@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/quality"
 	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -50,6 +51,88 @@ func newPublishedPrepareConflictFixture(t *testing.T) (engineFixture, WorktreeMe
 		t.Fatal(err)
 	}
 	return fixture, receipt, published, head
+}
+
+// resolvePublishedRepairMerge rebuilds the managed candidate on an exact base
+// and resolves the advanced-source conflict exactly as a human would, returning
+// the clean resolution commit. It proves the merge genuinely conflicts first,
+// so the fixture cannot silently degenerate into a fast-forward.
+func resolvePublishedRepairMerge(t *testing.T, worktree, base, source, sharedContents string) string {
+	t.Helper()
+	runEngineGit(t, worktree, "reset", "--hard", base)
+	if _, _, mergeErr := runCommand(context.Background(), defaultRunner, 0, 0, worktree, "git", "merge", "--no-edit", source); mergeErr == nil {
+		t.Fatalf("resolution fixture did not conflict at %s", base)
+	}
+	writeEngineFile(t, filepath.Join(worktree, "shared.txt"), sharedContents)
+	runEngineGit(t, worktree, "add", "shared.txt")
+	runEngineGit(t, worktree, "commit", "--no-edit")
+	return strings.TrimSpace(runEngineGit(t, worktree, "rev-parse", "HEAD"))
+}
+
+// newPublishedPrepareRepairConflictFixture builds, from real private Git, the
+// other durable published prepare conflict this recovery owns: a validated
+// local repair Q that descends the published predecessor P but was never
+// published, an advanced conflicting source S, and a receipt left exactly where
+// a failed refresh stops (prepare/conflict, candidate Q, the open pull request
+// and its remote branch still at P). The candidate worktree HEAD is Q, so
+// callers resolve H themselves, exactly as a human would.
+func newPublishedPrepareRepairConflictFixture(t *testing.T) (engineFixture, WorktreeMergeReceipt, string, string, string) {
+	t.Helper()
+	fixture := newEngineFixture(t)
+	sourceA := createMergeSource(t, fixture, "recorded-repair-a", "feature/recorded-repair-a", "shared.txt", "a\n")
+	sourceB := createMergeSource(t, fixture, "recorded-repair-b", "feature/recorded-repair-b", "b-other.txt", "b\n")
+	runEngineGit(t, sourceB.WorktreeDir, "merge", "--no-edit", sourceA.Branch)
+	writeEngineFile(t, filepath.Join(sourceB.WorktreeDir, "shared.txt"), "b\n")
+	runEngineGit(t, sourceB.WorktreeDir, "add", "shared.txt")
+	runEngineGit(t, sourceB.WorktreeDir, "commit", "-m", "feat: change the shared file on the descendant source")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{sourceA.WorktreeDir, sourceB.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	published := receipt.Candidate.SHA
+	runEngineGit(t, receipt.Candidate.Worktree, "push", "origin", published+":refs/heads/"+receipt.Candidate.Branch)
+
+	// Q is a validated local repair that was never published: it descends P
+	// and is the receipt's candidate while the pull request and remote branch
+	// still stand at P.
+	writeEngineFile(t, filepath.Join(receipt.Candidate.Worktree, "local-repair.txt"), "validated local repair, not yet published\n")
+	runEngineGit(t, receipt.Candidate.Worktree, "add", "local-repair.txt")
+	runEngineGit(t, receipt.Candidate.Worktree, "commit", "-m", "fix: validated local repair that is not yet published")
+	repair := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD"))
+	validated := receipt
+	validated.Candidate.SHA = repair
+	validated.Validation, validated.BaselineValidation = quality.VerificationReport{}, quality.VerificationReport{}
+	validated.ValidationIdentity, validated.ValidationDeferral = nil, nil
+	if err := validateWorktreeMergeCandidate(context.Background(), &validated, 30*time.Second, 0, 0, 0, nil); err != nil {
+		t.Fatalf("validate the recorded local repair: %v", err)
+	}
+	if validated.Validation.Status != quality.StatusPassed || validated.Validation.Revision != repair {
+		t.Fatalf("recorded local repair validation=%+v", validated.Validation)
+	}
+	receipt.Validation, receipt.BaselineValidation = validated.Validation, validated.BaselineValidation
+	receipt.ValidationIdentity, receipt.ValidationDeferral = validated.ValidationIdentity, validated.ValidationDeferral
+	receipt.Candidate.SHA = repair
+	receipt.Phase, receipt.Status = WorktreeMergePhasePrepare, WorktreeMergePrepared
+	receipt.PullRequest, receipt.PublishedCandidateSHA = "https://example.test/acme/app/pull/41", published
+	if err := persistWorktreeMergeReceipt(receipt); err != nil {
+		t.Fatal(err)
+	}
+
+	// The advanced source S is what a refresh would have to integrate, and the
+	// recorded receipt keeps it, so the failed refresh shape is complete.
+	writeEngineFile(t, filepath.Join(sourceA.WorktreeDir, "shared.txt"), "a-advanced\n")
+	runEngineGit(t, sourceA.WorktreeDir, "add", "shared.txt")
+	runEngineGit(t, sourceA.WorktreeDir, "commit", "-m", "feat: advance the conflicting recorded-repair source")
+	advanced := strings.TrimSpace(runEngineGit(t, sourceA.WorktreeDir, "rev-parse", "HEAD"))
+	receipt.Sources[0].SHA = advanced
+	receipt.Phase, receipt.Status = WorktreeMergePhasePrepare, WorktreeMergeConflict
+	receipt.Failure = "prepare refresh conflicted before recording the refreshed head"
+	if err := persistWorktreeMergeReceipt(receipt); err != nil {
+		t.Fatal(err)
+	}
+	return fixture, receipt, published, repair, advanced
 }
 
 func assertNativeAncestor(t *testing.T, directory, ancestor, descendant string) {
@@ -517,4 +600,81 @@ func TestPublishedPrepareConflictRecoveryRefusesUnreadableCandidateWorkLog(t *te
 	if changed || err == nil || !strings.Contains(err.Error(), "load Work Log") || !reflect.DeepEqual(receipt, before) {
 		t.Fatalf("unreadable journal changed=%v error=%v receipt=%+v", changed, err, receipt)
 	}
+}
+
+// TestPublishedPrepareConflictRecoveryKeepsUnvalidatedRecordedHeadResumable
+// proves the durable state an ordinary published recovery leaves when its
+// validation fails - the exact resolved head, recorded but still unvalidated,
+// on the retained publication - survives a route/validation-plan resolution
+// failure on the resume that must validate it. The failure keeps the truthful
+// unvalidated status instead of recording a conflict that no recovery path
+// re-proves; removing only the plan failure then validates that exact head and
+// publishes it by fast-forward onto the same open pull request.
+//
+//nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
+func TestPublishedPrepareConflictRecoveryKeepsUnvalidatedRecordedHeadResumable(t *testing.T) {
+	fixture, receipt, published, repair, advanced := newPublishedPrepareRepairConflictFixture(t)
+	resolved := resolvePublishedRepairMerge(t, receipt.Candidate.Worktree, repair, advanced, "a-advanced\nb\n")
+	gh := installWorktreeMergeEngineGH(t, fixture, published, receipt.Candidate.Branch)
+	target := receipt.TargetSHA
+
+	receipt.Status = WorktreeMergeValidationFailed
+	receipt.Candidate.SHA = resolved
+	receipt.Validation = quality.VerificationReport{
+		Repository: receipt.Repository, Path: "git:" + resolved, Revision: resolved,
+		WorkspaceClean: true, Status: quality.StatusFailed,
+		Results: []quality.VerificationEntry{{Status: quality.StatusFailed, Detail: "recorded failed validation of the resolved published prepare head"}},
+	}
+	receipt.ValidationIdentity, receipt.ValidationDeferral = nil, nil
+	receipt.Failure = "recovered candidate validation failed"
+	if err := persistWorktreeMergeReceipt(receipt); err != nil {
+		t.Fatal(err)
+	}
+
+	options := wmEngineLandOptions(fixture, receipt.ReceiptPath)
+	options.Route, options.ValidateLocally = WorktreeMergeRouteDirect, true
+	failed, planErr := ResumeWorktreeMerge(context.Background(), options)
+	if planErr == nil || !strings.Contains(planErr.Error(), "direct route is not authoritatively permitted") {
+		t.Fatalf("unvalidated head plan refusal=%+v error=%v", failed, planErr)
+	}
+	if failed.Status != WorktreeMergeValidationFailed || failed.Candidate.SHA != resolved ||
+		failed.PublishedCandidateSHA != published || failed.PullRequest != gh.pr || failed.TargetSHA != target || failed.LandingSHA != "" {
+		t.Fatalf("plan refusal stranded the recorded head: %+v", failed)
+	}
+	stored, err := readWorktreeMergeReceipt(receipt.ReceiptPath)
+	if err != nil || stored.Status != WorktreeMergeValidationFailed || stored.Candidate.SHA != resolved ||
+		stored.PublishedCandidateSHA != published || stored.PullRequest != gh.pr || stored.TargetSHA != target || stored.LandingSHA != "" {
+		t.Fatalf("durable plan refusal=%+v error=%v", stored, err)
+	}
+	if head := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD")); head != resolved {
+		t.Fatalf("plan refusal moved the recorded head from %s to %s", resolved, head)
+	}
+	if remote := strings.TrimSpace(runEngineGit(t, fixture.repository.CloneURL, "rev-parse", "refs/heads/"+receipt.Candidate.Branch)); remote != published {
+		t.Fatalf("plan refusal moved the published branch to %s, want %s", remote, published)
+	}
+	if live := strings.TrimSpace(runEngineGit(t, fixture.repository.CloneURL, "rev-parse", "refs/heads/main")); live != target {
+		t.Fatalf("plan refusal moved the target to %s, want %s", live, target)
+	}
+	if log := gh.ghLog(t); strings.Contains(log, "pr create") || strings.Contains(log, "pulls/41/merge") || strings.Contains(log, "update-branch") {
+		t.Fatalf("plan refusal performed a pull-request write:\n%s", log)
+	}
+
+	// Removing only the plan failure (the route this target's own policy
+	// permits) validates that same head and publishes it onto the same PR.
+	options.Route, options.StopBeforeMerge = WorktreeMergeRoutePullRequest, true
+	resumed, err := ResumeWorktreeMerge(context.Background(), options)
+	if err != nil || resumed.Status != WorktreeMergePublished || resumed.Candidate.SHA != resolved ||
+		resumed.PublishedCandidateSHA != resolved || resumed.PullRequest != gh.pr ||
+		resumed.LandingSHA != "" || resumed.Failure != "" ||
+		resumed.Validation.Revision != resolved || resumed.Validation.Status != quality.StatusPassed {
+		t.Fatalf("resumed unvalidated recorded head=%+v error=%v", resumed, err)
+	}
+	if remote := strings.TrimSpace(runEngineGit(t, fixture.repository.CloneURL, "rev-parse", "refs/heads/"+receipt.Candidate.Branch)); remote != resolved {
+		t.Fatalf("resumed published branch=%s, want %s", remote, resolved)
+	}
+	if live := strings.TrimSpace(runEngineGit(t, fixture.repository.CloneURL, "rev-parse", "refs/heads/main")); live != target {
+		t.Fatalf("resumed publication moved the target: %s", live)
+	}
+	assertNativeAncestor(t, fixture.repository.CloneURL, published, resolved)
+	assertNativeAncestor(t, fixture.repository.CloneURL, repair, resolved)
 }

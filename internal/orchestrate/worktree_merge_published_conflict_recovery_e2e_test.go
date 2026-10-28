@@ -15,22 +15,6 @@ import (
 	"github.com/sneat-dev/wb/internal/quality"
 )
 
-// resolvePublishedRepairMerge rebuilds the managed candidate on an exact base
-// and resolves the advanced-source conflict exactly as a human would, returning
-// the clean resolution commit. It proves the merge genuinely conflicts first,
-// so the fixture cannot silently degenerate into a fast-forward.
-func resolvePublishedRepairMerge(t *testing.T, worktree, base, source, sharedContents string) string {
-	t.Helper()
-	runEngineGit(t, worktree, "reset", "--hard", base)
-	if _, _, mergeErr := runCommand(context.Background(), defaultRunner, 0, 0, worktree, "git", "merge", "--no-edit", source); mergeErr == nil {
-		t.Fatalf("resolution fixture did not conflict at %s", base)
-	}
-	writeEngineFile(t, filepath.Join(worktree, "shared.txt"), sharedContents)
-	runEngineGit(t, worktree, "add", "shared.txt")
-	runEngineGit(t, worktree, "commit", "--no-edit")
-	return strings.TrimSpace(runEngineGit(t, worktree, "rev-parse", "HEAD"))
-}
-
 // TestE2EPublishedPrepareRefreshConflictPreservesRecordedLocalRepairAndRefusesItsLoss
 // is the recorded-candidate root-cause regression. A validated local repair Q
 // descends the published predecessor P but was never published. A later prepare
@@ -171,6 +155,84 @@ func TestE2EPublishedPrepareRefreshConflictPreservesRecordedLocalRepairAndRefuse
 	}
 	for _, root := range []string{published, repair, advanced, receipt.TargetSHA} {
 		assertNativeAncestor(t, fixture.repository.CloneURL, root, resolved)
+	}
+}
+
+// TestE2EPublishedPrepareConflictRecoveryResumesAfterPlanResolutionFailure is
+// the retry-trap regression for the published recovery. The proof records the
+// clean resolved head H in memory before the route/validation plan is resolved,
+// so a plan-resolution failure must not persist H as a prepare conflict: this
+// recovery only re-runs for an empty or source-missing candidate, nothing else
+// would re-validate H, and the publish guard would refuse the stale repair
+// validation forever. The failure must leave the recorded repair Q, the
+// published predecessor P, the open pull request, the remote branch, and the
+// target exactly as recorded. Removing only that plan failure then resumes
+// through the actual entry point, validates exact H, and publishes H by
+// fast-forward onto the same existing pull request.
+//
+//nolint:paralleltest // the scripted provider changes PATH/XDG and the private lane is shared
+func TestE2EPublishedPrepareConflictRecoveryResumesAfterPlanResolutionFailure(t *testing.T) {
+	fixture, receipt, published, repair, advanced := newPublishedPrepareRepairConflictFixture(t)
+	resolved := resolvePublishedRepairMerge(t, receipt.Candidate.Worktree, repair, advanced, "a-advanced\nb\n")
+	gh := installWorktreeMergeEngineGH(t, fixture, published, receipt.Candidate.Branch)
+	target := receipt.TargetSHA
+
+	options := wmEngineLandOptions(fixture, receipt.ReceiptPath)
+	options.Route, options.ValidateLocally = WorktreeMergeRouteDirect, true
+	failed, planErr := ResumeWorktreeMerge(context.Background(), options)
+	if planErr == nil || !strings.Contains(planErr.Error(), "direct route is not authoritatively permitted") {
+		t.Fatalf("published recovery plan refusal=%+v error=%v", failed, planErr)
+	}
+	// The failure is planning, not candidate evidence: Q, P, the pull request,
+	// the target, and the validated repair record all stay exactly as the failed
+	// refresh recorded them, and H is never recorded as a conflicted candidate.
+	if failed.Status != WorktreeMergeConflict || failed.Candidate.SHA != repair ||
+		failed.PublishedCandidateSHA != published || failed.PullRequest != gh.pr ||
+		failed.TargetSHA != target || failed.LandingSHA != "" || failed.Validation.Revision != repair {
+		t.Fatalf("plan refusal changed recorded identity: %+v", failed)
+	}
+	stored, err := readWorktreeMergeReceipt(receipt.ReceiptPath)
+	if err != nil || stored.Status != WorktreeMergeConflict || stored.Candidate.SHA != repair ||
+		stored.PublishedCandidateSHA != published || stored.PullRequest != gh.pr ||
+		stored.TargetSHA != target || stored.LandingSHA != "" {
+		t.Fatalf("durable plan refusal=%+v error=%v", stored, err)
+	}
+	if head := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD")); head != resolved {
+		t.Fatalf("plan refusal moved the clean resolution from %s to %s", resolved, head)
+	}
+	if remote := strings.TrimSpace(runEngineGit(t, fixture.repository.CloneURL, "rev-parse", "refs/heads/"+receipt.Candidate.Branch)); remote != published {
+		t.Fatalf("plan refusal pushed the candidate branch to %s, want %s", remote, published)
+	}
+	if live := strings.TrimSpace(runEngineGit(t, fixture.repository.CloneURL, "rev-parse", "refs/heads/main")); live != target {
+		t.Fatalf("plan refusal moved the target to %s, want %s", live, target)
+	}
+	if log := gh.ghLog(t); strings.Contains(log, "pr create") || strings.Contains(log, "pulls/41/merge") || strings.Contains(log, "update-branch") {
+		t.Fatalf("plan refusal performed a pull-request write:\n%s", log)
+	}
+
+	// Removing only the plan failure (the route this target's own policy
+	// permits) re-proves the publication, validates exact H, and publishes it
+	// by fast-forward onto the same open pull request.
+	options.Route, options.StopBeforeMerge = WorktreeMergeRoutePullRequest, true
+	publishedResume, err := ResumeWorktreeMerge(context.Background(), options)
+	if err != nil || publishedResume.Status != WorktreeMergePublished || publishedResume.Candidate.SHA != resolved ||
+		publishedResume.PublishedCandidateSHA != resolved || publishedResume.PullRequest != gh.pr ||
+		publishedResume.LandingSHA != "" || publishedResume.Failure != "" ||
+		publishedResume.Validation.Revision != resolved || publishedResume.Validation.Status != quality.StatusPassed {
+		t.Fatalf("resumed published recovery=%+v error=%v", publishedResume, err)
+	}
+	if remote := strings.TrimSpace(runEngineGit(t, fixture.repository.CloneURL, "rev-parse", "refs/heads/"+receipt.Candidate.Branch)); remote != resolved {
+		t.Fatalf("published recovery branch=%s, want %s", remote, resolved)
+	}
+	if live := strings.TrimSpace(runEngineGit(t, fixture.repository.CloneURL, "rev-parse", "refs/heads/main")); live != target {
+		t.Fatalf("published recovery moved the target: %s", live)
+	}
+	assertNativeAncestor(t, fixture.repository.CloneURL, published, resolved)
+	assertNativeAncestor(t, fixture.repository.CloneURL, repair, resolved)
+	stored, err = readWorktreeMergeReceipt(receipt.ReceiptPath)
+	if err != nil || stored.Status != WorktreeMergePublished || stored.Candidate.SHA != resolved ||
+		stored.PublishedCandidateSHA != resolved || stored.PullRequest != gh.pr || stored.Validation.Revision != resolved {
+		t.Fatalf("durable published recovery=%+v error=%v", stored, err)
 	}
 }
 
