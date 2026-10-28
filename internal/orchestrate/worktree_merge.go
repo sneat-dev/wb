@@ -1063,6 +1063,11 @@ func prepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 				return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, conflict, save)
 			}
 		}
+		// This stage event reports an in-flight integration checkpoint; it does
+		// not certify a durable Merged receipt, which stays after every accepted
+		// head and graph check below.
+		progress.Report(options.Progress, progress.Event{Operation: "worktree_merge", Phase: "integrate_sources", Repository: repository,
+			State: progress.Running, Completed: index + 1, Total: len(receipt.Sources), Detail: source.Branch + "@" + shortMergeRevision(source.SHA)})
 		head, headErr := mergeRevision(ctx, run, candidate.WorktreeDir, "HEAD")
 		if headErr != nil {
 			return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, headErr, save)
@@ -1088,8 +1093,6 @@ func prepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 			}
 		}
 		source.Merged = true
-		progress.Report(options.Progress, progress.Event{Operation: "worktree_merge", Phase: "integrate_sources", Repository: repository,
-			State: progress.Running, Completed: index + 1, Total: len(receipt.Sources), Detail: source.Branch + "@" + shortMergeRevision(source.SHA)})
 		receipt.Candidate.SHA = head
 		receipt.UpdatedAt = time.Now().UTC()
 		if err := save(receipt); err != nil {
