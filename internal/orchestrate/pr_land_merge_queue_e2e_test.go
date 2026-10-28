@@ -169,6 +169,40 @@ func TestLandOnAMergeQueueTargetRecordsAPlanLimitedRulesReadUnderAllowUnfenced(t
 }
 
 //nolint:paralleltest // calls a fixture helper (newLandFixture/newEngineFixture/createMergeSource) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
+func TestLandOnAFreePlanPrivateRepositoryReadsNoRulesetsAndLandsUnderAllowUnfenced(t *testing.T) {
+	fixture := newLandFixture(t, "bump/free-plan", "go.mod", "go.sum")
+	fixture.writeState(t, "free-plan", "1")
+	fixture.writeState(t, "rules-403", "1")
+	options := landOptions(fixture)
+	options.AllowUnfenced = true
+
+	result, err := LandPullRequest(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != LandSuccess || result.MergeQueue != nil ||
+		!strings.Contains(result.Evidence["merge_queue"], "none: rulesets are unavailable on this repository's GitHub plan") {
+		t.Fatalf("outcome = %s (%s): %s; evidence %v", result.Outcome, result.RefusalCode, result.Reason, result.Evidence)
+	}
+}
+
+//nolint:paralleltest // calls a fixture helper (newLandFixture/newEngineFixture/createMergeSource) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
+func TestLandOnAFreePlanPrivateRepositoryWithoutAllowUnfencedNamesTheMissingFenceNotA403(t *testing.T) {
+	fixture := newLandFixture(t, "bump/free-plan-fenced", "go.mod", "go.sum")
+	fixture.writeState(t, "free-plan", "1")
+	fixture.writeState(t, "rules-403", "1")
+
+	result, err := LandPullRequest(context.Background(), landOptions(fixture))
+	if err != nil {
+		t.Fatalf("err = %v, want the missing fence reported instead of the plan-gated read", err)
+	}
+	if result.Outcome == LandSuccess || strings.Contains(result.Reason, "HTTP 403") || !strings.Contains(result.Reason+result.SanctionedCommand, "allow-unfenced") {
+		t.Fatalf("outcome = %s (%s): %s; command %q", result.Outcome, result.RefusalCode, result.Reason, result.SanctionedCommand)
+	}
+	assertNoDirectLanding(t, fixture)
+}
+
+//nolint:paralleltest // calls a fixture helper (newLandFixture/newEngineFixture/createMergeSource) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
 func TestLandOnAMergeQueueTargetKeepsAnIntegrationHeadBranch(t *testing.T) {
 	fixture := newMergeQueueLandFixture(t, "public-demo", "merge")
 	fixture.writeState(t, "open-onto", `[{"number":9}]`)

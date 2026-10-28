@@ -720,7 +720,10 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	// A merge-queue target is read before any flag is acted on: the queue
 	// overrides the merge method and message, and a direct merge would go
 	// around it, so the whole landing below takes the enqueue route instead.
-	queue, err := githubchecks.TargetMergeQueue(ctx, options.Repository, view.Base.Ref)
+	queue, rulesetsUnavailable, err := githubchecks.TargetMergeQueue(ctx, options.Repository, view.Base.Ref)
+	if rulesetsUnavailable != "" {
+		result.Evidence["merge_queue"] = "none: rulesets are unavailable on this repository's GitHub plan, so no ruleset applies: " + rulesetsUnavailable
+	}
 	if options.AllowUnfenced && githubchecks.IsPolicyUnavailableByPlan(err) {
 		result.Evidence["merge_queue"] = "unknown: " + err.Error() + "; landing under explicit --allow-unfenced"
 		queue, err = nil, nil

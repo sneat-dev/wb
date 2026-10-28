@@ -115,7 +115,9 @@ func landWorktreeMergePullRequest(ctx context.Context, receipt WorktreeMergeRece
 	if textErr != nil {
 		return failWorktreeMergePRLand(receipt, WorktreeMergeConflict, fmt.Errorf("prepare pull-request merge text: %w", textErr))
 	}
-	queue, queueErr := githubchecks.TargetMergeQueue(ctx, receipt.Repository, receipt.Target)
+	// A plan with no rulesets has no queue; the wait's required-checks
+	// authority records that gap in receipt.Checks.
+	queue, _, queueErr := githubchecks.TargetMergeQueue(ctx, receipt.Repository, receipt.Target)
 	if queueErr != nil {
 		return failWorktreeMergePRLandRead(receipt, queueErr)
 	}

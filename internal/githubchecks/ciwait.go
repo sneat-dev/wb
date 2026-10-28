@@ -780,6 +780,9 @@ type requiredChecksCache struct {
 	branchChecks       []RequiredRemoteCheck
 	freshnessAuthority string
 	policyUnavailable  string
+	// rulesetsUnavailable is GitHub's plan-gate refusal of the rulesets
+	// read: the target has no ruleset, so none was enumerated.
+	rulesetsUnavailable string
 }
 
 func requiredChecksReceipt(ctx context.Context, options PullRequestWaitOptions, cache *requiredChecksCache) ([]RequiredRemoteCheck, string, string, string, string) {
@@ -787,13 +790,15 @@ func requiredChecksReceipt(ctx context.Context, options PullRequestWaitOptions, 
 	branchChecks := []RequiredRemoteCheck(nil)
 	freshnessAuthority := ""
 	policyUnavailable := ""
+	rulesetsUnavailable := ""
 	if cache != nil && cache.valid {
 		branchChecks = cache.branchChecks
 		freshnessAuthority = cache.freshnessAuthority
 		policyUnavailable = cache.policyUnavailable
+		rulesetsUnavailable = cache.rulesetsUnavailable
 	} else {
 		var reason string
-		branchChecks, freshnessAuthority, reason = RequiredChecks(ctx, options.Repository, options.Target, options.PullRequest != "" && !options.AllowUnfenced && !options.MergeQueue)
+		branchChecks, freshnessAuthority, reason = requiredChecksPolicy(ctx, options.Repository, options.Target, options.PullRequest != "" && !options.AllowUnfenced && !options.MergeQueue, &rulesetsUnavailable)
 		if reason == "" && options.MergeQueue {
 			freshnessAuthority = strings.Trim(freshnessAuthority+"+"+MergeQueueFreshnessAuthority, "+")
 		}
@@ -810,12 +815,16 @@ func requiredChecksReceipt(ctx context.Context, options PullRequestWaitOptions, 
 			cache.branchChecks = branchChecks
 			cache.freshnessAuthority = freshnessAuthority
 			cache.policyUnavailable = policyUnavailable
+			cache.rulesetsUnavailable = rulesetsUnavailable
 		}
 	}
 	for _, expectation := range branchChecks {
 		addRequiredExpectation(required, expectation)
 	}
 	authority := "github-branch-protection+active-branch-rules"
+	if rulesetsUnavailable != "" {
+		authority = "github-branch-protection+rulesets-unavailable-by-plan"
+	}
 	if options.PullRequest != "" {
 		if reason := pullRequestTargetsBase(ctx, options.Repository, options.PullRequest, options.Target); reason != "" {
 			return nil, "", "", "", reason
@@ -901,7 +910,19 @@ type ActiveBranchRule struct {
 	} `json:"parameters"`
 }
 
+// RequiredChecks reads the target's required checks and server-enforced
+// freshness authority from classic branch protection and every active rule.
+// A non-empty third result is the reason that policy could not be read.
 func RequiredChecks(ctx context.Context, repository, target string, requireServerFreshness bool) ([]RequiredRemoteCheck, string, string) {
+	return requiredChecksPolicy(ctx, repository, target, requireServerFreshness, new(string))
+}
+
+// requiredChecksPolicy is RequiredChecks that also sets rulesetsUnavailable
+// to GitHub's refusal when the repository's plan offers no rulesets: the
+// target then has no ruleset, only classic protection. A target classic
+// protection still protects contradicts that plan gate, so it fails closed
+// rather than skip rules that may exist.
+func requiredChecksPolicy(ctx context.Context, repository, target string, requireServerFreshness bool, rulesetsUnavailable *string) ([]RequiredRemoteCheck, string, string) {
 	branchEndpoint := "repos/" + repository + "/branches/" + url.PathEscape(target)
 	branchOutputRawResponse, branchErr := githubobserver.Get(ctx, githubobserver.GetRequest{Dir: "", Repository: strings.TrimSpace(repository), Target: strings.TrimSpace(target), Head: strings.TrimSpace(""), Endpoint: branchEndpoint, FreshWindow: 0})
 	branchOutputRaw := branchOutputRawResponse.Body
@@ -925,7 +946,10 @@ func RequiredChecks(ctx context.Context, repository, target string, requireServe
 			detailOutputRawResponse, detailErr := githubobserver.Get(ctx, githubobserver.GetRequest{Dir: "", Repository: strings.TrimSpace(repository), Target: strings.TrimSpace(target), Head: strings.TrimSpace(""), Endpoint: branchEndpoint + "/protection/required_status_checks", FreshWindow: 0})
 			detailOutputRaw := detailOutputRawResponse.Body
 			if detailErr != nil {
-				if len(contexts) != 0 || len(checks) != 0 || !strings.Contains(strings.ToLower(detailErr.Error()), "http 404") {
+				// An unprotected branch on a plan without classic protection
+				// reports an empty, unenforced block whose detail GitHub refuses.
+				absent := strings.Contains(strings.ToLower(detailErr.Error()), "http 404") || (!*branch.Protected && IsBranchPolicyUnavailableByPlan(detailErr))
+				if len(contexts) != 0 || len(checks) != 0 || !absent {
 					return nil, "", fmt.Sprintf("read authoritative required-status-check policy for %s: %v", target, detailErr)
 				}
 			} else {
@@ -957,6 +981,12 @@ func RequiredChecks(ctx context.Context, repository, target string, requireServe
 	}
 
 	pages, rulesErr := ActiveRules(ctx, repository, target)
+	if IsBranchPolicyUnavailableByPlan(rulesErr) {
+		if *branch.Protected {
+			return nil, "", fmt.Sprintf("read active branch rules for target %s: %v; classic protection still protects %s, so the plan gate is not corroborated", target, rulesErr, target)
+		}
+		*rulesetsUnavailable, pages, rulesErr = rulesErr.Error(), nil, nil
+	}
 	if rulesErr != nil {
 		return nil, "", fmt.Sprintf("read active branch rules for target %s: %v", target, rulesErr)
 	}
