@@ -93,13 +93,18 @@ var containerCgroupFiles = []string{
 // There is no field for extra Docker arguments, mounts, ports, environment or
 // credentials: an unsupported need is refused later, not smuggled through here.
 //
+// Workspace is the one closed set of trusted host paths a later admission layer
+// supplies. A nil Workspace keeps the lifecycle-only probe behaviour and plans
+// no host mounts at all.
+//
 // The unexported fields are private dependency seams for focused tests. A
 // production caller leaves them empty, which selects the fixed per-user state
 // directory, the real docker binary and the current owner's UID/GID.
 type ContainerRuntimeOptions struct {
-	Policy   ExecutionPolicy
-	RunID    string
-	Lifetime time.Duration
+	Policy    ExecutionPolicy
+	RunID     string
+	Lifetime  time.Duration
+	Workspace *ContainerWorkspace
 
 	stateDir string
 	commands *containerCommands
@@ -152,6 +157,8 @@ type containerHost struct {
 	dockerPath  func() (string, error)
 	hostOS      func() string
 	currentUser func() (int, int)
+	userHome    func() (string, error)
+	lookupEnv   func(string) (string, bool)
 }
 
 func defaultContainerHost() *containerHost {
@@ -159,7 +166,26 @@ func defaultContainerHost() *containerHost {
 		dockerPath:  func() (string, error) { return exec.LookPath("docker") },
 		hostOS:      func() string { return goruntime.GOOS },
 		currentUser: func() (int, int) { return os.Getuid(), os.Getgid() },
+		userHome:    os.UserHomeDir,
+		lookupEnv:   os.LookupEnv,
 	}
+}
+
+// homeDirectory resolves the whole owner home that a workspace root may never
+// be. A missing home is a refusal, not an invitation to skip the boundary.
+func (host *containerHost) homeDirectory() (string, error) {
+	if host != nil && host.userHome != nil {
+		return host.userHome()
+	}
+	return os.UserHomeDir()
+}
+
+// lookupEnvironment reads one host variable for the Docker client transport.
+func (host *containerHost) lookupEnvironment(name string) (string, bool) {
+	if host != nil && host.lookupEnv != nil {
+		return host.lookupEnv(name)
+	}
+	return os.LookupEnv(name)
 }
 
 // operatingSystem reports the controller platform. A focused test may pin the
@@ -184,15 +210,21 @@ func containerControllerSupported(hostOS string) bool {
 	}
 }
 
-func defaultContainerCommands(dockerPath string) *containerCommands {
+func defaultContainerCommands(dockerPath string, transport []string) *containerCommands {
+	// The captured transport is applied to every Docker child. A non-nil empty
+	// slice is deliberately used: a nil Env would inherit the whole host.
+	commandEnvironment := make([]string, len(transport))
+	copy(commandEnvironment, transport)
 	return &containerCommands{
 		command: func(ctx context.Context, args []string) ([]byte, error) {
-			return runBoundedDockerCommand(ctx, dockerPath, args)
+			return runBoundedDockerCommand(ctx, dockerPath, commandEnvironment, args)
 		},
 		attach: func(ctx context.Context, containerID string, readEnd *os.File) (containerAttachProcess, error) {
 			// The proven attach client: interactive attach, controller-retained
 			// write end. Only the read end is inherited, as stdin.
 			command := process.CommandContext(ctx, dockerPath, "start", "--attach", "--interactive", containerID)
+			command.Env = make([]string, len(commandEnvironment))
+			copy(command.Env, commandEnvironment)
 			command.Stdin = readEnd
 			command.Stdout = io.Discard
 			command.Stderr = io.Discard
@@ -218,9 +250,11 @@ type ContainerRuntime struct {
 	reserved          bool
 	ownerUser         string
 
-	dockerPath string
-	commands   *containerCommands
-	host       *containerHost
+	dockerPath   string
+	commands     *containerCommands
+	host         *containerHost
+	transportEnv []string
+	workspace    containerWorkspacePlan
 
 	containerID string
 	imageID     string
@@ -289,6 +323,11 @@ func newContainerRuntime(options ContainerRuntimeOptions) (*ContainerRuntime, er
 	if ownerUID <= 0 || ownerGID < 0 {
 		return nil, errors.New("container execution requires a positive numeric owner UID and a non-negative numeric owner GID for the unprivileged worker")
 	}
+	workspace, err := normalizeContainerWorkspace(options.Workspace, host)
+	if err != nil {
+		return nil, err
+	}
+	transport := containerTransportEnvironment(host.lookupEnvironment)
 	slot, err := OpenContainerSlot(options.stateDir)
 	if err != nil {
 		return nil, err
@@ -304,6 +343,8 @@ func newContainerRuntime(options ContainerRuntimeOptions) (*ContainerRuntime, er
 		ownerUser:         fmt.Sprintf("%d:%d", ownerUID, ownerGID),
 		commands:          options.commands,
 		host:              host,
+		transportEnv:      transport,
+		workspace:         workspace,
 		attachReapTimeout: containerAttachReapTimeout,
 		attachKillTimeout: containerAttachKillTimeout,
 	}, nil
@@ -317,7 +358,7 @@ func (runtime *ContainerRuntime) open(ctx context.Context) error {
 		return err
 	}
 	if runtime.commands == nil {
-		runtime.commands = defaultContainerCommands(runtime.dockerPath)
+		runtime.commands = defaultContainerCommands(runtime.dockerPath, runtime.transportEnv)
 	}
 	if err := runtime.recoverPriorReservation(ctx); err != nil {
 		return err
@@ -429,14 +470,15 @@ func (runtime *ContainerRuntime) createContainer(ctx context.Context) error {
 	return nil
 }
 
-// containerCreateArgs is the whole accepted Docker surface. There are no
-// mounts, ports, host namespaces, sockets, credentials or user arguments.
+// containerCreateArgs is the whole accepted Docker surface. The only mounts it
+// adds are the validated workspace bind/tmpfs plan; there are no ports, host
+// namespaces, sockets, credentials or user arguments.
 func (runtime *ContainerRuntime) containerCreateArgs(reservation ContainerReservation) []string {
 	seconds := int64((runtime.lifetime() + time.Second - 1) / time.Second)
 	if seconds < 1 {
 		seconds = 1
 	}
-	return []string{
+	args := []string{
 		"create",
 		"--name", reservation.Name,
 		"--label", containerLabelRunID + "=" + reservation.RunID,
@@ -455,12 +497,18 @@ func (runtime *ContainerRuntime) containerCreateArgs(reservation ContainerReserv
 		"--cap-drop", "ALL",
 		"--security-opt", "no-new-privileges",
 		"--pull=never",
+	}
+	for _, mount := range runtime.workspace.mounts {
+		args = append(args, "--mount", mount.dockerArgument())
+	}
+	args = append(args,
 		"--entrypoint", "/bin/sh",
 		runtime.imageID,
 		"-c", containerPID1Script,
 		"wb-pid1",
-		strconv.FormatInt(seconds, 10) + "s",
-	}
+		strconv.FormatInt(seconds, 10)+"s",
+	)
+	return args
 }
 
 // lifetime is the finite duration passed to the PID1 supervisor. It is stored
@@ -565,15 +613,21 @@ type containerInspectDocument struct {
 		Labels map[string]string `json:"Labels"`
 	} `json:"Config"`
 	HostConfig struct {
-		Memory      int64    `json:"Memory"`
-		MemorySwap  int64    `json:"MemorySwap"`
-		NanoCpus    int64    `json:"NanoCpus"`
-		PidsLimit   *int64   `json:"PidsLimit"`
-		Privileged  bool     `json:"Privileged"`
-		AutoRemove  bool     `json:"AutoRemove"`
-		Binds       []string `json:"Binds"`
-		CapDrop     []string `json:"CapDrop"`
-		SecurityOpt []string `json:"SecurityOpt"`
+		Memory      int64                      `json:"Memory"`
+		MemorySwap  int64                      `json:"MemorySwap"`
+		NanoCpus    int64                      `json:"NanoCpus"`
+		PidsLimit   *int64                     `json:"PidsLimit"`
+		Privileged  bool                       `json:"Privileged"`
+		AutoRemove  bool                       `json:"AutoRemove"`
+		Binds       []string                   `json:"Binds"`
+		Volumes     map[string]json.RawMessage `json:"Volumes"`
+		Tmpfs       map[string]string          `json:"Tmpfs"`
+		CapDrop     []string                   `json:"CapDrop"`
+		SecurityOpt []string                   `json:"SecurityOpt"`
+		NetworkMode string                     `json:"NetworkMode"`
+		PidMode     string                     `json:"PidMode"`
+		IpcMode     string                     `json:"IpcMode"`
+		UsernsMode  string                     `json:"UsernsMode"`
 		Restart     struct {
 			Name string `json:"Name"`
 		} `json:"RestartPolicy"`
@@ -584,7 +638,17 @@ type containerInspectDocument struct {
 		Pid     int    `json:"Pid"`
 		Status  string `json:"Status"`
 	} `json:"State"`
-	Mounts []json.RawMessage `json:"Mounts"`
+	Mounts []containerInspectMount `json:"Mounts"`
+}
+
+// containerInspectMount is Docker's actual Mounts array element shape. The
+// verifier compares every element, so a source, destination, kind or read-write
+// flag that was not planned is visible rather than inferred from create argv.
+type containerInspectMount struct {
+	Type        string `json:"Type"`
+	Source      string `json:"Source"`
+	Destination string `json:"Destination"`
+	RW          bool   `json:"RW"`
 }
 
 func (runtime *ContainerRuntime) inspectContainer(ctx context.Context, identity string) (containerInspectDocument, error) {
@@ -609,7 +673,7 @@ func (runtime *ContainerRuntime) verifyInspect(document containerInspectDocument
 	if err := verifyContainerOwnership(document, runtime.reservation, runtime.ownerUser); err != nil {
 		return err
 	}
-	return verifyContainerHostConfig(runtime.policy, document)
+	return verifyContainerHostConfig(runtime.policy, document, runtime.workspace.mounts)
 }
 
 // verifyContainerOwnership checks only durable identity: full ID, exact name,
@@ -641,7 +705,7 @@ func verifyContainerOwnership(document containerInspectDocument, reservation Con
 // verifyContainerHostConfig checks the bounds Docker actually applied, not the
 // arguments we hoped it applied, and refuses every resource the policy does not
 // allow.
-func verifyContainerHostConfig(policy ExecutionPolicy, document containerInspectDocument) error {
+func verifyContainerHostConfig(policy ExecutionPolicy, document containerInspectDocument, expectedMounts []containerMount) error {
 	host := document.HostConfig
 	if host.Memory != policy.MemoryBytes {
 		return fmt.Errorf("container %s HostConfig memory %d does not match agents.execution memory_bytes %d", document.ID, host.Memory, policy.MemoryBytes)
@@ -667,8 +731,20 @@ func verifyContainerHostConfig(policy ExecutionPolicy, document containerInspect
 	if host.Restart.Name != "no" {
 		return fmt.Errorf("container %s restart policy is %q; the mandatory policy requires no", document.ID, host.Restart.Name)
 	}
-	if len(host.Binds) != 0 || len(document.Mounts) != 0 {
-		return fmt.Errorf("container %s has mounts; no host, source, home or socket mount is permitted", document.ID)
+	if err := verifyContainerMounts(document, expectedMounts); err != nil {
+		return err
+	}
+	if host.NetworkMode != "" && host.NetworkMode != "default" && host.NetworkMode != "bridge" && host.NetworkMode != "none" {
+		return fmt.Errorf("container %s uses network mode %q; no host or shared network namespace is permitted", document.ID, host.NetworkMode)
+	}
+	if host.PidMode != "" && host.PidMode != "private" {
+		return fmt.Errorf("container %s uses PID mode %q; no host or shared PID namespace is permitted", document.ID, host.PidMode)
+	}
+	if host.IpcMode != "" && host.IpcMode != "private" {
+		return fmt.Errorf("container %s uses IPC mode %q; the private IPC namespace is required", document.ID, host.IpcMode)
+	}
+	if host.UsernsMode != "" && host.UsernsMode != "private" {
+		return fmt.Errorf("container %s uses user namespace mode %q; the controller's namespace mode must not be overridden", document.ID, host.UsernsMode)
 	}
 	if len(host.PortBindings) != 0 {
 		return fmt.Errorf("container %s publishes ports; no port mapping is permitted", document.ID)
@@ -863,29 +939,34 @@ func (runtime *ContainerRuntime) reapAttachLocked() error {
 		case <-time.After(runtime.attachReapTimeout):
 		}
 	}
-	if runtime.attachCancel != nil {
-		// Release the attach context even on a graceful exit: nothing else owns
-		// it once the client has been reaped.
-		runtime.attachCancel()
-		runtime.attachCancel = nil
-	}
 	if graceful {
+		if runtime.attachCancel != nil {
+			// Release the attach context even on a graceful exit: nothing else
+			// owns it once the client has been reaped.
+			runtime.attachCancel()
+			runtime.attachCancel = nil
+		}
 		runtime.attachDone = nil
 		runtime.attach = nil
 		return nil
+	}
+	if runtime.attachCancel != nil {
+		runtime.attachCancel()
+		runtime.attachCancel = nil
+	}
+	// After the grace window, cancellation and the forced kill are issued
+	// together and only one existing kill timeout is waited on. That keeps the
+	// original combined reap-plus-kill bound instead of adding a second window.
+	if runtime.attach != nil {
+		_ = runtime.attach.Kill()
 	}
 	if runtime.attachDone != nil {
 		select {
 		case <-runtime.attachDone:
 		case <-time.After(runtime.attachKillTimeout):
-			_ = runtime.attach.Kill()
-			select {
-			case <-runtime.attachDone:
-			case <-time.After(runtime.attachKillTimeout):
-				runtime.attach = nil
-				runtime.attachDone = nil
-				return fmt.Errorf("the docker attach client for container %s did not exit after being stopped", runtime.containerID)
-			}
+			runtime.attach = nil
+			runtime.attachDone = nil
+			return fmt.Errorf("the docker attach client for container %s did not exit after being stopped", runtime.containerID)
 		}
 		runtime.attachDone = nil
 	}
@@ -1088,13 +1169,15 @@ func containerNoSuchObject(err error, identity string) bool {
 	return false
 }
 
-func runBoundedDockerCommand(ctx context.Context, dockerPath string, args []string) ([]byte, error) {
+func runBoundedDockerCommand(ctx context.Context, dockerPath string, environment []string, args []string) ([]byte, error) {
 	if len(args) == 0 {
 		return nil, errors.New("run a docker command: no arguments")
 	}
 	commandCtx, cancel := context.WithTimeout(ctx, containerMetadataTimeout)
 	defer cancel()
 	command := process.CommandContext(commandCtx, dockerPath, args...)
+	command.Env = make([]string, len(environment))
+	copy(command.Env, environment)
 	stdout := &boundedContainerOutput{limit: maxContainerCommandBytes}
 	stderr := &boundedContainerOutput{limit: maxContainerDiagnosticBytes}
 	command.Stdout = stdout
