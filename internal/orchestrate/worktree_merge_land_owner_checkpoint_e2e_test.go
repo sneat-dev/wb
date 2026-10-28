@@ -202,12 +202,26 @@ func TestE2ELandOwnerRebaseReadAndSaveFaultsKeepNativeMutationAndTargetCustody(t
 
 //nolint:paralleltest // original direct-route provider fixture changes PATH and XDG_STATE_HOME
 func TestE2ELandOwnerRoutePlanErrorsAtActualResumeStagesDoNotPublish(t *testing.T) {
-	for _, stage := range []string{"recovered head", "interrupted validation", "failed validation", "advanced validation", "route decision"} {
+	// A route planning refusal is not candidate evidence, so each resume stage
+	// keeps its own exact truthful status: a candidate that was still awaiting
+	// validation stays preparing, one whose validation already failed stays
+	// validation_failed, and every conflict-only stage records the conflict.
+	// Each row allows exactly one status — never a set of acceptable ones.
+	for _, tc := range []struct {
+		stage string
+		want  WorktreeMergeStatus
+	}{
+		{stage: "recovered head", want: WorktreeMergeConflict},
+		{stage: "interrupted validation", want: WorktreeMergePreparing},
+		{stage: "failed validation", want: WorktreeMergeValidationFailed},
+		{stage: "advanced validation", want: WorktreeMergeConflict},
+		{stage: "route decision", want: WorktreeMergeConflict},
+	} {
 		//nolint:paralleltest // Process-wide environment changes in installWorktreeMergeDirectGH; these rows share their parent environment and remain sequential.
-		t.Run(stage, func(t *testing.T) {
+		t.Run(tc.stage, func(t *testing.T) {
 			fixture, receipt := landOwnerNativeFixture(t)
 			installWorktreeMergeDirectGH(t)
-			switch stage {
+			switch tc.stage {
 			case "recovered head":
 				receipt.Status = WorktreeMergeConflict
 				receipt.Candidate.SHA = ""
@@ -225,14 +239,14 @@ func TestE2ELandOwnerRoutePlanErrorsAtActualResumeStagesDoNotPublish(t *testing.
 				t.Fatal(err)
 			}
 			got, err := LandWorktreeMerge(context.Background(), WorktreeMergeLandOptions{ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRoute("unsupported-test-route"), Timeout: 5 * time.Second})
-			if err == nil || got.Status != WorktreeMergeConflict || !strings.Contains(err.Error(), "route") {
-				t.Fatalf("%s route refusal=%+v %v", stage, got, err)
+			if err == nil || got.Status != tc.want || !strings.Contains(err.Error(), "route") {
+				t.Fatalf("%s route refusal status=%s want=%s: %+v %v", tc.stage, got.Status, tc.want, got, err)
 			}
 			if remote := strings.TrimSpace(runEngineGit(t, fixture.repository.CloneURL, "rev-parse", "refs/heads/main")); remote != receipt.TargetSHA {
 				t.Fatalf("route refusal changed target: %s", remote)
 			}
 			stored, readErr := readWorktreeMergeReceipt(receipt.ReceiptPath)
-			if readErr != nil || stored.Failure != err.Error() || stored.PublishedCandidateSHA != "" {
+			if readErr != nil || stored.Status != tc.want || stored.Failure != err.Error() || stored.PublishedCandidateSHA != "" {
 				t.Fatalf("route refusal durable evidence=%+v %v", stored, readErr)
 			}
 		})
