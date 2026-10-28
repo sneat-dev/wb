@@ -146,6 +146,13 @@ func PrepareRun(ctx context.Context, request DispatchRequest, deps DispatchDeps)
 	if err != nil {
 		return nil, err
 	}
+	// Enforce a declared mandatory sandbox before anything is created. The
+	// loaded configuration is the authority: a plan whose snapshot disagrees is
+	// refused, and while container execution is unimplemented a matching policy
+	// means "refuse", never "run it on the host anyway".
+	if err := requireRunnableExecution(config.Execution, plan.Execution, plan.Profile.Harness); err != nil {
+		return nil, err
+	}
 	// A Codex run authenticates with a credential WB injects; refuse a dispatch
 	// that cannot authenticate before a worktree exists. This check is
 	// independent of the injected preflight seam so a direct caller cannot skip
@@ -208,6 +215,8 @@ func PrepareRun(ctx context.Context, request DispatchRequest, deps DispatchDeps)
 		capabilities.Version = deps.DetectVersion(ctx, plan.Profile.Harness)
 	}
 	taskDigest, taskBytes := TaskIdentity(request.Task)
+	// The mandatory policy is snapshotted beside the profile facts, so a
+	// configuration edit after admission cannot change what is recorded.
 	record := Record{
 		State:                StateRunning,
 		ExecutionStatus:      StatusQueued,
@@ -228,6 +237,7 @@ func PrepareRun(ctx context.Context, request DispatchRequest, deps DispatchDeps)
 		WorktreeSource:       plan.WorktreeSource,
 		TimeoutSource:        plan.TimeoutSource,
 		HarnessCapabilities:  capabilities,
+		Execution:            snapshotExecution(plan.Execution),
 		Task:                 request.Task,
 		TaskSummary:          SummaryLine(request.Task),
 		TaskSHA256:           taskDigest,

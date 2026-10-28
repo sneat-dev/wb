@@ -210,6 +210,7 @@ func renderDryRun(runtime shared.Runtime, deps Dependencies, command *cobra.Comm
 		"harness:    " + plan.Profile.Harness,
 		"provider:   " + emptyWord(plan.Profile.Provider, "(harness default)"),
 		"model:      " + plan.Profile.Model,
+		"execution:  " + executionPlanWord(plan),
 		"complexity: " + emptyWord(plan.Complexity, "(none)") + " (" + plan.ComplexitySource + ")",
 		"effort:     " + effortPlanWord(plan),
 		"worktree:   " + plan.WorktreeMode + " (" + plan.WorktreeSource + ")",
@@ -236,6 +237,16 @@ type dryRunDocument struct {
 	TaskSHA256 string      `json:"task_sha256"`
 	TaskBytes  int         `json:"task_bytes"`
 	Executed   bool        `json:"executed"`
+}
+
+func executionPlanWord(plan agents.Plan) string {
+	if plan.Execution == nil {
+		return "host (no agents.execution policy)"
+	}
+	policy := plan.Execution
+	return fmt.Sprintf("%s image=%s memory=%dB swap=%dB cpus=%d pids=%d parallel=%d (mandatory)",
+		policy.Mode, policy.Image, policy.MemoryBytes, policy.MemorySwapBytes,
+		policy.CPUCount, policy.PIDsLimit, policy.MaxParallel)
 }
 
 func effortPlanWord(plan agents.Plan) string {

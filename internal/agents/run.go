@@ -254,6 +254,11 @@ type Record struct {
 	HarnessVersion      string              `json:"harness_version,omitempty"`
 	HarnessCapabilities HarnessCapabilities `json:"harness_capabilities"`
 
+	// Execution is the mandatory execution policy snapshotted at admission, so
+	// a later edit to the user's configuration cannot rewrite what this run was
+	// required to respect. Absent when the operator declared no sandbox.
+	Execution *ExecutionPolicy `json:"execution,omitempty"`
+
 	// Task is the exact originating request. It is private: it is never
 	// rendered by status or await, only persisted here.
 	Task string `json:"task"`
@@ -385,6 +390,7 @@ type Result struct {
 	TimeoutSource       string              `json:"timeout_source,omitempty"`
 	HarnessVersion      string              `json:"harness_version,omitempty"`
 	HarnessCapabilities HarnessCapabilities `json:"harness_capabilities"`
+	Execution           *ExecutionPolicy    `json:"execution,omitempty"`
 	Repository          string              `json:"repository"`
 	Caller              CallerSession       `json:"caller_session,omitzero"`
 	WorktreeMode        string              `json:"worktree_mode"`
@@ -513,6 +519,7 @@ func (store Store) Render(record Record) Result {
 		EffortApplied: record.EffortApplied, EffortNote: record.EffortNote,
 		WorktreeSource: record.WorktreeSource, TimeoutSource: record.TimeoutSource,
 		HarnessVersion: record.HarnessVersion, HarnessCapabilities: record.HarnessCapabilities,
+		Execution:  snapshotExecution(record.Execution),
 		Repository: record.Repository, Caller: record.Caller,
 		WorktreeMode: record.WorktreeMode, Worktree: record.Worktree,
 		WorktreeDir: record.WorktreeDir, Branch: record.Branch,

@@ -167,6 +167,9 @@ func (s *Service) recordFailedAttempt(store agents.Store, experimentID string, a
 		Telemetry:  agents.Telemetry{Available: false, Source: agents.UsageUnavailable, UnavailableReason: "the attempt never started"},
 		Cost:       agents.CostRecord{Kind: "api_equivalent", Source: agents.CostUnavailable},
 		Validation: agents.ValidationRecord{Status: agents.ValidationSkipped, Reason: "the attempt never started"},
+		// The mandatory policy travels with the failed attempt, so a comparison
+		// can state which sandbox it was planned under.
+		Execution: plan.Execution,
 	}
 	_ = store.Create(record)
 }

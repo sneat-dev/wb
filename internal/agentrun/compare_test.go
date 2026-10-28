@@ -212,6 +212,34 @@ func TestCompareSurvivesAPartialFailure(t *testing.T) {
 	}
 }
 
+func TestCompareKeepsTheMandatoryExecutionPolicyOnAFailedAttempt(t *testing.T) {
+	t.Parallel()
+	fixture := newCompareFixture(t)
+	policy := &agents.ExecutionPolicy{
+		Mode: agents.ExecutionModeLinuxContainer, Image: "ghcr.io/acme/agent@sha256:" + strings.Repeat("a", 64),
+		MemoryBytes: 8589934592, MemorySwapBytes: 8589934592, CPUCount: 2, PIDsLimit: 128, MaxParallel: 1,
+	}
+	fixture.config.Execution = policy
+	fixture.prepareErrAt = 1
+	report, err := fixture.service().Compare(context.Background(), CompareRequest{
+		ProjectsRoot: fixture.root, Task: "compare this", Profiles: []string{"cheap", "op"}, Repeat: 1, Concurrency: 1,
+	})
+	if err != nil {
+		t.Fatalf("Compare: %v", err)
+	}
+	failed := report.Attempts[1]
+	if failed.Status != agents.AttemptFailed {
+		t.Fatalf("failed attempt = %#v", failed)
+	}
+	record, err := agents.NewStore(fixture.home).Load(failed.AgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Execution == nil || *record.Execution != *policy {
+		t.Fatalf("failed attempt lost the mandatory policy: %#v", record.Execution)
+	}
+}
+
 func TestCompareContinuesAfterAStartFailure(t *testing.T) {
 	t.Parallel()
 	fixture := newCompareFixture(t)

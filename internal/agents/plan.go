@@ -67,6 +67,12 @@ type Plan struct {
 	Profile        Resolved `json:"profile"`
 	ProfileSource  string   `json:"profile_source"`
 
+	// Execution is the user-level mandatory execution policy snapshotted from
+	// configuration. It is absent when the operator configured none, and it is
+	// never derived from the resolved profile, task type or request, so no
+	// fallback or override can change it.
+	Execution *ExecutionPolicy `json:"execution,omitempty"`
+
 	Complexity           string `json:"complexity,omitempty"`
 	ComplexitySource     string `json:"complexity_source,omitempty"`
 	ComplexityOverridden bool   `json:"complexity_overridden,omitempty"`
@@ -118,7 +124,7 @@ type Planner struct {
 // Plan resolves one request, failing closed on anything it cannot execute.
 func (planner Planner) Plan(request RunRequest) (Plan, error) {
 	config := planner.Config
-	plan := Plan{}
+	plan := Plan{Execution: snapshotExecution(config.Execution)}
 
 	taskType, taskTypeName, taskTypeSource, err := config.resolveTaskType(request.TaskType)
 	if err != nil {

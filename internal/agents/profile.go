@@ -104,6 +104,11 @@ type Config struct {
 	Validations         map[string][]ValidationStep
 	Defaults            Defaults
 	Fallback            []string
+	// Execution is the operator's mandatory execution sandbox, read only from
+	// the user's wb.yaml. Nil means the operator configured none, which keeps
+	// WB's existing host execution unchanged; a declared policy is never
+	// reachable from a profile, a task type or a command-line override.
+	Execution *ExecutionPolicy
 }
 
 // Defaults are the values a request inherits when it names neither a task type
@@ -162,6 +167,7 @@ type fileConfig struct {
 		Validations map[string][]ValidationStep `yaml:"validations"`
 		Defaults    Defaults                    `yaml:"defaults"`
 		Fallback    []string                    `yaml:"fallback"`
+		Execution   *ExecutionPolicy            `yaml:"execution"`
 	} `yaml:"agents"`
 }
 
@@ -251,6 +257,7 @@ func LoadConfigFile(path string) (Config, error) {
 	}
 	config.Defaults = document.Agents.Defaults
 	config.Fallback = document.Agents.Fallback
+	config.Execution = document.Agents.Execution
 	// Everything a request can name is validated once, here, so a typo fails
 	// before a worktree exists rather than halfway through a comparison.
 	if err := config.validate(); err != nil {
@@ -263,6 +270,13 @@ func LoadConfigFile(path string) (Config, error) {
 // the whole document is merged, because a task type may name a profile declared
 // later in the same file.
 func (config Config) validate() error {
+	// A declared mandatory sandbox is validated on its own terms: it is not a
+	// profile preference, so no later resolution may repair or soften it.
+	if config.Execution != nil {
+		if err := validateExecutionPolicy(*config.Execution); err != nil {
+			return err
+		}
+	}
 	for name := range config.Validations {
 		if strings.TrimSpace(name) == "" {
 			return fmt.Errorf("validation suite name must not be empty")
