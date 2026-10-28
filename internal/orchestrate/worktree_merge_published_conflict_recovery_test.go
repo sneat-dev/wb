@@ -66,6 +66,7 @@ func clonePublishedConflictReceipt(r WorktreeMergeReceipt) WorktreeMergeReceipt 
 	return r
 }
 
+//nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
 func TestPublishedPrepareConflictRecoveryProvesExactPredecessorWithoutRecordingEarly(t *testing.T) {
 	fixture, receipt, published, head := newPublishedPrepareConflictFixture(t)
 	installWorktreeMergeEngineGH(t, fixture, published, receipt.Candidate.Branch)
@@ -90,6 +91,7 @@ func TestPublishedPrepareConflictRecoveryProvesExactPredecessorWithoutRecordingE
 	}
 }
 
+//nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
 func TestPublishedPrepareConflictRecoveryAdmitsOnlyTheFailedRefreshShape(t *testing.T) {
 	fixture, receipt, published, head := newPublishedPrepareConflictFixture(t)
 	installWorktreeMergeEngineGH(t, fixture, published, receipt.Candidate.Branch)
@@ -112,6 +114,7 @@ func TestPublishedPrepareConflictRecoveryAdmitsOnlyTheFailedRefreshShape(t *test
 		{"incomplete source identity", func(r *WorktreeMergeReceipt) { r.Sources[0].SHA = "" }, "incomplete receipted source", false},
 		{"ordinary published conflict already contains its source", func(r *WorktreeMergeReceipt) { r.Candidate.SHA = head }, "", false},
 	} {
+		//nolint:paralleltest // Each case builds its own t.Setenv real-Git fixture in the shared private lane.
 		t.Run(tc.name, func(t *testing.T) {
 			current := clonePublishedConflictReceipt(receipt)
 			tc.mutate(&current)
@@ -133,6 +136,7 @@ func TestPublishedPrepareConflictRecoveryAdmitsOnlyTheFailedRefreshShape(t *test
 	}
 }
 
+//nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
 func TestPublishedPrepareConflictRecoveryRefusesUnprovenNativeEvidence(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -181,6 +185,7 @@ func TestPublishedPrepareConflictRecoveryRefusesUnprovenNativeEvidence(t *testin
 			r.Sources = []WorktreeMergeSource{{Task: "unrelated-source", Worktree: extra.WorktreeDir, Branch: extra.Branch, SHA: strings.TrimSpace(runEngineGit(t, extra.WorktreeDir, "rev-parse", "HEAD"))}}
 		}, "does not contain required immutable root"},
 	} {
+		//nolint:paralleltest // Each case builds its own t.Setenv real-Git fixture in the shared private lane.
 		t.Run(tc.name, func(t *testing.T) {
 			fixture, receipt, published, _ := newPublishedPrepareConflictFixture(t)
 			installWorktreeMergeEngineGH(t, fixture, published, receipt.Candidate.Branch)
@@ -199,6 +204,7 @@ func TestPublishedPrepareConflictRecoveryRefusesUnprovenNativeEvidence(t *testin
 	}
 }
 
+//nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
 func TestPublishedPrepareConflictRecoveryRefusesUnprovenPullRequestIdentity(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -221,6 +227,7 @@ func TestPublishedPrepareConflictRecoveryRefusesUnprovenPullRequestIdentity(t *t
 			runEngineGit(t, r.Candidate.Worktree, "push", "origin", "HEAD:refs/heads/"+r.Candidate.Branch)
 		}, map[string]string{"WB_TEST_PR_HEAD_SHA": ""}, "candidate remote branch"},
 	} {
+		//nolint:paralleltest // Each case builds its own t.Setenv real-Git fixture in the shared private lane.
 		t.Run(tc.name, func(t *testing.T) {
 			fixture, receipt, published, _ := newPublishedPrepareConflictFixture(t)
 			installWorktreeMergeEngineGH(t, fixture, published, receipt.Candidate.Branch)
@@ -262,7 +269,9 @@ func recordLocalOnlyRepair(t *testing.T, worktree, branch, predecessor string) s
 	return repair
 }
 
+//nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
 func TestPublishedPrepareConflictRecoveryPreservesRecordedLocalRepair(t *testing.T) {
+	//nolint:paralleltest // Each case builds its own t.Setenv real-Git fixture in the shared private lane.
 	t.Run("resolution dropping the recorded repair refuses", func(t *testing.T) {
 		fixture, receipt, published, head := newPublishedPrepareConflictFixture(t)
 		installWorktreeMergeEngineGH(t, fixture, published, receipt.Candidate.Branch)
@@ -286,6 +295,7 @@ func TestPublishedPrepareConflictRecoveryPreservesRecordedLocalRepair(t *testing
 		}
 	})
 
+	//nolint:paralleltest // Each case builds its own t.Setenv real-Git fixture in the shared private lane.
 	t.Run("resolution containing the recorded repair recovers", func(t *testing.T) {
 		fixture, receipt, published, _ := newPublishedPrepareConflictFixture(t)
 		installWorktreeMergeEngineGH(t, fixture, published, receipt.Candidate.Branch)
@@ -308,6 +318,7 @@ func TestPublishedPrepareConflictRecoveryPreservesRecordedLocalRepair(t *testing
 	})
 }
 
+//nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
 func TestPublishedPrepareConflictRecoveryProvesEveryRecordedCandidateRoot(t *testing.T) {
 	// Each row records one available root of the same publication that a
 	// replacement head omitted. The refusal must name it and leave the
@@ -338,6 +349,7 @@ func TestPublishedPrepareConflictRecoveryProvesEveryRecordedCandidateRoot(t *tes
 			r.SourceRefreshes = []WorktreeMergeSourceRefresh{{RecordedAt: r.CreatedAt, Sources: []WorktreeMergeSource{{Task: "historical-source", Worktree: r.Sources[0].Worktree, Branch: r.Sources[0].Branch, SHA: side}}}}
 		}},
 	} {
+		//nolint:paralleltest // Each case builds its own t.Setenv real-Git fixture in the shared private lane.
 		t.Run(tc.name, func(t *testing.T) {
 			fixture, receipt, published, head := newPublishedPrepareConflictFixture(t)
 			installWorktreeMergeEngineGH(t, fixture, published, receipt.Candidate.Branch)
@@ -360,6 +372,7 @@ func TestPublishedPrepareConflictRecoveryProvesEveryRecordedCandidateRoot(t *tes
 	}
 }
 
+//nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
 func TestPublishedPrepareConflictRecoveryRecoversWhenEveryRecordedRootIsContained(t *testing.T) {
 	fixture, receipt, published, head := newPublishedPrepareConflictFixture(t)
 	installWorktreeMergeEngineGH(t, fixture, published, receipt.Candidate.Branch)
@@ -379,6 +392,7 @@ func TestPublishedPrepareConflictRecoveryRecoversWhenEveryRecordedRootIsContaine
 	}
 }
 
+//nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
 func TestPublishedPrepareConflictRecoveryUsesTheProvedTargetNormalization(t *testing.T) {
 	fixture, receipt, published, _ := newPublishedPrepareConflictFixture(t)
 	installWorktreeMergeEngineGH(t, fixture, published, receipt.Candidate.Branch)
@@ -403,7 +417,7 @@ func TestPublishedPrepareConflictRecoveryUsesTheProvedTargetNormalization(t *tes
 
 	// The same normalization must refuse when the clean head does not contain
 	// the freshly fetched receipt target.
-	fixture, receipt, published, head = newPublishedPrepareConflictFixture(t)
+	fixture, receipt, published, _ = newPublishedPrepareConflictFixture(t)
 	installWorktreeMergeEngineGH(t, fixture, published, receipt.Candidate.Branch)
 	writeEngineFile(t, filepath.Join(fixture.canonical, "unmerged-target.txt"), "unmerged target\n")
 	runEngineGit(t, fixture.canonical, "add", "unmerged-target.txt")
@@ -418,6 +432,7 @@ func TestPublishedPrepareConflictRecoveryUsesTheProvedTargetNormalization(t *tes
 	}
 }
 
+//nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
 func TestPublishedPrepareConflictRecoveryRefusesExactNativeReadErrors(t *testing.T) {
 	fixture, receipt, published, head := newPublishedPrepareConflictFixture(t)
 	installWorktreeMergeEngineGH(t, fixture, published, receipt.Candidate.Branch)
@@ -439,6 +454,7 @@ func TestPublishedPrepareConflictRecoveryRefusesExactNativeReadErrors(t *testing
 		{"missing source read", missingSource, worktree, "merge-base " + receipt.Sources[0].SHA + " " + head, "inspect published prepare candidate source"},
 		{"remote candidate ref", receipt, worktree, "ls-remote --heads origin refs/heads/" + receipt.Candidate.Branch, "read candidate remote ref"},
 	} {
+		//nolint:paralleltest // Each case builds its own t.Setenv real-Git fixture in the shared private lane.
 		t.Run(tc.name, func(t *testing.T) {
 			current := tc.receipt
 			before := current
@@ -454,6 +470,7 @@ func TestPublishedPrepareConflictRecoveryRefusesExactNativeReadErrors(t *testing
 	}
 }
 
+//nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
 func TestPublishedPrepareConflictRecoveryRefusesInactiveCandidateClaim(t *testing.T) {
 	fixture, receipt, _, _ := newPublishedPrepareConflictFixture(t)
 	view, err := worktrees.LoadWorkLogView(t.Context(), worktrees.LoadWorkLogOptions{ProjectsRoot: fixture.githubDir, Worktree: receipt.Candidate.Worktree})
@@ -484,6 +501,7 @@ func TestPublishedPrepareConflictRecoveryRefusesInactiveCandidateClaim(t *testin
 	}
 }
 
+//nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
 func TestPublishedPrepareConflictRecoveryRefusesUnreadableCandidateWorkLog(t *testing.T) {
 	fixture, receipt, published, _ := newPublishedPrepareConflictFixture(t)
 	prompts := filepath.Join(receipt.Candidate.Worktree, ".wb", "local", "prompts")
