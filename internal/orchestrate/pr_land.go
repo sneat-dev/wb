@@ -724,7 +724,7 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	if rulesetsUnavailable != "" {
 		result.Evidence["merge_queue"] = "none: rulesets are unavailable on this repository's GitHub plan, so no ruleset applies: " + rulesetsUnavailable
 	}
-	if options.AllowUnfenced && githubchecks.IsPolicyUnavailableByPlan(err) {
+	if options.AllowUnfenced && githubchecks.IsTargetPolicyRead403(err) {
 		result.Evidence["merge_queue"] = "unknown: " + err.Error() + "; landing under explicit --allow-unfenced"
 		queue, err = nil, nil
 	}

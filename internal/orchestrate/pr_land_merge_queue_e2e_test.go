@@ -166,6 +166,27 @@ func TestLandOnAMergeQueueTargetRecordsAPlanLimitedRulesReadUnderAllowUnfenced(t
 	if result.Outcome != LandSuccess || !strings.Contains(result.Evidence["merge_queue"], "HTTP 403") || result.MergeQueue != nil {
 		t.Fatalf("outcome = %s (%s): %s; evidence %v", result.Outcome, result.RefusalCode, result.Reason, result.Evidence)
 	}
+	// main is classic-protected, so the plan gate is not corroborated: the
+	// queue read and the check receipt both record unknown policy, never
+	// "no rulesets" in one and "unavailable" in the other.
+	if !strings.HasPrefix(result.Evidence["merge_queue"], "unknown: ") || !strings.Contains(result.Evidence["merge_queue"], "plan gate is not corroborated") {
+		t.Fatalf("merge_queue evidence = %q, want the uncorroborated gate recorded as unknown", result.Evidence["merge_queue"])
+	}
+	if result.Checks == nil || !strings.HasPrefix(result.Checks.RequiredChecksAuthority, "github-branch-policy-unavailable-under-allow-unfenced") {
+		t.Fatalf("checks = %+v, want the policy recorded as unavailable", result.Checks)
+	}
+}
+
+//nolint:paralleltest // calls a fixture helper (newLandFixture/newEngineFixture/createMergeSource) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
+func TestLandOnAProtectedTargetWhosePlanGateIsNotCorroboratedFailsClosedWithoutAllowUnfenced(t *testing.T) {
+	fixture := newLandFixture(t, "bump/plan-gate-protected", "go.mod", "go.sum")
+	fixture.writeState(t, "rules-403", "1")
+
+	_, err := LandPullRequest(context.Background(), landOptions(fixture))
+	if err == nil || !strings.Contains(err.Error(), "classic protection still protects main, so the plan gate is not corroborated") {
+		t.Fatalf("err = %v, want the uncorroborated plan gate refused", err)
+	}
+	assertNoDirectLanding(t, fixture)
 }
 
 //nolint:paralleltest // calls a fixture helper (newLandFixture/newEngineFixture/createMergeSource) that calls t.Setenv, which Go's testing package forbids combined with t.Parallel
@@ -183,6 +204,9 @@ func TestLandOnAFreePlanPrivateRepositoryReadsNoRulesetsAndLandsUnderAllowUnfenc
 	if result.Outcome != LandSuccess || result.MergeQueue != nil ||
 		!strings.Contains(result.Evidence["merge_queue"], "none: rulesets are unavailable on this repository's GitHub plan") {
 		t.Fatalf("outcome = %s (%s): %s; evidence %v", result.Outcome, result.RefusalCode, result.Reason, result.Evidence)
+	}
+	if result.Checks == nil || !strings.Contains(result.Checks.RequiredChecksAuthority, "rulesets-unavailable-by-plan") {
+		t.Fatalf("checks = %+v, want the plan-gated rulesets recorded in the required-checks authority", result.Checks)
 	}
 }
 

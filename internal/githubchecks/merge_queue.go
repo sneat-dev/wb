@@ -25,28 +25,59 @@ type MergeQueuePolicy struct {
 // TargetMergeQueue reports the merge queue the target's active rules require,
 // or nil when none does. An unreadable rule set is an error, never "no
 // queue": a caller that guessed wrong would merge around the queue. The one
-// exception is a repository whose plan offers no rulesets
-// (IsBranchPolicyUnavailableByPlan): no queue can apply there, so it returns no
-// queue and GitHub's refusal as rulesetsUnavailable for the caller's receipt.
+// exception is a corroborated plan gate (activeRulesCorroborated): no queue can
+// apply there, so it returns no queue and GitHub's refusal as
+// rulesetsUnavailable for the caller's receipt.
 func TargetMergeQueue(ctx context.Context, repository, target string) (policy *MergeQueuePolicy, rulesetsUnavailable string, err error) {
-	pages, err := ActiveRules(ctx, repository, target)
-	if IsBranchPolicyUnavailableByPlan(err) {
-		return nil, err.Error(), nil
-	}
+	pages, rulesetsUnavailable, err := activeRulesCorroborated(ctx, repository, target, func() (bool, error) {
+		branch, err := readTargetBranchPolicy(ctx, repository, target)
+		if err != nil {
+			return false, err
+		}
+		return *branch.Protected, nil
+	})
 	if err != nil {
-		return nil, "", fmt.Errorf("read active branch rules for target %s: %w", target, err)
+		return nil, "", err
 	}
 	policy, err = mergeQueueFromRules(pages, target)
-	return policy, "", err
+	return policy, rulesetsUnavailable, err
 }
 
-// IsPolicyUnavailableByPlan reports a target-policy read GitHub refused with
-// a 403, the same class requiredChecksReceipt accepts as unavailable policy
-// under an explicit --allow-unfenced. That flag then also gives up merge-queue
+// IsTargetPolicyRead403 reports any target-policy read GitHub refused with a
+// 403 — a plan gate, a missing scope, an integration without access alike —
+// the class requiredChecksReceipt accepts as unavailable policy under an
+// explicit --allow-unfenced. That flag then also gives up merge-queue
 // detection: the receipt records the gap, and a caller that must never merge
-// around a queue does not pass it.
-func IsPolicyUnavailableByPlan(err error) bool {
-	return err != nil && isGitHubPolicyPlan403(err.Error())
+// around a queue does not pass it. It is deliberately broader than
+// IsBranchPolicyUnavailableByPlan, the one 403 that means "no rules".
+func IsTargetPolicyRead403(err error) bool {
+	return err != nil && isTargetPolicyRead403(err.Error())
+}
+
+// activeRulesCorroborated reads the target's active rules, and is the one
+// place that decides what GitHub's plan-gate refusal of that read means, so a
+// merge-queue read and a required-checks read of the same target cannot
+// disagree. A plan that offers no rulesets offers no classic protection
+// either, so the refusal means "no ruleset applies" only while classic
+// protection agrees the target is unprotected; protected is consulted only
+// then. A target classic protection still protects contradicts the gate, and
+// the read fails closed rather than skip rules that may exist.
+func activeRulesCorroborated(ctx context.Context, repository, target string, protected func() (bool, error)) (pages [][]ActiveBranchRule, rulesetsUnavailable string, err error) {
+	pages, err = ActiveRules(ctx, repository, target)
+	if !IsBranchPolicyUnavailableByPlan(err) {
+		if err != nil {
+			return nil, "", fmt.Errorf("read active branch rules for target %s: %w", target, err)
+		}
+		return pages, "", nil
+	}
+	isProtected, protectedErr := protected()
+	if protectedErr != nil {
+		return nil, "", protectedErr
+	}
+	if isProtected {
+		return nil, "", fmt.Errorf("read active branch rules for target %s: %w; classic protection still protects %s, so the plan gate is not corroborated", target, err, target)
+	}
+	return nil, err.Error(), nil
 }
 
 // githubBranchPolicyPlanGateMessage is GitHub's exact refusal of a rulesets
