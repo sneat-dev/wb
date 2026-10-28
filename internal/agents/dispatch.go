@@ -150,7 +150,7 @@ func PrepareRun(ctx context.Context, request DispatchRequest, deps DispatchDeps)
 	// loaded configuration is the authority: a plan whose snapshot disagrees is
 	// refused, and while container execution is unimplemented a matching policy
 	// means "refuse", never "run it on the host anyway".
-	if err := requireRunnableExecution(config.Execution, plan.Execution, plan.Profile.Harness); err != nil {
+	if err := RequireRunnableExecution(config.Execution, plan.Execution, "plan", plan.Profile.Harness); err != nil {
 		return nil, err
 	}
 	// A Codex run authenticates with a credential WB injects; refuse a dispatch
@@ -237,7 +237,7 @@ func PrepareRun(ctx context.Context, request DispatchRequest, deps DispatchDeps)
 		WorktreeSource:       plan.WorktreeSource,
 		TimeoutSource:        plan.TimeoutSource,
 		HarnessCapabilities:  capabilities,
-		Execution:            snapshotExecution(plan.Execution),
+		Execution:            SnapshotExecution(plan.Execution),
 		Task:                 request.Task,
 		TaskSummary:          SummaryLine(request.Task),
 		TaskSHA256:           taskDigest,

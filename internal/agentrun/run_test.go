@@ -115,6 +115,81 @@ func writeServiceConfig(t *testing.T, body string) string {
 	return path
 }
 
+func serviceExecutionPolicy() agents.ExecutionPolicy {
+	return agents.ExecutionPolicy{
+		Mode: agents.ExecutionModeLinuxContainer, Image: "ghcr.io/acme/agent@sha256:" + strings.Repeat("a", 64),
+		MemoryBytes: 8589934592, MemorySwapBytes: 8589934592, CPUCount: 2, PIDsLimit: 128, MaxParallel: 1,
+	}
+}
+
+func TestRunRefusesMandatoryPolicyBeforeHostPreflightOrPreparation(t *testing.T) {
+	t.Parallel()
+	fixture := newServiceFixture(t)
+	policy := serviceExecutionPolicy()
+	fixture.config.Execution = &policy
+	probes, versions, prepares := 0, 0, 0
+	fixture.deps.Preflight = func(context.Context, agents.Resolved) error { probes++; return nil }
+	fixture.deps.DetectVersion = func(context.Context, string) string { versions++; return "" }
+	prepare := fixture.deps.PrepareRun
+	fixture.deps.PrepareRun = func(ctx context.Context, request agents.DispatchRequest, deps agents.DispatchDeps) (*agents.PreparedRun, error) {
+		prepares++
+		return prepare(ctx, request, deps)
+	}
+	_, err := fixture.service().Run(context.Background(), RunRequest{
+		ProjectsRoot: fixture.root,
+		Request:      agents.RunRequest{Task: "do it", TaskType: "coding", WorktreeMode: agents.ModeAuto, Worktree: "op"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "refusing to run it outside the mandatory sandbox") {
+		t.Fatalf("error = %v, want a mandatory-sandbox refusal", err)
+	}
+	if probes != 0 || versions != 0 || prepares != 0 || len(fixture.started) != 0 {
+		t.Fatalf("a contained run reached the host: preflight=%d detect-version=%d prepare=%d started=%d",
+			probes, versions, prepares, len(fixture.started))
+	}
+}
+
+func TestRunFallbackRefusesMandatoryPolicyBeforeHostPreflight(t *testing.T) {
+	t.Parallel()
+	fixture := newServiceFixture(t)
+	policy := serviceExecutionPolicy()
+	fixture.config.Execution = &policy
+	planned := policy
+	probes, prepares := 0, 0
+	fixture.deps.Preflight = func(context.Context, agents.Resolved) error { probes++; return nil }
+	prepare := fixture.deps.PrepareRun
+	fixture.deps.PrepareRun = func(ctx context.Context, request agents.DispatchRequest, deps agents.DispatchDeps) (*agents.PreparedRun, error) {
+		prepares++
+		return prepare(ctx, request, deps)
+	}
+	store := agents.NewStore(fixture.home)
+	current := agents.Record{
+		AgentID: "agt-00000000000000000000000000000001", State: agents.StateFailed,
+		ExecutionStatus: agents.StatusFailed, FailureCategory: agents.FailureProvider,
+		Failure: "provider unavailable", RequestedProfile: "cheap",
+		StartedAt: fixture.now, FinishedAt: fixture.now,
+	}
+	if err := store.Create(current); err != nil {
+		t.Fatal(err)
+	}
+	plan := agents.Plan{
+		Profile:       agents.Resolved{Profile: "cheap", Harness: agents.HarnessCodex, Model: "m"},
+		ProfileSource: agents.SourceTaskType, WorktreeMode: agents.ModeAuto,
+		FallbackChain: []string{"op"}, FallbackOn: []string{agents.FallbackRuntime},
+		Execution: &planned, TimeoutMS: time.Minute.Milliseconds(),
+	}
+	_, err := fixture.service().awaitWithFailover(context.Background(), RunRequest{
+		ProjectsRoot: fixture.root, Wait: time.Second,
+		Request: agents.RunRequest{Task: "do it", TaskType: "coding"},
+	}, plan, agents.DispatchDeps{}, store, store.Render(current))
+	if err == nil || !strings.Contains(err.Error(), "refusing to run it outside the mandatory sandbox") {
+		t.Fatalf("error = %v, want a mandatory-sandbox refusal", err)
+	}
+	if probes != 0 || prepares != 0 || len(fixture.started) != 0 {
+		t.Fatalf("a contained fallback reached the host: preflight=%d prepare=%d started=%d",
+			probes, prepares, len(fixture.started))
+	}
+}
+
 func TestRunResolvesAndStartsOneExecution(t *testing.T) {
 	t.Parallel()
 	fixture := newServiceFixture(t)

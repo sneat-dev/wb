@@ -519,7 +519,7 @@ func (store Store) Render(record Record) Result {
 		EffortApplied: record.EffortApplied, EffortNote: record.EffortNote,
 		WorktreeSource: record.WorktreeSource, TimeoutSource: record.TimeoutSource,
 		HarnessVersion: record.HarnessVersion, HarnessCapabilities: record.HarnessCapabilities,
-		Execution:  snapshotExecution(record.Execution),
+		Execution:  SnapshotExecution(record.Execution),
 		Repository: record.Repository, Caller: record.Caller,
 		WorktreeMode: record.WorktreeMode, Worktree: record.Worktree,
 		WorktreeDir: record.WorktreeDir, Branch: record.Branch,

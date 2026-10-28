@@ -212,6 +212,34 @@ func TestCompareSurvivesAPartialFailure(t *testing.T) {
 	}
 }
 
+func TestCompareFailedAttemptSnapshotsTheMandatoryPolicyByValue(t *testing.T) {
+	t.Parallel()
+	policy := agents.ExecutionPolicy{
+		Mode: agents.ExecutionModeLinuxContainer, Image: "ghcr.io/acme/agent@sha256:" + strings.Repeat("a", 64),
+		MemoryBytes: 8589934592, MemorySwapBytes: 8589934592, CPUCount: 2, PIDsLimit: 128, MaxParallel: 1,
+	}
+	expected := policy
+	plan := agents.Plan{
+		TaskType: "coding", Profile: agents.Resolved{Profile: "cheap", Harness: agents.HarnessCodex},
+		Execution: &policy,
+	}
+	now := func() time.Time { return time.Unix(1700000000, 0).UTC() }
+	record := failedAttemptRecord("exp-00000000000000000000000000000001", agents.Attempt{
+		AgentID: "agt-00000000000000000000000000000001", Operation: "exp-op", RepeatIndex: 0,
+	}, "do it", plan, errors.New("worktree creation failed"), now)
+	if record.Execution == nil || *record.Execution != expected {
+		t.Fatalf("failed attempt policy = %#v, want %#v", record.Execution, expected)
+	}
+	if record.Execution == plan.Execution {
+		t.Fatal("the failed record must snapshot the policy, not alias the plan's pointer")
+	}
+	plan.Execution.MemoryBytes = 1
+	plan.Execution.Image = "ghcr.io/acme/other@sha256:" + strings.Repeat("b", 64)
+	if record.Execution.MemoryBytes != expected.MemoryBytes || record.Execution.Image != expected.Image {
+		t.Fatalf("mutating the plan rewrote the failed record: %#v", record.Execution)
+	}
+}
+
 func TestCompareKeepsTheMandatoryExecutionPolicyOnAFailedAttempt(t *testing.T) {
 	t.Parallel()
 	fixture := newCompareFixture(t)

@@ -150,12 +150,20 @@ func (s *Service) Compare(ctx context.Context, r CompareRequest) (agents.Experim
 // recordFailedAttempt keeps one row for an attempt that never started, so
 // `wb agent experiment` shows every planned comparison.
 func (s *Service) recordFailedAttempt(store agents.Store, experimentID string, attempt agents.Attempt, task string, plan agents.Plan, failure error, now func() time.Time) {
+	_ = store.Create(failedAttemptRecord(experimentID, attempt, task, plan, failure, now))
+}
+
+// failedAttemptRecord maps a planned attempt that never started onto the same
+// durable shape a started run uses. The mandatory policy is copied by value so
+// a later edit to the configuration or to the plan map cannot rewrite what the
+// record claims.
+func failedAttemptRecord(experimentID string, attempt agents.Attempt, task string, plan agents.Plan, failure error, now func() time.Time) agents.Record {
 	digest, size := agents.TaskIdentity(task)
 	category := agents.FailureWorktree
 	if agents.IsRequestError(failure) {
 		category = agents.FailureConfig
 	}
-	record := agents.Record{
+	return agents.Record{
 		AgentID: attempt.AgentID, State: agents.StateFailed, ExecutionStatus: agents.StatusFailed,
 		FailureCategory: category, Failure: failure.Error(),
 		RequestedProfile: plan.Profile.Profile, Resolved: plan.Profile,
@@ -169,9 +177,8 @@ func (s *Service) recordFailedAttempt(store agents.Store, experimentID string, a
 		Validation: agents.ValidationRecord{Status: agents.ValidationSkipped, Reason: "the attempt never started"},
 		// The mandatory policy travels with the failed attempt, so a comparison
 		// can state which sandbox it was planned under.
-		Execution: plan.Execution,
+		Execution: agents.SnapshotExecution(plan.Execution),
 	}
-	_ = store.Create(record)
 }
 
 func experimentOperation(experimentID, profile string, repeat int) string {

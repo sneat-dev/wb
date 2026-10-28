@@ -503,7 +503,7 @@ func dispatchWithHandlers(handlers processHandlers, args []string, stdin io.Read
 	case sessionlaunch.PrivateLauncherArgument:
 		return handlers.privateLauncher(rest)
 	case agents.OwnerArgument:
-		return handlers.ownerCLI(rest, agents.DefaultOwnerDeps())
+		return handlers.ownerCLI(rest, agents.ProductionOwnerDeps())
 	case agents.RemoteArgument:
 		// The private remote entry point is a validated protocol value on stdin,
 		// not a command line: it is handled here so a remote caller can never

@@ -124,7 +124,7 @@ type Planner struct {
 // Plan resolves one request, failing closed on anything it cannot execute.
 func (planner Planner) Plan(request RunRequest) (Plan, error) {
 	config := planner.Config
-	plan := Plan{Execution: snapshotExecution(config.Execution)}
+	plan := Plan{Execution: SnapshotExecution(config.Execution)}
 
 	taskType, taskTypeName, taskTypeSource, err := config.resolveTaskType(request.TaskType)
 	if err != nil {

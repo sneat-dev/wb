@@ -80,17 +80,37 @@ type OwnerDeps struct {
 	// can assert the environment and the inherited lease without spawning a
 	// process tree.
 	Validation func(context.Context, ValidationOptions) ValidationRecord
+	// LoadExecutionPolicy re-reads the operator's authoritative mandatory
+	// execution policy before this owner starts anything. Nil means this owner
+	// has no way to reload the configuration; a record that already claims a
+	// sandbox is still refused, and a host record keeps its historical
+	// behaviour only because no policy can be shown to exist.
+	LoadExecutionPolicy func() (*ExecutionPolicy, error)
 }
 
 // DefaultOwnerDeps returns the production seams. Lease is deliberately not set
 // here: only OwnerCLI, the detached entry point, may adopt an inherited
 // descriptor, because a test process's fd 3 is not a lease.
+//
+// LoadExecutionPolicy is deliberately not set either, so a test that builds on
+// DefaultOwnerDeps never reads the ambient user configuration. Production
+// owner launches use ProductionOwnerDeps, which wires the authoritative loader.
 func DefaultOwnerDeps() OwnerDeps {
 	return OwnerDeps{
 		LookPath: exec.LookPath, Now: time.Now, Sleep: time.Sleep,
 		StopGrace: defaultStopGrace, StopPollInterval: defaultStopPollInterval,
 		Validation: RunValidation,
 	}
+}
+
+// ProductionOwnerDeps is DefaultOwnerDeps plus the authoritative policy loader.
+// It is the only wiring the detached owner entry point may use: with no loader a
+// stale host record could launch after the operator configured a mandatory
+// sandbox.
+func ProductionOwnerDeps() OwnerDeps {
+	deps := DefaultOwnerDeps()
+	deps.LoadExecutionPolicy = LoadDefaultExecutionPolicy
+	return deps
 }
 
 // inheritedLease returns the lease descriptor the dispatcher passed, or nil when
@@ -131,6 +151,21 @@ func runOwnerWithSave(ctx context.Context, store Store, agentID string, deps Own
 	record, err := store.Load(agentID)
 	if err != nil {
 		return err
+	}
+	// The mandatory policy is decided before the owner resolves a credential,
+	// looks up a harness, creates its private home, starts a child or runs
+	// validation. A record that claims a sandbox is refused because this build
+	// cannot execute inside it, and a host record is refused when the operator's
+	// current configuration declares one: the configuration is the authority,
+	// not a snapshot written before the policy existed.
+	if policyErr := requireOwnerHostExecution(record, deps); policyErr != nil {
+		record.State = StateFailed
+		record.ExecutionStatus = StatusFailed
+		record.Failure = policyErr.Error()
+		record.FailureCategory = FailureConfig
+		record.Validation = ValidationRecord{Status: ValidationSkipped, Reason: "the mandatory execution policy refuses a host run"}
+		record.FinishedAt = deps.Now().UTC()
+		return save(record)
 	}
 	// The bound is enforced here, in the process that outlives the dispatcher,
 	// using the same process-group cancellation internal/process already owns.
@@ -361,6 +396,21 @@ func validationStepsFromRecord(record Record) []ValidationStep {
 		steps = append(steps, ValidationStep{Name: step.Name, Argv: step.Argv, Timeout: step.Timeout})
 	}
 	return steps
+}
+
+// requireOwnerHostExecution applies the one mandatory-policy authority to a
+// persisted record. The fresh user configuration is the authority, so an owner
+// that can reload it refuses a stale host record, and any configuration load
+// error refuses too: a broken file must never read as "no mandatory sandbox".
+func requireOwnerHostExecution(record Record, deps OwnerDeps) error {
+	if deps.LoadExecutionPolicy == nil {
+		return RequireRunnableExecution(nil, record.Execution, "run record", record.Resolved.Harness)
+	}
+	configured, err := deps.LoadExecutionPolicy()
+	if err != nil {
+		return fmt.Errorf("reload the authoritative agents.execution policy: %w", err)
+	}
+	return RequireRunnableExecution(configured, record.Execution, "run record", record.Resolved.Harness)
 }
 
 // executionStart is when the harness began, falling back to admission time for

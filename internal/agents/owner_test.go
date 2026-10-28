@@ -2,6 +2,7 @@ package agents
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -117,6 +118,166 @@ func ownedRun(t *testing.T, task string, timeout time.Duration) (Store, Record, 
 		t.Fatal(err)
 	}
 	return store, record, worktree
+}
+
+// containedOwnerRun persists a run whose resolution may claim a mandatory
+// sandbox. The worktree need not be a Git repository: every case below must be
+// refused before the owner touches it.
+func containedOwnerRun(t *testing.T, policy *ExecutionPolicy) (Store, Record) {
+	t.Helper()
+	store := NewStore(t.TempDir())
+	id, err := NewID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := Record{
+		AgentID: id, State: StateRunning, ExecutionStatus: StatusQueued,
+		RequestedProfile: "cheap",
+		Resolved: Resolved{
+			Profile: "cheap", Harness: HarnessOpenCode, Provider: "deepseek", Model: "m",
+		},
+		Task: "do the contained thing", Worktree: "task-one", WorktreeDir: t.TempDir(),
+		Repository: "acme/app", TimeoutMS: time.Minute.Milliseconds(),
+		StartedAt: time.Unix(1700000000, 0).UTC(), Execution: policy,
+	}
+	if err := store.Create(record); err != nil {
+		t.Fatal(err)
+	}
+	return store, record
+}
+
+func TestRunOwnerRefusesAHostLaunchWhenTheMandatoryPolicyRequiresIt(t *testing.T) {
+	t.Parallel()
+	recorded := executionTestPolicy()
+	changed := recorded
+	changed.MemoryBytes, changed.MemorySwapBytes = 4294967296, 4294967296
+	cases := map[string]struct {
+		recorded *ExecutionPolicy
+		loader   func() (*ExecutionPolicy, error)
+		want     string
+	}{
+		"contained record": {
+			recorded: &recorded,
+			loader: func() (*ExecutionPolicy, error) {
+				policy := recorded
+				return &policy, nil
+			},
+			want: "refusing to run it outside the mandatory sandbox",
+		},
+		"contained record without a loader": {
+			recorded: &recorded,
+			loader:   nil,
+			want:     "no longer declares",
+		},
+		"stale host record after policy was configured": {
+			recorded: nil,
+			loader:   func() (*ExecutionPolicy, error) { return &recorded, nil },
+			want:     "carries no mandatory policy snapshot",
+		},
+		"record from a policy the configuration removed": {
+			recorded: &recorded,
+			loader:   func() (*ExecutionPolicy, error) { return nil, nil },
+			want:     "no longer declares",
+		},
+		"record from a policy the configuration changed": {
+			recorded: &recorded,
+			loader:   func() (*ExecutionPolicy, error) { return &changed, nil },
+			want:     "changed after this run record was resolved",
+		},
+		"unreadable configuration": {
+			recorded: nil,
+			loader:   func() (*ExecutionPolicy, error) { return nil, errors.New("broken wb.yaml") },
+			want:     "reload the authoritative agents.execution policy",
+		},
+	}
+	for name, testCase := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			store, record := containedOwnerRun(t, testCase.recorded)
+			deps := DefaultOwnerDeps()
+			deps.LoadExecutionPolicy = testCase.loader
+			lookups, validations := 0, 0
+			deps.LookPath = func(string) (string, error) {
+				lookups++
+				return "", errors.New("a policy-refused owner must not look up a harness")
+			}
+			deps.Validation = func(context.Context, ValidationOptions) ValidationRecord {
+				validations++
+				return ValidationRecord{Status: ValidationPassed}
+			}
+			if err := RunOwner(context.Background(), store, record.AgentID, deps); err != nil {
+				t.Fatalf("RunOwner: %v", err)
+			}
+			if lookups != 0 || validations != 0 {
+				t.Fatalf("a policy-refused owner ran host side effects: lookups=%d validations=%d", lookups, validations)
+			}
+			loaded, err := store.Load(record.AgentID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(loaded.Failure, testCase.want) {
+				t.Fatalf("failure = %q, want %q", loaded.Failure, testCase.want)
+			}
+			if loaded.State != StateFailed || loaded.ExecutionStatus != StatusFailed {
+				t.Fatalf("state = %s/%s, want a truthful failed execution", loaded.State, loaded.ExecutionStatus)
+			}
+			if loaded.FailureCategory != FailureConfig {
+				t.Fatalf("failure category = %q, want %q", loaded.FailureCategory, FailureConfig)
+			}
+			if loaded.Validation.Status != ValidationSkipped || !strings.Contains(loaded.Validation.Reason, "mandatory execution policy") {
+				t.Fatalf("validation = %#v, want a skipped record naming the policy", loaded.Validation)
+			}
+			if loaded.FinishedAt.IsZero() || loaded.OwnerPID != 0 || loaded.WorkerPID != 0 {
+				t.Fatalf("refused record = owner %d worker %d finished %v", loaded.OwnerPID, loaded.WorkerPID, loaded.FinishedAt)
+			}
+			if testCase.recorded == nil {
+				if loaded.Execution != nil {
+					t.Fatalf("a host record must not grow a policy: %#v", loaded.Execution)
+				}
+			} else if loaded.Execution == nil || *loaded.Execution != *testCase.recorded {
+				t.Fatalf("recorded policy = %#v, want %#v", loaded.Execution, testCase.recorded)
+			}
+		})
+	}
+}
+
+func TestRunOwnerKeepsHistoricalHostRunsWhenConfigurationDeclaresNoPolicy(t *testing.T) {
+	t.Parallel()
+	store, record := containedOwnerRun(t, nil)
+	deps := DefaultOwnerDeps()
+	deps.LoadExecutionPolicy = func() (*ExecutionPolicy, error) { return nil, nil }
+	lookups := 0
+	deps.LookPath = func(string) (string, error) {
+		lookups++
+		return "", errors.New("harness is not installed")
+	}
+	if err := RunOwner(context.Background(), store, record.AgentID, deps); err != nil {
+		t.Fatalf("RunOwner: %v", err)
+	}
+	if lookups != 1 {
+		t.Fatalf("host run reached LookPath %d times, want 1", lookups)
+	}
+	loaded, err := store.Load(record.AgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.FailureCategory != FailureHarnessMiss || strings.Contains(loaded.Failure, "mandatory") {
+		t.Fatalf("a historical host run must fail on the harness, not on policy: %#v", loaded)
+	}
+}
+
+func TestProductionOwnerDepsWiresTheAuthoritativePolicyLoader(t *testing.T) {
+	t.Parallel()
+	if DefaultOwnerDeps().LoadExecutionPolicy != nil {
+		t.Fatal("the test-safe defaults must not read the ambient user configuration")
+	}
+	deps := ProductionOwnerDeps()
+	if deps.LoadExecutionPolicy == nil {
+		t.Fatal("production owner deps must reload the authoritative policy")
+	}
+	if deps.LookPath == nil || deps.Validation == nil || deps.Now == nil {
+		t.Fatalf("production owner deps lost their existing seams: %#v", deps)
+	}
 }
 
 func TestRunOwnerRecordsASuccessfulRun(t *testing.T) {

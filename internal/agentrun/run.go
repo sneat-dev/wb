@@ -22,11 +22,25 @@ func (s *Service) Run(ctx context.Context, r RunRequest) (agents.Result, error) 
 	if err != nil {
 		return agents.Result{}, err
 	}
-	planner := agents.Planner{Config: config, Probe: func(resolved agents.Resolved) error {
-		return s.deps.Preflight(ctx, resolved)
-	}}
+	planner := agents.Planner{Config: config}
+	// A mandatory sandbox is decided before any host probe. Installing the
+	// preflight only when the operator declared no policy is what keeps a
+	// contained plan from resolving a harness (or falling back to another one)
+	// through host LookPath/version checks that the sandbox could never
+	// legitimately use.
+	if config.Execution == nil {
+		planner.Probe = func(resolved agents.Resolved) error {
+			return s.deps.Preflight(ctx, resolved)
+		}
+	}
 	plan, err := planner.Plan(r.Request)
 	if err != nil {
+		return agents.Result{}, err
+	}
+	// The authority is checked once more against the resolved snapshot, before
+	// any worktree or owner exists. This is the same exported gate dispatch and
+	// the owner use, so a plan cannot become exempt by arriving through `run`.
+	if err := agents.RequireRunnableExecution(config.Execution, plan.Execution, "plan", plan.Profile.Harness); err != nil {
 		return agents.Result{}, err
 	}
 	if plan.FallbackFrom != "" {
@@ -105,6 +119,12 @@ func (s *Service) awaitWithFailover(ctx context.Context, r RunRequest, plan agen
 		}
 		nextProfile, err := resolved.Resolve(next)
 		if err != nil {
+			return awaited, err
+		}
+		// Failover is another host entry point: the mandatory policy refuses
+		// before the fallback profile is probed, so a configured sandbox cannot
+		// be bypassed by an infrastructure failure.
+		if err := agents.RequireRunnableExecution(resolved.Execution, plan.Execution, "fallback plan", nextProfile.Harness); err != nil {
 			return awaited, err
 		}
 		if s.deps.Preflight != nil {

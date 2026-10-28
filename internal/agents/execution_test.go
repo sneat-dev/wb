@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -64,6 +65,7 @@ func TestExecutionPolicyAcceptsOnlyDigestPinnedImages(t *testing.T) {
 		"tag plus digest is pinned": "ghcr.io/acme/agent:2026.10.31@sha256:" + hash,
 		"bare image ID":             "sha256:" + hash,
 		"docker hub library":        "alpine@sha256:" + hash,
+		"registry with port":        "localhost:5000/acme/agent@sha256:" + hash,
 	}
 	for name, image := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -76,6 +78,96 @@ func TestExecutionPolicyAcceptsOnlyDigestPinnedImages(t *testing.T) {
 				t.Fatalf("policy = %#v", config.Execution)
 			}
 		})
+	}
+}
+
+// TestExecutionImageRejectsMalformedRepositories pins the grammar beside the
+// digest check: a valid sha256 is not enough when the repository prefix could be
+// reinterpreted as a flag, a second reference or a path escape.
+func TestExecutionImageRejectsMalformedRepositories(t *testing.T) {
+	t.Parallel()
+	hash := strings.Repeat("a", 64)
+	cases := map[string]struct {
+		image string
+		want  string
+	}{
+		"empty image":                 {image: "", want: "image is required"},
+		"leading dash repository":     {image: "-ghcr.io/acme/agent@sha256:" + hash, want: "invalid registry"},
+		"leading dash component":      {image: "ghcr.io/-acme/agent@sha256:" + hash, want: "invalid repository component"},
+		"uppercase repository":        {image: "ghcr.io/acme/Agent@sha256:" + hash, want: "invalid repository component"},
+		"empty path component":        {image: "ghcr.io//agent@sha256:" + hash, want: "empty repository component"},
+		"trailing slash":              {image: "ghcr.io/acme/agent/@sha256:" + hash, want: "empty repository component"},
+		"parent directory component":  {image: "ghcr.io/acme/../agent@sha256:" + hash, want: "invalid repository component"},
+		"multiple digest separators":  {image: "ghcr.io/acme/agent@sha256:" + hash + "@sha256:" + hash, want: "at most one @ digest separator"},
+		"control character":           {image: "ghcr.io/acme/agent\x01@sha256:" + hash, want: "printable ASCII"},
+		"non-ASCII repository":        {image: "ghcr.io/acme/agënt@sha256:" + hash, want: "printable ASCII"},
+		"whitespace after repository": {image: "ghcr.io/acme/agent @sha256:" + hash, want: "must not contain whitespace"},
+		"scheme is not a repository":  {image: "https://ghcr.io/acme/agent@sha256:" + hash, want: "empty repository component"},
+		"invalid registry port":       {image: "ghcr.io:abc/acme/agent@sha256:" + hash, want: "invalid registry port"},
+		"empty registry host":         {image: ":5000/acme/agent@sha256:" + hash, want: "empty registry host"},
+		"invalid registry label":      {image: "ghcr..io/acme/agent@sha256:" + hash, want: "invalid registry"},
+		"empty tag":                   {image: "ghcr.io/acme/agent:@sha256:" + hash, want: "invalid tag"},
+		"overlong tag":                {image: "ghcr.io/acme/agent:" + strings.Repeat("x", 129) + "@sha256:" + hash, want: "invalid tag"},
+		"non-sha256 algorithm":        {image: "ghcr.io/acme/agent@sha512:" + hash, want: "pinned by a sha256 digest"},
+		"short digest":                {image: "ghcr.io/acme/agent@sha256:" + hash[:63], want: "invalid sha256 digest"},
+		"uppercase digest":            {image: "ghcr.io/acme/agent@sha256:" + strings.Repeat("A", 64), want: "invalid sha256 digest"},
+		"non-hex digest":              {image: "ghcr.io/acme/agent@sha256:" + strings.Repeat("z", 64), want: "invalid sha256 digest"},
+		"bare digest is too short":    {image: "sha256:" + hash[:63], want: "invalid sha256 digest"},
+		"mutable tag":                 {image: "ghcr.io/acme/agent:latest", want: "is a mutable tag"},
+		"untagged repository":         {image: "ghcr.io/acme/agent", want: "is a mutable tag"},
+	}
+	for name, testCase := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			err := validateExecutionImage(testCase.image)
+			if err == nil || !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("validateExecutionImage(%q) = %v, want %q", testCase.image, err, testCase.want)
+			}
+		})
+	}
+}
+
+func TestExecutionImageAcceptsFullSHA256ImageIDs(t *testing.T) {
+	t.Parallel()
+	for _, image := range []string{"sha256:" + strings.Repeat("0", 64), "sha256:" + strings.Repeat("f", 64)} {
+		if err := validateExecutionImage(image); err != nil {
+			t.Fatalf("full image ID %q was refused: %v", image, err)
+		}
+	}
+}
+
+func TestLoadDefaultExecutionPolicyReadsTheAuthoritativeConfiguration(t *testing.T) {
+	// Not parallel: it points the user configuration path at a temporary root.
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	path := filepath.Join(configHome, "wb", "wb.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(executionYAML(ExecutionModeLinuxContainer, executionTestImage, 8589934592, 8589934592, 2, 128, 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	policy, err := LoadDefaultExecutionPolicy()
+	if err != nil {
+		t.Fatalf("load configured policy: %v", err)
+	}
+	if policy == nil || *policy != executionTestPolicy() {
+		t.Fatalf("policy = %#v", policy)
+	}
+	// A missing configuration is not an error and declares no policy.
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	policy, err = LoadDefaultExecutionPolicy()
+	if err != nil || policy != nil {
+		t.Fatalf("missing configuration = %#v, %v", policy, err)
+	}
+	// A broken configuration must refuse, never read as "no policy".
+	if err := os.WriteFile(path, []byte("agents: [broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadDefaultExecutionPolicy(); err == nil {
+		t.Fatal("a malformed configuration must not be treated as no policy")
 	}
 }
 
@@ -123,6 +215,18 @@ func TestLoadConfigFileRefusesMalformedExecutionPolicies(t *testing.T) {
 		"empty repository before digest": {
 			body: executionYAML(mode, "@sha256:"+strings.Repeat("d", 64), 8589934592, 8589934592, 2, 128, 1),
 			want: "no repository before its digest",
+		},
+		"leading dash repository": {
+			body: executionYAML(mode, "-ghcr.io/acme/agent@sha256:"+strings.Repeat("e", 64), 8589934592, 8589934592, 2, 128, 1),
+			want: "invalid registry",
+		},
+		"multiple digest separators": {
+			body: executionYAML(mode, "ghcr.io/acme/agent@sha256:"+strings.Repeat("e", 64)+"@sha256:"+strings.Repeat("f", 64), 8589934592, 8589934592, 2, 128, 1),
+			want: "at most one @ digest separator",
+		},
+		"control character in repository": {
+			body: executionYAML(mode, "ghcr.io/acme/agent\x01@sha256:"+strings.Repeat("e", 64), 8589934592, 8589934592, 2, 128, 1),
+			want: "printable ASCII",
 		},
 		"zero memory": {
 			body: executionYAML(mode, image, 0, 8589934592, 2, 128, 1),
@@ -417,6 +521,11 @@ func TestDispatchRefusesToRunOutsideAConfiguredMandatorySandbox(t *testing.T) {
 	fixture.deps.LoadConfig = func() (Config, error) {
 		return LoadConfigFile(writeConfig(t, body))
 	}
+	// These seams are host side effects: a contained plan must refuse before
+	// any of them can run.
+	probes, versions := 0, 0
+	fixture.deps.Preflight = func(context.Context, Resolved) error { probes++; return nil }
+	fixture.deps.DetectVersion = func(context.Context, string) string { versions++; return "" }
 	_, err := fixture.dispatch(t, newRequest())
 	if err == nil {
 		t.Fatal("a mandatory sandbox this build cannot enforce must refuse the dispatch")
@@ -424,8 +533,12 @@ func TestDispatchRefusesToRunOutsideAConfiguredMandatorySandbox(t *testing.T) {
 	if !strings.Contains(err.Error(), "refusing to run it outside the mandatory sandbox") {
 		t.Fatalf("error = %v", err)
 	}
-	if fixture.createCalls != 0 || fixture.beforeCalls != 0 || fixture.spawnedAgentID != "" {
-		t.Fatalf("a refused dispatch started side effects: create=%d before=%d spawn=%q", fixture.createCalls, fixture.beforeCalls, fixture.spawnedAgentID)
+	if probes != 0 || versions != 0 {
+		t.Fatalf("a refused dispatch probed the host: preflight=%d detect-version=%d", probes, versions)
+	}
+	if fixture.createCalls != 0 || fixture.beforeCalls != 0 || fixture.listCalls != 0 || fixture.originCalls != 0 || fixture.spawnedAgentID != "" {
+		t.Fatalf("a refused dispatch started side effects: create=%d before=%d list=%d origin=%d spawn=%q",
+			fixture.createCalls, fixture.beforeCalls, fixture.listCalls, fixture.originCalls, fixture.spawnedAgentID)
 	}
 	records, err := NewStore(fixture.home).List()
 	if err != nil {
@@ -467,12 +580,18 @@ func TestDispatchRefusesAPlanWhosePolicyDoesNotMatchConfiguration(t *testing.T) 
 					Execution: testCase.configured,
 				}, nil
 			}
+			probes, versions := 0, 0
+			fixture.deps.Preflight = func(context.Context, Resolved) error { probes++; return nil }
+			fixture.deps.DetectVersion = func(context.Context, string) string { versions++; return "" }
 			plan := Plan{Profile: Resolved{Profile: "cheap", Harness: HarnessCodex, Provider: "deepseek", Model: "deepseek-flash"}, Execution: testCase.planned}
 			_, err := fixture.dispatch(t, DispatchRequest{
 				Mode: ModeNew, Worktree: "task-one", Task: "x", Timeout: time.Minute, Plan: &plan,
 			})
 			if err == nil || !strings.Contains(err.Error(), testCase.want) {
 				t.Fatalf("error = %v, want %q", err, testCase.want)
+			}
+			if probes != 0 || versions != 0 {
+				t.Fatalf("a refused dispatch probed the host: preflight=%d detect-version=%d", probes, versions)
 			}
 			if fixture.createCalls != 0 || fixture.spawnedAgentID != "" {
 				t.Fatalf("a refused dispatch started side effects: create=%d spawn=%q", fixture.createCalls, fixture.spawnedAgentID)
