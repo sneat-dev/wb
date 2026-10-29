@@ -119,6 +119,20 @@ and remote ref under the lane lock. Prove a normal descendant-source refresh
 retains the PR/published predecessor and advances it with an ordinary non-force
 push, while malformed or drifted evidence refuses without mutation.
 
+### Task 7: Judge canonical dirt against the landed target's ignore rules
+
+**Id:** task-7
+**Verifies:** mechanical-worktree-merge#ac:canonical-sync-tolerates-dirt-the-landing-ignores
+**Depends-On:** 3
+**Status:** complete
+
+When the canonical clone's only dirt is untracked, fetch the target before
+judging it, and fast-forward only when no dirty path is touched by the
+fast-forward and every one is ignored by the target's materialised ignore
+rules; re-check cleanliness afterwards. Unit tests cover every observation
+through the runner seam; a real-git e2e test reproduces the `profile.cov`
+landing.
+
 ## Deferred AC Coverage
 
 - mechanical-worktree-merge#ac:pr-route-defers-local-validation-to-authoritative-ci — added to the Feature on 2026-09-18, after this Plan was reconciled as Implemented; delivered outside this Plan's task list by a8e4c4c, a90bea0 and f3375eb with their own tests in `internal/orchestrate`, not as a new task tracked here.

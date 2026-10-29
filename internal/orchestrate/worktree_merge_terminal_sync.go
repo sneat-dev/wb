@@ -88,17 +88,31 @@ func syncCanonicalMergeTargetWithRunner(ctx context.Context, run runner.Runner, 
 	if strings.TrimSpace(branch) != target {
 		return "not_checked_out", nil
 	}
-	if err := requireCleanMergeWorktreeWithRunner(ctx, run, canonical); err != nil {
+	// Untracked-only dirt is judged after the fetch, against the ignore rules
+	// the landed target carries: a landing that ignores the very file left
+	// in the canonical clone must not block its own synchronization.
+	status, _, err := runCommand(ctx, run, 0, 0, canonical, "git", "status", "--porcelain=v1")
+	if err != nil {
 		return "blocked_dirty", fmt.Errorf("remote landed, but canonical target synchronization is blocked: %w", err)
+	}
+	dirty := strings.TrimSpace(status)
+	if dirty != "" && !statusIsUntrackedOnly(status) {
+		return "blocked_dirty", fmt.Errorf("remote landed, but canonical target synchronization is blocked: worktree is dirty: %s", dirty)
 	}
 	beforeHead, err := mergeRevision(ctx, run, canonical, "HEAD")
 	if err != nil {
 		return "", err
 	}
-	if _, _, err := runCommand(ctx, run, timeout, retry, canonical, "git", "fetch", "--no-tags", "origin", "+refs/heads/"+target+":refs/remotes/origin/"+target); err != nil {
+	remoteRef := "refs/remotes/origin/" + target
+	if _, _, err := runCommand(ctx, run, timeout, retry, canonical, "git", "fetch", "--no-tags", "origin", "+refs/heads/"+target+":"+remoteRef); err != nil {
 		return "blocked_fetch", err
 	}
-	if _, _, err := runCommand(ctx, run, timeout, retry, canonical, "git", "merge", "--ff-only", "refs/remotes/origin/"+target); err != nil {
+	if dirty != "" {
+		if err := requireUntrackedDirtIgnoredAtTarget(ctx, run, canonical, remoteRef, ""); err != nil {
+			return "blocked_dirty", fmt.Errorf("remote landed, but canonical target synchronization is blocked: worktree is dirty: %s: %w", dirty, err)
+		}
+	}
+	if _, _, err := runCommand(ctx, run, timeout, retry, canonical, "git", "merge", "--ff-only", remoteRef); err != nil {
 		return "blocked_diverged", fmt.Errorf("remote landed, but canonical target cannot fast-forward: %w", err)
 	}
 	head, err := mergeRevision(ctx, run, canonical, "HEAD")
@@ -114,6 +128,11 @@ func syncCanonicalMergeTargetWithRunner(ctx context.Context, run runner.Runner, 
 	}
 	if checkoutUpdated != nil && head != beforeHead {
 		checkoutUpdated(ctx, CheckoutUpdate{Checkout: canonical, OldSHA: beforeHead, NewSHA: head, Cause: "merge-land"})
+	}
+	if dirty != "" {
+		if err := requireCleanMergeWorktreeWithRunner(ctx, run, canonical); err != nil {
+			return "blocked_dirty", fmt.Errorf("canonical target fast-forwarded to %s but is still not clean: %w", head, err)
+		}
 	}
 	return "fast_forwarded", nil
 }

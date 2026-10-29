@@ -164,6 +164,16 @@ WB records it and cleans the remaining live assets normally.
   and cleanliness evidence is re-read before success. The failed receipt and
   existing Work Logs are never edited, and a separate append-only supersession
   acknowledgement is still required.
+- Canonical synchronization judges untracked dirt against the landed target,
+  not the stale checkout: it fetches the target first and fast-forwards when
+  the canonical clone's only dirt is untracked paths that the fast-forward
+  neither adds, modifies, removes nor shadows, and that the target's own ignore
+  rules ignore (its committed `.gitignore` files, nested ones included, plus
+  the repository's `info/exclude` and global excludes). It evaluates those
+  rules in a private scratch directory without touching the canonical index or
+  working tree, and re-checks cleanliness after the fast-forward so the
+  receipt is truthful. Any tracked modification, staged change, or untracked
+  path the target does not ignore still ends `blocked_dirty`.
 - `--cleanup` is ignored until remote receipt and required canonical
   synchronization have succeeded. Cleanup retains the landing receipt needed
   to prepare a later revert.
@@ -240,6 +250,16 @@ Given a PR route with stable required checks, WB merges only the recorded head,
 proves the remote target contains the server landing SHA, then fast-forwards a
 clean canonical checkout already on that target to that exact SHA before
 cleanup.
+
+### AC: canonical-sync-tolerates-dirt-the-landing-ignores
+
+Given a canonical clone on the target whose only dirt is an untracked
+`profile.cov`, and a landing that adds `**/profile.cov` to `.gitignore`, when
+canonical synchronization runs, then it fetches the target, fast-forwards to
+it, leaves `profile.cov` untouched, and records `fast_forwarded` with a clean
+checkout. Given the same landing and an additional untracked path the target
+does not ignore, or any tracked or staged change, it records `blocked_dirty`
+and leaves the canonical HEAD unchanged.
 
 ### AC: unpublished-candidate-rebases-over-target-drift
 
