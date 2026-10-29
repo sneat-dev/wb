@@ -73,7 +73,9 @@ func requireUntrackedDirtIgnoredAtTarget(ctx context.Context, run runner.Runner,
 	if err := materializeTargetGitignores(ctx, run, canonical, ref, scratch, untracked); err != nil {
 		return err
 	}
-	stdin := []byte(strings.Join(untracked, "\x00") + "\x00")
+	// check-ignore reads stdin paths as pathspecs and refuses
+	// --literal-pathspecs; a "./" prefix keeps a leading ":" literal.
+	stdin := []byte("./" + strings.Join(untracked, "\x00./") + "\x00")
 	report, err := syncIgnoreGit(ctx, run, scratch, stdin, true,
 		"--git-dir="+strings.TrimSpace(gitDir), "--work-tree="+scratch,
 		"check-ignore", "--no-index", "-z", "--stdin", "--verbose", "--non-matching")
@@ -175,7 +177,7 @@ func parseCheckIgnoreVerbose(report string) (map[string]bool, error) {
 	for i := 0; i < len(fields); i += 4 {
 		pattern := fields[i+2]
 		if pattern != "" && !strings.HasPrefix(pattern, "!") {
-			ignored[fields[i+3]] = true
+			ignored[strings.TrimPrefix(fields[i+3], "./")] = true
 		}
 	}
 	return ignored, nil

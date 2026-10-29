@@ -73,3 +73,16 @@ func TestE2ECanonicalSyncStillBlocksUntrackedFileTheLandingDoesNotIgnore(t *test
 		t.Fatalf("target not fetched before judging dirt: %s", fetched)
 	}
 }
+
+func TestE2ECanonicalSyncTreatsLeadingColonPathsLiterally(t *testing.T) {
+	t.Parallel()
+	f, before, after := landIgnoreRules(t)
+	writeEngineFile(t, filepath.Join(f.canonical, ":profile.cov"), "pathspec magic lookalike\n")
+	status, err := syncCanonicalMergeTarget(t.Context(), f.canonical, "main", after, 0, 0, nil)
+	if status != "blocked_dirty" || err == nil || !strings.Contains(err.Error(), "not ignored by refs/remotes/origin/main: :profile.cov") {
+		t.Fatalf("sync=%q %v", status, err)
+	}
+	if head := strings.TrimSpace(runEngineGit(t, f.canonical, "rev-parse", "HEAD")); head != before {
+		t.Fatalf("blocked sync moved HEAD to %s", head)
+	}
+}

@@ -64,7 +64,7 @@ func TestCanonicalSyncFastForwardsOverUntrackedPathIgnoredByLandedTarget(t *test
 	expectIgnoredSyncPrelude(f, "profile.cov\x00", "**/profile.cov\n")
 	var scratch, materialized string
 	var stdin []byte
-	expectCheckIgnore(f, runner.Result{Stdout: ".gitignore\x001\x00**/profile.cov\x00profile.cov\x00"}, nil, func(c runnertest.Call) {
+	expectCheckIgnore(f, runner.Result{Stdout: ".gitignore\x001\x00**/profile.cov\x00./profile.cov\x00"}, nil, func(c runnertest.Call) {
 		scratch = c.Dir
 		stdin = c.Input
 		content, _ := os.ReadFile(filepath.Join(c.Dir, ".gitignore"))
@@ -82,7 +82,7 @@ func TestCanonicalSyncFastForwardsOverUntrackedPathIgnoredByLandedTarget(t *test
 	if len(updates) != 1 || updates[0].OldSHA != "before" || updates[0].NewSHA != "after" {
 		t.Fatalf("updates=%+v", updates)
 	}
-	if materialized != "**/profile.cov\n" || string(stdin) != "profile.cov\x00" {
+	if materialized != "**/profile.cov\n" || string(stdin) != "./profile.cov\x00" {
 		t.Fatalf("target rules=%q stdin=%q", materialized, stdin)
 	}
 	if _, statErr := os.Stat(scratch); !os.IsNotExist(statErr) {
