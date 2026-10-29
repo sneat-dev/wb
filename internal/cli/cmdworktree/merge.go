@@ -899,9 +899,10 @@ func newWorktreeMergeAcknowledgeUnpublishedValidationFailureCmd(inv *mergeInvoca
 		Long: `Prove that the receipt never published its candidate branch and that its
 original source work remains preserved in clean, actively claimed worktrees
 or is independently proven landed and retired. A prepare/validation_failed
-attempt retains its clean candidate. An interrupted preparing attempt may instead name an absent
-candidate only when WB's private lifecycle backlog proves that exact checkout
-and local branch were deliberately discarded to completion. WB freshly checks
+attempt retains its clean candidate. An interrupted preparing attempt, or a
+prepared attempt whose validated candidate was abandoned before landing, must
+instead name an absent candidate that WB's private lifecycle backlog proves was
+deliberately discarded to completion (checkout and local branch). WB freshly checks
 that the candidate branch has no remote ref and the candidate is not reachable
 from the current remote target. It then records a separate append-only
 acknowledgement so another source set can own the repository target lane.
