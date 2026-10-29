@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -47,6 +48,8 @@ type fakeContainedRuntime struct {
 	harnessStdout   string
 	harnessStderr   string
 	harnessExit     int
+	harnessBlock    bool
+	harnessMarker   string
 	validationDone  chan struct{}
 	validationBlock bool
 }
@@ -82,10 +85,17 @@ func (fake *fakeContainedRuntime) WorkerCommand(ctx context.Context, credential 
 	case len(argv) >= 2 && argv[0] == HarnessDSH && containsContainedArg(argv, "--dump-config"):
 		return containedOwnerShell(ctx, containedOwnerDump(), "", 0), nil
 	case containedHarnessArgv(argv):
+		if fake.harnessBlock {
+			if fake.harnessMarker != "" {
+				return exec.CommandContext(ctx, "/bin/sh", "-c",
+					"printf started > "+shellQuote(fake.harnessMarker)+"\nexec sleep 600"), nil
+			}
+			return containedBlockingCommand(ctx), nil
+		}
 		return containedOwnerShell(ctx, fake.harnessStdout, fake.harnessStderr, fake.harnessExit), nil
 	default:
 		if fake.validationBlock {
-			return exec.CommandContext(ctx, "/bin/sh", "-c", "sleep 600"), nil
+			return containedBlockingCommand(ctx), nil
 		}
 		return containedOwnerShell(ctx, "validation ok\n", "", 0), nil
 	}
@@ -143,6 +153,16 @@ func containsContainedArg(argv []string, wanted string) bool {
 	return false
 }
 
+// containedBlockingCommand is the blocking fixture process. It must be the
+// sleeping process itself, never a shell that spawns it: the owner's Wait also
+// waits for the goroutines copying the command's output pipes, and a surviving
+// child would keep those pipes open until the full sleep ended. Canceling the
+// fixture then reaps the process promptly, exactly as a canceled container
+// client would.
+func containedBlockingCommand(ctx context.Context) *exec.Cmd {
+	return exec.CommandContext(ctx, "sleep", "600")
+}
+
 func containedOwnerShell(ctx context.Context, stdout, stderr string, exit int) *exec.Cmd {
 	script := "printf '%s' " + shellQuote(stdout)
 	if stderr != "" {
@@ -167,6 +187,9 @@ func containedOwnerDump() string {
   config:
     apiKeyEnv: ` + containedOwnerCredentialEnv + `
     baseURL: https://api.deepseek.com
+    reasoningEffort: ` + containedDshReasoningEffort + `
+    thinking: ` + containedDshThinking + `
+    maxTokens: 32768
 `
 }
 
@@ -390,6 +413,11 @@ func TestRunOwnerRefusesAnInContainerPreflightFailureBeforeStartingHarness(t *te
 	if loaded.ExecutionStatus != StatusFailed || !strings.Contains(loaded.Failure, "dsh is missing") {
 		t.Fatalf("failure = %q / %q", loaded.ExecutionStatus, loaded.Failure)
 	}
+	// A probe that fails inside the container is a configuration/overlay
+	// refusal, not an infrastructure timeout, whenever the setup pool is live.
+	if loaded.FailureCategory != FailureConfig {
+		t.Fatalf("failure category = %q, want %q for a live-setup probe refusal", loaded.FailureCategory, FailureConfig)
+	}
 	if loaded.WorkerPID != 0 {
 		t.Fatalf("a failed in-container preflight started a harness: worker PID %d", loaded.WorkerPID)
 	}
@@ -403,6 +431,199 @@ func TestRunOwnerRefusesAnInContainerPreflightFailureBeforeStartingHarness(t *te
 	}
 	if loaded.ExecutionRuntime == nil || !loaded.ExecutionRuntime.CleanupVerified {
 		t.Fatalf("runtime facts = %#v", loaded.ExecutionRuntime)
+	}
+}
+
+// executeContainedWithExpiredSetupPool drives the production setup path with the
+// exact context pair the owner derives: a live total lifetime and a setup pool
+// that has already expired. executeContained already takes both contexts, so
+// this exercises the real setup-budget branch without a ten-minute wait and
+// without adding a second budget seam.
+func executeContainedWithExpiredSetupPool(t *testing.T, fake *fakeContainedRuntime) containedResult {
+	t.Helper()
+	policy := executionTestPolicy()
+	worktree, gitCommon := containedOwnerWorkspace(t)
+	store, record := containedOwnerRecord(t, &policy, worktree, gitCommon)
+	ctx := context.Background()
+	setupCtx, cancelSetup := context.WithDeadline(ctx, time.Now().Add(-time.Second))
+	defer cancelSetup()
+	return executeContained(ctx, setupCtx, store, record.AgentID, &record, DefaultOwnerDeps(), func(Record) error { return nil }, fake, Credential{}, ContainedDshLaunch{}, containedDshDefaultBaseURL)
+}
+
+func assertContainedSetupTimeout(t *testing.T, result containedResult, stage, detail string) {
+	t.Helper()
+	if result.State != StateTimeout || result.ExecutionStatus != StatusTimedOut || result.Category != FailureTimeout {
+		t.Fatalf("result = %s/%s/%s (%q), want an infrastructure timeout", result.State, result.ExecutionStatus, result.Category, result.Failure)
+	}
+	if result.HarnessRan {
+		t.Fatalf("an expired setup pool claimed a harness run: %#v", result)
+	}
+	for _, want := range []string{stage, context.DeadlineExceeded.Error()} {
+		if !strings.Contains(result.Failure, want) {
+			t.Fatalf("failure = %q, want %q", result.Failure, want)
+		}
+	}
+	if detail != "" && !strings.Contains(result.Failure, detail) {
+		t.Fatalf("failure = %q, want the underlying detail %q preserved", result.Failure, detail)
+	}
+}
+
+func TestExecuteContainedClassifiesAnExpiredSetupPoolAsATimeout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the contained owner fixture uses a POSIX shell command")
+	}
+	t.Parallel()
+	cases := []struct {
+		name  string
+		fake  *fakeContainedRuntime
+		stage string
+	}{
+		{
+			name:  "worker home preparation",
+			fake:  &fakeContainedRuntime{prepareHomeFn: func(ctx context.Context) error { return ctx.Err() }},
+			stage: "prepare the contained worker home",
+		},
+		{
+			name:  "version probe",
+			fake:  &fakeContainedRuntime{},
+			stage: "read the contained dsh version",
+		},
+	}
+	for _, testCase := range cases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			result := executeContainedWithExpiredSetupPool(t, testCase.fake)
+			assertContainedSetupTimeout(t, result, testCase.stage, "")
+			for _, argv := range testCase.fake.commands {
+				if containedHarnessArgv(argv) {
+					t.Fatalf("an expired setup pool started the harness: %#v", testCase.fake.commands)
+				}
+			}
+		})
+	}
+}
+
+func TestExecuteContainedKeepsAnOperatorStopAsCancellationWhenTheSetupPoolExpired(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the contained owner fixture uses a POSIX shell command")
+	}
+	t.Parallel()
+	policy := executionTestPolicy()
+	worktree, gitCommon := containedOwnerWorkspace(t)
+	store, record := containedOwnerRecord(t, &policy, worktree, gitCommon)
+	if err := requestCancel(store, record.AgentID, time.Now); err != nil {
+		t.Fatalf("requestCancel: %v", err)
+	}
+	ctx := context.Background()
+	setupCtx, cancelSetup := context.WithDeadline(ctx, time.Now().Add(-time.Second))
+	defer cancelSetup()
+	fake := &fakeContainedRuntime{prepareHomeFn: func(ctx context.Context) error { return ctx.Err() }}
+	result := executeContained(ctx, setupCtx, store, record.AgentID, &record, DefaultOwnerDeps(), func(Record) error { return nil }, fake, Credential{}, ContainedDshLaunch{}, containedDshDefaultBaseURL)
+	if result.ExecutionStatus != StatusCancelled || result.Category != FailureCancelled {
+		t.Fatalf("result = %s/%s (%q), want an operator cancellation, not a setup timeout", result.ExecutionStatus, result.Category, result.Failure)
+	}
+}
+
+func TestExecuteContainedKeepsAnOrdinaryProbeFailureAsConfiguration(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the contained owner fixture uses a POSIX shell command")
+	}
+	t.Parallel()
+	policy := executionTestPolicy()
+	worktree, gitCommon := containedOwnerWorkspace(t)
+	store, record := containedOwnerRecord(t, &policy, worktree, gitCommon)
+	ctx := context.Background()
+	setupCtx, cancelSetup := context.WithTimeout(ctx, time.Minute)
+	defer cancelSetup()
+	fake := &fakeContainedRuntime{probeErr: errors.New("dsh overlay is invalid")}
+	result := executeContained(ctx, setupCtx, store, record.AgentID, &record, DefaultOwnerDeps(), func(Record) error { return nil }, fake, Credential{}, ContainedDshLaunch{}, containedDshDefaultBaseURL)
+	if result.ExecutionStatus != StatusFailed || result.Category != FailureConfig {
+		t.Fatalf("result = %s/%s (%q), want an ordinary configuration failure", result.ExecutionStatus, result.Category, result.Failure)
+	}
+	if !strings.Contains(result.Failure, "dsh overlay is invalid") {
+		t.Fatalf("failure = %q, want the configuration detail preserved", result.Failure)
+	}
+}
+
+func TestContainedRuntimeOpenFailureClassifiesTheActualCause(t *testing.T) {
+	t.Parallel()
+	store := NewStore(t.TempDir())
+	const agentID = "agt-runtime-open-classification"
+	live := context.Background()
+	expiredSetup, cancelExpired := context.WithDeadline(live, time.Now().Add(-time.Second))
+	defer cancelExpired()
+	liveSetup, cancelLive := context.WithTimeout(live, time.Minute)
+	defer cancelLive()
+
+	t.Run("expired setup pool", func(t *testing.T) {
+		t.Parallel()
+		result := containedRuntimeOpenFailure(live, expiredSetup, store, agentID, errors.New("docker create: signal: killed"))
+		assertContainedSetupTimeout(t, result, "open the verified container", "signal: killed")
+	})
+
+	t.Run("operator cancellation", func(t *testing.T) {
+		t.Parallel()
+		cancelled, cancel := context.WithCancel(live)
+		cancel()
+		result := containedRuntimeOpenFailure(cancelled, expiredSetup, store, agentID, errors.New("docker create: signal: killed"))
+		if result.ExecutionStatus != StatusCancelled || result.Category != FailureCancelled {
+			t.Fatalf("result = %s/%s (%q), want an operator cancellation", result.ExecutionStatus, result.Category, result.Failure)
+		}
+	})
+
+	t.Run("expired total lifetime stays an execution timeout", func(t *testing.T) {
+		t.Parallel()
+		outer, cancel := context.WithDeadline(live, time.Now().Add(-time.Second))
+		defer cancel()
+		result := containedRuntimeOpenFailure(outer, expiredSetup, store, agentID, errors.New("docker create: signal: killed"))
+		if result.ExecutionStatus != StatusTimedOut || result.Category != FailureTimeout {
+			t.Fatalf("result = %s/%s (%q), want the total lifetime timeout", result.ExecutionStatus, result.Category, result.Failure)
+		}
+		if strings.Contains(result.Failure, "setup budget") {
+			t.Fatalf("failure = %q, want the total lifetime timeout, not a setup budget claim", result.Failure)
+		}
+	})
+
+	t.Run("ordinary open failure", func(t *testing.T) {
+		t.Parallel()
+		result := containedRuntimeOpenFailure(live, liveSetup, store, agentID, errors.New("docker is missing"))
+		if result.State != StateFailed || result.ExecutionStatus != StatusFailed || result.Category != FailureInternal {
+			t.Fatalf("result = %s/%s/%s (%q), want an internal open failure", result.State, result.ExecutionStatus, result.Category, result.Failure)
+		}
+		if !strings.Contains(result.Failure, "open the verified container") || !strings.Contains(result.Failure, "docker is missing") {
+			t.Fatalf("failure = %q, want the actual stage and detail", result.Failure)
+		}
+	})
+}
+
+func TestRunOwnerRecordsAnOrdinaryContainedRuntimeOpenFailureAsInternal(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the contained owner fixture uses a POSIX shell command")
+	}
+	t.Setenv(containedOwnerCredentialEnv, containedOwnerSecret)
+	policy := executionTestPolicy()
+	worktree, gitCommon := containedOwnerWorkspace(t)
+	store, record := containedOwnerRecord(t, &policy, worktree, gitCommon)
+	deps := containedOwnerDeps(t, policy, &fakeContainedRuntime{})
+	deps.openContainedRuntime = func(context.Context, ContainerRuntimeOptions) (containedRuntime, error) {
+		return nil, errors.New("docker: cannot connect to the daemon")
+	}
+	if err := RunOwner(context.Background(), store, record.AgentID, deps); err != nil {
+		t.Fatalf("RunOwner: %v", err)
+	}
+	loaded, err := store.Load(record.AgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.State != StateFailed || loaded.ExecutionStatus != StatusFailed || loaded.FailureCategory != FailureInternal {
+		t.Fatalf("record = %s/%s/%s (%q), want an internal open failure", loaded.State, loaded.ExecutionStatus, loaded.FailureCategory, loaded.Failure)
+	}
+	if !strings.Contains(loaded.Failure, "open the verified container") || !strings.Contains(loaded.Failure, "cannot connect") {
+		t.Fatalf("failure = %q, want the actual stage and detail", loaded.Failure)
+	}
+	if loaded.ExecutionRuntime != nil {
+		t.Fatalf("a refused open must not claim runtime facts: %#v", loaded.ExecutionRuntime)
 	}
 }
 
@@ -819,5 +1040,328 @@ func TestContainedGitMetadataContextSurvivesACancelledOwnerButStaysFinite(t *tes
 	}
 	if remaining := time.Until(deadline); remaining <= 0 || remaining > containedGitMetadataTimeout {
 		t.Fatalf("metadata deadline is in %s, want it within %s", remaining, containedGitMetadataTimeout)
+	}
+}
+
+func TestVerifyContainedDshDumpRequiresThePinnedFlashDefaults(t *testing.T) {
+	t.Parallel()
+	valid := containedOwnerDump()
+	cases := map[string]struct {
+		dump string
+		want string
+	}{
+		"valid": {
+			dump: valid,
+		},
+		"wrong reasoning effort": {
+			dump: strings.Replace(valid, "reasoningEffort: "+containedDshReasoningEffort, "reasoningEffort: high", 1),
+			want: "reasoningEffort",
+		},
+		"missing reasoning effort": {
+			dump: strings.Replace(valid, "    reasoningEffort: "+containedDshReasoningEffort+"\n", "", 1),
+			want: "reasoningEffort",
+		},
+		"thinking disabled": {
+			dump: strings.Replace(valid, "thinking: "+containedDshThinking, "thinking: disabled", 1),
+			want: "thinking",
+		},
+		"missing thinking": {
+			dump: strings.Replace(valid, "    thinking: "+containedDshThinking+"\n", "", 1),
+			want: "thinking",
+		},
+		"wrong max tokens": {
+			dump: strings.Replace(valid, "maxTokens: 32768", "maxTokens: 65536", 1),
+			want: "maxTokens",
+		},
+		"max tokens quoted as text": {
+			dump: strings.Replace(valid, "maxTokens: 32768", `maxTokens: "32768"`, 1),
+			want: "maxTokens",
+		},
+		"max tokens not decimal": {
+			dump: strings.Replace(valid, "maxTokens: 32768", "maxTokens: 0x8000", 1),
+			want: "maxTokens",
+		},
+		"missing max tokens": {
+			dump: strings.Replace(valid, "    maxTokens: 32768\n", "", 1),
+			want: "maxTokens",
+		},
+	}
+	for name, testCase := range cases {
+		name, testCase := name, testCase
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			err := verifyContainedDshDump([]byte(testCase.dump), "deepseek-flash", containedOwnerCredentialEnv, "https://api.deepseek.com")
+			if testCase.want == "" {
+				if err != nil {
+					t.Fatalf("the exact composed configuration must verify: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("error = %v, want a %q mismatch", err, testCase.want)
+			}
+		})
+	}
+}
+
+// waitForObservedFile blocks until path exists or the test deadline passes. It
+// waits for a real process observation instead of sleeping for a guessed
+// duration, so the ordering assertion stays deterministic on a slow host.
+func waitForObservedFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("the contained harness never started: %s did not appear", path)
+}
+
+func TestContainedOwnerReadsGitOnlyAfterTheRuntimeIsClosedOnSuccess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the contained owner fixture uses a POSIX shell command")
+	}
+	t.Setenv(containedOwnerCredentialEnv, containedOwnerSecret)
+	policy := executionTestPolicy()
+	worktree, gitCommon := containedOwnerWorkspace(t)
+	store, record := containedOwnerRecord(t, &policy, worktree, gitCommon)
+	fake := &fakeContainedRuntime{
+		containerID: containedOwnerContainerID, imageID: containedOwnerImageID,
+		harnessStdout: "contained final message\n",
+	}
+	deps := containedOwnerDeps(t, policy, fake)
+	var closedAtObservation []bool
+	deps.observeGitMetadataContext = func(context.Context) {
+		closedAtObservation = append(closedAtObservation, fake.closedNow())
+	}
+	if err := RunOwner(context.Background(), store, record.AgentID, deps); err != nil {
+		t.Fatalf("RunOwner: %v", err)
+	}
+	if len(closedAtObservation) != 1 || !closedAtObservation[0] {
+		t.Fatalf("Git metadata was observed with runtime closed = %v, want exactly one observation after Close", closedAtObservation)
+	}
+	loaded, err := store.Load(record.AgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.State != StateCompleted || loaded.ExecutionStatus != StatusCompleted {
+		t.Fatalf("state = %s/%s failure=%q", loaded.State, loaded.ExecutionStatus, loaded.Failure)
+	}
+}
+
+// TestFakeContainedBlockingCommandsReapOnCancellation pins the blocking
+// fixtures to a single process that owns the output pipe. A shell wrapper that
+// spawns `sleep` would survive the cancellation of the shell and keep the pipe
+// open, so the owner's Wait would block for the whole sleep instead of the
+// fixture being reaped promptly.
+func TestFakeContainedBlockingCommandsReapOnCancellation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the contained owner fixture uses a POSIX blocking command")
+	}
+	cases := map[string]struct {
+		block func(*fakeContainedRuntime)
+		argv  []string
+	}{
+		"harness": {
+			block: func(fake *fakeContainedRuntime) { fake.harnessBlock = true },
+			argv:  []string{HarnessDSH, "--profile", "fixture"},
+		},
+		"validation": {
+			block: func(fake *fakeContainedRuntime) { fake.validationBlock = true },
+			argv:  []string{"validate", "fixture"},
+		},
+	}
+	for name, testCase := range cases {
+		name, testCase := name, testCase
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			fake := &fakeContainedRuntime{
+				containerID: containedOwnerContainerID, imageID: containedOwnerImageID,
+			}
+			testCase.block(fake)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			command, err := fake.WorkerCommand(ctx, Credential{}, testCase.argv)
+			if err != nil {
+				t.Fatalf("WorkerCommand: %v", err)
+			}
+			if base := filepath.Base(command.Path); base != "sleep" {
+				t.Fatalf("blocking fixture command = %q, want the sleeping process itself so cancellation leaves no orphan holding the output pipe", command.Path)
+			}
+			var stdout, stderr bytes.Buffer
+			// A non-*os.File writer makes os/exec own a pipe and copy it from a
+			// goroutine, which Wait must not block on after cancellation.
+			command.Stdout = &stdout
+			command.Stderr = &stderr
+			if err := command.Start(); err != nil {
+				t.Fatalf("start blocking fixture command: %v", err)
+			}
+			cancel()
+			reaped := make(chan error, 1)
+			go func() { reaped <- command.Wait() }()
+			select {
+			case err := <-reaped:
+				if err == nil {
+					t.Fatal("a canceled blocking fixture command must report the cancellation")
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("a canceled blocking fixture command did not reap promptly: an orphaned child still holds the output pipe")
+			}
+		})
+	}
+}
+
+func TestContainedOwnerReadsGitOnlyAfterTheRuntimeIsClosedOnTimeout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the contained owner fixture uses a POSIX shell command")
+	}
+	t.Setenv(containedOwnerCredentialEnv, containedOwnerSecret)
+	policy := executionTestPolicy()
+	worktree, gitCommon := containedOwnerWorkspace(t)
+	store, record := containedOwnerRecord(t, &policy, worktree, gitCommon)
+	record.TimeoutMS = 500
+	if err := store.Save(record); err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeContainedRuntime{
+		containerID: containedOwnerContainerID, imageID: containedOwnerImageID,
+		harnessBlock: true,
+	}
+	deps := containedOwnerDeps(t, policy, fake)
+	var closedAtObservation []bool
+	deps.observeGitMetadataContext = func(context.Context) {
+		closedAtObservation = append(closedAtObservation, fake.closedNow())
+	}
+	if err := RunOwner(context.Background(), store, record.AgentID, deps); err != nil {
+		t.Fatalf("RunOwner: %v", err)
+	}
+	if len(closedAtObservation) != 1 || !closedAtObservation[0] {
+		t.Fatalf("Git metadata was observed with runtime closed = %v, want exactly one observation after Close", closedAtObservation)
+	}
+	loaded, err := store.Load(record.AgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.ExecutionStatus != StatusTimedOut || loaded.State != StateTimeout {
+		t.Fatalf("state = %s/%s, want a timeout", loaded.State, loaded.ExecutionStatus)
+	}
+	if strings.Contains(loaded.Failure, "process group") {
+		t.Fatalf("a contained timeout must not claim a host process group was killed: %q", loaded.Failure)
+	}
+}
+
+func TestContainedOwnerReadsGitOnlyAfterTheRuntimeIsClosedOnCancellation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the contained owner fixture uses a POSIX shell command")
+	}
+	t.Setenv(containedOwnerCredentialEnv, containedOwnerSecret)
+	policy := executionTestPolicy()
+	worktree, gitCommon := containedOwnerWorkspace(t)
+	store, record := containedOwnerRecord(t, &policy, worktree, gitCommon)
+	marker := filepath.Join(t.TempDir(), "harness-started")
+	fake := &fakeContainedRuntime{
+		containerID: containedOwnerContainerID, imageID: containedOwnerImageID,
+		harnessBlock: true, harnessMarker: marker,
+	}
+	deps := containedOwnerDeps(t, policy, fake)
+	var closedAtObservation []bool
+	deps.observeGitMetadataContext = func(context.Context) {
+		closedAtObservation = append(closedAtObservation, fake.closedNow())
+	}
+	done := make(chan error, 1)
+	go func() { done <- RunOwner(context.Background(), store, record.AgentID, deps) }()
+	waitForObservedFile(t, marker)
+	if _, err := StopRun(store, record.AgentID, DefaultOwnerDeps()); err != nil {
+		t.Fatalf("StopRun: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunOwner: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the owner did not stop after the cancellation sentinel")
+	}
+	if len(closedAtObservation) != 1 || !closedAtObservation[0] {
+		t.Fatalf("Git metadata was observed with runtime closed = %v, want exactly one observation after Close", closedAtObservation)
+	}
+	loaded, err := store.Load(record.AgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.ExecutionStatus != StatusCancelled {
+		t.Fatalf("status = %q, want cancelled", loaded.ExecutionStatus)
+	}
+}
+
+func TestContainedOwnerNeverReadsGitWhenCleanupFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the contained owner fixture uses a POSIX shell command")
+	}
+	t.Setenv(containedOwnerCredentialEnv, containedOwnerSecret)
+	policy := executionTestPolicy()
+	worktree, gitCommon := containedOwnerWorkspace(t)
+	store, record := containedOwnerRecord(t, &policy, worktree, gitCommon)
+	fake := &fakeContainedRuntime{
+		containerID: containedOwnerContainerID, imageID: containedOwnerImageID,
+		harnessStdout: "contained final message\n",
+		closeErr:      errors.New("the container is still present"),
+	}
+	deps := containedOwnerDeps(t, policy, fake)
+	observed := 0
+	deps.observeGitMetadataContext = func(context.Context) { observed++ }
+	if err := RunOwner(context.Background(), store, record.AgentID, deps); err != nil {
+		t.Fatalf("RunOwner: %v", err)
+	}
+	if observed != 0 {
+		t.Fatalf("a failed cleanup captured %d Git metadata snapshots, want none", observed)
+	}
+	loaded, err := store.Load(record.AgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.ExecutionStatus != StatusFailed || loaded.Changes != nil {
+		t.Fatalf("a failed cleanup must not claim a stable change summary: %#v changes=%#v", loaded.ExecutionStatus, loaded.Changes)
+	}
+}
+
+func TestContainedOwnerRequestsFailFastValidationInTheSameContainer(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the contained owner fixture uses a POSIX shell command")
+	}
+	t.Setenv(containedOwnerCredentialEnv, containedOwnerSecret)
+	policy := executionTestPolicy()
+	worktree, gitCommon := containedOwnerWorkspace(t)
+	store, record := containedOwnerRecord(t, &policy, worktree, gitCommon)
+	record.Validation = ValidationRecord{Status: ValidationPending, Steps: []ValidationStepResult{
+		{Name: "first", Argv: []string{"validate", "first"}, Status: ValidationPending},
+		{Name: "second", Argv: []string{"validate", "second"}, Status: ValidationPending},
+	}}
+	if err := store.Save(record); err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeContainedRuntime{
+		containerID: containedOwnerContainerID, imageID: containedOwnerImageID,
+		harnessStdout: "contained final message\n",
+	}
+	deps := containedOwnerDeps(t, policy, fake)
+	var captured ValidationOptions
+	deps.Validation = func(_ context.Context, options ValidationOptions) ValidationRecord {
+		captured = options
+		return ValidationRecord{Status: ValidationPassed}
+	}
+	if err := RunOwner(context.Background(), store, record.AgentID, deps); err != nil {
+		t.Fatalf("RunOwner: %v", err)
+	}
+	if !captured.FailFast {
+		t.Fatal("contained validation must be fail-fast so a timed-out step cannot overlap a later one")
+	}
+	if captured.Transport == nil {
+		t.Fatal("contained validation must use the runtime's in-container transport")
+	}
+	if len(captured.Steps) != 2 {
+		t.Fatalf("validation steps = %#v, want both snapshotted steps", captured.Steps)
 	}
 }

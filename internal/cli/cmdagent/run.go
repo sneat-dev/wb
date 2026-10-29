@@ -150,7 +150,7 @@ wb agent run --task-type debugging --worktree current --allow-dirty --task-file 
 	command.Flags().StringVar(&flags.base, "base", "", "optional base branch for a created worktree")
 	command.Flags().StringArrayVar(&flags.validate, "validate", nil, "validation suite to run after the harness (repeatable)")
 	command.Flags().BoolVar(&flags.noValidate, "no-validate", false, "skip the task type's validation suites")
-	command.Flags().DurationVar(&flags.timeout, "timeout", agents.DefaultTimeout, "bound on the worker's run; on expiry WB terminates its process group")
+	command.Flags().DurationVar(&flags.timeout, "timeout", agents.DefaultTimeout, "bound on the worker's run; on expiry WB stops the worker (its host process group, or the contained namespace)")
 	command.Flags().BoolVar(&flags.wait, "wait", false, "block until the execution reaches a terminal status")
 	command.Flags().DurationVar(&flags.waitTimeout, "wait-timeout", time.Hour, "with --wait, give up after this long; zero waits without a bound")
 	command.Flags().BoolVar(&flags.dryRun, "dry-run", false, "print the fully resolved plan and start nothing")

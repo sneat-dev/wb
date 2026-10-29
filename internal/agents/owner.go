@@ -288,7 +288,7 @@ func runOwnerWithSave(ctx context.Context, store Store, agentID string, deps Own
 	}
 	defer func() { _ = logFile.Close() }()
 	log := &boundedLog{writer: logFile, remaining: logLimit}
-	firstOutput := &firstWriteClock{now: deps.Now, started: record.StartedAt, record: &record}
+	firstOutput := &firstWriteClock{now: deps.Now, started: record.StartedAt}
 	redactor := newRedactingWriter(log, credential.Value)
 	var sink io.Writer = log
 	if redactor != nil {
@@ -344,6 +344,11 @@ func runOwnerWithSave(ctx context.Context, store Store, agentID string, deps Own
 	}
 
 	waitErr := command.Wait()
+	// Wait has joined the stdout-copying goroutine, so the owner goroutine can
+	// now publish the clock's private result without racing it.
+	if elapsed, ok := firstOutput.elapsedMS(); ok {
+		record.TimeToFirstOutputMS = elapsed
+	}
 	if redactor != nil {
 		_ = redactor.Flush()
 	}
@@ -560,20 +565,36 @@ func summarizeLogFile(path string, adapter Harness) HarnessSummary {
 }
 
 // firstWriteClock records how long the harness ran before its first output.
+// It deliberately holds no Record pointer: mark runs on os/exec's stdout-copying
+// goroutine while the owner goroutine reads and saves the record, so mutating
+// the record here would be a data race. The clock keeps a private, mutex-guarded
+// elapsed value that only the owner copies into the record, after Wait has
+// joined the copying goroutines.
 type firstWriteClock struct {
-	mutex   sync.Mutex
-	now     func() time.Time
-	started time.Time
-	record  *Record
+	mutex    sync.Mutex
+	now      func() time.Time
+	started  time.Time
+	elapsed  int64
+	observed bool
 }
 
 func (clock *firstWriteClock) mark() {
 	clock.mutex.Lock()
 	defer clock.mutex.Unlock()
-	if clock.record.TimeToFirstOutputMS != 0 || clock.started.IsZero() {
+	if clock.observed || clock.started.IsZero() {
 		return
 	}
-	clock.record.TimeToFirstOutputMS = clock.now().Sub(clock.started).Milliseconds()
+	clock.observed = true
+	clock.elapsed = clock.now().Sub(clock.started).Milliseconds()
+}
+
+// elapsed reports the recorded first-output latency. A zero elapsed value with
+// observed false means no output was ever written (or the clock had no start),
+// which the owner records as the zero value it already is.
+func (clock *firstWriteClock) elapsedMS() (int64, bool) {
+	clock.mutex.Lock()
+	defer clock.mutex.Unlock()
+	return clock.elapsed, clock.observed
 }
 
 // timedWriter marks the first byte written through it.

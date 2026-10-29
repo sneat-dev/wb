@@ -763,6 +763,17 @@ func TestContainerRuntimeRefusesCleanupWhenTheDaemonIdentityChanged(t *testing.T
 	if !strings.Contains(closeErr.Error(), "daemon") {
 		t.Fatalf("Close error = %v, want an actionable daemon mismatch", closeErr)
 	}
+	// The diagnostic may only name the recorded daemon identity and the exact
+	// durable reservation path; no transport state (DOCKER_HOST/context) was
+	// stored, so claiming one would be a lie.
+	for _, want := range []string{testContainerDaemonID, filepath.Join(stateDir, containerSlotReservationFileName)} {
+		if !strings.Contains(closeErr.Error(), want) {
+			t.Fatalf("Close error = %v, want %q named", closeErr, want)
+		}
+	}
+	if strings.Contains(closeErr.Error(), "DOCKER_HOST") {
+		t.Fatalf("Close error = %v must not claim a recorded DOCKER_HOST or context", closeErr)
+	}
 	if removed := fake.removedIDs(); len(removed) != 0 {
 		t.Fatalf("a changed daemon must not remove anything: %v", removed)
 	}
@@ -1001,6 +1012,14 @@ func TestContainerRuntimeRecoversOnlyAStoppedExactOwnedPriorContainer(t *testing
 		}
 		if !strings.Contains(err.Error(), "daemon") {
 			t.Fatalf("error = %v, want an actionable daemon mismatch refusal", err)
+		}
+		for _, want := range []string{prior.DaemonID, filepath.Join(stateDir, containerSlotReservationFileName)} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("error = %v, want %q named", err, want)
+			}
+		}
+		if strings.Contains(err.Error(), "DOCKER_HOST") {
+			t.Fatalf("error = %v must not claim a recorded DOCKER_HOST or context", err)
 		}
 		if fake.callCount("inspect") != 0 {
 			t.Fatalf("a daemon mismatch must not inspect the prior container: %v", fake.calls)

@@ -43,6 +43,12 @@ type ValidationOptions struct {
 	// returned command keeps the environment and directory its factory chose.
 	// Nil keeps the legacy host Command behaviour exactly.
 	Transport ValidationCommandFactory
+	// FailFast stops the sequence after the first failed or timed-out step, so
+	// no later step starts while a contained step's command may still be
+	// winding down inside the same namespace. It is set only for contained
+	// validation; false preserves the legacy host behaviour of running and
+	// reporting every configured step.
+	FailFast bool
 }
 
 // RunValidation executes the snapshotted steps and reports one record. It never
@@ -79,6 +85,13 @@ func RunValidation(ctx context.Context, options ValidationOptions) ValidationRec
 		record.Steps = append(record.Steps, result)
 		if result.Status != ValidationPassed {
 			record.Status = ValidationFailed
+			// A contained step that failed or timed out must not overlap a later
+			// step: its client call can return while the exec'd process is still
+			// alive. The failure is final for this validation; the full suite
+			// runs again only after the first failure is fixed.
+			if options.FailFast {
+				break
+			}
 		}
 	}
 	finish()

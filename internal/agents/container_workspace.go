@@ -37,6 +37,16 @@ const (
 	maxContainerWorkspaceDir = 4096
 	maxContainerMaskCount    = 256
 	containerTmpfsMode       = "1777"
+	// containerTmpfsOptions is the exact fixed option set every dependency and
+	// cache mask must report. Docker's structured --mount tmpfs form cannot
+	// request exec, so the documented --tmpfs <target>:<options> form is used
+	// to let fresh Linux native dependencies load from the mask. The options are
+	// a package constant, never caller data.
+	containerTmpfsOptions = "rw,nosuid,nodev,exec,mode=" + containerTmpfsMode
+	// containerTmpfsSource is the synthetic source Docker reports for an
+	// anonymous tmpfs mask. It is not a host path and is the only alternative
+	// accepted besides the empty source.
+	containerTmpfsSource = "tmpfs"
 )
 
 // ContainerWorkspace is the complete and closed set of host paths a contained
@@ -84,18 +94,21 @@ type containerMount struct {
 	writable bool
 }
 
-// dockerArgument renders one fixed --mount value. Paths were already validated
-// against Docker's comma/quoted value syntax, so no escaping is performed here
-// and none would be accepted from a caller.
-func (mount containerMount) dockerArgument() string {
+// dockerArguments renders one planned mount as the exact Docker CLI option
+// pair. Binds keep the structured --mount form. Tmpfs masks use the documented
+// --tmpfs <target>:<options> form because --mount type=tmpfs can only express
+// size/mode, so it can never request exec. Paths were already validated against
+// Docker's comma/quoted value syntax, so the composed value stays unambiguous
+// and no escaping is performed here; none would be accepted from a caller.
+func (mount containerMount) dockerArguments() []string {
 	if mount.kind == containerMountTmpfs {
-		return "type=tmpfs,target=" + mount.target + ",tmpfs-mode=" + containerTmpfsMode
+		return []string{"--tmpfs", mount.target + ":" + containerTmpfsOptions}
 	}
 	argument := "type=bind,source=" + mount.source + ",target=" + mount.target
 	if !mount.writable {
 		argument += ",readonly"
 	}
-	return argument
+	return []string{"--mount", argument}
 }
 
 // containerWorkspacePlan is the validated, normalized workspace held by the
@@ -373,32 +386,70 @@ func validateContainerMaskTarget(target string) error {
 }
 
 // verifyContainerMounts is the exact allowlist replacement for the former
-// blanket no-mount refusal. Every Docker-reported mount must match one planned
-// mount's kind, source, destination and read-write flag; every planned mount
-// must appear exactly once; and no bind, volume, tmpfs key or other mount may be
-// extra. Host, home and socket sources therefore never match.
+// blanket no-mount refusal. Docker proves the two mount kinds in different
+// fields: a host bind appears as an element of the top-level Mounts array (and
+// is repeated in HostConfig.Binds), while a mask created with the documented
+// --tmpfs <target>:<options> form is reported authoritatively in
+// HostConfig.Tmpfs and, on the daemon form this policy uses, never appears in
+// Mounts at all. Every planned bind must therefore match an actual Mounts
+// element's kind, source, destination and read-write flag, every planned tmpfs
+// mask must match its HostConfig.Tmpfs target and fixed option set, and no bind,
+// volume, tmpfs key or other mount may be extra. A daemon that additionally
+// reports a top-level tmpfs entry is held to the same planned target, source and
+// read-write flag, so an unplanned, duplicate or mistyped mount can never hide
+// there. Host, home and socket sources therefore never match.
 func verifyContainerMounts(document containerInspectDocument, expected []containerMount) error {
-	remaining := append([]containerMount(nil), expected...)
+	remainingBinds := make([]containerMount, 0, len(expected))
+	remainingTmpfs := make([]containerMount, 0, len(expected))
+	for _, planned := range expected {
+		if planned.kind == containerMountBind {
+			remainingBinds = append(remainingBinds, planned)
+			continue
+		}
+		remainingTmpfs = append(remainingTmpfs, planned)
+	}
 	for _, mount := range document.Mounts {
-		kind := containerMountKind(mount.Type)
-		if kind != containerMountBind && kind != containerMountTmpfs {
+		switch containerMountKind(mount.Type) {
+		case containerMountBind:
+			matched := -1
+			for index, planned := range remainingBinds {
+				if planned.target != mount.Destination || planned.writable != mount.RW {
+					continue
+				}
+				if !planned.inspectSourceMatches(mount.Source) {
+					continue
+				}
+				matched = index
+				break
+			}
+			if matched < 0 {
+				return fmt.Errorf("container %s has an unplanned %s mount from %q at %q (rw=%t); it does not match any planned bind source, destination and read-write flag", document.ID, mount.Type, mount.Source, mount.Destination, mount.RW)
+			}
+			remainingBinds = append(remainingBinds[:matched], remainingBinds[matched+1:]...)
+		case containerMountTmpfs:
+			// Only a redundant top-level tmpfs entry reaches this branch; it is
+			// never required, but when present it must be the planned mask.
+			matched := -1
+			for index, planned := range remainingTmpfs {
+				if planned.target != mount.Destination || planned.writable != mount.RW {
+					continue
+				}
+				if !planned.inspectSourceMatches(mount.Source) {
+					continue
+				}
+				matched = index
+				break
+			}
+			if matched < 0 {
+				return fmt.Errorf("container %s has an unplanned tmpfs mount from %q at %q (rw=%t); it does not match any planned mask source, destination and read-write flag", document.ID, mount.Source, mount.Destination, mount.RW)
+			}
+			remainingTmpfs = append(remainingTmpfs[:matched], remainingTmpfs[matched+1:]...)
+		default:
 			return fmt.Errorf("container %s has an unplanned %q mount at %s; only the planned bind and tmpfs allowlist is permitted", document.ID, mount.Type, mount.Destination)
 		}
-		matched := -1
-		for index, planned := range remaining {
-			if planned.kind != kind || planned.source != mount.Source || planned.target != mount.Destination || planned.writable != mount.RW {
-				continue
-			}
-			matched = index
-			break
-		}
-		if matched < 0 {
-			return fmt.Errorf("container %s has an unplanned %s mount from %q at %q (rw=%t); it does not match any planned source, destination and read-write flag", document.ID, mount.Type, mount.Source, mount.Destination, mount.RW)
-		}
-		remaining = append(remaining[:matched], remaining[matched+1:]...)
 	}
-	if len(remaining) != 0 {
-		missing := remaining[0]
+	if len(remainingBinds) != 0 {
+		missing := remainingBinds[0]
 		return fmt.Errorf("container %s is missing the planned %s mount from %q at %q", document.ID, missing.kind, missing.source, missing.target)
 	}
 
@@ -432,13 +483,66 @@ func verifyContainerMounts(document containerInspectDocument, expected []contain
 	}
 	expectedTmpfs := map[string]bool{}
 	for _, planned := range expected {
-		if planned.kind == containerMountTmpfs {
-			expectedTmpfs[planned.target] = true
+		if planned.kind != containerMountTmpfs {
+			continue
+		}
+		expectedTmpfs[planned.target] = true
+		options, ok := document.HostConfig.Tmpfs[planned.target]
+		if !ok {
+			return fmt.Errorf("container %s is missing the planned tmpfs mask at %q; Docker reported no options for it", document.ID, planned.target)
+		}
+		if err := verifyContainerTmpfsOptions(document.ID, planned.target, options); err != nil {
+			return err
 		}
 	}
 	for target := range document.HostConfig.Tmpfs {
 		if !expectedTmpfs[target] {
 			return fmt.Errorf("container %s has an unplanned tmpfs at %q", document.ID, target)
+		}
+	}
+	return nil
+}
+
+// inspectSourceMatches compares a Docker-reported mount source with the planned
+// one. A bind is an exact host path. An anonymous tmpfs has no host origin, so
+// Docker reports an empty or synthetic "tmpfs" source; any other source is
+// still refused.
+func (mount containerMount) inspectSourceMatches(reported string) bool {
+	if mount.kind == containerMountTmpfs {
+		return reported == "" || reported == containerTmpfsSource
+	}
+	return reported == mount.source
+}
+
+// verifyContainerTmpfsOptions is a small closed parser for Docker's reported
+// tmpfs option string. It accepts the fixed rw/nosuid/nodev/exec/mode=1777 set
+// in any order, so Docker may reorder options, and refuses an empty value, a
+// missing, duplicate, unknown or contradictory option. Defaults (an empty
+// string or a silent noexec) therefore cannot pass as the fixed set.
+func verifyContainerTmpfsOptions(containerID, target, raw string) error {
+	if strings.TrimSpace(raw) == "" {
+		return fmt.Errorf("container %s reports the tmpfs mask at %q without options; the fixed %s set is mandatory", containerID, target, containerTmpfsOptions)
+	}
+	required := map[string]bool{
+		"rw":                         false,
+		"nosuid":                     false,
+		"nodev":                      false,
+		"exec":                       false,
+		"mode=" + containerTmpfsMode: false,
+	}
+	for _, option := range strings.Split(raw, ",") {
+		present, planned := required[option]
+		if !planned {
+			return fmt.Errorf("container %s reports the tmpfs mask at %q with the unplanned option %q; only the fixed %s set is permitted", containerID, target, option, containerTmpfsOptions)
+		}
+		if present {
+			return fmt.Errorf("container %s reports the tmpfs mask at %q with the duplicate option %q", containerID, target, option)
+		}
+		required[option] = true
+	}
+	for _, option := range []string{"rw", "nosuid", "nodev", "exec", "mode=" + containerTmpfsMode} {
+		if !required[option] {
+			return fmt.Errorf("container %s reports the tmpfs mask at %q without the mandatory option %q", containerID, target, option)
 		}
 	}
 	return nil

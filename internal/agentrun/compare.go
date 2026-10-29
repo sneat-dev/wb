@@ -71,6 +71,12 @@ func (s *Service) Compare(ctx context.Context, r CompareRequest) (agents.Experim
 			if err := agents.RequireRunnableExecution(config.Execution, plan.Execution, "comparison plan", plan.Profile.Harness); err != nil {
 				return agents.ExperimentReport{}, err
 			}
+			// A contained plan's complete lifetime is finite by construction.
+			// Validate it here, before any experiment document, attempt or
+			// worktree exists, so an unusable bound leaves nothing behind.
+			if _, err := agents.ContainedLifetime(plan.TimeoutMS, plan.ValidationSteps); err != nil {
+				return agents.ExperimentReport{}, fmt.Errorf("contained comparison plan for profile %q: %w", profile, err)
+			}
 		}
 	}
 	// Allocate every attempt identity before anything runs, so the plan is
@@ -127,14 +133,6 @@ func (s *Service) Compare(ctx context.Context, r CompareRequest) (agents.Experim
 	// A bounded pool: start while there is room, then await the oldest attempt.
 	// Because every worktree already exists, starting later is cheap and the
 	// comparison still runs concurrently.
-	deadlineFor := func(run *agents.PreparedRun) time.Time {
-		timeout := time.Duration(run.Record.TimeoutMS) * time.Millisecond
-		if timeout <= 0 {
-			timeout = agents.DefaultTimeout
-		}
-		// Validation runs after the harness, so it belongs to the wait bound.
-		return s.deps.Now().Add(timeout + agents.ValidationBudget(run.Record.Validation.Steps) + compareSlack)
-	}
 	awaiter := Awaiter{Load: store.Load, Render: store.Render, Now: s.deps.Now, Wait: s.deps.Wait}
 	// A sliding window: start while there is room, then await the oldest attempt
 	// and fill the freed slot. Fixed batches would leave capacity idle.
@@ -154,11 +152,37 @@ func (s *Service) Compare(ctx context.Context, r CompareRequest) (agents.Experim
 		}
 		oldest := active[0]
 		active = active[1:]
-		if _, err := awaiter.Await(ctx, oldest.Record.AgentID, deadlineFor(oldest)); err != nil {
+		deadline, err := s.awaitDeadline(oldest)
+		if err != nil {
+			return agents.ExperimentReport{}, err
+		}
+		if _, err := awaiter.Await(ctx, oldest.Record.AgentID, deadline); err != nil {
 			return agents.ExperimentReport{}, err
 		}
 	}
 	return store.BuildReport(experiment), nil
+}
+
+// awaitDeadline is the last moment Compare waits for one started attempt. A
+// contained attempt may legitimately consume its entire validated setup, run,
+// validation and cleanup lifetime, so its deadline uses that same finite bound
+// (plus the existing slack). A host attempt keeps the legacy run+validation
+// deadline exactly. An invalid contained bound is refused rather than turned
+// into a premature, non-terminal wait.
+func (s *Service) awaitDeadline(run *agents.PreparedRun) (time.Time, error) {
+	if run.Record.Execution != nil {
+		lifetime, err := agents.ContainedRecordLifetime(run.Record)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("bound the await for contained attempt %s: %w", run.Record.AgentID, err)
+		}
+		return s.deps.Now().Add(lifetime + compareSlack), nil
+	}
+	timeout := time.Duration(run.Record.TimeoutMS) * time.Millisecond
+	if timeout <= 0 {
+		timeout = agents.DefaultTimeout
+	}
+	// Validation runs after the harness, so it belongs to the wait bound.
+	return s.deps.Now().Add(timeout + agents.ValidationBudget(run.Record.Validation.Steps) + compareSlack), nil
 }
 
 // recordFailedAttempt keeps one row for an attempt that never started, so

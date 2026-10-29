@@ -235,7 +235,7 @@ wb agent dispatch --to hetzner-vm1 \
 	command.Flags().StringVar(&branch, "branch", "", "optional exact feature branch, passed through to worktree creation policy")
 	command.Flags().StringVar(&base, "base", "", "optional base branch, passed through to worktree creation policy")
 	command.Flags().StringVar(&to, "to", "", "run the dispatch on this configured machine over SSH instead of locally")
-	command.Flags().DurationVar(&timeout, "timeout", agents.DefaultTimeout, "bound on the worker's run; on expiry WB terminates its process group")
+	command.Flags().DurationVar(&timeout, "timeout", agents.DefaultTimeout, "bound on the worker's run; on expiry WB stops the worker (its host process group, or the contained namespace)")
 	shared.AddJSONFormatFlags(command, &jsonOut)
 	return command
 }
@@ -695,13 +695,22 @@ func newAgentStopCmd(runtime shared.Runtime, deps Dependencies) *cobra.Command {
 	command := &cobra.Command{
 		Use:     "stop <agent-id>",
 		Aliases: []string{"cancel"},
-		Short:   "Terminate a running worker's process group",
+		Short:   "Terminate a running worker or cancel a contained execution",
 		Long: `Terminate the worker and everything it started.
 
 The run owner is deliberately left alive so it observes the exit and records a
 real terminal state; a stopped run therefore reports what happened instead of
 drifting into "abandoned". The worktree and everything already written to it are
 left untouched.
+
+A run under a mandatory agents.execution policy is stopped through its durable
+cancellation sentinel, never by signalling a host PID: the recorded worker PID
+for a contained run is the host Docker client, not the workload. The owner
+cancels the execution and proves the container namespace removed before it
+records the terminal state. If that owner is already gone, the container and the
+durable per-user execution slot stay blocked until a later contained run proves
+the container absent against the same Docker Engine; restore that engine rather
+than deleting the reservation by hand.
 
 Against another machine this runs there, because only the machine holding the
 worker can signal it.`,
@@ -721,6 +730,12 @@ worker can signal it.`,
 				if response.Result == nil {
 					return runtime.ExitError(shared.ExitFindings, fmt.Sprintf("%s returned no stop result", target.Machine))
 				}
+				if response.Result.Execution != nil {
+					_, err = fmt.Fprintf(command.OutOrStdout(),
+						"stopping %s:%s contained execution; the run owner will cancel it and prove the container namespace removed\n",
+						target.Machine, response.Result.AgentID)
+					return err
+				}
 				_, err = fmt.Fprintf(command.OutOrStdout(), "stopping %s:%s worker process %d\n",
 					target.Machine, response.Result.AgentID, response.Result.WorkerPID)
 				return err
@@ -728,6 +743,12 @@ worker can signal it.`,
 			record, err := deps.Stop(command.Context(), agentrun.LookupRequest{ProjectsRoot: runtime.Flags().ProjectsRoot, AgentID: agentID})
 			if err != nil {
 				return agentLookupError(runtime, deps, err)
+			}
+			if record.Execution != nil {
+				_, err = fmt.Fprintf(command.OutOrStdout(),
+					"stopping %s contained execution; the run owner will cancel it and prove the container namespace removed\n",
+					record.AgentID)
+				return err
 			}
 			_, err = fmt.Fprintf(command.OutOrStdout(), "stopping %s worker process %d\n", record.AgentID, record.WorkerPID)
 			return err

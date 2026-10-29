@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-func TestContainedLifetimeAddsRunValidationAndSetupAllowance(t *testing.T) {
+func TestContainedLifetimeAddsSetupRunValidationAndCleanupBudgets(t *testing.T) {
 	t.Parallel()
 	steps := []ValidationStep{
 		{Name: "unit tests", Argv: []string{"go", "test", "./..."}, Timeout: "5m"},
@@ -16,12 +16,59 @@ func TestContainedLifetimeAddsRunValidationAndSetupAllowance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ContainedLifetime: %v", err)
 	}
-	want := time.Hour + 5*time.Minute + defaultValidationStepTimeout + containerSetupCleanupAllowance
+	want := time.Hour + 5*time.Minute + defaultValidationStepTimeout + containerSetupBudget + containerCleanupBudget
 	if got != want {
 		t.Fatalf("lifetime = %s, want %s", got, want)
 	}
 	if got > maxContainerLifetime {
 		t.Fatalf("lifetime %s exceeds the maximum %s", got, maxContainerLifetime)
+	}
+}
+
+func TestContainedLifetimeKeepsSetupAndCleanupAsSeparateFinitePools(t *testing.T) {
+	t.Parallel()
+	got, err := ContainedLifetime(time.Minute.Milliseconds(), nil)
+	if err != nil {
+		t.Fatalf("ContainedLifetime: %v", err)
+	}
+	allowance := got - time.Minute
+	if allowance != containerSetupBudget+containerCleanupBudget {
+		t.Fatalf("non-run allowance = %s, want setup %s plus cleanup %s", allowance, containerSetupBudget, containerCleanupBudget)
+	}
+	if containerCleanupBudget <= 0 || containerCleanupBudget != containerCleanupTimeout+containerAttachReapTimeout+containerAttachKillTimeout {
+		t.Fatalf("cleanup budget = %s, want the bounded cleanup, reap and kill windows", containerCleanupBudget)
+	}
+	if allowance >= maxContainerLifetime {
+		t.Fatalf("setup plus cleanup %s must stay below the maximum %s or no run bound could fit", allowance, maxContainerLifetime)
+	}
+}
+
+func TestContainedLifetimeAcceptsASlowLegitimateSetupWithoutShrinkingTheRun(t *testing.T) {
+	t.Parallel()
+	// A three-and-a-half hour run plus a quarter-hour validation still fits
+	// under the four-hour ceiling once the explicit setup and cleanup pools are
+	// accounted for; a slow setup must come out of its own pool, never out of
+	// the declared harness or validation time.
+	got, err := ContainedLifetime((3*time.Hour + 30*time.Minute).Milliseconds(), []ValidationStep{
+		{Name: "slow but legitimate", Argv: []string{"true"}, Timeout: "15m"},
+	})
+	if err != nil {
+		t.Fatalf("ContainedLifetime: %v", err)
+	}
+	want := 3*time.Hour + 30*time.Minute + 15*time.Minute + containerSetupBudget + containerCleanupBudget
+	if got != want {
+		t.Fatalf("lifetime = %s, want %s", got, want)
+	}
+	if got > maxContainerLifetime {
+		t.Fatalf("lifetime %s exceeds the maximum %s", got, maxContainerLifetime)
+	}
+	// A longer run would exceed the ceiling once validation, setup and cleanup
+	// are accounted for: the refusal must be about the complete total rather
+	// than silently trimming a stage.
+	if _, err := ContainedLifetime((3*time.Hour + 45*time.Minute).Milliseconds(), []ValidationStep{
+		{Name: "slow but legitimate", Argv: []string{"true"}, Timeout: "15m"},
+	}); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("error = %v, want an excess refusal", err)
 	}
 }
 
@@ -35,7 +82,7 @@ func TestContainedLifetimeDefaultsEveryValidationStep(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ContainedLifetime: %v", err)
 	}
-	want := time.Minute + 2*defaultValidationStepTimeout + containerSetupCleanupAllowance
+	want := time.Minute + 2*defaultValidationStepTimeout + containerSetupBudget + containerCleanupBudget
 	if got != want {
 		t.Fatalf("lifetime = %s, want %s", got, want)
 	}
@@ -98,7 +145,7 @@ func TestContainedLifetimeAcceptsACombinedTotalBelowTheMaximum(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ContainedLifetime: %v", err)
 	}
-	want := time.Hour + 2*time.Hour + containerSetupCleanupAllowance
+	want := time.Hour + 2*time.Hour + containerSetupBudget + containerCleanupBudget
 	if got != want {
 		t.Fatalf("lifetime = %s, want %s", got, want)
 	}
@@ -117,7 +164,7 @@ func TestContainedRecordLifetimeUsesThePersistedBoundAndSnapshottedSteps(t *test
 	if err != nil {
 		t.Fatalf("ContainedRecordLifetime: %v", err)
 	}
-	want := time.Hour + 2*time.Minute + defaultValidationStepTimeout + containerSetupCleanupAllowance
+	want := time.Hour + 2*time.Minute + defaultValidationStepTimeout + containerSetupBudget + containerCleanupBudget
 	if got != want {
 		t.Fatalf("lifetime = %s, want %s", got, want)
 	}

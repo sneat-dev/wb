@@ -60,8 +60,10 @@ func testContainerWorkspacePlan(t *testing.T, options ContainerRuntimeOptions, w
 }
 
 // testContainerWorkspaceDocument builds the real inspect shape: one array with
-// one object, a Mounts array of typed elements, and the corresponding Binds and
-// Tmpfs maps Docker reports for --mount arguments.
+// one object. A bind appears as a typed Mounts element and in HostConfig.Binds.
+// A mask created with --tmpfs <target>:<options> appears only in
+// HostConfig.Tmpfs, never in the top-level Mounts array, exactly as the daemon
+// reports it.
 func testContainerWorkspaceDocument(t *testing.T, containerID, name, runID, nonce, owner string, policy ExecutionPolicy, mounts []containerMount) []byte {
 	t.Helper()
 	raw := testContainerRuntimeDocument(t, containerID, name, runID, nonce, owner, policy, true)
@@ -73,27 +75,39 @@ func testContainerWorkspaceDocument(t *testing.T, containerID, name, runID, nonc
 	document.HostConfig.Binds = []string{}
 	document.HostConfig.Tmpfs = map[string]string{}
 	for _, mount := range mounts {
+		if mount.kind == containerMountTmpfs {
+			document.HostConfig.Tmpfs[mount.target] = containerTmpfsOptions
+			continue
+		}
 		document.Mounts = append(document.Mounts, containerInspectMount{
 			Type:        string(mount.kind),
 			Source:      mount.source,
 			Destination: mount.target,
 			RW:          mount.writable,
 		})
-		if mount.kind == containerMountBind {
-			mode := "rw"
-			if !mount.writable {
-				mode = "ro"
-			}
-			document.HostConfig.Binds = append(document.HostConfig.Binds, mount.source+":"+mount.target+":"+mode)
-			continue
+		mode := "rw"
+		if !mount.writable {
+			mode = "ro"
 		}
-		document.HostConfig.Tmpfs[mount.target] = "rw"
+		document.HostConfig.Binds = append(document.HostConfig.Binds, mount.source+":"+mount.target+":"+mode)
 	}
 	raw, err := json.Marshal([]containerInspectDocument{document})
 	if err != nil {
 		t.Fatalf("marshal workspace inspect fixture: %v", err)
 	}
 	return raw
+}
+
+// testContainerWorkspaceInspect decodes the workspace fixture into the exact
+// document shape verifyContainerHostConfig consumes.
+func testContainerWorkspaceInspect(t *testing.T, policy ExecutionPolicy, plan containerWorkspacePlan) containerInspectDocument {
+	t.Helper()
+	raw := testContainerWorkspaceDocument(t, testContainerID, "wb-agent", testContainerRunID, "nonce", testContainerRuntimeOwner, policy, plan.mounts)
+	var documents []containerInspectDocument
+	if err := json.Unmarshal(raw, &documents); err != nil {
+		t.Fatalf("decode workspace inspect fixture: %v", err)
+	}
+	return documents[0]
 }
 
 func newContainerWorkspaceReadyFake(t *testing.T, policy ExecutionPolicy, plan containerWorkspacePlan) *fakeContainerDocker {
@@ -147,29 +161,48 @@ func TestContainerWorkspacePlansExactTrustedMountsAndMasks(t *testing.T) {
 	}()
 
 	createArgs := fake.createCall(t)
-	var gotMounts []string
+	var gotBinds, gotTmpfs []string
 	for index, argument := range createArgs {
-		if argument == "--mount" && index+1 < len(createArgs) {
-			gotMounts = append(gotMounts, createArgs[index+1])
+		switch argument {
+		case "--mount":
+			if index+1 >= len(createArgs) {
+				t.Fatalf("docker create has a dangling --mount: %v", createArgs)
+			}
+			gotBinds = append(gotBinds, createArgs[index+1])
+		case "--tmpfs":
+			if index+1 >= len(createArgs) {
+				t.Fatalf("docker create has a dangling --tmpfs: %v", createArgs)
+			}
+			gotTmpfs = append(gotTmpfs, createArgs[index+1])
 		}
 	}
-	wantMounts := []string{
+	wantBinds := []string{
 		"type=bind,source=" + worktree + ",target=" + worktree,
 		"type=bind,source=" + gitCommon + ",target=" + gitCommon + ",readonly",
 		"type=bind,source=" + input + ",target=" + containerInputTarget + ",readonly",
-		"type=tmpfs,target=" + filepath.Join(worktree, "node_modules") + ",tmpfs-mode=" + containerTmpfsMode,
-		"type=tmpfs,target=" + filepath.Join(worktree, ".nx") + ",tmpfs-mode=" + containerTmpfsMode,
-		"type=tmpfs,target=" + filepath.Join(worktree, ".pnpm-store") + ",tmpfs-mode=" + containerTmpfsMode,
-		"type=tmpfs,target=" + filepath.Join(worktree, "pkg", ".nx") + ",tmpfs-mode=" + containerTmpfsMode,
-		"type=tmpfs,target=" + filepath.Join(worktree, "pkg", ".pnpm-store") + ",tmpfs-mode=" + containerTmpfsMode,
-		"type=tmpfs,target=" + filepath.Join(worktree, "pkg", "node_modules") + ",tmpfs-mode=" + containerTmpfsMode,
 	}
-	if !reflect.DeepEqual(gotMounts, wantMounts) {
-		t.Fatalf("docker create mount arguments = %#v, want %#v", gotMounts, wantMounts)
+	if !reflect.DeepEqual(gotBinds, wantBinds) {
+		t.Fatalf("docker create bind mount arguments = %#v, want %#v", gotBinds, wantBinds)
 	}
-	for _, argument := range gotMounts {
+	wantTmpfs := []string{
+		filepath.Join(worktree, "node_modules") + ":" + containerTmpfsOptions,
+		filepath.Join(worktree, ".nx") + ":" + containerTmpfsOptions,
+		filepath.Join(worktree, ".pnpm-store") + ":" + containerTmpfsOptions,
+		filepath.Join(worktree, "pkg", ".nx") + ":" + containerTmpfsOptions,
+		filepath.Join(worktree, "pkg", ".pnpm-store") + ":" + containerTmpfsOptions,
+		filepath.Join(worktree, "pkg", "node_modules") + ":" + containerTmpfsOptions,
+	}
+	if !reflect.DeepEqual(gotTmpfs, wantTmpfs) {
+		t.Fatalf("docker create tmpfs arguments = %#v, want %#v", gotTmpfs, wantTmpfs)
+	}
+	for _, argument := range append(append([]string{}, gotBinds...), gotTmpfs...) {
 		if strings.Contains(argument, "host-only-dependency") || strings.Contains(argument, ".git") {
 			t.Fatalf("a dependency or git object below a masked directory was mounted: %q", argument)
+		}
+	}
+	for _, argument := range gotTmpfs {
+		if !strings.HasSuffix(argument, ":"+containerTmpfsOptions) {
+			t.Fatalf("tmpfs mask %q does not carry the fixed executable options %q", argument, containerTmpfsOptions)
 		}
 	}
 	for _, argument := range createArgs {
@@ -256,6 +289,7 @@ func TestContainerWorkspaceRejectsUnsafeOrOverlappingRoots(t *testing.T) {
 		"worktrees root":    {ContainerWorkspace{WorktreeDir: "/home/testowner/.worktrees", GitCommonDir: gitCommon}, "forbidden"},
 		"run store root":    {ContainerWorkspace{WorktreeDir: "/home/testowner/.wb", GitCommonDir: gitCommon}, "forbidden"},
 		"comma in path":     {ContainerWorkspace{WorktreeDir: worktree + ",x", GitCommonDir: gitCommon}, "unsafe character"},
+		"colon in path":     {ContainerWorkspace{WorktreeDir: worktree + ":x", GitCommonDir: gitCommon}, "unsafe character"},
 		"quote in path":     {ContainerWorkspace{WorktreeDir: worktree + `"x`, GitCommonDir: gitCommon}, "unsafe character"},
 		"control in path":   {ContainerWorkspace{WorktreeDir: worktree + "\x01", GitCommonDir: gitCommon}, "control character"},
 		"overlapping git":   {ContainerWorkspace{WorktreeDir: worktree, GitCommonDir: filepath.Join(worktree, ".git")}, "overlaps"},
@@ -302,6 +336,16 @@ func TestContainerRuntimeVerifiesOnlyTheExactPlannedMounts(t *testing.T) {
 	worktree, gitCommon, input := testContainerWorkspaceDirs(t)
 	workspace := &ContainerWorkspace{WorktreeDir: worktree, GitCommonDir: gitCommon, InputDir: input}
 	plan := testContainerWorkspacePlan(t, testContainerWorkspaceOptions("", newFakeContainerDocker(), workspace), workspace)
+	maskTarget := ""
+	for _, planned := range plan.mounts {
+		if planned.kind == containerMountTmpfs {
+			maskTarget = planned.target
+			break
+		}
+	}
+	if maskTarget == "" {
+		t.Fatal("the exact mount fixture needs at least one planned tmpfs mask")
+	}
 
 	exact := func(t *testing.T) containerInspectDocument {
 		t.Helper()
@@ -337,7 +381,7 @@ func TestContainerRuntimeVerifiesOnlyTheExactPlannedMounts(t *testing.T) {
 		}},
 		"unplanned tmpfs": {mutate: func(document *containerInspectDocument) {
 			document.Mounts = append(document.Mounts, containerInspectMount{Type: "tmpfs", Destination: "/tmp/wb-extra", RW: true})
-			document.HostConfig.Tmpfs["/tmp/wb-extra"] = "rw"
+			document.HostConfig.Tmpfs["/tmp/wb-extra"] = containerTmpfsOptions
 		}},
 		"missing planned bind": {mutate: func(document *containerInspectDocument) {
 			document.Mounts = document.Mounts[1:]
@@ -358,6 +402,24 @@ func TestContainerRuntimeVerifiesOnlyTheExactPlannedMounts(t *testing.T) {
 		"host ipc namespace": {mutate: func(document *containerInspectDocument) {
 			document.HostConfig.IpcMode = "host"
 		}},
+		"added capability despite cap-drop all": {mutate: func(document *containerInspectDocument) {
+			document.HostConfig.CapAdd = []string{"SYS_ADMIN"}
+		}},
+		"unexpected tmpfs source": {mutate: func(document *containerInspectDocument) {
+			document.Mounts = append(document.Mounts, containerInspectMount{
+				Type:        string(containerMountTmpfs),
+				Source:      "/host/dependencies",
+				Destination: maskTarget,
+				RW:          true,
+			})
+		}},
+		"duplicate top-level tmpfs": {mutate: func(document *containerInspectDocument) {
+			planned := containerInspectMount{Type: string(containerMountTmpfs), Destination: maskTarget, RW: true}
+			document.Mounts = append(document.Mounts, planned, planned)
+		}},
+		"unknown mount kind": {mutate: func(document *containerInspectDocument) {
+			document.Mounts = append(document.Mounts, containerInspectMount{Type: "volume", Source: "wb-cache", Destination: "/cache", RW: true})
+		}},
 	}
 	for name, testCase := range cases {
 		name, testCase := name, testCase
@@ -376,6 +438,173 @@ func TestContainerRuntimeVerifiesOnlyTheExactPlannedMounts(t *testing.T) {
 				t.Fatalf("mutated mount plan %q must be refused", name)
 			}
 		})
+	}
+}
+
+func TestContainerTmpfsOptionsAreTheClosedExecutableSet(t *testing.T) {
+	t.Parallel()
+	for _, raw := range []string{
+		containerTmpfsOptions,
+		"exec,mode=" + containerTmpfsMode + ",nodev,nosuid,rw",
+	} {
+		if err := verifyContainerTmpfsOptions(testContainerID, "/tmp/mask", raw); err != nil {
+			t.Fatalf("the fixed executable tmpfs option set %q must verify: %v", raw, err)
+		}
+	}
+	refused := map[string]string{
+		"empty":              "",
+		"blank":              " ",
+		"missing mode":       "rw,nosuid,nodev,exec",
+		"missing exec":       "rw,nosuid,nodev,mode=" + containerTmpfsMode,
+		"missing nodev":      "rw,nosuid,exec,mode=" + containerTmpfsMode,
+		"missing nosuid":     "rw,nodev,exec,mode=" + containerTmpfsMode,
+		"missing rw":         "nosuid,nodev,exec,mode=" + containerTmpfsMode,
+		"noexec default":     "rw,nosuid,nodev,noexec,mode=" + containerTmpfsMode,
+		"contradictory ro":   "ro,nosuid,nodev,exec,mode=" + containerTmpfsMode,
+		"contradictory suid": "rw,suid,nodev,exec,mode=" + containerTmpfsMode,
+		"contradictory dev":  "rw,nosuid,dev,exec,mode=" + containerTmpfsMode,
+		"wrong mode":         "rw,nosuid,nodev,exec,mode=0755",
+		"unplanned size":     "rw,nosuid,nodev,exec,mode=" + containerTmpfsMode + ",size=1g",
+		"duplicate":          "rw,rw,nosuid,nodev,exec,mode=" + containerTmpfsMode,
+		"trailing comma":     "rw,nosuid,nodev,exec,mode=" + containerTmpfsMode + ",",
+	}
+	for name, raw := range refused {
+		name, raw := name, raw
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if err := verifyContainerTmpfsOptions(testContainerID, "/tmp/mask", raw); err == nil {
+				t.Fatalf("tmpfs options %q must be refused", raw)
+			}
+		})
+	}
+}
+
+func TestContainerRuntimeRefusesTmpfsMasksThatAreNotTheFixedExecutableSet(t *testing.T) {
+	t.Parallel()
+	policy := executionTestPolicy()
+	worktree, gitCommon, input := testContainerWorkspaceDirs(t)
+	workspace := &ContainerWorkspace{WorktreeDir: worktree, GitCommonDir: gitCommon, InputDir: input}
+	plan := testContainerWorkspacePlan(t, testContainerWorkspaceOptions("", newFakeContainerDocker(), workspace), workspace)
+	mask := filepath.Join(worktree, containerNodeModulesName)
+	cases := map[string]struct {
+		mutate    func(*containerInspectDocument)
+		errorPart string
+	}{
+		"missing mask entry": {mutate: func(document *containerInspectDocument) {
+			delete(document.HostConfig.Tmpfs, mask)
+		}, errorPart: "missing the planned tmpfs"},
+		"empty options": {mutate: func(document *containerInspectDocument) {
+			document.HostConfig.Tmpfs[mask] = ""
+		}, errorPart: "without options"},
+		"default noexec options": {mutate: func(document *containerInspectDocument) {
+			document.HostConfig.Tmpfs[mask] = "rw,nosuid,nodev,mode=" + containerTmpfsMode
+		}, errorPart: "exec"},
+		"unplanned option": {mutate: func(document *containerInspectDocument) {
+			document.HostConfig.Tmpfs[mask] = containerTmpfsOptions + ",size=1g"
+		}, errorPart: "unplanned option"},
+		"duplicate option": {mutate: func(document *containerInspectDocument) {
+			document.HostConfig.Tmpfs[mask] = containerTmpfsOptions + ",rw"
+		}, errorPart: "duplicate option"},
+	}
+	for name, testCase := range cases {
+		name, testCase := name, testCase
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			document := testContainerWorkspaceInspect(t, policy, plan)
+			testCase.mutate(&document)
+			err := verifyContainerHostConfig(policy, document, plan.mounts)
+			if err == nil || !strings.Contains(err.Error(), testCase.errorPart) {
+				t.Fatalf("mutated tmpfs mask %q error = %v, want it to contain %q", name, err, testCase.errorPart)
+			}
+		})
+	}
+}
+
+// TestContainerRuntimeAcceptsTmpfsMasksReportedOnlyInHostConfig pins the
+// daemon form this policy's --tmpfs arguments produce: the masks appear in
+// HostConfig.Tmpfs and the top-level Mounts array carries only binds.
+func TestContainerRuntimeAcceptsTmpfsMasksReportedOnlyInHostConfig(t *testing.T) {
+	t.Parallel()
+	policy := executionTestPolicy()
+	worktree, gitCommon, input := testContainerWorkspaceDirs(t)
+	workspace := &ContainerWorkspace{WorktreeDir: worktree, GitCommonDir: gitCommon, InputDir: input}
+	plan := testContainerWorkspacePlan(t, testContainerWorkspaceOptions("", newFakeContainerDocker(), workspace), workspace)
+	document := testContainerWorkspaceInspect(t, policy, plan)
+	masks := 0
+	for _, mount := range document.Mounts {
+		if mount.Type == string(containerMountTmpfs) {
+			t.Fatalf("the default --tmpfs fixture must not invent a top-level tmpfs entry: %#v", mount)
+		}
+	}
+	for _, planned := range plan.mounts {
+		if planned.kind != containerMountTmpfs {
+			continue
+		}
+		options, ok := document.HostConfig.Tmpfs[planned.target]
+		if !ok || options != containerTmpfsOptions {
+			t.Fatalf("HostConfig.Tmpfs[%q] = %q (present=%t), want the exact %q", planned.target, options, ok, containerTmpfsOptions)
+		}
+		masks++
+	}
+	if masks == 0 {
+		t.Fatal("the fixture plan has no tmpfs mask")
+	}
+	if err := verifyContainerHostConfig(policy, document, plan.mounts); err != nil {
+		t.Fatalf("a tmpfs mask reported only in HostConfig.Tmpfs must verify: %v", err)
+	}
+}
+
+// TestContainerRuntimeAcceptsDockerSyntheticTmpfsSource models the separate,
+// redundant form where a daemon additionally lists a tmpfs mask in the
+// top-level Mounts array. That entry is optional, but when it exists it must
+// still name the planned destination and a permitted synthetic source.
+func TestContainerRuntimeAcceptsDockerSyntheticTmpfsSource(t *testing.T) {
+	t.Parallel()
+	policy := executionTestPolicy()
+	worktree, gitCommon, input := testContainerWorkspaceDirs(t)
+	workspace := &ContainerWorkspace{WorktreeDir: worktree, GitCommonDir: gitCommon, InputDir: input}
+	plan := testContainerWorkspacePlan(t, testContainerWorkspaceOptions("", newFakeContainerDocker(), workspace), workspace)
+	document := testContainerWorkspaceInspect(t, policy, plan)
+	appended := 0
+	for _, planned := range plan.mounts {
+		if planned.kind != containerMountTmpfs {
+			continue
+		}
+		document.Mounts = append(document.Mounts, containerInspectMount{
+			Type:        string(containerMountTmpfs),
+			Source:      containerTmpfsSource,
+			Destination: planned.target,
+			RW:          planned.writable,
+		})
+		appended++
+	}
+	if appended == 0 {
+		t.Fatal("the fixture plan has no tmpfs mask to report redundantly")
+	}
+	if err := verifyContainerHostConfig(policy, document, plan.mounts); err != nil {
+		t.Fatalf("Docker's synthetic tmpfs source must verify: %v", err)
+	}
+}
+
+func TestContainerHostConfigRefusesAnAddedCapabilityDespiteCapDropAll(t *testing.T) {
+	t.Parallel()
+	policy := executionTestPolicy()
+	worktree, gitCommon, input := testContainerWorkspaceDirs(t)
+	workspace := &ContainerWorkspace{WorktreeDir: worktree, GitCommonDir: gitCommon, InputDir: input}
+	plan := testContainerWorkspacePlan(t, testContainerWorkspaceOptions("", newFakeContainerDocker(), workspace), workspace)
+	raw := testContainerWorkspaceDocument(t, testContainerID, "wb-agent", testContainerRunID, "nonce", testContainerRuntimeOwner, policy, plan.mounts)
+	var documents []containerInspectDocument
+	if err := json.Unmarshal(raw, &documents); err != nil {
+		t.Fatalf("decode exact mount fixture: %v", err)
+	}
+	document := documents[0]
+	if !containsFold(document.HostConfig.CapDrop, "ALL") {
+		t.Fatalf("the fixture must model cap-drop ALL: %#v", document.HostConfig.CapDrop)
+	}
+	document.HostConfig.CapAdd = []string{"SYS_ADMIN"}
+	err := verifyContainerHostConfig(policy, document, plan.mounts)
+	if err == nil || !strings.Contains(err.Error(), "adds capabilities") {
+		t.Fatalf("error = %v, want an added-capability refusal", err)
 	}
 }
 

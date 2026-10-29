@@ -505,7 +505,7 @@ func (runtime *ContainerRuntime) confirmDaemonIdentity(ctx context.Context, rese
 		return err
 	}
 	if identity != reservation.DaemonID {
-		return fmt.Errorf("the current Docker Engine %s does not match the daemon %s that owns the container reservation for run %s; refusing to remove or clear it", identity, reservation.DaemonID, reservation.RunID)
+		return fmt.Errorf("the current Docker daemon (Engine ID %s) does not match the Docker Engine with recorded ID %s that owns the container reservation for run %s; refusing to remove or clear it. Restore or reach that Docker daemon and let the next contained run verify and recover the container; the durable reservation is %s and must never be deleted by hand", identity, reservation.DaemonID, reservation.RunID, runtime.slot.reservationPath())
 	}
 	return nil
 }
@@ -604,7 +604,7 @@ func (runtime *ContainerRuntime) containerCreateArgs(reservation ContainerReserv
 		"--pull=never",
 	}
 	for _, mount := range runtime.workspace.mounts {
-		args = append(args, "--mount", mount.dockerArgument())
+		args = append(args, mount.dockerArguments()...)
 	}
 	args = append(args,
 		"--entrypoint", "/bin/sh",
@@ -728,6 +728,7 @@ type containerInspectDocument struct {
 		Binds       []string                   `json:"Binds"`
 		Volumes     map[string]json.RawMessage `json:"Volumes"`
 		Tmpfs       map[string]string          `json:"Tmpfs"`
+		CapAdd      []string                   `json:"CapAdd"`
 		CapDrop     []string                   `json:"CapDrop"`
 		SecurityOpt []string                   `json:"SecurityOpt"`
 		NetworkMode string                     `json:"NetworkMode"`
@@ -826,8 +827,11 @@ func verifyContainerOwnership(document containerInspectDocument, reservation Con
 }
 
 // verifyContainerHostConfig checks the bounds Docker actually applied, not the
-// arguments we hoped it applied, and refuses every resource the policy does not
-// allow.
+// arguments we hoped it applied. It covers the memory, CPU and PIDs bounds, the
+// security and namespace surface the controller sets, the closed mount
+// allowlist and the capability/privilege posture this policy forbids. It is a
+// defense-in-depth check of the fields it models, not a complete audit of every
+// possible Docker resource.
 func verifyContainerHostConfig(policy ExecutionPolicy, document containerInspectDocument, expectedMounts []containerMount) error {
 	host := document.HostConfig
 	if host.Memory != policy.MemoryBytes {
@@ -875,6 +879,12 @@ func verifyContainerHostConfig(policy ExecutionPolicy, document containerInspect
 	if !containsFold(host.CapDrop, "ALL") {
 		return fmt.Errorf("container %s does not drop all capabilities", document.ID)
 	}
+	// CapDrop ALL is only a drop list: a simultaneous --cap-add would still
+	// re-grant capabilities, so a non-empty addition is refused even though the
+	// controller never emits one.
+	if len(host.CapAdd) != 0 {
+		return fmt.Errorf("container %s adds capabilities %v; cap-drop ALL is mandatory with no additions", document.ID, host.CapAdd)
+	}
 	if !hasNoNewPrivileges(host.SecurityOpt) {
 		return fmt.Errorf("container %s does not set no-new-privileges", document.ID)
 	}
@@ -915,7 +925,7 @@ func (runtime *ContainerRuntime) recoverPriorReservation(ctx context.Context) er
 		return fmt.Errorf("a previous container reservation for run %s predates Docker Engine binding and has no daemon identity; refusing to inspect, remove or clear it, because the container may still be running on the daemon that owns it", prior.RunID)
 	}
 	if prior.DaemonID != runtime.daemonID {
-		return fmt.Errorf("a previous container reservation for run %s is bound to Docker Engine %s, but the current daemon is %s; refusing to inspect, remove or clear it, because absence on another daemon proves nothing", prior.RunID, prior.DaemonID, runtime.daemonID)
+		return fmt.Errorf("a previous container reservation for run %s is bound to the Docker Engine with recorded ID %s, but the current daemon is %s; refusing to inspect, remove or clear it, because absence on another daemon proves nothing. Restore or reach that Docker Engine and let the next contained run verify and recover the container; the durable reservation is %s and must never be deleted by hand", prior.RunID, prior.DaemonID, runtime.daemonID, runtime.slot.reservationPath())
 	}
 	identity := prior.ContainerID
 	switch {

@@ -231,3 +231,71 @@ func TestContainerValidationTransportIsCredentialFreeAndRemapsArgv(t *testing.T)
 		t.Fatal("a nil runtime must return an error instead of panicking")
 	}
 }
+
+func TestContainedValidationFailFastStopsAfterTheFirstFailedStep(t *testing.T) {
+	t.Parallel()
+	cases := map[string]struct {
+		timeout string
+		fail    bool
+	}{
+		"timed out": {timeout: "50ms"},
+		"failed":    {fail: true},
+	}
+	for name, testCase := range cases {
+		name, testCase := name, testCase
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			calls := 0
+			record := RunValidation(context.Background(), ValidationOptions{
+				WorktreeDir: t.TempDir(),
+				RunDir:      t.TempDir(),
+				Steps: []ValidationStep{
+					{Name: "first", Argv: []string{"go", "test", "./..."}, Timeout: testCase.timeout},
+					{Name: "second", Argv: []string{"go", "vet", "./..."}},
+				},
+				FailFast: true,
+				Transport: func(ctx context.Context, _ []string) (*exec.Cmd, error) {
+					calls++
+					if testCase.fail {
+						return nil, errors.New("the contained transport refused the step")
+					}
+					return exec.CommandContext(ctx, "/bin/sleep", "5"), nil
+				},
+				Now: time.Now,
+			})
+			if record.Status != ValidationFailed {
+				t.Fatalf("validation = %#v, want an overall failure", record)
+			}
+			if calls != 1 {
+				t.Fatalf("transport calls = %d, want the first step only", calls)
+			}
+			if len(record.Steps) != 1 || record.Steps[0].Status != ValidationFailed {
+				t.Fatalf("steps = %#v, want only the failed first step", record.Steps)
+			}
+		})
+	}
+}
+
+func TestLegacyValidationStillReportsEveryConfiguredStep(t *testing.T) {
+	t.Parallel()
+	calls := 0
+	record := RunValidation(context.Background(), ValidationOptions{
+		WorktreeDir: t.TempDir(),
+		RunDir:      t.TempDir(),
+		Steps: []ValidationStep{
+			{Name: "first", Argv: []string{"false"}},
+			{Name: "second", Argv: []string{"false"}},
+		},
+		Command: func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+			calls++
+			return exec.CommandContext(ctx, "/bin/false")
+		},
+		Now: time.Now,
+	})
+	if calls != 2 {
+		t.Fatalf("legacy validation ran %d steps, want every configured step", calls)
+	}
+	if record.Status != ValidationFailed || len(record.Steps) != 2 {
+		t.Fatalf("validation = %#v, want both steps reported", record)
+	}
+}

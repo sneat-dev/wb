@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,10 +37,12 @@ const (
 	// cancellation sentinel while Docker is doing setup, the harness is
 	// running, or validation is running.
 	defaultCancelPollInterval = 100 * time.Millisecond
-	// containedGitMetadataTimeout bounds the post-run host Git metadata reads.
-	// The context is independent of the owner's lifetime (a cancelled run still
-	// has a stable artifact to record) but it is always finite, so a stuck Git
-	// read cannot hold the runtime cleanup or the global execution slot forever.
+	// containedGitMetadataTimeout bounds the host Git metadata reads taken
+	// after cleanup. The context is independent of the owner's lifetime (a
+	// cancelled run still has a stable artifact to record) but always finite, so
+	// a stuck Git read cannot hold the global execution slot forever. It is used
+	// only after runtime.Close has proved the container namespace absent, so the
+	// read never observes a workload that may still be writing the worktree.
 	containedGitMetadataTimeout = 30 * time.Second
 )
 
@@ -73,6 +76,10 @@ type containedResult struct {
 	Category        string
 	ExitCode        *int
 	Validation      ValidationRecord
+	// HarnessRan reports that the harness command itself was started. A setup
+	// failure that never reached the harness must not claim a run-time change
+	// snapshot.
+	HarnessRan bool
 	// saveErr records an intermediate save failure, which must still close the
 	// runtime before the owner returns.
 	saveErr error
@@ -91,6 +98,52 @@ func containedTimedOutResult(reason string) containedResult {
 		State: StateTimeout, ExecutionStatus: StatusTimedOut,
 		Failure: reason, Category: FailureTimeout,
 		Validation: ValidationRecord{Status: ValidationSkipped, Reason: "the execution exceeded its timeout"},
+	}
+}
+
+// containedSetupBudgetExpired reports whether the finite setup pool, rather than
+// the whole execution lifetime or an operator stop, has run out. It requires the
+// outer context to still be live, so an expired total lifetime can never be
+// reported as a setup timeout, and callers still report an operator stop as a
+// cancellation.
+func containedSetupBudgetExpired(ctx, setupCtx context.Context) bool {
+	return ctx.Err() == nil && errors.Is(setupCtx.Err(), context.DeadlineExceeded)
+}
+
+// containedSetupTimeoutResult is the terminal outcome for a setup stage that
+// exhausted its finite pool. The stage names the actual step that was running
+// and the raw context deadline text is preserved, so an infrastructure timeout
+// is never recorded as an ordinary configuration refusal. A setup stage never
+// started the harness, so the result claims no run-time workspace change.
+func containedSetupTimeoutResult(stage string, err error) containedResult {
+	failure := fmt.Sprintf("%s exceeded the %s container setup budget: %v", stage, containerSetupBudget, context.DeadlineExceeded)
+	if err != nil && !errors.Is(err, context.DeadlineExceeded) {
+		failure = fmt.Sprintf("%s exceeded the %s container setup budget: %v: %v", stage, containerSetupBudget, context.DeadlineExceeded, err)
+	}
+	return containedResult{
+		State: StateTimeout, ExecutionStatus: StatusTimedOut,
+		Failure: failure, Category: FailureTimeout,
+		Validation: ValidationRecord{Status: ValidationSkipped, Reason: "the contained setup exceeded its finite budget"},
+	}
+}
+
+// containedRuntimeOpenFailure classifies a refused runtime open. An expired
+// setup pool is an infrastructure timeout, distinct from the generic internal
+// failure of an open that genuinely failed; an operator stop or the expired
+// outer lifetime is still reported as exactly that. The refused open already
+// ran its own partial-open cleanup before this is recorded, so this claims no
+// container.
+func containedRuntimeOpenFailure(ctx, setupCtx context.Context, store Store, agentID string, err error) containedResult {
+	if outcome, ok := containedCancellationOutcome(ctx, store, agentID); ok {
+		return outcome
+	}
+	if containedSetupBudgetExpired(ctx, setupCtx) {
+		return containedSetupTimeoutResult("open the verified container", err)
+	}
+	return containedResult{
+		State: StateFailed, ExecutionStatus: StatusFailed,
+		Failure: fmt.Sprintf("open the verified container: %v", err), Category: FailureInternal,
+		Validation: ValidationRecord{Status: ValidationSkipped, Reason: "the container runtime could not be opened"},
 	}
 }
 
@@ -152,6 +205,12 @@ func runContainedOwner(baseCtx context.Context, store Store, agentID string, rec
 	// The sentinel is authoritative during setup, the harness and validation.
 	ctx, stopMonitor := monitorCancellation(ctx, store, agentID, deps.CancelPollInterval)
 	defer stopMonitor()
+	// Setup gets its own finite pool derived from the same total lifetime. It
+	// covers the runtime open, the worker-home preparation and the read-only
+	// probes; a slow setup therefore can never consume the declared harness or
+	// validation time.
+	setupCtx, cancelSetup := context.WithTimeout(ctx, containerSetupBudget)
+	defer cancelSetup()
 
 	launch, err := PrepareContainedDshLaunchFromRecord(record, store.Dir(agentID), credential.EnvName)
 	if err != nil {
@@ -165,18 +224,11 @@ func runContainedOwner(baseCtx context.Context, store Store, agentID string, rec
 	if opener == nil {
 		opener = openContainedRuntime
 	}
-	runtime, err := opener(ctx, ContainerRuntimeOptions{
+	runtime, err := opener(setupCtx, ContainerRuntimeOptions{
 		Policy: *configured, RunID: agentID, Lifetime: lifetime, Workspace: launch.Workspace,
 	})
 	if err != nil {
-		result := containedResult{
-			State: StateFailed, ExecutionStatus: StatusFailed,
-			Failure: fmt.Sprintf("open the verified container: %v", err), Category: FailureInternal,
-			Validation: ValidationRecord{Status: ValidationSkipped, Reason: "the container runtime could not be opened"},
-		}
-		if cancellationOutcome, ok := containedCancellationOutcome(ctx, store, agentID); ok {
-			result = cancellationOutcome
-		}
+		result := containedRuntimeOpenFailure(ctx, setupCtx, store, agentID, err)
 		return finishContainedRecord(store, agentID, record, save, deps, result)
 	}
 	// Runtime identity is persisted only after the runtime actually opened. A
@@ -192,7 +244,10 @@ func runContainedOwner(baseCtx context.Context, store Store, agentID string, rec
 		return errors.Join(err, runtime.Close())
 	}
 
-	result := executeContained(ctx, store, agentID, &record, deps, save, runtime, credential, launch, baseURL)
+	result := executeContained(ctx, setupCtx, store, agentID, &record, deps, save, runtime, credential, launch, baseURL)
+	// The runtime is closed before any host-side handoff work. A cancelled
+	// Docker exec client does not prove the in-container workload stopped, so
+	// only Close's namespace-absence proof makes the mounted worktree stable.
 	closeErr := runtime.Close()
 	if closeErr != nil {
 		facts.CleanupPending = false
@@ -221,6 +276,12 @@ func runContainedOwner(baseCtx context.Context, store Store, agentID string, rec
 	if result.saveErr != nil {
 		return errors.Join(result.saveErr, closeErr)
 	}
+	// A stable handoff is captured only when cleanup proved the namespace absent
+	// and the harness actually ran. On an uncertain live workload there is no
+	// stable change summary to record, and reporting one would be a guess.
+	if closeErr == nil && result.HarnessRan {
+		captureContainedHandoff(ctx, store, agentID, &record, deps)
+	}
 	if result.Validation.Status == "" {
 		result.Validation = ValidationRecord{Status: ValidationSkipped, Reason: "validation did not run"}
 	}
@@ -242,8 +303,10 @@ func snapshotVerifiedLimits(limits ContainerVerifiedLimits) *ContainerVerifiedLi
 	return &copied
 }
 
-// finishContainedRecord records a pre-runtime terminal failure. It never
-// fabricates runtime facts: a container that never opened is not claimed.
+// finishContainedRecord records a terminal failure reached before a runtime
+// receipt exists. It never fabricates runtime facts: it claims no verified
+// container. A refused or partial open that created a container still holds its
+// cleanup failure in the durable per-user slot, not in this record.
 func finishContainedRecord(store Store, agentID string, record Record, save func(Record) error, deps OwnerDeps, result containedResult) error {
 	record.State = result.State
 	record.ExecutionStatus = result.ExecutionStatus
@@ -260,8 +323,10 @@ func finishContainedRecord(store Store, agentID string, record Record, save func
 
 // executeContained performs the in-container setup, harness and validation. It
 // returns the outcome; the caller owns Close and only then makes the record
-// terminal.
-func executeContained(ctx context.Context, store Store, agentID string, record *Record, deps OwnerDeps, save func(Record) error, runtime containedRuntime, credential Credential, launch ContainedDshLaunch, baseURL string) containedResult {
+// terminal. It never reads host Git metadata: a Docker exec client that has
+// returned does not prove the in-container workload stopped, so the stable
+// handoff is the caller's job after Close.
+func executeContained(ctx, setupCtx context.Context, store Store, agentID string, record *Record, deps OwnerDeps, save func(Record) error, runtime containedRuntime, credential Credential, launch ContainedDshLaunch, baseURL string) containedResult {
 	failure := func(stage string, err error) containedResult {
 		if outcome, ok := containedCancellationOutcome(ctx, store, agentID); ok {
 			return outcome
@@ -272,19 +337,33 @@ func executeContained(ctx context.Context, store Store, agentID string, record *
 			Validation: ValidationRecord{Status: ValidationSkipped, Reason: "the contained setup did not complete"},
 		}
 	}
-	if err := runtime.PrepareWorkerHome(ctx); err != nil {
-		return failure("prepare the contained worker home", err)
+	// setupFailure adds the finite setup pool to that classifier: when the pool
+	// itself expires, the stage is an infrastructure timeout, not a
+	// configuration refusal. An operator stop or the expired outer lifetime is
+	// still reported as such, and an ordinary configuration/overlay failure
+	// never reaches the timeout branch.
+	setupFailure := func(stage string, err error) containedResult {
+		if containedSetupBudgetExpired(ctx, setupCtx) {
+			if outcome, ok := containedCancellationOutcome(ctx, store, agentID); ok {
+				return outcome
+			}
+			return containedSetupTimeoutResult(stage, err)
+		}
+		return failure(stage, err)
+	}
+	if err := runtime.PrepareWorkerHome(setupCtx); err != nil {
+		return setupFailure("prepare the contained worker home", err)
 	}
 	if outcome, ok := containedCancellationOutcome(ctx, store, agentID); ok {
 		return outcome
 	}
-	version, err := runContainedDshVersion(ctx, runtime)
+	version, err := runContainedDshVersion(setupCtx, runtime)
 	if err != nil {
-		return failure("read the contained dsh version", err)
+		return setupFailure("read the contained dsh version", err)
 	}
-	dump, err := runContainedDshDump(ctx, runtime)
+	dump, err := runContainedDshDump(setupCtx, runtime)
 	if err != nil {
-		return failure("dump the contained dsh configuration", err)
+		return setupFailure("dump the contained dsh configuration", err)
 	}
 	if err := verifyContainedDshDump(dump, record.Resolved.Model, credential.EnvName, baseURL); err != nil {
 		return failure("verify the contained dsh configuration", err)
@@ -326,7 +405,7 @@ func executeContained(ctx context.Context, store Store, agentID string, record *
 	}
 	defer func() { _ = logFile.Close() }()
 	stdoutLog := &boundedLog{writer: logFile, remaining: maxLogBytes}
-	firstOutput := &firstWriteClock{now: deps.Now, started: record.StartedAt, record: record}
+	firstOutput := &firstWriteClock{now: deps.Now, started: record.StartedAt}
 	stdoutRedactor := newRedactingWriter(stdoutLog, credential.Value)
 	var stdout io.Writer = stdoutLog
 	if stdoutRedactor != nil {
@@ -356,7 +435,20 @@ func executeContained(ctx context.Context, store Store, agentID string, record *
 		_ = command.Wait()
 		return containedResult{saveErr: err}
 	}
+	// Every outcome from here on belongs to a harness that actually started, so
+	// it may carry a real workspace change once cleanup has proved the
+	// namespace absent.
+	finishHarness := func(result containedResult) containedResult {
+		result.HarnessRan = true
+		return result
+	}
 	waitErr := command.Wait()
+	// Wait has reaped the client and every stdout/stderr copying goroutine has
+	// finished, so the owner goroutine can now copy the clock's private result
+	// into the record without racing it.
+	if elapsed, ok := firstOutput.elapsedMS(); ok {
+		record.TimeToFirstOutputMS = elapsed
+	}
 	if stdoutRedactor != nil {
 		_ = stdoutRedactor.Flush()
 	}
@@ -374,7 +466,7 @@ func executeContained(ctx context.Context, store Store, agentID string, record *
 
 	adapter, adapterErr := HarnessFor(record.Resolved.Harness)
 	if adapterErr != nil {
-		return failure("resolve the contained harness adapter", adapterErr)
+		return finishHarness(failure("resolve the contained harness adapter", adapterErr))
 	}
 	summary := summarizeLogFile(store.LogPath(agentID), adapter)
 	record.Usage = legacyUsage(summary.Tokens)
@@ -389,73 +481,63 @@ func executeContained(ctx context.Context, store Store, agentID string, record *
 			record.HarnessEvents = append(record.HarnessEvents, "the final message contained the provider credential and was redacted")
 		}
 	}
-	// Host Git metadata snapshots are bounded reads only, after the worker has
-	// stopped. They never run a build or a test on the host. The context is
-	// independent of a cancelled owner (the artifact must still describe what
-	// happened) but always finite, so a stuck Git read cannot hold cleanup.
-	metadataCtx, cancelMetadata := containedGitMetadataContext(ctx, deps)
-	defer cancelMetadata()
-	record.Changes = SummarizeChangesWith(metadataCtx, record.WorktreeDir, record.BaseSHA, record.DirtyFiles)
-	if path, err := store.WriteDiff(metadataCtx, agentID, record.WorktreeDir, record.BaseSHA, DefaultTargetDeps()); err == nil {
-		record.DiffPath = path
-	}
 
 	if outcome, ok := containedCancellationOutcome(ctx, store, agentID); ok {
-		return outcome
+		return finishHarness(outcome)
 	}
 	switch {
 	case errors.Is(runCtx.Err(), context.DeadlineExceeded):
 		code := exitCodeOf(command)
 		record.ExitCode = code
-		return containedTimedOutResult("run exceeded its timeout and its process group was terminated")
+		return finishHarness(containedTimedOutResult("run exceeded its timeout; the contained namespace was removed before this result was recorded"))
 	case waitErr != nil:
 		code := exitCodeOf(command)
-		return containedResult{
+		return finishHarness(containedResult{
 			State: StateFailed, ExecutionStatus: StatusFailed,
 			Failure: failureMessage(summary, waitErr), Category: classifyFailure(summary), ExitCode: code,
 			Validation: ValidationRecord{Status: ValidationSkipped, Reason: "the harness did not complete"},
-		}
+		})
 	case summary.TurnFailed:
 		code := 0
-		return containedResult{
+		return finishHarness(containedResult{
 			State: StateFailed, ExecutionStatus: StatusFailed,
 			Failure: "harness exited zero but reported a failed turn", Category: classifyFailure(summary), ExitCode: &code,
 			Validation: ValidationRecord{Status: ValidationSkipped, Reason: "the harness reported a failed turn"},
-		}
+		})
 	case summary.MalformedLines > 0:
 		code := exitCodeOf(command)
-		return containedResult{
+		return finishHarness(containedResult{
 			State: StateFailed, ExecutionStatus: StatusFailed,
 			Failure: fmt.Sprintf("harness produced no terminal turn event and %d unparsable event line(s); the run is not a success", summary.MalformedLines), Category: FailureHarness, ExitCode: code,
 			Validation: ValidationRecord{Status: ValidationSkipped, Reason: "the harness stream was unparsable"},
-		}
+		})
 	case !summary.TurnCompleted:
 		code := exitCodeOf(command)
-		return containedResult{
+		return finishHarness(containedResult{
 			State: StateFailed, ExecutionStatus: StatusFailed,
 			Failure: "harness produced no terminal turn event; the run is not a success", Category: FailureHarness, ExitCode: code,
 			Validation: ValidationRecord{Status: ValidationSkipped, Reason: "the harness produced no completion evidence"},
-		}
+		})
 	}
 
 	code := exitCodeOf(command)
 	validation := runContainedValidation(ctx, store, agentID, record, deps, runtime.ValidationTransport(), save)
 	if validation.result.saveErr != nil {
-		return validation.result
+		return finishHarness(validation.result)
 	}
 	if outcome, ok := containedCancellationOutcome(ctx, store, agentID); ok {
-		return outcome
+		return finishHarness(outcome)
 	}
 	if validation.record.Status != ValidationPassed && !(validation.skippedWithoutSteps && validation.record.Status == ValidationSkipped) {
-		return containedResult{
+		return finishHarness(containedResult{
 			State: StateFailed, ExecutionStatus: StatusFailed,
 			Failure: "objective validation did not pass", Category: FailureValidation, ExitCode: code,
 			Validation: validation.record,
-		}
+		})
 	}
-	return containedResult{
+	return finishHarness(containedResult{
 		State: StateCompleted, ExecutionStatus: StatusCompleted, ExitCode: code, Validation: validation.record,
-	}
+	})
 }
 
 type containedValidation struct {
@@ -496,6 +578,11 @@ func runContainedValidation(ctx context.Context, store Store, agentID string, re
 		Steps:       steps,
 		Now:         deps.Now,
 		Transport:   transport,
+		// A timed-out contained step's Docker client may return while the exec'd
+		// process is still winding down inside the namespace. Stop after the
+		// first failed step so no later step starts concurrently, then let the
+		// owner close the whole namespace before any host Git read.
+		FailFast: true,
 	})
 	return containedValidation{record: validation}
 }
@@ -629,6 +716,21 @@ func runContainedBoundedCommand(ctx context.Context, runtime containedRuntime, a
 	return stdout.buffer.Bytes(), nil
 }
 
+// captureContainedHandoff records the host Git change summary and diff of a
+// contained execution that runtime.Close has already proved absent. It is the
+// only place the contained path reads host Git state, so a snapshot is never
+// taken while a workload may still be writing the mounted worktree. The read
+// context is independent of a cancelled owner (the artifact must still describe
+// what happened) but always finite.
+func captureContainedHandoff(ctx context.Context, store Store, agentID string, record *Record, deps OwnerDeps) {
+	metadataCtx, cancel := containedGitMetadataContext(ctx, deps)
+	defer cancel()
+	record.Changes = SummarizeChangesWith(metadataCtx, record.WorktreeDir, record.BaseSHA, record.DirtyFiles)
+	if path, err := store.WriteDiff(metadataCtx, agentID, record.WorktreeDir, record.BaseSHA, DefaultTargetDeps()); err == nil {
+		record.DiffPath = path
+	}
+}
+
 // containedGitMetadataContext supplies the post-run Git metadata snapshots a
 // context that is independent of the owner's cancellation yet always finite.
 // The optional observer is a focused test seam so a test can prove the real
@@ -650,9 +752,9 @@ func containedDshEffectiveBaseURL(raw string) string {
 }
 
 // verifyContainedDshDump parses the composed configuration and requires the
-// exact model/provider and provider routing the launch overlay asked for. A
-// missing or different entry fails closed instead of trusting prose or the
-// requested values.
+// exact model/provider, provider routing and bounded Flash defaults the launch
+// overlay asked for. A missing, different or wrongly typed entry fails closed
+// instead of trusting prose or the requested values.
 func verifyContainedDshDump(raw []byte, model, credentialEnvName, baseURL string) error {
 	if len(raw) > maxContainerDshDumpBytes {
 		return fmt.Errorf("dsh --dump-config output is %d bytes, above the %d-byte bound", len(raw), maxContainerDshDumpBytes)
@@ -684,14 +786,46 @@ func verifyContainedDshDump(raw []byte, model, credentialEnvName, baseURL string
 	if gotBase != strings.TrimRight(baseURL, "/") {
 		return fmt.Errorf("the composed dsh baseURL is %q, not the pinned official endpoint %q", containedDshScalar(routingEntry["baseURL"]), baseURL)
 	}
+	// The overlay pins bounded public Flash defaults; proving the composed
+	// configuration means proving them too, not only provider routing.
+	if got := containedDshScalar(routingEntry["reasoningEffort"]); got != containedDshReasoningEffort {
+		return fmt.Errorf("the composed dsh reasoningEffort is %q, not the pinned %q", got, containedDshReasoningEffort)
+	}
+	if got := containedDshScalar(routingEntry["thinking"]); got != containedDshThinking {
+		return fmt.Errorf("the composed dsh thinking mode is %q, not the pinned %q", got, containedDshThinking)
+	}
+	maxTokens, ok := containedDshInt(routingEntry["maxTokens"])
+	if !ok {
+		return fmt.Errorf("the composed dsh maxTokens is %q, not the pinned integer %d", containedDshScalar(routingEntry["maxTokens"]), containedDshMaxTokens)
+	}
+	if maxTokens != containedDshMaxTokens {
+		return fmt.Errorf("the composed dsh maxTokens is %d, not the pinned output bound %d", maxTokens, containedDshMaxTokens)
+	}
 	return nil
 }
 
+// containedDshScalar reads one scalar leaf. A missing node, a mapping, a
+// sequence or an explicitly null value all read as the empty string, so a
+// required value is never satisfied by the wrong shape.
 func containedDshScalar(node *yaml.Node) string {
-	if node == nil || node.Kind != yaml.ScalarNode {
+	if node == nil || node.Kind != yaml.ScalarNode || node.Tag == "!!null" {
 		return ""
 	}
 	return strings.TrimSpace(node.Value)
+}
+
+// containedDshInt reads one integer leaf. It requires an integer-shaped scalar
+// so a quoted or otherwise non-integer maxTokens cannot pass as the pinned
+// bound.
+func containedDshInt(node *yaml.Node) (int, bool) {
+	if node == nil || node.Kind != yaml.ScalarNode || node.Tag != "!!int" {
+		return 0, false
+	}
+	value, err := strconv.Atoi(strings.TrimSpace(node.Value))
+	if err != nil {
+		return 0, false
+	}
+	return value, true
 }
 
 func collectContainedDshEntries(node *yaml.Node, entries map[string]map[string]*yaml.Node) {
