@@ -80,17 +80,62 @@ type OwnerDeps struct {
 	// can assert the environment and the inherited lease without spawning a
 	// process tree.
 	Validation func(context.Context, ValidationOptions) ValidationRecord
+	// LoadExecutionPolicy re-reads the operator's authoritative mandatory
+	// execution policy before this owner starts anything. A nil seam is
+	// defaulted by RunOwner to LoadDefaultExecutionPolicy: an owner must never
+	// treat "no loader injected" as "no mandatory sandbox". Tests that need the
+	// historical host behaviour inject an explicit loader that returns nil.
+	LoadExecutionPolicy func() (*ExecutionPolicy, error)
+	// CancelPollInterval is how often a contained execution checks the durable
+	// cancellation sentinel during setup, the harness and validation. Zero
+	// selects the production default. It is a struct field, not package state.
+	CancelPollInterval time.Duration
+	// openContainedRuntime is the narrow per-instance runtime opener for the
+	// contained branch. Production leaves it nil and OpenContainerRuntime is
+	// used; a focused test supplies a fake. It is deliberately unexported so
+	// there is no public bypass.
+	openContainedRuntime containedRuntimeOpener
+	// observeGitMetadataContext is a focused test seam: it sees the finite,
+	// cancellation-independent context the post-run Git metadata snapshots are
+	// given, so a test can prove the real production context is bounded. It
+	// never replaces the context and is unexported so no user option can reach it.
+	observeGitMetadataContext func(context.Context)
+	// harnessFor resolves the host harness adapter. Production leaves it nil and
+	// the real HarnessFor is used; a focused test supplies a fake adapter to
+	// exercise a capability combination the default registry does not expose.
+	// It is unexported so there is no public bypass.
+	harnessFor func(string) (Harness, error)
+	// containedLogLimit bounds each captured contained stream. Zero selects the
+	// production maxLogBytes and a larger value is clamped; it is unexported so
+	// no user flag or configuration can raise the bound.
+	containedLogLimit int64
 }
 
 // DefaultOwnerDeps returns the production seams. Lease is deliberately not set
 // here: only OwnerCLI, the detached entry point, may adopt an inherited
 // descriptor, because a test process's fd 3 is not a lease.
+//
+// LoadExecutionPolicy is deliberately not set here even though RunOwner
+// defaults a nil seam to the authoritative loader: keeping it absent lets a
+// test see whether it injected an explicit policy seam, and ProductionOwnerDeps
+// makes the production wiring unambiguous.
 func DefaultOwnerDeps() OwnerDeps {
 	return OwnerDeps{
 		LookPath: exec.LookPath, Now: time.Now, Sleep: time.Sleep,
 		StopGrace: defaultStopGrace, StopPollInterval: defaultStopPollInterval,
-		Validation: RunValidation,
+		Validation:         RunValidation,
+		CancelPollInterval: defaultCancelPollInterval,
 	}
+}
+
+// ProductionOwnerDeps is DefaultOwnerDeps plus the authoritative policy loader.
+// It is the wiring the detached owner entry point uses, and a direct RunOwner
+// gets the same authority because a nil loader is defaulted rather than read as
+// "no mandatory sandbox".
+func ProductionOwnerDeps() OwnerDeps {
+	deps := DefaultOwnerDeps()
+	deps.LoadExecutionPolicy = LoadDefaultExecutionPolicy
+	return deps
 }
 
 // inheritedLease returns the lease descriptor the dispatcher passed, or nil when
@@ -128,17 +173,33 @@ func runOwnerWithSave(ctx context.Context, store Store, agentID string, deps Own
 	if deps.Validation == nil {
 		deps.Validation = RunValidation
 	}
+	// The configuration is the authority even for a direct RunOwner call. A
+	// nil seam is defaulted, never read as "no mandatory sandbox": otherwise a
+	// stale host record could launch after the operator configured one.
+	if deps.LoadExecutionPolicy == nil {
+		deps.LoadExecutionPolicy = LoadDefaultExecutionPolicy
+	}
+	if deps.CancelPollInterval <= 0 {
+		deps.CancelPollInterval = defaultCancelPollInterval
+	}
 	record, err := store.Load(agentID)
 	if err != nil {
 		return err
 	}
-	// The bound is enforced here, in the process that outlives the dispatcher,
-	// using the same process-group cancellation internal/process already owns.
-	// Leaving it to the harness would make it advisory.
-	if record.TimeoutMS > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(record.TimeoutMS)*time.Millisecond)
-		defer cancel()
+	// The mandatory policy is decided before the owner resolves a credential,
+	// looks up a harness, creates its private home, starts a child or runs
+	// validation. The fresh user configuration is the authority: a stale host
+	// record is refused when the operator declares a policy, and a matching,
+	// valid policy admits exactly the contained dsh path.
+	configured, policyErr := ownerExecutionPolicy(record, deps)
+	if policyErr != nil {
+		record.State = StateFailed
+		record.ExecutionStatus = StatusFailed
+		record.Failure = policyErr.Error()
+		record.FailureCategory = FailureConfig
+		record.Validation = ValidationRecord{Status: ValidationSkipped, Reason: "the mandatory execution policy refuses this run"}
+		record.FinishedAt = deps.Now().UTC()
+		return save(record)
 	}
 	// A queued attempt can be cancelled before it ever starts; honour the
 	// sentinel without launching anything.
@@ -160,6 +221,18 @@ func runOwnerWithSave(ctx context.Context, store Store, agentID string, deps Own
 	if err := save(record); err != nil {
 		return err
 	}
+	if record.Execution != nil {
+		return runContainedOwner(ctx, store, agentID, record, deps, save, configured)
+	}
+	// The bound is enforced here, in the process that outlives the dispatcher,
+	// using the same process-group cancellation internal/process already owns.
+	// Leaving it to the harness would make it advisory. A contained execution
+	// applies its own whole-lifetime bound inside runContainedOwner.
+	if record.TimeoutMS > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(record.TimeoutMS)*time.Millisecond)
+		defer cancel()
+	}
 
 	finish := func(state State, failure, category string) error {
 		record.State = state
@@ -175,7 +248,7 @@ func runOwnerWithSave(ctx context.Context, store Store, agentID string, deps Own
 		return save(record)
 	}
 
-	adapter, err := HarnessFor(record.Resolved.Harness)
+	adapter, err := ownerHarnessFor(deps, record.Resolved.Harness)
 	if err != nil {
 		return finish(StateFailed, err.Error(), FailureConfig)
 	}
@@ -224,7 +297,7 @@ func runOwnerWithSave(ctx context.Context, store Store, agentID string, deps Own
 	}
 	defer func() { _ = logFile.Close() }()
 	log := &boundedLog{writer: logFile, remaining: logLimit}
-	firstOutput := &firstWriteClock{now: deps.Now, started: record.StartedAt, record: &record}
+	firstOutput := &firstWriteClock{now: deps.Now, started: record.StartedAt}
 	redactor := newRedactingWriter(log, credential.Value)
 	var sink io.Writer = log
 	if redactor != nil {
@@ -245,13 +318,24 @@ func runOwnerWithSave(ctx context.Context, store Store, agentID string, deps Own
 		command.Stdin = strings.NewReader(launch.Stdin)
 	}
 	command.Stdout = sink
+	var stderrRedactor *redactingWriter
+	var stderrLog *boundedLog
 	if launch.SplitStderr {
 		stderrFile, stderrErr := os.OpenFile(filepath.Join(store.Dir(agentID), stderrFileName), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 		if stderrErr != nil {
 			return finish(StateFailed, fmt.Sprintf("open run stderr log: %v", stderrErr), FailureInternal)
 		}
 		defer func() { _ = stderrFile.Close() }()
-		command.Stderr = stderrFile
+		// The separate stderr stream is bounded and redacted by the same rule as
+		// stdout. A harness that prints its credential to stderr must not leak it
+		// just because the two streams reach different files.
+		stderrLog = &boundedLog{writer: stderrFile, remaining: logLimit}
+		stderrRedactor = newRedactingWriter(stderrLog, credential.Value)
+		var stderrSink io.Writer = stderrLog
+		if stderrRedactor != nil {
+			stderrSink = stderrRedactor
+		}
+		command.Stderr = stderrSink
 	} else {
 		command.Stderr = sink
 	}
@@ -269,8 +353,16 @@ func runOwnerWithSave(ctx context.Context, store Store, agentID string, deps Own
 	}
 
 	waitErr := command.Wait()
+	// Wait has joined the stdout-copying goroutine, so the owner goroutine can
+	// now publish the clock's private result without racing it.
+	if elapsed, ok := firstOutput.elapsedMS(); ok {
+		record.TimeToFirstOutputMS = elapsed
+	}
 	if redactor != nil {
 		_ = redactor.Flush()
+	}
+	if stderrRedactor != nil {
+		_ = stderrRedactor.Flush()
 	}
 	summary := summarizeLogFile(store.LogPath(agentID), adapter)
 	record.Usage = legacyUsage(summary.Tokens)
@@ -279,6 +371,10 @@ func runOwnerWithSave(ctx context.Context, store Store, agentID string, deps Own
 	if log.truncated() {
 		record.HarnessEvents = append(record.HarnessEvents,
 			fmt.Sprintf("run log truncated at %d bytes", logLimit))
+	}
+	if stderrLog != nil && stderrLog.truncated() {
+		record.HarnessEvents = append(record.HarnessEvents,
+			fmt.Sprintf("run stderr log truncated at %d bytes", logLimit))
 	}
 	record.Telemetry = buildTelemetry(record.Resolved.Harness, summary)
 	record.Cost = buildCost(record.Resolved.Harness, summary, deps.Now())
@@ -355,12 +451,41 @@ func runValidation(ctx context.Context, store Store, agentID string, record Reco
 	return validation
 }
 
+// ownerHarnessFor resolves the adapter through the optional per-instance seam,
+// defaulting to the exact production HarnessFor. The mandatory execution policy
+// has already been decided before this is called, so a supplied adapter can
+// never bypass the gate that decides whether a host run may start at all.
+func ownerHarnessFor(deps OwnerDeps, harness string) (Harness, error) {
+	if deps.harnessFor != nil {
+		return deps.harnessFor(harness)
+	}
+	return HarnessFor(harness)
+}
+
 func validationStepsFromRecord(record Record) []ValidationStep {
 	steps := make([]ValidationStep, 0, len(record.Validation.Steps))
 	for _, step := range record.Validation.Steps {
 		steps = append(steps, ValidationStep{Name: step.Name, Argv: step.Argv, Timeout: step.Timeout})
 	}
 	return steps
+}
+
+// ownerExecutionPolicy applies the one mandatory-policy authority to a
+// persisted record. The fresh user configuration is the authority, so an owner
+// that can reload it refuses a stale host record, and any configuration load
+// error refuses too: a broken file must never read as "no mandatory sandbox".
+func ownerExecutionPolicy(record Record, deps OwnerDeps) (*ExecutionPolicy, error) {
+	if deps.LoadExecutionPolicy == nil {
+		deps.LoadExecutionPolicy = LoadDefaultExecutionPolicy
+	}
+	configured, err := deps.LoadExecutionPolicy()
+	if err != nil {
+		return nil, fmt.Errorf("reload the authoritative agents.execution policy: %w", err)
+	}
+	if err := RequireRunnableExecution(configured, record.Execution, "run record", record.Resolved.Harness); err != nil {
+		return nil, err
+	}
+	return configured, nil
 }
 
 // executionStart is when the harness began, falling back to admission time for
@@ -460,20 +585,36 @@ func summarizeLogFile(path string, adapter Harness) HarnessSummary {
 }
 
 // firstWriteClock records how long the harness ran before its first output.
+// It deliberately holds no Record pointer: mark runs on os/exec's stdout-copying
+// goroutine while the owner goroutine reads and saves the record, so mutating
+// the record here would be a data race. The clock keeps a private, mutex-guarded
+// elapsed value that only the owner copies into the record, after Wait has
+// joined the copying goroutines.
 type firstWriteClock struct {
-	mutex   sync.Mutex
-	now     func() time.Time
-	started time.Time
-	record  *Record
+	mutex    sync.Mutex
+	now      func() time.Time
+	started  time.Time
+	elapsed  int64
+	observed bool
 }
 
 func (clock *firstWriteClock) mark() {
 	clock.mutex.Lock()
 	defer clock.mutex.Unlock()
-	if clock.record.TimeToFirstOutputMS != 0 || clock.started.IsZero() {
+	if clock.observed || clock.started.IsZero() {
 		return
 	}
-	clock.record.TimeToFirstOutputMS = clock.now().Sub(clock.started).Milliseconds()
+	clock.observed = true
+	clock.elapsed = clock.now().Sub(clock.started).Milliseconds()
+}
+
+// elapsed reports the recorded first-output latency. A zero elapsed value with
+// observed false means no output was ever written (or the clock had no start),
+// which the owner records as the zero value it already is.
+func (clock *firstWriteClock) elapsedMS() (int64, bool) {
+	clock.mutex.Lock()
+	defer clock.mutex.Unlock()
+	return clock.elapsed, clock.observed
 }
 
 // timedWriter marks the first byte written through it.
@@ -597,7 +738,9 @@ func spawnOwnerWithNull(runDir string, executable func() (string, error), extraF
 // StopRun terminates a running worker's process group. The owner is left alive
 // deliberately: it observes the non-zero exit and records the terminal state,
 // so a stopped run reports a real outcome instead of vanishing into
-// "abandoned".
+// "abandoned". A contained execution is stopped only through the durable
+// cancellation sentinel: its owner cancels the whole runtime, because a host
+// PID is either absent during setup or not authoritative for the container.
 func StopRun(store Store, agentID string, deps OwnerDeps) (Record, error) {
 	return stopRunWithSignal(store, agentID, deps, terminateOwner)
 }
@@ -609,6 +752,15 @@ func stopRunWithSignal(store Store, agentID string, deps OwnerDeps, terminate fu
 	}
 	if record.State.Terminal() {
 		return record, fmt.Errorf("agent run %s is already %s", agentID, record.State)
+	}
+	if record.Execution != nil {
+		// A contained execution's authority is the durable sentinel, not a host
+		// PID that may be zero during setup/validation or reused after a crash.
+		// The owner's monitor cancels its context and closes the whole runtime.
+		if err := requestCancel(store, agentID, deps.Now); err != nil {
+			return record, fmt.Errorf("record cancellation request for %s: %w", agentID, err)
+		}
+		return record, nil
 	}
 	if record.WorkerPID <= 0 {
 		if record.ExecutionStatus == StatusQueued {

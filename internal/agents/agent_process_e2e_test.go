@@ -71,6 +71,7 @@ func ownedRunWithHarness(t *testing.T, harnessName, script string, mutate func(*
 		t.Fatal(err)
 	}
 	deps := DefaultOwnerDeps()
+	deps.LoadExecutionPolicy = noMandatoryExecutionPolicy
 	deps.LookPath = func(name string) (string, error) {
 		if name != harnessName {
 			t.Fatalf("owner looked up %q, want %q", name, harnessName)
@@ -712,9 +713,9 @@ func TestE2EResolveExistingTargetRecordsAnUnmanagedCheckout(t *testing.T) {
 	linked := filepath.Join(t.TempDir(), "linked")
 	runGit(t, worktree, "worktree", "add", "-b", "linked", linked)
 	deps := DispatchDeps{OriginSlug: func(context.Context, string) (string, error) { return "acme/app", nil }}
-	target, err := resolveExistingTarget(context.Background(), DispatchRequest{Mode: ModePath, Worktree: linked}, deps)
+	target, err := resolveExistingTargetWithPolicy(context.Background(), DispatchRequest{Mode: ModePath, Worktree: linked}, deps, false)
 	if err != nil {
-		t.Fatalf("resolveExistingTarget: %v", err)
+		t.Fatalf("resolveExistingTargetWithPolicy: %v", err)
 	}
 	if target.Repository != "acme/app" || target.Branch != "linked" || target.BaseSHA == "" {
 		t.Fatalf("target = %#v", target)

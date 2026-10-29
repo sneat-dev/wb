@@ -1,3 +1,5 @@
+//go:build e2e
+
 package orchestrate
 
 import (
@@ -20,7 +22,7 @@ import (
 // Actual normal Prepare must refuse before any durable mutation or publication.
 //
 //nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
-func TestPrepareLegacyPublishedAdvanceRefusesHeadThatReturnedToCapturedIdentity(t *testing.T) {
+func TestE2EPrepareLegacyPublishedAdvanceRefusesHeadThatReturnedToCapturedIdentity(t *testing.T) {
 	fixture := newLegacyPublishedAdvanceUnrecordedRepairFixture(t)
 	gh := installWorktreeMergeEngineGH(t, fixture.engineFixture, fixture.published, fixture.receipt.Candidate.Branch)
 	before := fixture.receipt
@@ -88,7 +90,7 @@ func TestPrepareLegacyPublishedAdvanceRefusesHeadThatReturnedToCapturedIdentity(
 // accepted. Prepare must refuse and keep the last proven checkpoint.
 //
 //nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
-func TestPrepareLegacyPublishedAdvanceRefusesSourceCheckpointThatLostTheMerge(t *testing.T) {
+func TestE2EPrepareLegacyPublishedAdvanceRefusesSourceCheckpointThatLostTheMerge(t *testing.T) {
 	fixture := newLegacyPublishedAdvanceFixture(t)
 	gh := installWorktreeMergeEngineGH(t, fixture.engineFixture, fixture.published, fixture.receipt.Candidate.Branch)
 	before := fixture.receipt
@@ -142,7 +144,7 @@ func TestPrepareLegacyPublishedAdvanceRefusesSourceCheckpointThatLostTheMerge(t 
 // that silently lost A, and must retain H_A plus A's accepted flag.
 //
 //nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
-func TestPrepareLegacyPublishedAdvanceRefusesLaterSourceCheckpointThatDroppedEarlierSource(t *testing.T) {
+func TestE2EPrepareLegacyPublishedAdvanceRefusesLaterSourceCheckpointThatDroppedEarlierSource(t *testing.T) {
 	fixture := newLegacyPublishedTwoSourceAdvanceFixture(t)
 	gh := installWorktreeMergeEngineGH(t, fixture.engineFixture, fixture.published, fixture.receipt.Candidate.Branch)
 	before := fixture.receipt
@@ -228,7 +230,7 @@ func TestPrepareLegacyPublishedAdvanceRefusesLaterSourceCheckpointThatDroppedEar
 // and its source. Prepare must refuse and keep H-prime.
 //
 //nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
-func TestPrepareLegacyPublishedAdvanceRefusesPreparedCheckpointThatLostIntegratedCandidate(t *testing.T) {
+func TestE2EPrepareLegacyPublishedAdvanceRefusesPreparedCheckpointThatLostIntegratedCandidate(t *testing.T) {
 	fixture := newLegacyPublishedAdvanceFixture(t)
 	gh := installWorktreeMergeEngineGH(t, fixture.engineFixture, fixture.published, fixture.receipt.Candidate.Branch)
 	before := fixture.receipt
@@ -289,7 +291,7 @@ func TestPrepareLegacyPublishedAdvanceRefusesPreparedCheckpointThatLostIntegrate
 // covered. Prepare must refuse and keep H-prime with its truthful validation.
 //
 //nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
-func TestPrepareLegacyPublishedAdvanceRefusesPreparedCleanDescendantBeyondValidatedHead(t *testing.T) {
+func TestE2EPrepareLegacyPublishedAdvanceRefusesPreparedCleanDescendantBeyondValidatedHead(t *testing.T) {
 	fixture := newLegacyPublishedAdvanceFixture(t)
 	gh := installWorktreeMergeEngineGH(t, fixture.engineFixture, fixture.published, fixture.receipt.Candidate.Branch)
 	before := fixture.receipt
@@ -369,7 +371,7 @@ func TestPrepareLegacyPublishedAdvanceRefusesPreparedCleanDescendantBeyondValida
 // proven checkpoint plus the publication.
 //
 //nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
-func TestPrepareLegacyPublishedAdvanceRefusesIntegratedGraphReadFailure(t *testing.T) {
+func TestE2EPrepareLegacyPublishedAdvanceRefusesIntegratedGraphReadFailure(t *testing.T) {
 	fixture := newLegacyPublishedAdvanceFixture(t)
 	gh := installWorktreeMergeEngineGH(t, fixture.engineFixture, fixture.published, fixture.receipt.Candidate.Branch)
 	before := fixture.receipt

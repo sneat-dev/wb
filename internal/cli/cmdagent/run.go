@@ -150,7 +150,7 @@ wb agent run --task-type debugging --worktree current --allow-dirty --task-file 
 	command.Flags().StringVar(&flags.base, "base", "", "optional base branch for a created worktree")
 	command.Flags().StringArrayVar(&flags.validate, "validate", nil, "validation suite to run after the harness (repeatable)")
 	command.Flags().BoolVar(&flags.noValidate, "no-validate", false, "skip the task type's validation suites")
-	command.Flags().DurationVar(&flags.timeout, "timeout", agents.DefaultTimeout, "bound on the worker's run; on expiry WB terminates its process group")
+	command.Flags().DurationVar(&flags.timeout, "timeout", agents.DefaultTimeout, "bound on the worker's run; on expiry WB stops the worker (its host process group, or the contained namespace)")
 	command.Flags().BoolVar(&flags.wait, "wait", false, "block until the execution reaches a terminal status")
 	command.Flags().DurationVar(&flags.waitTimeout, "wait-timeout", time.Hour, "with --wait, give up after this long; zero waits without a bound")
 	command.Flags().BoolVar(&flags.dryRun, "dry-run", false, "print the fully resolved plan and start nothing")
@@ -210,6 +210,7 @@ func renderDryRun(runtime shared.Runtime, deps Dependencies, command *cobra.Comm
 		"harness:    " + plan.Profile.Harness,
 		"provider:   " + emptyWord(plan.Profile.Provider, "(harness default)"),
 		"model:      " + plan.Profile.Model,
+		"execution:  " + executionPlanWord(plan),
 		"complexity: " + emptyWord(plan.Complexity, "(none)") + " (" + plan.ComplexitySource + ")",
 		"effort:     " + effortPlanWord(plan),
 		"worktree:   " + plan.WorktreeMode + " (" + plan.WorktreeSource + ")",
@@ -236,6 +237,16 @@ type dryRunDocument struct {
 	TaskSHA256 string      `json:"task_sha256"`
 	TaskBytes  int         `json:"task_bytes"`
 	Executed   bool        `json:"executed"`
+}
+
+func executionPlanWord(plan agents.Plan) string {
+	if plan.Execution == nil {
+		return "host (no agents.execution policy)"
+	}
+	policy := plan.Execution
+	return fmt.Sprintf("%s image=%s memory=%dB swap=%dB cpus=%d pids=%d parallel=%d (mandatory)",
+		policy.Mode, policy.Image, policy.MemoryBytes, policy.MemorySwapBytes,
+		policy.CPUCount, policy.PIDsLimit, policy.MaxParallel)
 }
 
 func effortPlanWord(plan agents.Plan) string {

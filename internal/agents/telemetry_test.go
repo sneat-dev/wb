@@ -3,6 +3,7 @@ package agents
 import (
 	"bytes"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -151,25 +152,52 @@ func TestFirstWriteClockRecordsOnlyTheFirstOutput(t *testing.T) {
 	t.Parallel()
 	now := time.Unix(1000, 0)
 	record := &Record{StartedAt: now}
-	clock := &firstWriteClock{now: func() time.Time { return now.Add(1500 * time.Millisecond) }, started: now, record: record}
+	clock := &firstWriteClock{now: func() time.Time { return now.Add(1500 * time.Millisecond) }, started: now}
 	writer := &timedWriter{inner: &bytes.Buffer{}, clock: clock}
 	if _, err := writer.Write(nil); err != nil {
 		t.Fatal(err)
 	}
-	if record.TimeToFirstOutputMS != 0 {
+	if _, observed := clock.elapsedMS(); observed {
 		t.Fatal("an empty write is not output")
 	}
 	_, _ = writer.Write([]byte("first"))
 	clock.now = func() time.Time { return now.Add(5 * time.Second) }
 	_, _ = writer.Write([]byte("second"))
+	// The clock never mutates the record: only the owner's accessor copy does.
+	if record.TimeToFirstOutputMS != 0 {
+		t.Fatalf("the clock mutated the record directly: %d", record.TimeToFirstOutputMS)
+	}
+	elapsed, observed := clock.elapsedMS()
+	if !observed || elapsed != 1500 {
+		t.Fatalf("time to first output = %d (observed %t), want 1500", elapsed, observed)
+	}
+	record.TimeToFirstOutputMS = elapsed
 	if record.TimeToFirstOutputMS != 1500 {
 		t.Fatalf("time to first output = %d", record.TimeToFirstOutputMS)
 	}
-	clock.started = time.Time{}
-	clock.record = &Record{}
-	clock.mark()
-	if clock.record.TimeToFirstOutputMS != 0 {
-		t.Fatal("a clock without a start must not record a duration")
+	// A clock with no start records nothing and reports no observation.
+	stopped := &firstWriteClock{now: func() time.Time { return now }, started: time.Time{}}
+	stopped.mark()
+	if _, observed := stopped.elapsedMS(); observed {
+		t.Fatal("a clock without a start must report no observation")
+	}
+}
+
+func TestFirstWriteClockKeepsItsValuePrivateUnderConcurrentWrites(t *testing.T) {
+	t.Parallel()
+	now := time.Unix(2000, 0)
+	clock := &firstWriteClock{now: func() time.Time { return now.Add(250 * time.Millisecond) }, started: now}
+	var writers sync.WaitGroup
+	for index := 0; index < 8; index++ {
+		writers.Add(1)
+		go func() {
+			defer writers.Done()
+			_, _ = (&timedWriter{inner: &bytes.Buffer{}, clock: clock}).Write([]byte("output"))
+		}()
+	}
+	writers.Wait()
+	if elapsed, observed := clock.elapsedMS(); !observed || elapsed != 250 {
+		t.Fatalf("time to first output = %d (observed %t), want 250", elapsed, observed)
 	}
 }
 

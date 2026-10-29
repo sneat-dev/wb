@@ -241,6 +241,71 @@ also accept `--to <machine>`.
 `wb agent prune --older-than 720h` plans retention of private run artefacts and
 never removes a running, leased, accepted or unreviewed required run.
 
+#### Mandatory Linux-container execution (`agents.execution`)
+
+An operator may declare one user-level mandatory sandbox. When it is present,
+every admitted `dsh` run executes inside a capped Linux container instead of a
+host process; profiles, task types, `--harness`/`--model`, fallback and a
+comparison attempt cannot weaken it. Absent the key, WB keeps its host behaviour
+exactly.
+
+```yaml
+agents:
+  execution:
+    mode: linux-container
+    # Replace this placeholder with the ID of the keyless image you prepared
+    # locally. WB ships no image, pulls none and names no registry.
+    image: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    memory_bytes: 8589934592
+    memory_swap_bytes: 8589934592
+    cpu_count: 2
+    pids_limit: 128
+    max_parallel: 1
+```
+
+The policy is closed and optional: unknown fields, a mutable or missing image
+reference, a swap total different from memory, a non-positive bound and
+unsupported parallelism are refused before a worktree exists. The only mode is
+`linux-container`; a harness the container cannot carry is refused rather than
+run outside the sandbox, and one durable per-user execution slot is the real
+concurrency bound (`max_parallel: 1`).
+
+The image contract is keyless and immutable. It must provide the composed
+`dsh` profile contents at `/opt/wb-dsh-profile`, its tool tree at
+`/opt/agent/node_modules`, and `dsh`, Node and coreutils on the worker `PATH`
+for an unprivileged worker UID/GID. It must not depend on a host home directory,
+the Docker socket, a credential store or host `node_modules`. The image declares
+no Dockerfile `VOLUME`: anonymous volumes are refused, so the only mounts present
+are the closed set WB verifies. Fresh Linux
+dependencies are installed per run into ephemeral, container-owned tmpfs masks
+at the worktree's dependency and cache paths; the masks are explicitly
+executable, so a native addon loads the same as on a normal Linux host, while
+host macOS dependency and cache paths stay hidden. Cleanup removes the masks
+with the container; there is no ad-hoc host file relocation. A locally prepared
+keyless image is the only source: there are no image-build steps or registry
+credentials in WB.
+
+The container receives exactly one provider credential, resolved from the exact
+`credential_env`/`credential_file` routing and injected as an environment
+*variable name*; the value never appears in argv, the overlay or the run record.
+The worktree is mounted read-write, the Git common directory read-only, and a
+generated scoped input directory read-only. The controller reads the
+container's own kernel memory, swap, CPU and PIDs limits before the worker
+starts and refuses a mismatch. On any termination path the run owner closes the
+whole namespace and proves the container absent before recording a stable
+handoff; a failed cleanup is reported and keeps the durable slot blocked until
+a later contained run proves it absent on the same Docker Engine. `wb agent
+stop` for a contained run writes that durable cancellation sentinel — the
+recorded worker PID is the host Docker client, not the workload. `wb agent
+status` reports `worker_alive` for that recorded transport process only, so it
+can be false during contained validation; the run state and validation status
+describe the remaining work.
+
+The native lifecycle proofs establish this implementation's behaviour under
+local Linux limits. They do not prove that a particular host has an updated WB
+binary, a valid keyless image or an enabled `agents.execution` policy; each of
+those must be verified separately.
+
 ### `wb worktree` — isolated feature branches
 
 Keep canonical clones at `<projects-root>/<host>/<org>/<repository>` clean when

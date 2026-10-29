@@ -1,3 +1,5 @@
+//go:build e2e
+
 package orchestrate
 
 import (
@@ -85,7 +87,7 @@ func assertLegacyPrepareRefusalLeftPublicationAlone(t *testing.T, fixture legacy
 // target untouched.
 //
 //nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
-func TestPrepareLegacyPublishedAdvanceRefusesReplacedCandidateHeadUnderTheLaneLock(t *testing.T) {
+func TestE2EPrepareLegacyPublishedAdvanceRefusesReplacedCandidateHeadUnderTheLaneLock(t *testing.T) {
 	fixture := newLegacyPublishedAdvanceUnrecordedRepairFixture(t)
 	gh := installWorktreeMergeEngineGH(t, fixture.engineFixture, fixture.published, fixture.receipt.Candidate.Branch)
 	before := fixture.receipt
@@ -137,7 +139,7 @@ func TestPrepareLegacyPublishedAdvanceRefusesReplacedCandidateHeadUnderTheLaneLo
 // never retain H.
 //
 //nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
-func TestPrepareLegacyPublishedAdvanceRefusesCompetingContinuationForCapturedCandidate(t *testing.T) {
+func TestE2EPrepareLegacyPublishedAdvanceRefusesCompetingContinuationForCapturedCandidate(t *testing.T) {
 	fixture := newLegacyPublishedAdvanceFixture(t)
 	gh := installWorktreeMergeEngineGH(t, fixture.engineFixture, fixture.published, fixture.receipt.Candidate.Branch)
 	before := fixture.receipt
@@ -173,7 +175,7 @@ func TestPrepareLegacyPublishedAdvanceRefusesCompetingContinuationForCapturedCan
 // carry the integration forward as if the replacement were still H.
 //
 //nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
-func TestPrepareLegacyPublishedAdvanceRefusesHeadMoveBeforePreparingSave(t *testing.T) {
+func TestE2EPrepareLegacyPublishedAdvanceRefusesHeadMoveBeforePreparingSave(t *testing.T) {
 	fixture := newLegacyPublishedAdvanceFixture(t)
 	gh := installWorktreeMergeEngineGH(t, fixture.engineFixture, fixture.published, fixture.receipt.Candidate.Branch)
 	before := fixture.receipt
@@ -223,7 +225,7 @@ func TestPrepareLegacyPublishedAdvanceRefusesHeadMoveBeforePreparingSave(t *test
 // publication stays where it was.
 //
 //nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
-func TestPrepareLegacyPublishedAdvanceRefusesIntegratedHeadWithoutCapturedCandidate(t *testing.T) {
+func TestE2EPrepareLegacyPublishedAdvanceRefusesIntegratedHeadWithoutCapturedCandidate(t *testing.T) {
 	fixture := newLegacyPublishedAdvanceFixture(t)
 	gh := installWorktreeMergeEngineGH(t, fixture.engineFixture, fixture.published, fixture.receipt.Candidate.Branch)
 	before := fixture.receipt
@@ -267,7 +269,7 @@ func TestPrepareLegacyPublishedAdvanceRefusesIntegratedHeadWithoutCapturedCandid
 // the receipt keeps the integrated H-prime it proved and nothing is published.
 //
 //nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
-func TestPrepareLegacyPublishedAdvanceRefusesHeadMoveBeforePreparedRecord(t *testing.T) {
+func TestE2EPrepareLegacyPublishedAdvanceRefusesHeadMoveBeforePreparedRecord(t *testing.T) {
 	fixture := newLegacyPublishedAdvanceFixture(t)
 	gh := installWorktreeMergeEngineGH(t, fixture.engineFixture, fixture.published, fixture.receipt.Candidate.Branch)
 	before := fixture.receipt
@@ -316,7 +318,7 @@ func TestPrepareLegacyPublishedAdvanceRefusesHeadMoveBeforePreparedRecord(t *tes
 // leaves the durable receipt and the resolved head alone.
 //
 //nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
-func TestPrepareLegacyPublishedAdvanceRefusalSurvivesGuardReadFailures(t *testing.T) {
+func TestE2EPrepareLegacyPublishedAdvanceRefusalSurvivesGuardReadFailures(t *testing.T) {
 	sentinel := errors.New("controlled captured-head read refused")
 	//nolint:paralleltest // Each case builds its own t.Setenv real-Git fixture in the shared private lane.
 	t.Run("captured head read", func(t *testing.T) {
@@ -428,7 +430,7 @@ func (r *legacyReadCountRunner) RunOpts(ctx context.Context, dir string, options
 // pre-validation planning error as a conflict.
 //
 //nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
-func TestPrepareOrdinaryPlanFailureStaysAConflict(t *testing.T) {
+func TestE2EPrepareOrdinaryPlanFailureStaysAConflict(t *testing.T) {
 	fixture := newEngineFixture(t)
 	source := createMergeSource(t, fixture, "ordinary-plan-source", "feature/ordinary-plan", "ordinary-plan.txt", "ordinary\n")
 	failed, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{

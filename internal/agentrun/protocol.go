@@ -84,7 +84,13 @@ func Handle(ctx context.Context, ops Operations, root string, stderr io.Writer, 
 		if err != nil {
 			return err
 		}
-		response.Result = &agents.Result{AgentID: record.AgentID, WorkerPID: record.WorkerPID, State: record.State}
+		// The policy snapshot tells the caller whether this was a contained
+		// execution, whose recorded worker PID is the Docker client rather than
+		// the workload, without adding a second stop protocol.
+		response.Result = &agents.Result{
+			AgentID: record.AgentID, WorkerPID: record.WorkerPID, State: record.State,
+			Execution: agents.SnapshotExecution(record.Execution),
+		}
 	default:
 		return fmt.Errorf("remote operation %q is unsupported", r.Operation)
 	}

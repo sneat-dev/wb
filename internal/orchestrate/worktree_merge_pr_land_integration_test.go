@@ -416,6 +416,8 @@ func TestLandWorktreeMergePullRequestRouteDelegatesToTheSharedEngine(t *testing.
 // reproduces meaninggraph/meaninggraph (2026-10-28): GitHub refuses the
 // rulesets read with its plan gate, which means no ruleset applies, so the
 // landing proceeds and the receipt records the gap instead of aborting.
+//
+//nolint:paralleltest // newEngineFixture pins the process-wide WB_PROJECTS_ROOT override, so the real-Git landing journey cannot run in parallel.
 func TestLandWorktreeMergePullRequestOnAFreePlanPrivateRepositoryLandsUnderAllowUnfenced(t *testing.T) {
 	fixture := newEngineFixture(t)
 	source := createMergeSource(t, fixture, "free-plan-source", "feature/free-plan", "free-plan.txt", "free plan\n")

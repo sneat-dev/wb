@@ -76,6 +76,10 @@ func TestRunDryRunPrintsTheResolvedPlan(t *testing.T) {
 			Validation: []string{"go"}, ValidationSource: agents.SourceTaskType,
 			ValidationSteps:    []agents.ValidationStep{{Name: "vet", Argv: []string{"go", "vet"}}},
 			AcceptanceRequired: true,
+			Execution: &agents.ExecutionPolicy{
+				Mode: agents.ExecutionModeLinuxContainer, Image: "ghcr.io/acme/agent@sha256:" + strings.Repeat("a", 64),
+				MemoryBytes: 8589934592, MemorySwapBytes: 8589934592, CPUCount: 2, PIDsLimit: 128, MaxParallel: 1,
+			},
 		}, nil
 	}
 	code, out, errout := runFake(t, deps, "agent", "run", "--task-type", "coding", "--task-complexity", "high", "--dry-run", "--task", "do it")
@@ -88,10 +92,23 @@ func TestRunDryRunPrintsTheResolvedPlan(t *testing.T) {
 	if planned == nil || planned.Request.Task != "do it" || planned.Request.TaskType != "coding" {
 		t.Fatalf("plan request = %#v", planned)
 	}
-	for _, want := range []string{"task type:  coding", "profile:    op", "complexity: high", "worktree:   auto", "validation: vet", "acceptance: required", "sha256"} {
+	for _, want := range []string{"task type:  coding", "profile:    op", "complexity: high", "worktree:   auto", "validation: vet", "acceptance: required", "sha256",
+		"execution:  linux-container", "memory=8589934592B", "swap=8589934592B", "cpus=2", "pids=128", "parallel=1"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output %q is missing %q", out, want)
 		}
+	}
+	// With no configured policy the same command must say so, not imply a
+	// sandbox that does not exist.
+	deps.Plan = func(_ context.Context, _ agentrun.PlanRequest) (agents.Plan, error) {
+		return agents.Plan{Profile: agents.Resolved{Profile: "op", Harness: agents.HarnessOpenCode, Model: "opencode-go/m"}}, nil
+	}
+	code, out, errout = runFake(t, deps, "agent", "run", "--task-type", "coding", "--dry-run", "--task", "do it")
+	if code != exitOK {
+		t.Fatalf("host dry run code = %d stderr=%s", code, errout)
+	}
+	if !strings.Contains(out, "execution:  host (no agents.execution policy)") {
+		t.Fatalf("host dry run output = %q", out)
 	}
 }
 

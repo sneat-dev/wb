@@ -340,3 +340,78 @@ func TestListPreservesOperationOrderInTextJSONAndRemoteText(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentStopDistinguishesAContainedExecutionFromAWorkerProcess(t *testing.T) {
+	t.Parallel()
+	policy := agents.ExecutionPolicy{
+		Mode: agents.ExecutionModeLinuxContainer, Image: "sha256:" + strings.Repeat("a", 64),
+		MemoryBytes: 8589934592, MemorySwapBytes: 8589934592, CPUCount: 2, PIDsLimit: 128, MaxParallel: 1,
+	}
+	for _, contained := range []bool{false, true} {
+		contained := contained
+		t.Run(map[bool]string{false: "host", true: "contained"}[contained], func(t *testing.T) {
+			t.Parallel()
+			deps := fakeDependencies()
+			deps.Stop = func(_ context.Context, r agentrun.LookupRequest) (agents.Record, error) {
+				record := agents.Record{AgentID: r.AgentID, WorkerPID: 4242}
+				if contained {
+					record.Execution = &policy
+				}
+				return record, nil
+			}
+			code, out, stderr := runFake(t, deps, "agent", "stop", "id")
+			if code != 0 || stderr != "" {
+				t.Fatalf("code = %d, stderr = %q: %s", code, stderr, out)
+			}
+			if contained {
+				if !strings.Contains(out, "id contained execution") || !strings.Contains(out, "container namespace") {
+					t.Fatalf("contained stop output = %q, want the sentinel/namespace description", out)
+				}
+				if strings.Contains(out, "worker process") || strings.Contains(out, "4242") {
+					t.Fatalf("contained stop output must not present the Docker client PID as the workload: %q", out)
+				}
+				return
+			}
+			if out != "stopping id worker process 4242\n" {
+				t.Fatalf("legacy stop output = %q, want the unchanged host message", out)
+			}
+		})
+	}
+}
+
+func TestRemoteAgentStopDescribesAContainedCancellationWithoutAClientPID(t *testing.T) {
+	t.Parallel()
+	policy := agents.ExecutionPolicy{
+		Mode: agents.ExecutionModeLinuxContainer, Image: "sha256:" + strings.Repeat("a", 64),
+		MemoryBytes: 8589934592, MemorySwapBytes: 8589934592, CPUCount: 2, PIDsLimit: 128, MaxParallel: 1,
+	}
+	deps := fakeDependencies()
+	deps.CallRemote = func(_ context.Context, target agents.RemoteTarget, request agents.RemoteRequest) (agents.RemoteResponse, error) {
+		if target.Machine != "machine" || request.Operation != agents.RemoteStop {
+			t.Fatalf("target/operation = %#v/%q", target, request.Operation)
+		}
+		result := agents.Result{AgentID: "id", WorkerPID: 4242, State: agents.StateRunning, Execution: &policy}
+		return agents.RemoteResponse{Result: &result}, nil
+	}
+	code, out, stderr := runFake(t, deps, "agent", "stop", "--to=machine", "id")
+	if code != 0 || stderr != "" {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(out, "machine:id contained execution") || strings.Contains(out, "4242") || strings.Contains(out, "worker process") {
+		t.Fatalf("remote contained stop output = %q, want a namespace cancellation without the client PID", out)
+	}
+}
+
+func TestAgentStopHelpDescribesContainedSentinelCleanup(t *testing.T) {
+	t.Parallel()
+	command := New(testRuntime(), fakeDependencies())
+	stop, _, err := command.Find([]string{"stop"})
+	if err != nil {
+		t.Fatalf("find stop: %v", err)
+	}
+	for _, required := range []string{"mandatory agents.execution policy", "cancellation sentinel", "container namespace removed", "Docker client"} {
+		if !strings.Contains(stop.Long, required) {
+			t.Fatalf("stop help is missing %q:\n%s", required, stop.Long)
+		}
+	}
+}

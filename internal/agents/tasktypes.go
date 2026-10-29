@@ -22,7 +22,9 @@ const (
 )
 
 // ProviderDshDefault is the only inference provider the `dsh` compose tree
-// names, so it is the only one this build can prove for that harness.
+// names, so it is the only one this build can prove for that harness. It is not
+// a built-in provider entry: an operator must declare it explicitly under a
+// mandatory execution policy, where the host credential store is unavailable.
 const ProviderDshDefault = "deepseek-official"
 
 // defaultValidationStepTimeout bounds one validation step when the operator

@@ -18,6 +18,14 @@ const validationLogDirName = "validation"
 // maxValidationLogBytes bounds one step's captured output.
 const maxValidationLogBytes = 8 << 20
 
+// ValidationCommandFactory builds one validation step command from the step's
+// argv alone. It is the contained-execution seam: a factory from a verified
+// container runtime returns a credential-free Docker client command whose
+// environment is already the bounded Docker transport. RunValidation never
+// replaces that environment with the host worker environment, so a validation
+// step cannot regain host variables or a provider credential.
+type ValidationCommandFactory func(ctx context.Context, argv []string) (*exec.Cmd, error)
+
 // ValidationOptions is one validation run's inputs.
 type ValidationOptions struct {
 	WorktreeDir string
@@ -30,6 +38,17 @@ type ValidationOptions struct {
 	// Command builds the process; it is a seam for tests, never a production
 	// override.
 	Command func(ctx context.Context, name string, args ...string) *exec.Cmd
+	// Transport builds a contained step's command from argv alone. When it is
+	// set it is the only command source: there is no host fallback, and the
+	// returned command keeps the environment and directory its factory chose.
+	// Nil keeps the legacy host Command behaviour exactly.
+	Transport ValidationCommandFactory
+	// FailFast stops the sequence after the first failed or timed-out step, so
+	// no later step starts while a contained step's command may still be
+	// winding down inside the same namespace. It is set only for contained
+	// validation; false preserves the legacy host behaviour of running and
+	// reporting every configured step.
+	FailFast bool
 }
 
 // RunValidation executes the snapshotted steps and reports one record. It never
@@ -66,6 +85,13 @@ func RunValidation(ctx context.Context, options ValidationOptions) ValidationRec
 		record.Steps = append(record.Steps, result)
 		if result.Status != ValidationPassed {
 			record.Status = ValidationFailed
+			// A contained step that failed or timed out must not overlap a later
+			// step: its client call can return while the exec'd process is still
+			// alive. The failure is final for this validation; the full suite
+			// runs again only after the first failure is fixed.
+			if options.FailFast {
+				break
+			}
 		}
 	}
 	finish()
@@ -97,14 +123,32 @@ func runValidationStep(ctx context.Context, options ValidationOptions, command f
 	}
 	defer func() { _ = logFile.Close() }()
 	bounded := &boundedLog{writer: logFile, remaining: maxValidationLogBytes}
-	process := command(stepCtx, step.Argv[0], step.Argv[1:]...)
-	process.Dir = options.WorktreeDir
-	process.Env = WorkerEnvironment(Credential{})
+	var process *exec.Cmd
+	if options.Transport != nil {
+		// The contained factory owns the command's directory, environment and
+		// file descriptors. Only the bounded log sinks are attached here: a
+		// Docker client's transport environment must not be replaced with the
+		// host worker environment, which would put a provider credential back
+		// into a validation process.
+		var transportErr error
+		process, transportErr = options.Transport(stepCtx, append([]string(nil), step.Argv...))
+		if transportErr != nil || process == nil {
+			result.LogPath = logPath
+			return result
+		}
+	} else {
+		process = command(stepCtx, step.Argv[0], step.Argv[1:]...)
+		if process == nil {
+			return result
+		}
+		process.Dir = options.WorktreeDir
+		process.Env = WorkerEnvironment(Credential{})
+		if options.Lease != nil {
+			process.ExtraFiles = []*os.File{options.Lease}
+		}
+	}
 	process.Stdout = bounded
 	process.Stderr = bounded
-	if options.Lease != nil {
-		process.ExtraFiles = []*os.File{options.Lease}
-	}
 	started := now()
 	if err := process.Start(); err != nil {
 		result.LogPath = logPath
