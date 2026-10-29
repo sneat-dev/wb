@@ -713,6 +713,7 @@ func TestContainerWorkerCommandKeepsTheCredentialOutOfArgv(t *testing.T) {
 	} {
 		name, invalid := name, invalid
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			if command, err := runtime.WorkerCommand(context.Background(), invalid, []string{"/bin/true"}); err == nil {
 				t.Fatalf("invalid credential %#v must be refused; command = %#v", invalid, command)
 			}

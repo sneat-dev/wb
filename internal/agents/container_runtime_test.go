@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -37,14 +36,17 @@ type fakeContainerDocker struct {
 	contextErr       error
 	daemonID         string
 	daemonErr        error
+	onInfo           func()
 	inspectDocuments map[string][]byte
 	inspectErrors    map[string]error
+	onInspect        func(identity string)
 	createID         string
 	createErr        error
 	onCreate         func(args []string, containerID string)
 	execOutput       []byte
 	execErr          error
 	removeErr        error
+	onRemove         func(containerID string)
 	removed          []string
 
 	attachErr     error
@@ -75,6 +77,12 @@ func (fake *fakeContainerDocker) run(_ context.Context, args []string) ([]byte, 
 		fake.mutex.Unlock()
 		return []byte(output + "\n"), failure
 	case "info":
+		hook := fake.onInfo
+		if hook != nil {
+			fake.mutex.Unlock()
+			hook()
+			fake.mutex.Lock()
+		}
 		output, failure := fake.daemonID, fake.daemonErr
 		fake.mutex.Unlock()
 		return []byte(output + "\n"), failure
@@ -84,6 +92,14 @@ func (fake *fakeContainerDocker) run(_ context.Context, args []string) ([]byte, 
 		return output, failure
 	case "inspect":
 		identity := args[1]
+		hook := fake.onInspect
+		if hook != nil {
+			// The hook runs before the answer is read so a test can make a later
+			// inspection observe a changed daemon answer without a sleep.
+			fake.mutex.Unlock()
+			hook(identity)
+			fake.mutex.Lock()
+		}
 		document, found := fake.inspectDocuments[identity]
 		failure := fake.inspectErrors[identity]
 		fake.mutex.Unlock()
@@ -106,8 +122,11 @@ func (fake *fakeContainerDocker) run(_ context.Context, args []string) ([]byte, 
 		fake.mutex.Unlock()
 		return output, failure
 	case "rm":
-		containerID, failure := args[len(args)-1], fake.removeErr
+		containerID, failure, hook := args[len(args)-1], fake.removeErr, fake.onRemove
 		fake.mutex.Unlock()
+		if hook != nil {
+			hook(containerID)
+		}
 		fake.recordRemoval(containerID)
 		if failure == nil {
 			fake.forgetContainer(containerID)
@@ -216,6 +235,34 @@ func (fake *fakeContainerDocker) removedIDs() []string {
 	fake.mutex.Lock()
 	defer fake.mutex.Unlock()
 	return append([]string(nil), fake.removed...)
+}
+
+// inspectsBeforeFirstCreate reports the identities inspected after the last rm
+// that preceded the first create. That window is exactly where recovery must
+// prove the prior identity absent before it admits a new container.
+func (fake *fakeContainerDocker) inspectsBeforeFirstCreate() []string {
+	fake.mutex.Lock()
+	defer fake.mutex.Unlock()
+	firstCreate := len(fake.calls)
+	for index, call := range fake.calls {
+		if call[0] == "create" {
+			firstCreate = index
+			break
+		}
+	}
+	lastRemove := -1
+	for index, call := range fake.calls[:firstCreate] {
+		if call[0] == "rm" {
+			lastRemove = index
+		}
+	}
+	var identities []string
+	for _, call := range fake.calls[lastRemove+1 : firstCreate] {
+		if call[0] == "inspect" {
+			identities = append(identities, call[1])
+		}
+	}
+	return identities
 }
 
 func (fake *fakeContainerDocker) attachedIDs() []string {
@@ -442,6 +489,16 @@ func testContainerNoSuchObject(identity string) error {
 	return &containerDockerError{
 		Args:   []string{"inspect", identity},
 		Stderr: "Error: No such object: " + identity,
+		Err:    errors.New("exit status 1"),
+	}
+}
+
+// testContainerMissingAfterRemove is Docker's exact answer when `rm --force`
+// loses a race with an external removal of the named container.
+func testContainerMissingAfterRemove(identity string) error {
+	return &containerDockerError{
+		Args:   []string{"rm", "--force", identity},
+		Stderr: "Error response from daemon: No such container: " + identity,
 		Err:    errors.New("exit status 1"),
 	}
 }
@@ -889,6 +946,148 @@ func TestContainerRuntimeRecoversOnlyAStoppedExactOwnedPriorContainer(t *testing
 		}
 		if err := runtime.Close(); err != nil {
 			t.Fatalf("Close: %v", err)
+		}
+	})
+
+	t.Run("rm losing a race to an external removal still proves absence", func(t *testing.T) {
+		t.Parallel()
+		stateDir := testContainerSlotStateDir(t)
+		prior := testContainerReservation()
+		prior.ContainerID = testContainerID2
+		seedTestContainerRuntimeReservation(t, stateDir, prior)
+		fake := newReadyFake(t, policy)
+		fake.setDocument(prior.ContainerID, testContainerRuntimeDocument(t, prior.ContainerID, prior.Name, prior.RunID, prior.Nonce, testContainerRuntimeOwner, policy, false))
+		// Docker answers rm with its exact missing-container reply because the
+		// documented prior container was removed between inspect and rm.
+		fake.removeErr = testContainerMissingAfterRemove(prior.ContainerID)
+		// The external removal only makes the prior container's own rm answer
+		// missing. Clear that one-shot injection once it has fired so the later
+		// cleanup of the newly created container sees a normal daemon.
+		var raced atomic.Bool
+		fake.onRemove = func(containerID string) {
+			fake.forgetContainer(containerID)
+			if containerID == prior.ContainerID && raced.CompareAndSwap(false, true) {
+				fake.mutex.Lock()
+				fake.removeErr = nil
+				fake.mutex.Unlock()
+			}
+		}
+
+		runtime, err := OpenContainerRuntime(context.Background(), testContainerRuntimeOptions(stateDir, fake))
+		if err != nil {
+			t.Fatalf("OpenContainerRuntime after the rm race: %v", err)
+		}
+		// The rm reply is not itself absence: the exact prior identity must be
+		// inspected again after rm, and once more under the reservation clear,
+		// before any new container is created.
+		proved := fake.inspectsBeforeFirstCreate()
+		wantProof := []string{prior.ContainerID, prior.ContainerID}
+		if !reflect.DeepEqual(proved, wantProof) {
+			t.Fatalf("absence proof before create inspected %v, want the ordered prior identity %v", proved, wantProof)
+		}
+		if fake.createCount() != 1 {
+			t.Fatalf("create count = %d, want 1 after accepting the rm race", fake.createCount())
+		}
+		if runtime.ContainerID() != testContainerID {
+			t.Fatalf("new ContainerID = %q, want the healthy new container %q", runtime.ContainerID(), testContainerID)
+		}
+		if err := runtime.Close(); err != nil {
+			t.Fatalf("Close after the one-shot rm race: %v", err)
+		}
+	})
+
+	t.Run("rm missing-container reply with a reappearing container retains the block", func(t *testing.T) {
+		t.Parallel()
+		stateDir := testContainerSlotStateDir(t)
+		prior := testContainerReservation()
+		prior.ContainerID = testContainerID2
+		seedTestContainerRuntimeReservation(t, stateDir, prior)
+		fake := newReadyFake(t, policy)
+		fake.setDocument(prior.ContainerID, testContainerRuntimeDocument(t, prior.ContainerID, prior.Name, prior.RunID, prior.Nonce, testContainerRuntimeOwner, policy, false))
+		// The rm reply claims the container is missing, but the following
+		// inspect still finds it: the runtime must not treat the reply as proof.
+		fake.removeErr = testContainerMissingAfterRemove(prior.ContainerID)
+
+		runtime, err := OpenContainerRuntime(context.Background(), testContainerRuntimeOptions(stateDir, fake))
+		if err == nil {
+			_ = runtime.Close()
+			t.Fatal("a reappearing container must block despite the rm missing-container reply")
+		}
+		if !strings.Contains(err.Error(), "still present") {
+			t.Fatalf("error = %v, want the failed absence proof named", err)
+		}
+		if fake.createCount() != 0 {
+			t.Fatal("a reappearing container must block before create")
+		}
+		slot, openErr := OpenContainerSlot(stateDir)
+		if openErr != nil {
+			t.Fatalf("OpenContainerSlot: %v", openErr)
+		}
+		if _, ok := slot.Reservation(); !ok {
+			t.Fatal("a failed absence proof must retain the durable reservation")
+		}
+		_ = slot.Close()
+	})
+
+	t.Run("rm failures other than the exact missing-container reply retain the block", func(t *testing.T) {
+		t.Parallel()
+		cases := map[string]func(identity string) error{
+			"wrong identity": func(identity string) error {
+				return testContainerMissingAfterRemove(testContainerID)
+			},
+			"broader text": func(identity string) error {
+				return &containerDockerError{
+					Args:   []string{"rm", "--force", identity},
+					Stderr: "Error response from daemon: No such container: " + identity + "\nretry aborted",
+					Err:    errors.New("exit status 1"),
+				}
+			},
+			"inspect-shaped reply": func(identity string) error {
+				return testContainerNoSuchObject(identity)
+			},
+			"daemon transport error": func(identity string) error {
+				return &containerDockerError{
+					Args: []string{"rm", "--force", identity},
+					Err:  errors.New("connection reset by peer"),
+				}
+			},
+			"generic error": func(string) error {
+				return errors.New("docker daemon busy")
+			},
+		}
+		for name, removeErr := range cases {
+			name, removeErr := name, removeErr
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				stateDir := testContainerSlotStateDir(t)
+				prior := testContainerReservation()
+				prior.ContainerID = testContainerID2
+				seedTestContainerRuntimeReservation(t, stateDir, prior)
+				fake := newReadyFake(t, policy)
+				fake.setDocument(prior.ContainerID, testContainerRuntimeDocument(t, prior.ContainerID, prior.Name, prior.RunID, prior.Nonce, testContainerRuntimeOwner, policy, false))
+				fake.removeErr = removeErr(prior.ContainerID)
+
+				runtime, err := OpenContainerRuntime(context.Background(), testContainerRuntimeOptions(stateDir, fake))
+				if err == nil {
+					_ = runtime.Close()
+					t.Fatalf("OpenContainerRuntime must fail for %s", name)
+				}
+				if fake.createCount() != 0 {
+					t.Fatalf("%s must block before create", name)
+				}
+				slot, openErr := OpenContainerSlot(stateDir)
+				if openErr != nil {
+					t.Fatalf("OpenContainerSlot: %v", openErr)
+				}
+				reservation, ok := slot.Reservation()
+				if !ok {
+					t.Fatalf("%s must retain the durable reservation", name)
+				}
+				if reservation.ContainerID != prior.ContainerID {
+					t.Fatalf("retained reservation container ID = %q, want %q", reservation.ContainerID, prior.ContainerID)
+				}
+				_ = slot.Close()
+			})
 		}
 	})
 
@@ -1593,35 +1792,105 @@ func TestContainerRuntimeRequiresAPositiveUnprivilegedWorkerUID(t *testing.T) {
 	}
 }
 
-func TestContainerRuntimeAttachCommandDelegatesWaitAndKill(t *testing.T) {
+func TestContainerRemoveMissingAcceptsOnlyDockersExactRmReply(t *testing.T) {
 	t.Parallel()
-	t.Run("wait reaps a completed child", func(t *testing.T) {
-		t.Parallel()
-		command := exec.Command("/bin/sh", "-c", "exit 0")
-		if err := command.Start(); err != nil {
-			t.Fatalf("start the harmless attach test child: %v", err)
-		}
-		attach := &containerAttachCommand{command: command}
-		if err := attach.Wait(); err != nil {
-			t.Fatalf("Wait on a completed child: %v", err)
-		}
-	})
-	t.Run("kill stops the child and wait reaps it", func(t *testing.T) {
-		t.Parallel()
-		command := exec.Command("/bin/sh", "-c", "exec sleep 30")
-		if err := command.Start(); err != nil {
-			t.Fatalf("start the harmless attach test child: %v", err)
-		}
-		attach := &containerAttachCommand{command: command}
-		if err := attach.Kill(); err != nil {
-			t.Fatalf("Kill: %v", err)
-		}
-		if err := attach.Wait(); err == nil {
-			t.Fatal("Wait must report the killed attach child rather than dropping the exit status")
-		}
-	})
-	if err := (&containerAttachCommand{}).Kill(); err == nil {
-		t.Fatal("Kill must refuse an adapter with no started process")
+	const identity = testContainerID2
+	cases := map[string]struct {
+		err      error
+		identity string
+		want     bool
+	}{
+		"exact missing-container reply": {
+			err:      testContainerMissingAfterRemove(identity),
+			identity: identity,
+			want:     true,
+		},
+		"exact reply with a trailing newline": {
+			err: &containerDockerError{
+				Args:   []string{"rm", "--force", identity},
+				Stderr: "Error response from daemon: No such container: " + identity + "\n",
+				Err:    errors.New("exit status 1"),
+			},
+			identity: identity,
+			want:     true,
+		},
+		"wrong identity": {
+			err:      testContainerMissingAfterRemove(identity),
+			identity: testContainerID,
+			want:     false,
+		},
+		"empty identity": {
+			err:      testContainerMissingAfterRemove(identity),
+			identity: "",
+			want:     false,
+		},
+		"broader text after the message": {
+			err: &containerDockerError{
+				Args:   []string{"rm", "--force", identity},
+				Stderr: "Error response from daemon: No such container: " + identity + "\nwarning: retry",
+				Err:    errors.New("exit status 1"),
+			},
+			identity: identity,
+			want:     false,
+		},
+		"missing daemon prefix": {
+			err: &containerDockerError{
+				Args:   []string{"rm", "--force", identity},
+				Stderr: "Error: No such container: " + identity,
+				Err:    errors.New("exit status 1"),
+			},
+			identity: identity,
+			want:     false,
+		},
+		"inspect-shaped reply": {
+			err:      testContainerNoSuchObject(identity),
+			identity: identity,
+			want:     false,
+		},
+		"reply attributed to another verb": {
+			err: &containerDockerError{
+				Args:   []string{"inspect", identity},
+				Stderr: "Error response from daemon: No such container: " + identity,
+				Err:    errors.New("exit status 1"),
+			},
+			identity: identity,
+			want:     false,
+		},
+		"reply with no recorded arguments": {
+			err: &containerDockerError{
+				Stderr: "Error response from daemon: No such container: " + identity,
+				Err:    errors.New("exit status 1"),
+			},
+			identity: identity,
+			want:     false,
+		},
+		"transport failure with no stderr": {
+			err: &containerDockerError{
+				Args: []string{"rm", "--force", identity},
+				Err:  errors.New("connection reset by peer"),
+			},
+			identity: identity,
+			want:     false,
+		},
+		"generic error": {
+			err:      errors.New("docker daemon busy"),
+			identity: identity,
+			want:     false,
+		},
+		"nil error": {
+			err:      nil,
+			identity: identity,
+			want:     false,
+		},
+	}
+	for name, current := range cases {
+		name, current := name, current
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if got := containerRemoveMissing(current.err, current.identity); got != current.want {
+				t.Fatalf("containerRemoveMissing(%v, %q) = %t, want %t", current.err, current.identity, got, current.want)
+			}
+		})
 	}
 }
 

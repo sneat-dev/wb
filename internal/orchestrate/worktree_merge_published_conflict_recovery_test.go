@@ -1,3 +1,5 @@
+//go:build e2e
+
 package orchestrate
 
 import (
@@ -150,7 +152,7 @@ func clonePublishedConflictReceipt(r WorktreeMergeReceipt) WorktreeMergeReceipt 
 }
 
 //nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
-func TestPublishedPrepareConflictRecoveryProvesExactPredecessorWithoutRecordingEarly(t *testing.T) {
+func TestE2EPublishedPrepareConflictRecoveryProvesExactPredecessorWithoutRecordingEarly(t *testing.T) {
 	fixture, receipt, published, head := newPublishedPrepareConflictFixture(t)
 	installWorktreeMergeEngineGH(t, fixture, published, receipt.Candidate.Branch)
 	before := receipt
@@ -175,7 +177,7 @@ func TestPublishedPrepareConflictRecoveryProvesExactPredecessorWithoutRecordingE
 }
 
 //nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
-func TestPublishedPrepareConflictRecoveryAdmitsOnlyTheFailedRefreshShape(t *testing.T) {
+func TestE2EPublishedPrepareConflictRecoveryAdmitsOnlyTheFailedRefreshShape(t *testing.T) {
 	fixture, receipt, published, head := newPublishedPrepareConflictFixture(t)
 	installWorktreeMergeEngineGH(t, fixture, published, receipt.Candidate.Branch)
 
@@ -220,7 +222,7 @@ func TestPublishedPrepareConflictRecoveryAdmitsOnlyTheFailedRefreshShape(t *test
 }
 
 //nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
-func TestPublishedPrepareConflictRecoveryRefusesUnprovenNativeEvidence(t *testing.T) {
+func TestE2EPublishedPrepareConflictRecoveryRefusesUnprovenNativeEvidence(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		mutate func(*testing.T, engineFixture, *WorktreeMergeReceipt)
@@ -288,7 +290,7 @@ func TestPublishedPrepareConflictRecoveryRefusesUnprovenNativeEvidence(t *testin
 }
 
 //nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
-func TestPublishedPrepareConflictRecoveryRefusesUnprovenPullRequestIdentity(t *testing.T) {
+func TestE2EPublishedPrepareConflictRecoveryRefusesUnprovenPullRequestIdentity(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		mutate func(*testing.T, engineFixture, *WorktreeMergeReceipt)
@@ -353,7 +355,7 @@ func recordLocalOnlyRepair(t *testing.T, worktree, branch, predecessor string) s
 }
 
 //nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
-func TestPublishedPrepareConflictRecoveryPreservesRecordedLocalRepair(t *testing.T) {
+func TestE2EPublishedPrepareConflictRecoveryPreservesRecordedLocalRepair(t *testing.T) {
 	//nolint:paralleltest // Each case builds its own t.Setenv real-Git fixture in the shared private lane.
 	t.Run("resolution dropping the recorded repair refuses", func(t *testing.T) {
 		fixture, receipt, published, head := newPublishedPrepareConflictFixture(t)
@@ -402,7 +404,7 @@ func TestPublishedPrepareConflictRecoveryPreservesRecordedLocalRepair(t *testing
 }
 
 //nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
-func TestPublishedPrepareConflictRecoveryProvesEveryRecordedCandidateRoot(t *testing.T) {
+func TestE2EPublishedPrepareConflictRecoveryProvesEveryRecordedCandidateRoot(t *testing.T) {
 	// Each row records one available root of the same publication that a
 	// replacement head omitted. The refusal must name it and leave the
 	// candidate and publication identity untouched.
@@ -456,7 +458,7 @@ func TestPublishedPrepareConflictRecoveryProvesEveryRecordedCandidateRoot(t *tes
 }
 
 //nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
-func TestPublishedPrepareConflictRecoveryRecoversWhenEveryRecordedRootIsContained(t *testing.T) {
+func TestE2EPublishedPrepareConflictRecoveryRecoversWhenEveryRecordedRootIsContained(t *testing.T) {
 	fixture, receipt, published, head := newPublishedPrepareConflictFixture(t)
 	installWorktreeMergeEngineGH(t, fixture, published, receipt.Candidate.Branch)
 	receipt.Validation.Revision = published
@@ -476,7 +478,7 @@ func TestPublishedPrepareConflictRecoveryRecoversWhenEveryRecordedRootIsContaine
 }
 
 //nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
-func TestPublishedPrepareConflictRecoveryUsesTheProvedTargetNormalization(t *testing.T) {
+func TestE2EPublishedPrepareConflictRecoveryUsesTheProvedTargetNormalization(t *testing.T) {
 	fixture, receipt, published, _ := newPublishedPrepareConflictFixture(t)
 	installWorktreeMergeEngineGH(t, fixture, published, receipt.Candidate.Branch)
 	// Advance the target and integrate it, so the immutable claim base (the
@@ -516,7 +518,7 @@ func TestPublishedPrepareConflictRecoveryUsesTheProvedTargetNormalization(t *tes
 }
 
 //nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
-func TestPublishedPrepareConflictRecoveryRefusesExactNativeReadErrors(t *testing.T) {
+func TestE2EPublishedPrepareConflictRecoveryRefusesExactNativeReadErrors(t *testing.T) {
 	fixture, receipt, published, head := newPublishedPrepareConflictFixture(t)
 	installWorktreeMergeEngineGH(t, fixture, published, receipt.Candidate.Branch)
 	sentinel := errors.New("controlled exact published-conflict read refused")
@@ -554,7 +556,7 @@ func TestPublishedPrepareConflictRecoveryRefusesExactNativeReadErrors(t *testing
 }
 
 //nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
-func TestPublishedPrepareConflictRecoveryRefusesInactiveCandidateClaim(t *testing.T) {
+func TestE2EPublishedPrepareConflictRecoveryRefusesInactiveCandidateClaim(t *testing.T) {
 	fixture, receipt, _, _ := newPublishedPrepareConflictFixture(t)
 	view, err := worktrees.LoadWorkLogView(t.Context(), worktrees.LoadWorkLogOptions{ProjectsRoot: fixture.githubDir, Worktree: receipt.Candidate.Worktree})
 	if err != nil || view.Claim == nil || view.Claim.ClaimPath == "" {
@@ -585,7 +587,7 @@ func TestPublishedPrepareConflictRecoveryRefusesInactiveCandidateClaim(t *testin
 }
 
 //nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
-func TestPublishedPrepareConflictRecoveryRefusesUnreadableCandidateWorkLog(t *testing.T) {
+func TestE2EPublishedPrepareConflictRecoveryRefusesUnreadableCandidateWorkLog(t *testing.T) {
 	fixture, receipt, published, _ := newPublishedPrepareConflictFixture(t)
 	prompts := filepath.Join(receipt.Candidate.Worktree, ".wb", "local", "prompts")
 	if err := os.RemoveAll(prompts); err != nil {
@@ -612,7 +614,7 @@ func TestPublishedPrepareConflictRecoveryRefusesUnreadableCandidateWorkLog(t *te
 // publishes it by fast-forward onto the same open pull request.
 //
 //nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
-func TestPublishedPrepareConflictRecoveryKeepsUnvalidatedRecordedHeadResumable(t *testing.T) {
+func TestE2EPublishedPrepareConflictRecoveryKeepsUnvalidatedRecordedHeadResumable(t *testing.T) {
 	fixture, receipt, published, repair, advanced := newPublishedPrepareRepairConflictFixture(t)
 	resolved := resolvePublishedRepairMerge(t, receipt.Candidate.Worktree, repair, advanced, "a-advanced\nb\n")
 	gh := installWorktreeMergeEngineGH(t, fixture, published, receipt.Candidate.Branch)

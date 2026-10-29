@@ -274,7 +274,9 @@ The image contract is keyless and immutable. It must provide the composed
 `dsh` profile contents at `/opt/wb-dsh-profile`, its tool tree at
 `/opt/agent/node_modules`, and `dsh`, Node and coreutils on the worker `PATH`
 for an unprivileged worker UID/GID. It must not depend on a host home directory,
-the Docker socket, a credential store or host `node_modules`. Fresh Linux
+the Docker socket, a credential store or host `node_modules`. The image declares
+no Dockerfile `VOLUME`: anonymous volumes are refused, so the only mounts present
+are the closed set WB verifies. Fresh Linux
 dependencies are installed per run into ephemeral, container-owned tmpfs masks
 at the worktree's dependency and cache paths; the masks are explicitly
 executable, so a native addon loads the same as on a normal Linux host, while
@@ -294,7 +296,10 @@ whole namespace and proves the container absent before recording a stable
 handoff; a failed cleanup is reported and keeps the durable slot blocked until
 a later contained run proves it absent on the same Docker Engine. `wb agent
 stop` for a contained run writes that durable cancellation sentinel — the
-recorded worker PID is the host Docker client, not the workload.
+recorded worker PID is the host Docker client, not the workload. `wb agent
+status` reports `worker_alive` for that recorded transport process only, so it
+can be false during contained validation; the run state and validation status
+describe the remaining work.
 
 The native lifecycle proofs establish this implementation's behaviour under
 local Linux limits. They do not prove that a particular host has an updated WB

@@ -103,7 +103,9 @@ func TestContainedLifetimeRefusesUnboundedOrOverflowingRunTimeout(t *testing.T) 
 		"exactly four hours":     {timeoutMS: int64(maxContainerLifetime / time.Millisecond), want: "leaves no room"},
 	}
 	for name, testCase := range cases {
+		name, testCase := name, testCase
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			if _, err := ContainedLifetime(testCase.timeoutMS, nil); err == nil || !strings.Contains(err.Error(), testCase.want) {
 				t.Fatalf("error = %v, want %q", err, testCase.want)
 			}

@@ -61,6 +61,72 @@ func (err *ContainerSlotBusyError) Error() string {
 	return fmt.Sprintf("another container execution already holds the durable slot (%s); wait for it to finish or stop it before starting another", err.Path)
 }
 
+// containerSlotFiles is the smallest per-instance seam for the few filesystem
+// calls whose low-level failure the real OS cannot produce deterministically
+// inside an isolated test directory. Every nil field selects the exact
+// production function, so a nil seam -- what every production caller passes --
+// behaves byte-for-byte as before. It is per call and per slot, never a package
+// variable, so tests using different seams race nothing and stay safe under
+// t.Parallel(). injector is the existing filewrite fault injector, threaded
+// only so a focused test can fail one staging step; a nil injector writes
+// exactly as before.
+type containerSlotFiles struct {
+	openFile func(string, int, os.FileMode) (*os.File, error)
+	open     func(string) (*os.File, error)
+	readAll  func(io.Reader) ([]byte, error)
+	lstat    func(string) (os.FileInfo, error)
+	lock     func(*os.File) error
+	injector *filewrite.Injector
+}
+
+// openLockFile opens the retained lock file, or selects os.OpenFile.
+func (files *containerSlotFiles) openLockFile(path string, flag int, mode os.FileMode) (*os.File, error) {
+	if files != nil && files.openFile != nil {
+		return files.openFile(path, flag, mode)
+	}
+	return os.OpenFile(path, flag, mode)
+}
+
+// openReservation opens the durable reservation for reading, or selects os.Open.
+func (files *containerSlotFiles) openReservation(path string) (*os.File, error) {
+	if files != nil && files.open != nil {
+		return files.open(path)
+	}
+	return os.Open(path)
+}
+
+// readReservation reads the bounded reservation bytes, or selects io.ReadAll.
+func (files *containerSlotFiles) readReservation(reader io.Reader) ([]byte, error) {
+	if files != nil && files.readAll != nil {
+		return files.readAll(reader)
+	}
+	return io.ReadAll(reader)
+}
+
+// lstatPath inspects one state-directory entry, or selects os.Lstat.
+func (files *containerSlotFiles) lstatPath(path string) (os.FileInfo, error) {
+	if files != nil && files.lstat != nil {
+		return files.lstat(path)
+	}
+	return os.Lstat(path)
+}
+
+// lockDescriptor takes the exclusive kernel lock, or selects lockFile.
+func (files *containerSlotFiles) lockDescriptor(file *os.File) error {
+	if files != nil && files.lock != nil {
+		return files.lock(file)
+	}
+	return lockFile(file)
+}
+
+// faultInjector returns the filewrite injector, or nil for production.
+func (files *containerSlotFiles) faultInjector() *filewrite.Injector {
+	if files == nil {
+		return nil
+	}
+	return files.injector
+}
+
 // ContainerSlot is one retained holder. The open descriptor and its kernel
 // lock are the authority; the reservation file is the durable record a later
 // holder must see.
@@ -72,7 +138,10 @@ type ContainerSlot struct {
 	// persist is a per-slot seam for pinning the save-failure branch. It is set
 	// by OpenContainerSlot to writeReservation; production never changes it.
 	persist func(ContainerReservation) error
-	closed  bool
+	// files is the private filesystem seam. Production leaves it nil, which
+	// selects every exact production call.
+	files  *containerSlotFiles
+	closed bool
 }
 
 // ContainerSlotStateDir resolves the fixed per-user default state directory.
@@ -98,6 +167,13 @@ func ContainerSlotStateDir() (string, error) {
 // *ContainerSlotBusyError, and a platform without an inherited exclusive lock
 // fails closed rather than pretending to serialize.
 func OpenContainerSlot(stateDir string) (*ContainerSlot, error) {
+	return openContainerSlot(stateDir, nil)
+}
+
+// openContainerSlot is OpenContainerSlot with the private filesystem seam. A
+// nil seam selects every production call; production never passes anything
+// else.
+func openContainerSlot(stateDir string, files *containerSlotFiles) (*ContainerSlot, error) {
 	resolved := strings.TrimSpace(stateDir)
 	if resolved == "" {
 		defaultDir, err := ContainerSlotStateDir()
@@ -107,7 +183,7 @@ func OpenContainerSlot(stateDir string) (*ContainerSlot, error) {
 		resolved = defaultDir
 	}
 	resolved = filepath.Clean(resolved)
-	if err := prepareContainerSlotStateDir(resolved); err != nil {
+	if err := prepareContainerSlotStateDir(resolved, files); err != nil {
 		return nil, err
 	}
 	lockPath := filepath.Join(resolved, containerSlotLockFileName)
@@ -115,11 +191,11 @@ func OpenContainerSlot(stateDir string) (*ContainerSlot, error) {
 		return nil, err
 	}
 	// The lock file is never unlinked: a later holder must lock the same inode.
-	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	file, err := files.openLockFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open container slot lock %s: %w", lockPath, err)
 	}
-	if err := lockFile(file); err != nil {
+	if err := files.lockDescriptor(file); err != nil {
 		_ = file.Close()
 		if isLockBusy(err) {
 			return nil, &ContainerSlotBusyError{Path: lockPath}
@@ -128,7 +204,7 @@ func OpenContainerSlot(stateDir string) (*ContainerSlot, error) {
 		// admit two containers.
 		return nil, fmt.Errorf("lock container slot %s: %w", lockPath, err)
 	}
-	slot := &ContainerSlot{file: file, stateDir: resolved}
+	slot := &ContainerSlot{file: file, stateDir: resolved, files: files}
 	slot.persist = slot.writeReservation
 	prior, found, err := slot.loadReservation()
 	if err != nil {
@@ -231,7 +307,7 @@ func (slot *ContainerSlot) ClearReservation(confirmAbsent func(ContainerReservat
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove container reservation %s: %w", path, err)
 	}
-	if err := syncContainerSlotDir(slot.stateDir); err != nil {
+	if err := syncContainerSlotDir(slot.stateDir, slot.files.faultInjector()); err != nil {
 		return err
 	}
 	slot.reservation = nil
@@ -267,31 +343,32 @@ func (slot *ContainerSlot) writeReservation(reservation ContainerReservation) er
 	// mode left to report.
 	raw, _ := json.MarshalIndent(reservation, "", "  ")
 	raw = append(raw, '\n')
-	temporary, err := filewrite.CreateTemp(slot.stateDir, ".reservation-*.json.tmp", nil)
+	injector := slot.files.faultInjector()
+	temporary, err := filewrite.CreateTemp(slot.stateDir, ".reservation-*.json.tmp", injector)
 	if err != nil {
 		return fmt.Errorf("stage container reservation: %w", err)
 	}
 	temporaryName := temporary.Name()
 	defer func() { _ = os.Remove(temporaryName) }()
-	if err := filewrite.ChmodFile(temporary, 0o600, temporaryName, nil); err != nil {
+	if err := filewrite.ChmodFile(temporary, 0o600, temporaryName, injector); err != nil {
 		_ = temporary.Close()
 		return fmt.Errorf("protect staged container reservation: %w", err)
 	}
-	if err := filewrite.Write(temporary, raw, temporaryName, nil); err != nil {
+	if err := filewrite.Write(temporary, raw, temporaryName, injector); err != nil {
 		_ = temporary.Close()
 		return fmt.Errorf("write staged container reservation: %w", err)
 	}
-	if err := filewrite.Sync(temporary, temporaryName, nil); err != nil {
+	if err := filewrite.Sync(temporary, temporaryName, injector); err != nil {
 		_ = temporary.Close()
 		return fmt.Errorf("sync staged container reservation: %w", err)
 	}
-	if err := filewrite.Close(temporary, temporaryName, nil); err != nil {
+	if err := filewrite.Close(temporary, temporaryName, injector); err != nil {
 		return fmt.Errorf("close staged container reservation: %w", err)
 	}
-	if err := filewrite.Rename(temporaryName, slot.reservationPath(), nil); err != nil {
+	if err := filewrite.Rename(temporaryName, slot.reservationPath(), injector); err != nil {
 		return fmt.Errorf("publish container reservation: %w", err)
 	}
-	return syncContainerSlotDir(slot.stateDir)
+	return syncContainerSlotDir(slot.stateDir, injector)
 }
 
 func (slot *ContainerSlot) loadReservation() (ContainerReservation, bool, error) {
@@ -299,7 +376,7 @@ func (slot *ContainerSlot) loadReservation() (ContainerReservation, bool, error)
 	if err := inspectPrivateRegularFile(path); err != nil {
 		return ContainerReservation{}, false, err
 	}
-	file, err := os.Open(path)
+	file, err := slot.files.openReservation(path)
 	if os.IsNotExist(err) {
 		return ContainerReservation{}, false, nil
 	}
@@ -307,7 +384,7 @@ func (slot *ContainerSlot) loadReservation() (ContainerReservation, bool, error)
 		return ContainerReservation{}, false, fmt.Errorf("open container reservation %s: %w", path, err)
 	}
 	defer func() { _ = file.Close() }()
-	raw, err := io.ReadAll(io.LimitReader(file, maxContainerReservationBytes+1))
+	raw, err := slot.files.readReservation(io.LimitReader(file, maxContainerReservationBytes+1))
 	if err != nil {
 		return ContainerReservation{}, false, fmt.Errorf("read container reservation %s: %w", path, err)
 	}
@@ -326,11 +403,11 @@ func (slot *ContainerSlot) loadReservation() (ContainerReservation, bool, error)
 
 // prepareContainerSlotStateDir creates a missing state directory and refuses
 // an existing one that is a symlink, not a directory, or not private.
-func prepareContainerSlotStateDir(dir string) error {
+func prepareContainerSlotStateDir(dir string, files *containerSlotFiles) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create container slot state directory %s: %w", dir, err)
 	}
-	info, err := os.Lstat(dir)
+	info, err := files.lstatPath(dir)
 	if err != nil {
 		return fmt.Errorf("inspect container slot state directory %s: %w", dir, err)
 	}
@@ -365,13 +442,15 @@ func inspectPrivateRegularFile(path string) error {
 	return nil
 }
 
-func syncContainerSlotDir(path string) error {
+// syncContainerSlotDir opens the state directory and makes the published
+// reservation durable. A nil injector performs exactly the production calls.
+func syncContainerSlotDir(path string, inj *filewrite.Injector) error {
 	directory, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("open container slot state directory %s for sync: %w", path, err)
 	}
 	defer func() { _ = directory.Close() }()
-	if err := filewrite.SyncDir(directory, nil); err != nil {
+	if err := filewrite.SyncDir(directory, inj); err != nil {
 		return fmt.Errorf("sync container slot state directory %s: %w", path, err)
 	}
 	return nil

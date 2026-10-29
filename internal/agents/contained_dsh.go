@@ -142,11 +142,47 @@ func PrepareContainedDshLaunchFromRecord(record Record, runDir, credentialEnvNam
 	})
 }
 
+// containedDshFile is the opened overlay file surface the preparation needs.
+// Only the two operations the write path uses are representable, so the seam
+// cannot be widened into a general file abstraction.
+type containedDshFile interface {
+	Write([]byte) (int, error)
+	Close() error
+}
+
+// containedDshFilesystem is the minimal per-call filesystem surface the scoped
+// input preparation uses. Production supplies the exact os operations; a
+// focused test supplies a failure through one call without replacing any
+// process-wide function or exposing a public option.
+type containedDshFilesystem struct {
+	mkdir        func(string, os.FileMode) error
+	removeAll    func(string) error
+	lstat        func(string) (os.FileInfo, error)
+	evalSymlinks func(string) (string, error)
+	openFile     func(string, int, os.FileMode) (containedDshFile, error)
+}
+
+func defaultContainedDshFilesystem() containedDshFilesystem {
+	return containedDshFilesystem{
+		mkdir:        os.Mkdir,
+		removeAll:    os.RemoveAll,
+		lstat:        os.Lstat,
+		evalSymlinks: filepath.EvalSymlinks,
+		openFile: func(path string, flag int, perm os.FileMode) (containedDshFile, error) {
+			return os.OpenFile(path, flag, perm)
+		},
+	}
+}
+
 // PrepareContainedDshLaunch writes the exact scoped input directory and returns
 // the workspace and harness launch. It creates no other file or mount, so a
 // caller cannot add an input file, reuse the run store or point the harness at a
 // host harness home.
 func PrepareContainedDshLaunch(fields ContainedDshLaunchFields) (ContainedDshLaunch, error) {
+	return prepareContainedDshLaunch(fields, defaultContainedDshFilesystem())
+}
+
+func prepareContainedDshLaunch(fields ContainedDshLaunchFields, filesystem containedDshFilesystem) (ContainedDshLaunch, error) {
 	if fields.Provider != ProviderDshDefault {
 		return ContainedDshLaunch{}, fmt.Errorf("prepare a contained dsh launch: provider %q is not the only official provider %q", fields.Provider, ProviderDshDefault)
 	}
@@ -171,7 +207,7 @@ func PrepareContainedDshLaunch(fields ContainedDshLaunchFields) (ContainedDshLau
 	if !officialDeepSeekEndpoint(baseURL) {
 		return ContainedDshLaunch{}, fmt.Errorf("prepare a contained dsh launch: base URL %q is not the official HTTPS DeepSeek endpoint", fields.BaseURL)
 	}
-	runDir, err := validateContainedDshRunDir(fields.RunDir)
+	runDir, err := validateContainedDshRunDirWith(filesystem, fields.RunDir)
 	if err != nil {
 		return ContainedDshLaunch{}, err
 	}
@@ -194,16 +230,16 @@ func PrepareContainedDshLaunch(fields ContainedDshLaunchFields) (ContainedDshLau
 	if err != nil {
 		return ContainedDshLaunch{}, fmt.Errorf("prepare a contained dsh launch: %w", err)
 	}
-	if err := validateContainedDshInputTarget(inputDir); err != nil {
+	if err := validateContainedDshInputTargetWith(filesystem, inputDir); err != nil {
 		return ContainedDshLaunch{}, err
 	}
-	if err := os.Mkdir(inputDir, 0o700); err != nil {
+	if err := filesystem.mkdir(inputDir, 0o700); err != nil {
 		return ContainedDshLaunch{}, fmt.Errorf("prepare a contained dsh launch: create scoped input directory %s: %w", inputDir, err)
 	}
 	// From here on every failure removes the one directory this call created.
-	cleanup := func() { _ = os.RemoveAll(inputDir) }
+	cleanup := func() { _ = filesystem.removeAll(inputDir) }
 	patchPath := filepath.Join(inputDir, dshModelPatchName)
-	if err := writeContainedDshPatch(patchPath, containedDshModelPatch(model, credentialEnvName, baseURL)); err != nil {
+	if err := writeContainedDshPatchWith(filesystem, patchPath, containedDshModelPatch(model, credentialEnvName, baseURL)); err != nil {
 		cleanup()
 		return ContainedDshLaunch{}, err
 	}
@@ -263,15 +299,15 @@ func validateContainedDshCredentialName(raw string) (string, error) {
 	return name, nil
 }
 
-// validateContainedDshRunDir validates the one existing private run directory
+// validateContainedDshRunDirWith validates the one existing private run directory
 // this helper writes below. A symlink is refused rather than followed, because
 // following it would place the scoped input outside the run.
-func validateContainedDshRunDir(raw string) (string, error) {
+func validateContainedDshRunDirWith(filesystem containedDshFilesystem, raw string) (string, error) {
 	runDir, err := validateContainedDshPath("run directory", raw)
 	if err != nil {
 		return "", err
 	}
-	info, err := os.Lstat(runDir)
+	info, err := filesystem.lstat(runDir)
 	if err != nil {
 		return "", fmt.Errorf("prepare a contained dsh launch: inspect run directory %q: %w", runDir, err)
 	}
@@ -281,7 +317,7 @@ func validateContainedDshRunDir(raw string) (string, error) {
 	if !info.IsDir() {
 		return "", fmt.Errorf("prepare a contained dsh launch: run directory %q is not a directory", runDir)
 	}
-	resolved, err := filepath.EvalSymlinks(runDir)
+	resolved, err := filesystem.evalSymlinks(runDir)
 	if err != nil {
 		return "", fmt.Errorf("prepare a contained dsh launch: resolve run directory %q: %w", runDir, err)
 	}
@@ -312,11 +348,11 @@ func validateContainedDshPath(label, raw string) (string, error) {
 	return clean, nil
 }
 
-// validateContainedDshInputTarget refuses a scoped input path that already
+// validateContainedDshInputTargetWith refuses a scoped input path that already
 // exists, including a symlink. Reusing a pre-existing directory would let
 // something outside this preparation choose what the container mounts.
-func validateContainedDshInputTarget(inputDir string) error {
-	info, err := os.Lstat(inputDir)
+func validateContainedDshInputTargetWith(filesystem containedDshFilesystem, inputDir string) error {
+	info, err := filesystem.lstat(inputDir)
 	switch {
 	case err == nil:
 		if info.Mode()&os.ModeSymlink != 0 {
@@ -334,7 +370,11 @@ func validateContainedDshInputTarget(inputDir string) error {
 // caller owns the fresh directory, so an existing path is an error rather than
 // something to truncate.
 func writeContainedDshPatch(path string, raw []byte) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	return writeContainedDshPatchWith(defaultContainedDshFilesystem(), path, raw)
+}
+
+func writeContainedDshPatchWith(filesystem containedDshFilesystem, path string, raw []byte) error {
+	file, err := filesystem.openFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return fmt.Errorf("prepare a contained dsh launch: create overlay %s: %w", path, err)
 	}

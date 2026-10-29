@@ -416,7 +416,9 @@ func TestContainerSlotRefusesMalformedOversizedOrInsecureReservations(t *testing
 		}},
 	}
 	for _, testCase := range cases {
+		testCase := testCase
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			dir := testContainerSlotStateDir(t)
 			testCase.prepare(t, dir)
 			slot, err := OpenContainerSlot(dir)
@@ -441,6 +443,7 @@ func TestContainerSlotRefusesMalformedOversizedOrInsecureReservations(t *testing
 func TestContainerSlotRefusesAnUnsafeStateDirectory(t *testing.T) {
 	t.Parallel()
 	t.Run("symlink", func(t *testing.T) {
+		t.Parallel()
 		realDir := t.TempDir()
 		link := filepath.Join(t.TempDir(), "state")
 		if err := os.Symlink(realDir, link); err != nil {
@@ -452,6 +455,7 @@ func TestContainerSlotRefusesAnUnsafeStateDirectory(t *testing.T) {
 		}
 	})
 	t.Run("insecure permissions", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		if err := os.Chmod(dir, 0o755); err != nil {
 			t.Fatalf("chmod state directory: %v", err)
@@ -462,6 +466,7 @@ func TestContainerSlotRefusesAnUnsafeStateDirectory(t *testing.T) {
 		}
 	})
 	t.Run("creates a private directory", func(t *testing.T) {
+		t.Parallel()
 		dir := filepath.Join(t.TempDir(), "nested", "state")
 		slot := openTestContainerSlot(t, dir)
 		if slot == nil {
@@ -480,6 +485,7 @@ func TestContainerSlotRefusesAnUnsafeStateDirectory(t *testing.T) {
 func TestContainerSlotRefusesAnUnsafeExistingLockFile(t *testing.T) {
 	t.Parallel()
 	t.Run("symlink", func(t *testing.T) {
+		t.Parallel()
 		dir := testContainerSlotStateDir(t)
 		target := filepath.Join(dir, "real.lock")
 		writeContainerSlotFile(t, target, nil, 0o600)
@@ -492,6 +498,7 @@ func TestContainerSlotRefusesAnUnsafeExistingLockFile(t *testing.T) {
 		}
 	})
 	t.Run("insecure permissions", func(t *testing.T) {
+		t.Parallel()
 		dir := testContainerSlotStateDir(t)
 		writeContainerSlotFile(t, filepath.Join(dir, "container.lock"), nil, 0o644)
 		if slot, err := OpenContainerSlot(dir); err == nil {
@@ -500,6 +507,7 @@ func TestContainerSlotRefusesAnUnsafeExistingLockFile(t *testing.T) {
 		}
 	})
 	t.Run("not a regular file", func(t *testing.T) {
+		t.Parallel()
 		dir := testContainerSlotStateDir(t)
 		if err := os.Mkdir(filepath.Join(dir, "container.lock"), 0o700); err != nil {
 			t.Fatalf("make lock directory: %v", err)

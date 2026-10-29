@@ -1,3 +1,5 @@
+//go:build e2e
+
 package agents
 
 import (
@@ -11,7 +13,7 @@ import (
 	"time"
 )
 
-func TestValidationKeepsTheLegacyHostEnvironmentAndWorkdir(t *testing.T) {
+func TestE2EValidationKeepsTheLegacyHostEnvironmentAndWorkdir(t *testing.T) {
 	t.Setenv("DEEPSEEK_API_KEY", "super-secret")
 	worktree := t.TempDir()
 	var command *exec.Cmd
@@ -44,7 +46,7 @@ func TestValidationKeepsTheLegacyHostEnvironmentAndWorkdir(t *testing.T) {
 	}
 }
 
-func TestValidationPreservesTheContainedDockerClientTransport(t *testing.T) {
+func TestE2EValidationPreservesTheContainedDockerClientTransport(t *testing.T) {
 	t.Setenv("DEEPSEEK_API_KEY", "super-secret")
 	transportEnv := []string{
 		"DOCKER_HOST=unix:///var/run/docker.sock",
@@ -94,7 +96,7 @@ func TestValidationPreservesTheContainedDockerClientTransport(t *testing.T) {
 	}
 }
 
-func TestValidationContainedTransportFailureNeverFallsBackToTheHost(t *testing.T) {
+func TestE2EValidationContainedTransportFailureNeverFallsBackToTheHost(t *testing.T) {
 	t.Parallel()
 	hostFallback := false
 	hostCommand := func(context.Context, string, ...string) *exec.Cmd {
@@ -149,7 +151,7 @@ func TestValidationContainedTransportFailureNeverFallsBackToTheHost(t *testing.T
 	}
 }
 
-func TestValidationContainedTransportHonoursTheStepTimeout(t *testing.T) {
+func TestE2EValidationContainedTransportHonoursTheStepTimeout(t *testing.T) {
 	t.Parallel()
 	started := time.Now()
 	record := RunValidation(context.Background(), ValidationOptions{
@@ -169,7 +171,7 @@ func TestValidationContainedTransportHonoursTheStepTimeout(t *testing.T) {
 	}
 }
 
-func TestContainerValidationTransportIsCredentialFreeAndRemapsArgv(t *testing.T) {
+func TestE2EContainerValidationTransportIsCredentialFreeAndRemapsArgv(t *testing.T) {
 	t.Setenv("DEEPSEEK_API_KEY", "super-secret")
 	t.Setenv("DOCKER_HOST", "unix:///test-docker.sock")
 	runtime := &ContainerRuntime{
@@ -232,7 +234,7 @@ func TestContainerValidationTransportIsCredentialFreeAndRemapsArgv(t *testing.T)
 	}
 }
 
-func TestContainedValidationFailFastStopsAfterTheFirstFailedStep(t *testing.T) {
+func TestE2EContainedValidationFailFastStopsAfterTheFirstFailedStep(t *testing.T) {
 	t.Parallel()
 	cases := map[string]struct {
 		timeout string
@@ -276,7 +278,7 @@ func TestContainedValidationFailFastStopsAfterTheFirstFailedStep(t *testing.T) {
 	}
 }
 
-func TestLegacyValidationStillReportsEveryConfiguredStep(t *testing.T) {
+func TestE2ELegacyValidationStillReportsEveryConfiguredStep(t *testing.T) {
 	t.Parallel()
 	calls := 0
 	record := RunValidation(context.Background(), ValidationOptions{

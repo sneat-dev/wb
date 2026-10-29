@@ -129,11 +129,11 @@ func normalizeContainerWorkspace(workspace *ContainerWorkspace, host *containerH
 	if err != nil {
 		return containerWorkspacePlan{}, fmt.Errorf("resolve the owner home directory before validating the container workspace: %w", err)
 	}
-	worktree, err := validateContainerWorkspaceRoot("worktree directory", workspace.WorktreeDir, home)
+	worktree, err := validateContainerWorkspaceRoot(host, "worktree directory", workspace.WorktreeDir, home)
 	if err != nil {
 		return containerWorkspacePlan{}, err
 	}
-	gitCommon, err := validateContainerWorkspaceRoot("git common directory", workspace.GitCommonDir, home)
+	gitCommon, err := validateContainerWorkspaceRoot(host, "git common directory", workspace.GitCommonDir, home)
 	if err != nil {
 		return containerWorkspacePlan{}, err
 	}
@@ -142,7 +142,7 @@ func normalizeContainerWorkspace(workspace *ContainerWorkspace, host *containerH
 	}
 	input := ""
 	if workspace.InputDir != "" {
-		input, err = validateContainerWorkspaceRoot("input directory", workspace.InputDir, home)
+		input, err = validateContainerWorkspaceRoot(host, "input directory", workspace.InputDir, home)
 		if err != nil {
 			return containerWorkspacePlan{}, err
 		}
@@ -168,7 +168,7 @@ func normalizeContainerWorkspace(workspace *ContainerWorkspace, host *containerH
 // that is neither the filesystem root, the owner home, nor an ancestor of that
 // home. A symlink anywhere in the path is refused rather than resolved, because
 // resolving it would silently widen what the runtime later mounted.
-func validateContainerWorkspaceRoot(label, raw, home string) (string, error) {
+func validateContainerWorkspaceRoot(host *containerHost, label, raw, home string) (string, error) {
 	path := strings.TrimSpace(raw)
 	if path == "" {
 		return "", fmt.Errorf("the container workspace %s is empty", label)
@@ -205,7 +205,7 @@ func validateContainerWorkspaceRoot(label, raw, home string) (string, error) {
 	// Lstat only proves the last component. Resolving the whole path catches an
 	// earlier symlink component, which would make the mounted source differ
 	// from the path the plan records.
-	resolved, err := filepath.EvalSymlinks(path)
+	resolved, err := host.resolveSymlinks(path)
 	if err != nil {
 		return "", fmt.Errorf("resolve the container workspace %s %q: %w", label, path, err)
 	}

@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	goruntime "runtime"
 	"strconv"
@@ -165,15 +166,20 @@ type containerHost struct {
 	currentUser func() (int, int)
 	userHome    func() (string, error)
 	lookupEnv   func(string) (string, bool)
+	// evalSymlinks resolves a workspace root's whole path so an earlier
+	// symlink component cannot widen the later mount. Production keeps
+	// filepath.EvalSymlinks; a focused test may pin the resolution failure.
+	evalSymlinks func(string) (string, error)
 }
 
 func defaultContainerHost() *containerHost {
 	return &containerHost{
-		dockerPath:  func() (string, error) { return exec.LookPath("docker") },
-		hostOS:      func() string { return goruntime.GOOS },
-		currentUser: func() (int, int) { return os.Getuid(), os.Getgid() },
-		userHome:    os.UserHomeDir,
-		lookupEnv:   os.LookupEnv,
+		dockerPath:   func() (string, error) { return exec.LookPath("docker") },
+		hostOS:       func() string { return goruntime.GOOS },
+		currentUser:  func() (int, int) { return os.Getuid(), os.Getgid() },
+		userHome:     os.UserHomeDir,
+		lookupEnv:    os.LookupEnv,
+		evalSymlinks: filepath.EvalSymlinks,
 	}
 }
 
@@ -192,6 +198,15 @@ func (host *containerHost) lookupEnvironment(name string) (string, bool) {
 		return host.lookupEnv(name)
 	}
 	return os.LookupEnv(name)
+}
+
+// resolveSymlinks resolves a workspace root's whole path. A nil seam selects
+// filepath.EvalSymlinks, which is what production always uses.
+func (host *containerHost) resolveSymlinks(path string) (string, error) {
+	if host != nil && host.evalSymlinks != nil {
+		return host.evalSymlinks(path)
+	}
+	return filepath.EvalSymlinks(path)
 }
 
 // operatingSystem reports the controller platform. A focused test may pin the
@@ -270,6 +285,11 @@ type ContainerRuntime struct {
 	containerID string
 	imageID     string
 	limits      ContainerVerifiedLimits
+
+	// openPipe is the per-instance stdin pipe factory. Production always keeps
+	// the exact os.Pipe; a focused test may replace it on its own runtime to
+	// pin the pipe-creation failure branch. It is never a package global.
+	openPipe func() (*os.File, *os.File, error)
 
 	// writer is the only write end of the container's stdin pipe. Closing it
 	// is the owner-death signal: Docker sees EOF and the PID1 supervisor takes
@@ -357,6 +377,7 @@ func newContainerRuntime(options ContainerRuntimeOptions) (*ContainerRuntime, er
 		host:              host,
 		transportEnv:      transport,
 		workspace:         workspace,
+		openPipe:          os.Pipe,
 		attachReapTimeout: containerAttachReapTimeout,
 		attachKillTimeout: containerAttachKillTimeout,
 	}, nil
@@ -530,9 +551,10 @@ func (runtime *ContainerRuntime) inspectImage(ctx context.Context) (string, erro
 
 func (runtime *ContainerRuntime) newReservation() (ContainerReservation, error) {
 	nonce := make([]byte, 16)
-	if _, err := rand.Read(nonce); err != nil {
-		return ContainerReservation{}, fmt.Errorf("generate the container reservation nonce: %w", err)
-	}
+	// crypto/rand.Read is documented to fill the buffer and never return an
+	// error; the runtime crashes irrecoverably on an entropy failure, so there
+	// is no recoverable reservation error to report here.
+	_, _ = rand.Read(nonce)
 	nonceHex := hex.EncodeToString(nonce)
 	// validateAgentID already guarantees the agt- prefix and 32 hex
 	// characters, so this slice is always in range.
@@ -624,7 +646,11 @@ func (runtime *ContainerRuntime) lifetime() time.Duration {
 }
 
 func (runtime *ContainerRuntime) attachContainer() error {
-	readEnd, writeEnd, err := os.Pipe()
+	openPipe := runtime.openPipe
+	if openPipe == nil {
+		openPipe = os.Pipe
+	}
+	readEnd, writeEnd, err := openPipe()
 	if err != nil {
 		return fmt.Errorf("create the container attach stdin pipe: %w", err)
 	}
@@ -978,7 +1004,11 @@ func (runtime *ContainerRuntime) recoverPriorReservation(ctx context.Context) er
 
 func (runtime *ContainerRuntime) removeContainer(ctx context.Context, containerID string) error {
 	if _, err := runtime.commands.command(ctx, []string{"rm", "--force", containerID}); err != nil {
-		if containerNoSuchObject(err, containerID) {
+		// The ownership inspect can race with an external removal, after which
+		// rm answers with Docker's exact missing-container reply. That reply is
+		// permission to continue to the caller's independent absence proof; it
+		// is not itself absence.
+		if containerRemoveMissing(err, containerID) {
 			return nil
 		}
 		return fmt.Errorf("docker rm --force %s: %w", containerID, err)
@@ -1329,6 +1359,27 @@ func containerNoSuchObject(err error, identity string) bool {
 		}
 	}
 	return false
+}
+
+// containerRemoveMissing accepts only the exact answer Docker's `rm --force`
+// gives when the named container vanished before the removal:
+//
+//	Error response from daemon: No such container: <identity>
+//
+// The error must be an actual *containerDockerError from an `rm` invocation and
+// its whole bounded stderr must be that single message for this exact identity.
+// A different identity, any extra or different text, another verb, a generic
+// failure or a transport error is not accepted. This is deliberately separate
+// from containerNoSuchObject: inspect's no-such-object answer and rm's
+// no-such-container answer are different daemon messages, and neither may be
+// accepted where the other belongs. This reply only permits a caller to reach
+// its independent absence proof; it is never absence evidence itself.
+func containerRemoveMissing(err error, identity string) bool {
+	var dockerErr *containerDockerError
+	if !errors.As(err, &dockerErr) || identity == "" || len(dockerErr.Args) == 0 || dockerErr.Args[0] != "rm" {
+		return false
+	}
+	return strings.TrimSpace(dockerErr.Stderr) == "Error response from daemon: No such container: "+identity
 }
 
 func runBoundedDockerCommand(ctx context.Context, dockerPath string, environment []string, args []string) ([]byte, error) {

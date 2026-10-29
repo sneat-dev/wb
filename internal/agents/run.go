@@ -467,24 +467,30 @@ type Result struct {
 	OwnerPID            int                    `json:"owner_pid,omitempty"`
 	WorkerPID           int                    `json:"worker_pid,omitempty"`
 	OwnerAlive          bool                   `json:"owner_alive"`
-	WorkerAlive         bool                   `json:"worker_alive"`
-	ExitCode            *int                   `json:"exit_code,omitempty"`
-	Failure             string                 `json:"failure,omitempty"`
-	Result              string                 `json:"result,omitempty"`
-	ToolCalls           int                    `json:"tool_calls,omitempty"`
-	Usage               *Usage                 `json:"usage,omitempty"`
-	Telemetry           Telemetry              `json:"telemetry"`
-	Cost                CostRecord             `json:"cost"`
-	Validation          ValidationRecord       `json:"validation"`
-	Review              ReviewRecord           `json:"review"`
-	Changes             *ChangeSummary         `json:"changes,omitempty"`
-	HarnessDiagnostics  []string               `json:"harness_diagnostics,omitempty"`
-	DiffPath            string                 `json:"diff_path,omitempty"`
-	AcceptanceRequired  bool                   `json:"acceptance_required"`
-	Retries             int                    `json:"retries"`
-	TaskVisibility      string                 `json:"task_visibility,omitempty"`
-	TaskNormalized      bool                   `json:"task_normalized,omitempty"`
-	LogPath             string                 `json:"log_path,omitempty"`
+	// WorkerAlive reports whether the recorded harness transport process is
+	// still alive. For a contained run that process is the host Docker client,
+	// which is reaped during contained validation even though the validation
+	// namespace keeps running, so this can be false while work continues. It is
+	// not a workload probe: State/Status and Validation describe the remaining
+	// work, and contained workload liveness must not be derived from this field.
+	WorkerAlive        bool             `json:"worker_alive"`
+	ExitCode           *int             `json:"exit_code,omitempty"`
+	Failure            string           `json:"failure,omitempty"`
+	Result             string           `json:"result,omitempty"`
+	ToolCalls          int              `json:"tool_calls,omitempty"`
+	Usage              *Usage           `json:"usage,omitempty"`
+	Telemetry          Telemetry        `json:"telemetry"`
+	Cost               CostRecord       `json:"cost"`
+	Validation         ValidationRecord `json:"validation"`
+	Review             ReviewRecord     `json:"review"`
+	Changes            *ChangeSummary   `json:"changes,omitempty"`
+	HarnessDiagnostics []string         `json:"harness_diagnostics,omitempty"`
+	DiffPath           string           `json:"diff_path,omitempty"`
+	AcceptanceRequired bool             `json:"acceptance_required"`
+	Retries            int              `json:"retries"`
+	TaskVisibility     string           `json:"task_visibility,omitempty"`
+	TaskNormalized     bool             `json:"task_normalized,omitempty"`
+	LogPath            string           `json:"log_path,omitempty"`
 }
 
 // NormalizeState makes this process's closed state vocabulary authoritative for
@@ -525,8 +531,11 @@ func executionStatusFromState(state State) ExecutionStatus {
 // Abandoned is derived from the owner, not the worker: the owner is the only
 // process that will ever record a terminal state, so once it is gone the run
 // has no outcome and reporting it "running" indefinitely would be a lie. A
-// worker that outlived its owner is still surfaced, through WorkerAlive, so a
-// caller knows a stray process exists and can stop it.
+// harness transport process that outlived its owner is still surfaced, through
+// WorkerAlive, so a caller knows a stray process exists and can stop it.
+// WorkerAlive describes only that recorded transport process, never the
+// contained workload: during contained validation the transport client is
+// reaped while the validation namespace keeps running.
 func (store Store) Render(record Record) Result {
 	state := record.State
 	status := record.ExecutionStatus

@@ -100,6 +100,15 @@ type OwnerDeps struct {
 	// given, so a test can prove the real production context is bounded. It
 	// never replaces the context and is unexported so no user option can reach it.
 	observeGitMetadataContext func(context.Context)
+	// harnessFor resolves the host harness adapter. Production leaves it nil and
+	// the real HarnessFor is used; a focused test supplies a fake adapter to
+	// exercise a capability combination the default registry does not expose.
+	// It is unexported so there is no public bypass.
+	harnessFor func(string) (Harness, error)
+	// containedLogLimit bounds each captured contained stream. Zero selects the
+	// production maxLogBytes and a larger value is clamped; it is unexported so
+	// no user flag or configuration can raise the bound.
+	containedLogLimit int64
 }
 
 // DefaultOwnerDeps returns the production seams. Lease is deliberately not set
@@ -239,7 +248,7 @@ func runOwnerWithSave(ctx context.Context, store Store, agentID string, deps Own
 		return save(record)
 	}
 
-	adapter, err := HarnessFor(record.Resolved.Harness)
+	adapter, err := ownerHarnessFor(deps, record.Resolved.Harness)
 	if err != nil {
 		return finish(StateFailed, err.Error(), FailureConfig)
 	}
@@ -440,6 +449,17 @@ func runValidation(ctx context.Context, store Store, agentID string, record Reco
 		Now:         deps.Now,
 	})
 	return validation
+}
+
+// ownerHarnessFor resolves the adapter through the optional per-instance seam,
+// defaulting to the exact production HarnessFor. The mandatory execution policy
+// has already been decided before this is called, so a supplied adapter can
+// never bypass the gate that decides whether a host run may start at all.
+func ownerHarnessFor(deps OwnerDeps, harness string) (Harness, error) {
+	if deps.harnessFor != nil {
+		return deps.harnessFor(harness)
+	}
+	return HarnessFor(harness)
 }
 
 func validationStepsFromRecord(record Record) []ValidationStep {

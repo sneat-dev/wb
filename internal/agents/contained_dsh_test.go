@@ -300,7 +300,9 @@ func TestContainedDshLaunchRefusesWrongOrMalformedIdentity(t *testing.T) {
 		},
 	}
 	for name, testCase := range cases {
+		name, testCase := name, testCase
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			fields := base
 			testCase.mutate(&fields)
 			if _, err := PrepareContainedDshLaunch(fields); err == nil || !strings.Contains(err.Error(), testCase.want) {
@@ -355,7 +357,9 @@ func TestContainedDshLaunchRefusesUntrustedRecordWorkspace(t *testing.T) {
 		},
 	}
 	for name, testCase := range cases {
+		name, testCase := name, testCase
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			record := containedDshTestRecord(t, worktree, gitCommon)
 			testCase.mutate(&record)
 			if _, err := PrepareContainedDshLaunchFromRecord(record, runDir, dshMandatoryProviderEnv); err == nil || !strings.Contains(err.Error(), testCase.want) {

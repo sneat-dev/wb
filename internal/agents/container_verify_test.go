@@ -352,3 +352,20 @@ func TestVerifyContainerCgroupRefusesNonMandatoryValues(t *testing.T) {
 		})
 	}
 }
+
+// TestParseContainerCPUFieldsRefusesAnOversizedValue proves the cpu.max parser
+// bounds the raw line before splitting it, so a hostile oversized value is
+// refused without being interpreted as a quota and period.
+func TestParseContainerCPUFieldsRefusesAnOversizedValue(t *testing.T) {
+	t.Parallel()
+	quota, period, err := parseContainerCPUFields(strings.Repeat("1", maxContainerValueBytes+1))
+	if err == nil {
+		t.Fatalf("quota %d period %d, want an oversized cpu.max refusal", quota, period)
+	}
+	if quota != 0 || period != 0 {
+		t.Fatalf("refused parse returned quota %d period %d", quota, period)
+	}
+	if !strings.Contains(err.Error(), "above the") {
+		t.Fatalf("error = %v, want the byte bound named", err)
+	}
+}

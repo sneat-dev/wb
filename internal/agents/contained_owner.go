@@ -67,6 +67,18 @@ func openContainedRuntime(ctx context.Context, options ContainerRuntimeOptions) 
 	return OpenContainerRuntime(ctx, options)
 }
 
+// containedRuntimeOpenerFor selects the per-instance runtime opener. An absent
+// seam selects the exact production opener, never a no-op or a fake, so the
+// mandatory runtime gate is unchanged when the owner is wired for production.
+// A focused test can select the nil default directly and prove that the real
+// opener still refuses an invalid policy before it touches Docker or state.
+func containedRuntimeOpenerFor(configured containedRuntimeOpener) containedRuntimeOpener {
+	if configured != nil {
+		return configured
+	}
+	return openContainedRuntime
+}
+
 // containedResult is the terminal outcome the container execution produced.
 // It is applied to the durable record only after Close has proved absence.
 type containedResult struct {
@@ -171,6 +183,17 @@ func runContainedOwner(baseCtx context.Context, store Store, agentID string, rec
 			Validation: ValidationRecord{Status: ValidationSkipped, Reason: "the harness cannot run inside the mandatory sandbox"},
 		})
 	}
+	// The harness bound is validated first, so it keeps its own distinct refusal
+	// even though the whole-lifetime calculation also derives it. The two guards
+	// stay: a broken harness bound is a different failure from a total budget
+	// that leaves no room for setup, validation or cleanup.
+	if _, err := containedRunTimeout(record.TimeoutMS); err != nil {
+		return finishContainedRecord(store, agentID, record, save, deps, containedResult{
+			State: StateFailed, ExecutionStatus: StatusFailed,
+			Failure: err.Error(), Category: FailureConfig,
+			Validation: ValidationRecord{Status: ValidationSkipped, Reason: "the contained harness timeout was refused"},
+		})
+	}
 	// The whole execution is finite before a credential is read or a container
 	// is opened. This is the same bound the runtime enforces.
 	lifetime, err := ContainedRecordLifetime(record)
@@ -179,13 +202,6 @@ func runContainedOwner(baseCtx context.Context, store Store, agentID string, rec
 			State: StateFailed, ExecutionStatus: StatusFailed,
 			Failure: err.Error(), Category: FailureConfig,
 			Validation: ValidationRecord{Status: ValidationSkipped, Reason: "the contained lifetime was refused"},
-		})
-	}
-	if _, err := containedRunTimeout(record.TimeoutMS); err != nil {
-		return finishContainedRecord(store, agentID, record, save, deps, containedResult{
-			State: StateFailed, ExecutionStatus: StatusFailed,
-			Failure: err.Error(), Category: FailureConfig,
-			Validation: ValidationRecord{Status: ValidationSkipped, Reason: "the contained harness timeout was refused"},
 		})
 	}
 	// Exactly one explicit official routing credential. There is no host DSH
@@ -220,10 +236,7 @@ func runContainedOwner(baseCtx context.Context, store Store, agentID string, rec
 			Validation: ValidationRecord{Status: ValidationSkipped, Reason: "the contained launch could not be prepared"},
 		})
 	}
-	opener := deps.openContainedRuntime
-	if opener == nil {
-		opener = openContainedRuntime
-	}
+	opener := containedRuntimeOpenerFor(deps.openContainedRuntime)
 	runtime, err := opener(setupCtx, ContainerRuntimeOptions{
 		Policy: *configured, RunID: agentID, Lifetime: lifetime, Workspace: launch.Workspace,
 	})
@@ -254,25 +267,13 @@ func runContainedOwner(baseCtx context.Context, store Store, agentID string, rec
 		facts.CleanupVerified = false
 		facts.CleanupFailed = true
 		facts.CleanupFailure = BoundResult(closeErr.Error())
-		failure := fmt.Sprintf("clean up the contained execution: %v", closeErr)
-		// Keep the independent validation evidence exactly as it was actually
-		// recorded (Passed, Failed or Skipped). A cleanup failure changes the
-		// execution outcome, never what the checks proved.
-		validation := result.Validation
-		if validation.Status == "" {
-			validation = ValidationRecord{Status: ValidationSkipped, Reason: "the container could not be proved absent"}
-		}
-		result = containedResult{
-			State: StateFailed, ExecutionStatus: StatusFailed,
-			Failure: failure, Category: FailureInternal, ExitCode: result.ExitCode,
-			Validation: validation,
-		}
 	} else {
 		facts.CleanupPending = false
 		facts.CleanupVerified = true
 		facts.CleanupFailed = false
 		facts.CleanupFailure = ""
 	}
+	result = finalizeContainedResult(result, closeErr)
 	if result.saveErr != nil {
 		return errors.Join(result.saveErr, closeErr)
 	}
@@ -281,9 +282,6 @@ func runContainedOwner(baseCtx context.Context, store Store, agentID string, rec
 	// stable change summary to record, and reporting one would be a guess.
 	if closeErr == nil && result.HarnessRan {
 		captureContainedHandoff(ctx, store, agentID, &record, deps)
-	}
-	if result.Validation.Status == "" {
-		result.Validation = ValidationRecord{Status: ValidationSkipped, Reason: "validation did not run"}
 	}
 	record.State = result.State
 	record.ExecutionStatus = result.ExecutionStatus
@@ -295,7 +293,52 @@ func runContainedOwner(baseCtx context.Context, store Store, agentID string, rec
 	if started := executionStart(record); !started.IsZero() {
 		record.DurationMS = record.FinishedAt.Sub(started).Milliseconds()
 	}
-	return save(record)
+	terminalSaveErr := save(record)
+	if terminalSaveErr != nil && closeErr != nil {
+		// Both the terminal record save and the cleanup failed. Each has its own
+		// independent cause, so the caller must still be able to identify both.
+		return errors.Join(terminalSaveErr, closeErr)
+	}
+	return terminalSaveErr
+}
+
+// finalizeContainedResult is the single place the terminal result receives the
+// cleanup outcome and its last-resort validation record. It deliberately keeps
+// an intermediate saveErr recorded by executeContained: a cleanup failure must
+// not overwrite an earlier persistent-save failure, because the caller still
+// has to report both after the runtime is closed.
+func finalizeContainedResult(result containedResult, closeErr error) containedResult {
+	saveErr := result.saveErr
+	if closeErr != nil {
+		// Keep the independent validation evidence exactly as it was actually
+		// recorded (Passed, Failed or Skipped). A cleanup failure changes the
+		// execution outcome, never what the checks proved.
+		validation := result.Validation
+		if validation.Status == "" {
+			validation = ValidationRecord{Status: ValidationSkipped, Reason: "the container could not be proved absent"}
+		}
+		return containedResult{
+			State: StateFailed, ExecutionStatus: StatusFailed,
+			Failure:  fmt.Sprintf("clean up the contained execution: %v", closeErr),
+			Category: FailureInternal, ExitCode: result.ExitCode,
+			Validation: validation, saveErr: saveErr,
+		}
+	}
+	if result.Validation.Status == "" {
+		result.Validation = ValidationRecord{Status: ValidationSkipped, Reason: "validation did not run"}
+	}
+	return result
+}
+
+// containedLogLimitFor selects the captured-stream bound for one contained
+// execution. An absent or non-positive instance value selects the exact
+// production maxLogBytes, and a larger value is clamped to it, so this private
+// seam can only tighten the bound for a test and never raise it in production.
+func containedLogLimitFor(configured int64) int64 {
+	if configured <= 0 || configured > maxLogBytes {
+		return maxLogBytes
+	}
+	return configured
 }
 
 func snapshotVerifiedLimits(limits ContainerVerifiedLimits) *ContainerVerifiedLimits {
@@ -327,6 +370,7 @@ func finishContainedRecord(store Store, agentID string, record Record, save func
 // returned does not prove the in-container workload stopped, so the stable
 // handoff is the caller's job after Close.
 func executeContained(ctx, setupCtx context.Context, store Store, agentID string, record *Record, deps OwnerDeps, save func(Record) error, runtime containedRuntime, credential Credential, launch ContainedDshLaunch, baseURL string) containedResult {
+	logLimit := containedLogLimitFor(deps.containedLogLimit)
 	failure := func(stage string, err error) containedResult {
 		if outcome, ok := containedCancellationOutcome(ctx, store, agentID); ok {
 			return outcome
@@ -404,7 +448,7 @@ func executeContained(ctx, setupCtx context.Context, store Store, agentID string
 		return failure("open the contained run log", err)
 	}
 	defer func() { _ = logFile.Close() }()
-	stdoutLog := &boundedLog{writer: logFile, remaining: maxLogBytes}
+	stdoutLog := &boundedLog{writer: logFile, remaining: logLimit}
 	firstOutput := &firstWriteClock{now: deps.Now, started: record.StartedAt}
 	stdoutRedactor := newRedactingWriter(stdoutLog, credential.Value)
 	var stdout io.Writer = stdoutLog
@@ -418,7 +462,7 @@ func executeContained(ctx, setupCtx context.Context, store Store, agentID string
 		return failure("open the contained run stderr log", err)
 	}
 	defer func() { _ = stderrFile.Close() }()
-	stderrLog := &boundedLog{writer: stderrFile, remaining: maxLogBytes}
+	stderrLog := &boundedLog{writer: stderrFile, remaining: logLimit}
 	stderrRedactor := newRedactingWriter(stderrLog, credential.Value)
 	var stderr io.Writer = stderrLog
 	if stderrRedactor != nil {
@@ -457,11 +501,11 @@ func executeContained(ctx, setupCtx context.Context, store Store, agentID string
 	}
 	if stdoutLog.truncated() {
 		record.HarnessEvents = append(record.HarnessEvents,
-			fmt.Sprintf("run log truncated at %d bytes", maxLogBytes))
+			fmt.Sprintf("run log truncated at %d bytes", logLimit))
 	}
 	if stderrLog.truncated() {
 		record.HarnessEvents = append(record.HarnessEvents,
-			fmt.Sprintf("run stderr log truncated at %d bytes", maxLogBytes))
+			fmt.Sprintf("run stderr log truncated at %d bytes", logLimit))
 	}
 
 	adapter, adapterErr := HarnessFor(record.Resolved.Harness)
@@ -700,18 +744,22 @@ func runContainedBoundedCommand(ctx context.Context, runtime containedRuntime, a
 	stderr := &boundedContainerOutput{limit: maxContainerDiagnosticBytes}
 	command.Stdout = stdout
 	command.Stderr = stderr
-	if err := command.Run(); err != nil {
-		if stdout.exceeded || stderr.exceeded {
-			return nil, fmt.Errorf("%s output is above its bound", strings.Join(argv, " "))
-		}
+	runErr := command.Run()
+	// boundedContainerOutput.Write returns 0 and errContainerOutputExceeded as
+	// soon as a write would pass the bound; it never reports a short count for
+	// elided output. os/exec surfaces that error from Run, so an overflow would
+	// otherwise be folded into the generic run error below. The bound is
+	// therefore classified before the run error, so an overflow is reported as
+	// an overflow rather than as an ordinary command failure.
+	if stdout.exceeded || stderr.exceeded {
+		return nil, fmt.Errorf("%s output is above its bound", strings.Join(argv, " "))
+	}
+	if runErr != nil {
 		detail := strings.TrimSpace(stderr.buffer.String())
 		if detail != "" {
-			return nil, fmt.Errorf("%s failed: %v: %s", strings.Join(argv, " "), err, detail)
+			return nil, fmt.Errorf("%s failed: %v: %s", strings.Join(argv, " "), runErr, detail)
 		}
-		return nil, fmt.Errorf("%s failed: %w", strings.Join(argv, " "), err)
-	}
-	if stdout.exceeded {
-		return nil, fmt.Errorf("%s output is above its bound", strings.Join(argv, " "))
+		return nil, fmt.Errorf("%s failed: %w", strings.Join(argv, " "), runErr)
 	}
 	return stdout.buffer.Bytes(), nil
 }

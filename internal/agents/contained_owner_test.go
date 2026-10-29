@@ -1,3 +1,5 @@
+//go:build e2e
+
 package agents
 
 import (
@@ -50,6 +52,10 @@ type fakeContainedRuntime struct {
 	harnessExit     int
 	harnessBlock    bool
 	harnessMarker   string
+	harnessCmd      func(context.Context) *exec.Cmd
+	versionOutput   *string
+	dumpOutput      *string
+	workerCommandFn func(context.Context, Credential, []string) (*exec.Cmd, error)
 	validationDone  chan struct{}
 	validationBlock bool
 }
@@ -75,16 +81,34 @@ func (fake *fakeContainedRuntime) WorkerCommand(ctx context.Context, credential 
 	fake.commands = append(fake.commands, append([]string(nil), argv...))
 	fake.credentials = append(fake.credentials, credential)
 	probeErr := fake.probeErr
+	workerCommandFn := fake.workerCommandFn
+	versionOutput := fake.versionOutput
+	dumpOutput := fake.dumpOutput
+	harnessCmd := fake.harnessCmd
 	fake.mutex.Unlock()
+	if workerCommandFn != nil {
+		return workerCommandFn(ctx, credential, argv)
+	}
 	if probeErr != nil && containedProbeArgv(argv) {
 		return nil, probeErr
 	}
 	switch {
 	case len(argv) == 2 && argv[0] == HarnessDSH && argv[1] == "--version":
-		return containedOwnerShell(ctx, containedOwnerVersion+"\n", "", 0), nil
+		output := containedOwnerVersion + "\n"
+		if versionOutput != nil {
+			output = *versionOutput
+		}
+		return containedOwnerShell(ctx, output, "", 0), nil
 	case len(argv) >= 2 && argv[0] == HarnessDSH && containsContainedArg(argv, "--dump-config"):
-		return containedOwnerShell(ctx, containedOwnerDump(), "", 0), nil
+		output := containedOwnerDump()
+		if dumpOutput != nil {
+			output = *dumpOutput
+		}
+		return containedOwnerShell(ctx, output, "", 0), nil
 	case containedHarnessArgv(argv):
+		if harnessCmd != nil {
+			return harnessCmd(ctx), nil
+		}
 		if fake.harnessBlock {
 			if fake.harnessMarker != "" {
 				return exec.CommandContext(ctx, "/bin/sh", "-c",
@@ -179,18 +203,51 @@ func shellQuote(value string) string {
 }
 
 func containedOwnerDump() string {
+	return containedOwnerDumpFor(containedOwnerCredentialEnv)
+}
+
+// containedOwnerDumpFor renders the composed --dump-config document with the
+// credential variable name the resolved credential actually carries. A
+// file-sourced credential is injected under ProviderCredentialEnv, so a test
+// that uses a credential file must not hard-code the environment-sourced name.
+func containedOwnerDumpFor(credentialEnvName string) string {
 	return `- id: agent-default-model
   config:
     provider: ` + ProviderDshDefault + `
     model: deepseek-flash
 - id: llm-deepseek
   config:
-    apiKeyEnv: ` + containedOwnerCredentialEnv + `
+    apiKeyEnv: ` + credentialEnvName + `
     baseURL: https://api.deepseek.com
     reasoningEffort: ` + containedDshReasoningEffort + `
     thinking: ` + containedDshThinking + `
     maxTokens: 32768
 `
+}
+
+// containedOwnerCredentialFile writes the fake provider credential to a private
+// file under this test's own temporary directory. A file-sourced credential is
+// resolved without mutating any process-wide environment variable, so the test
+// that uses it can run in parallel. The value is a fake, never a real secret.
+func containedOwnerCredentialFile(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "provider-credential")
+	if err := os.WriteFile(path, []byte(containedOwnerSecret+"\n"), 0o600); err != nil {
+		t.Fatalf("write fake provider credential: %v", err)
+	}
+	return path
+}
+
+// containedOwnerUseCredentialFile switches one fixture's routing to the fake
+// private credential file, so the owner resolves exactly one credential without
+// touching the process environment.
+func containedOwnerUseCredentialFile(t *testing.T, record *Record) {
+	t.Helper()
+	record.Resolved.Routing = Provider{
+		BaseURL:        record.Resolved.Routing.BaseURL,
+		CredentialFile: containedOwnerCredentialFile(t),
+		WireAPI:        record.Resolved.Routing.WireAPI,
+	}
 }
 
 func containedOwnerWorkspace(t *testing.T) (worktree, gitCommon string) {
@@ -272,7 +329,7 @@ func containedOwnerDeps(t *testing.T, policy ExecutionPolicy, fake *fakeContaine
 	return deps
 }
 
-func TestRunOwnerRunsMatchingContainedDshWithoutAnyHostProbe(t *testing.T) {
+func TestE2ERunOwnerRunsMatchingContainedDshWithoutAnyHostProbe(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the contained owner fixture uses a POSIX shell command")
 	}
@@ -390,7 +447,7 @@ func TestRunOwnerRunsMatchingContainedDshWithoutAnyHostProbe(t *testing.T) {
 	}
 }
 
-func TestRunOwnerRefusesAnInContainerPreflightFailureBeforeStartingHarness(t *testing.T) {
+func TestE2ERunOwnerRefusesAnInContainerPreflightFailureBeforeStartingHarness(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the contained owner fixture uses a POSIX shell command")
 	}
@@ -468,7 +525,7 @@ func assertContainedSetupTimeout(t *testing.T, result containedResult, stage, de
 	}
 }
 
-func TestExecuteContainedClassifiesAnExpiredSetupPoolAsATimeout(t *testing.T) {
+func TestE2EExecuteContainedClassifiesAnExpiredSetupPoolAsATimeout(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the contained owner fixture uses a POSIX shell command")
 	}
@@ -504,7 +561,7 @@ func TestExecuteContainedClassifiesAnExpiredSetupPoolAsATimeout(t *testing.T) {
 	}
 }
 
-func TestExecuteContainedKeepsAnOperatorStopAsCancellationWhenTheSetupPoolExpired(t *testing.T) {
+func TestE2EExecuteContainedKeepsAnOperatorStopAsCancellationWhenTheSetupPoolExpired(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the contained owner fixture uses a POSIX shell command")
 	}
@@ -525,7 +582,7 @@ func TestExecuteContainedKeepsAnOperatorStopAsCancellationWhenTheSetupPoolExpire
 	}
 }
 
-func TestExecuteContainedKeepsAnOrdinaryProbeFailureAsConfiguration(t *testing.T) {
+func TestE2EExecuteContainedKeepsAnOrdinaryProbeFailureAsConfiguration(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the contained owner fixture uses a POSIX shell command")
 	}
@@ -546,7 +603,7 @@ func TestExecuteContainedKeepsAnOrdinaryProbeFailureAsConfiguration(t *testing.T
 	}
 }
 
-func TestContainedRuntimeOpenFailureClassifiesTheActualCause(t *testing.T) {
+func TestE2EContainedRuntimeOpenFailureClassifiesTheActualCause(t *testing.T) {
 	t.Parallel()
 	store := NewStore(t.TempDir())
 	const agentID = "agt-runtime-open-classification"
@@ -597,7 +654,7 @@ func TestContainedRuntimeOpenFailureClassifiesTheActualCause(t *testing.T) {
 	})
 }
 
-func TestRunOwnerRecordsAnOrdinaryContainedRuntimeOpenFailureAsInternal(t *testing.T) {
+func TestE2ERunOwnerRecordsAnOrdinaryContainedRuntimeOpenFailureAsInternal(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the contained owner fixture uses a POSIX shell command")
 	}
@@ -627,7 +684,7 @@ func TestRunOwnerRecordsAnOrdinaryContainedRuntimeOpenFailureAsInternal(t *testi
 	}
 }
 
-func TestRunOwnerCancelsContainedSetupBeforeAnyHarnessPIDExists(t *testing.T) {
+func TestE2ERunOwnerCancelsContainedSetupBeforeAnyHarnessPIDExists(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the contained owner fixture uses a POSIX shell command")
 	}
@@ -678,7 +735,7 @@ func TestRunOwnerCancelsContainedSetupBeforeAnyHarnessPIDExists(t *testing.T) {
 	}
 }
 
-func TestRunOwnerCancelsContainedValidationAndClosesTheRuntime(t *testing.T) {
+func TestE2ERunOwnerCancelsContainedValidationAndClosesTheRuntime(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the contained owner fixture uses a POSIX shell command")
 	}
@@ -741,7 +798,7 @@ func TestRunOwnerCancelsContainedValidationAndClosesTheRuntime(t *testing.T) {
 	}
 }
 
-func TestRunOwnerRefusesAContainedLifetimeBeyondTheMaximumBeforeOpening(t *testing.T) {
+func TestE2ERunOwnerRefusesAContainedLifetimeBeyondTheMaximumBeforeOpening(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the contained owner fixture uses a POSIX shell command")
 	}
@@ -772,9 +829,12 @@ func TestRunOwnerRefusesAContainedLifetimeBeyondTheMaximumBeforeOpening(t *testi
 	if loaded.ExecutionStatus != StatusFailed || loaded.ExecutionRuntime != nil {
 		t.Fatalf("record = %#v", loaded)
 	}
+	if loaded.Validation.Reason != "the contained lifetime was refused" {
+		t.Fatalf("validation reason = %q, want the whole-lifetime guard, distinct from the harness-bound refusal", loaded.Validation.Reason)
+	}
 }
 
-func TestRunOwnerRefusesToReportCompletedWhenContainedCleanupFails(t *testing.T) {
+func TestE2ERunOwnerRefusesToReportCompletedWhenContainedCleanupFails(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the contained owner fixture uses a POSIX shell command")
 	}
@@ -810,7 +870,7 @@ func TestRunOwnerRefusesToReportCompletedWhenContainedCleanupFails(t *testing.T)
 	}
 }
 
-func TestRunOwnerClosesTheContainedRuntimeWhenARecordSaveFails(t *testing.T) {
+func TestE2ERunOwnerClosesTheContainedRuntimeWhenARecordSaveFails(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the contained owner fixture uses a POSIX shell command")
 	}
@@ -838,7 +898,7 @@ func TestRunOwnerClosesTheContainedRuntimeWhenARecordSaveFails(t *testing.T) {
 	}
 }
 
-func TestRunOwnerDefaultsANilLoaderToTheAuthoritativePolicy(t *testing.T) {
+func TestE2ERunOwnerDefaultsANilLoaderToTheAuthoritativePolicy(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the contained owner fixture uses a POSIX shell command")
 	}
@@ -877,7 +937,7 @@ func TestRunOwnerDefaultsANilLoaderToTheAuthoritativePolicy(t *testing.T) {
 	}
 }
 
-func TestRunOwnerCompletesAContainedHarnessWithNoValidationSuites(t *testing.T) {
+func TestE2ERunOwnerCompletesAContainedHarnessWithNoValidationSuites(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the contained owner fixture uses a POSIX shell command")
 	}
@@ -910,7 +970,7 @@ func TestRunOwnerCompletesAContainedHarnessWithNoValidationSuites(t *testing.T) 
 	}
 }
 
-func TestRunOwnerFailsAContainedRunWhenAConfiguredValidatorSkips(t *testing.T) {
+func TestE2ERunOwnerFailsAContainedRunWhenAConfiguredValidatorSkips(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the contained owner fixture uses a POSIX shell command")
 	}
@@ -950,7 +1010,7 @@ func TestRunOwnerFailsAContainedRunWhenAConfiguredValidatorSkips(t *testing.T) {
 	}
 }
 
-func TestRunOwnerPreservesPassedValidationWhenContainedCleanupFails(t *testing.T) {
+func TestE2ERunOwnerPreservesPassedValidationWhenContainedCleanupFails(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the contained owner fixture uses a POSIX shell command")
 	}
@@ -995,7 +1055,7 @@ func TestRunOwnerPreservesPassedValidationWhenContainedCleanupFails(t *testing.T
 	}
 }
 
-func TestRunOwnerBoundsTheContainedGitMetadataContext(t *testing.T) {
+func TestE2ERunOwnerBoundsTheContainedGitMetadataContext(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the contained owner fixture uses a POSIX shell command")
 	}
@@ -1025,7 +1085,7 @@ func TestRunOwnerBoundsTheContainedGitMetadataContext(t *testing.T) {
 	}
 }
 
-func TestContainedGitMetadataContextSurvivesACancelledOwnerButStaysFinite(t *testing.T) {
+func TestE2EContainedGitMetadataContextSurvivesACancelledOwnerButStaysFinite(t *testing.T) {
 	t.Parallel()
 	parent, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -1043,7 +1103,7 @@ func TestContainedGitMetadataContextSurvivesACancelledOwnerButStaysFinite(t *tes
 	}
 }
 
-func TestVerifyContainedDshDumpRequiresThePinnedFlashDefaults(t *testing.T) {
+func TestE2EVerifyContainedDshDumpRequiresThePinnedFlashDefaults(t *testing.T) {
 	t.Parallel()
 	valid := containedOwnerDump()
 	cases := map[string]struct {
@@ -1119,7 +1179,7 @@ func waitForObservedFile(t *testing.T, path string) {
 	t.Fatalf("the contained harness never started: %s did not appear", path)
 }
 
-func TestContainedOwnerReadsGitOnlyAfterTheRuntimeIsClosedOnSuccess(t *testing.T) {
+func TestE2EContainedOwnerReadsGitOnlyAfterTheRuntimeIsClosedOnSuccess(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the contained owner fixture uses a POSIX shell command")
 	}
@@ -1156,7 +1216,8 @@ func TestContainedOwnerReadsGitOnlyAfterTheRuntimeIsClosedOnSuccess(t *testing.T
 // spawns `sleep` would survive the cancellation of the shell and keep the pipe
 // open, so the owner's Wait would block for the whole sleep instead of the
 // fixture being reaped promptly.
-func TestFakeContainedBlockingCommandsReapOnCancellation(t *testing.T) {
+func TestE2EFakeContainedBlockingCommandsReapOnCancellation(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("the contained owner fixture uses a POSIX blocking command")
 	}
@@ -1213,7 +1274,7 @@ func TestFakeContainedBlockingCommandsReapOnCancellation(t *testing.T) {
 	}
 }
 
-func TestContainedOwnerReadsGitOnlyAfterTheRuntimeIsClosedOnTimeout(t *testing.T) {
+func TestE2EContainedOwnerReadsGitOnlyAfterTheRuntimeIsClosedOnTimeout(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the contained owner fixture uses a POSIX shell command")
 	}
@@ -1252,7 +1313,7 @@ func TestContainedOwnerReadsGitOnlyAfterTheRuntimeIsClosedOnTimeout(t *testing.T
 	}
 }
 
-func TestContainedOwnerReadsGitOnlyAfterTheRuntimeIsClosedOnCancellation(t *testing.T) {
+func TestE2EContainedOwnerReadsGitOnlyAfterTheRuntimeIsClosedOnCancellation(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the contained owner fixture uses a POSIX shell command")
 	}
@@ -1296,7 +1357,7 @@ func TestContainedOwnerReadsGitOnlyAfterTheRuntimeIsClosedOnCancellation(t *test
 	}
 }
 
-func TestContainedOwnerNeverReadsGitWhenCleanupFails(t *testing.T) {
+func TestE2EContainedOwnerNeverReadsGitWhenCleanupFails(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the contained owner fixture uses a POSIX shell command")
 	}
@@ -1327,7 +1388,7 @@ func TestContainedOwnerNeverReadsGitWhenCleanupFails(t *testing.T) {
 	}
 }
 
-func TestContainedOwnerRequestsFailFastValidationInTheSameContainer(t *testing.T) {
+func TestE2EContainedOwnerRequestsFailFastValidationInTheSameContainer(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the contained owner fixture uses a POSIX shell command")
 	}

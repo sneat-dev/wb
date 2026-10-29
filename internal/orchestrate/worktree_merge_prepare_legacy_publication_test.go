@@ -1,3 +1,5 @@
+//go:build e2e
+
 package orchestrate
 
 import (
@@ -108,7 +110,7 @@ func prepareLegacyPublishedAdvance(t *testing.T, fixture legacyPublishedAdvanceF
 // persisted without publishing anything or replacing the open pull request.
 //
 //nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
-func TestPrepareLegacyPublishedAdvanceIntegratesAdvancedSourceIntoResolvedHead(t *testing.T) {
+func TestE2EPrepareLegacyPublishedAdvanceIntegratesAdvancedSourceIntoResolvedHead(t *testing.T) {
 	fixture := newLegacyPublishedAdvanceFixture(t)
 	gh := installWorktreeMergeEngineGH(t, fixture.engineFixture, fixture.published, fixture.receipt.Candidate.Branch)
 	target := fixture.receipt.TargetSHA
@@ -156,7 +158,7 @@ func TestPrepareLegacyPublishedAdvanceIntegratesAdvancedSourceIntoResolvedHead(t
 // only.
 //
 //nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
-func TestResumeLegacyPublishedAdvanceStillRefusesExactSourceDrift(t *testing.T) {
+func TestE2EResumeLegacyPublishedAdvanceStillRefusesExactSourceDrift(t *testing.T) {
 	fixture := newLegacyPublishedAdvanceFixture(t)
 	gh := installWorktreeMergeEngineGH(t, fixture.engineFixture, fixture.published, fixture.receipt.Candidate.Branch)
 	before := fixture.receipt
@@ -193,7 +195,7 @@ func TestResumeLegacyPublishedAdvanceStillRefusesExactSourceDrift(t *testing.T) 
 // remains the only owner that may publish the already resolved head.
 //
 //nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
-func TestPrepareLegacyPublishedUnchangedSourceKeepsExactResumeOwner(t *testing.T) {
+func TestE2EPrepareLegacyPublishedUnchangedSourceKeepsExactResumeOwner(t *testing.T) {
 	fixture, receipt, published, head := newPublishedPrepareConflictFixture(t)
 	gh := installWorktreeMergeEngineGH(t, fixture, published, receipt.Candidate.Branch)
 
@@ -253,7 +255,7 @@ func unrelatedLegacyRoot(t *testing.T, fixture engineFixture, name string) strin
 // target untouched. A repeated attempt must not erase that intent.
 //
 //nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
-func TestPrepareLegacyPublishedAdvanceMergeFailureKeepsResolvedHeadAndIntent(t *testing.T) {
+func TestE2EPrepareLegacyPublishedAdvanceMergeFailureKeepsResolvedHeadAndIntent(t *testing.T) {
 	fixture := newLegacyPublishedAdvanceFixture(t)
 	gh := installWorktreeMergeEngineGH(t, fixture.engineFixture, fixture.published, fixture.receipt.Candidate.Branch)
 	target := fixture.receipt.TargetSHA
@@ -308,7 +310,7 @@ func TestPrepareLegacyPublishedAdvanceMergeFailureKeepsResolvedHeadAndIntent(t *
 // old source snapshot, the same open publication, and an unmoved target.
 //
 //nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
-func TestPrepareLegacyPublishedAdvanceValidationFailureRetainsHPrimeAndIntent(t *testing.T) {
+func TestE2EPrepareLegacyPublishedAdvanceValidationFailureRetainsHPrimeAndIntent(t *testing.T) {
 	fixture := newEngineFixture(t)
 	writeEngineGoModule(t, fixture.canonical, "package app\n")
 	runEngineGit(t, fixture.canonical, "add", "go.mod", "app.go")
@@ -385,7 +387,7 @@ func TestPrepareLegacyPublishedAdvanceValidationFailureRetainsHPrimeAndIntent(t 
 // never enter, while a dirty current source is refused before H is adopted.
 //
 //nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
-func TestRecoverLegacyPublishedPrepareAdvanceAdmitsOnlyTheAdvancedEmptyShapeUnit(t *testing.T) {
+func TestE2ERecoverLegacyPublishedPrepareAdvanceAdmitsOnlyTheAdvancedEmptyShapeUnit(t *testing.T) {
 	fixture := newLegacyPublishedAdvanceFixture(t)
 	current := []WorktreeMergeSource{{Task: fixture.receipt.Sources[0].Task, Worktree: fixture.source, Branch: fixture.receipt.Sources[0].Branch, SHA: fixture.currentSource}}
 
@@ -430,7 +432,7 @@ func TestRecoverLegacyPublishedPrepareAdvanceAdmitsOnlyTheAdvancedEmptyShapeUnit
 // the locked re-read must be refused before any source is integrated.
 //
 //nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
-func TestPrepareLegacyPublishedAdvanceReProvesUnderTheLaneLock(t *testing.T) {
+func TestE2EPrepareLegacyPublishedAdvanceReProvesUnderTheLaneLock(t *testing.T) {
 	fixture := newLegacyPublishedAdvanceFixture(t)
 	gh := installWorktreeMergeEngineGH(t, fixture.engineFixture, fixture.published, fixture.receipt.Candidate.Branch)
 	receiptPath := fixture.receipt.ReceiptPath
@@ -479,7 +481,7 @@ func TestPrepareLegacyPublishedAdvanceReProvesUnderTheLaneLock(t *testing.T) {
 //
 //nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
 //nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
-func TestPrepareLegacyPublishedAdvanceRefusesUnprovenCustodyAndRoots(t *testing.T) {
+func TestE2EPrepareLegacyPublishedAdvanceRefusesUnprovenCustodyAndRoots(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		mutate func(*testing.T, *legacyPublishedAdvanceFixture, *WorktreeMergeReceipt)
@@ -585,7 +587,7 @@ func TestPrepareLegacyPublishedAdvanceRefusesUnprovenCustodyAndRoots(t *testing.
 // SHA, and the private remote predecessor must still match it.
 //
 //nolint:paralleltest // newEngineFixture scopes the process-wide projects root with t.Setenv; each case owns a private real-Git lane.
-func TestPrepareLegacyPublishedAdvanceRefusesUnprovenPullRequestIdentity(t *testing.T) {
+func TestE2EPrepareLegacyPublishedAdvanceRefusesUnprovenPullRequestIdentity(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		want string

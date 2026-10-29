@@ -518,6 +518,7 @@ func TestDryRunPlanDocumentCarriesTheMandatoryPolicy(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // newDispatchFixture pins process-wide environment variables (WB_PROJECTS_ROOT and the provider credential), so the test cannot run in parallel.
 func TestDispatchRefusesAnUnsupportedHarnessUnderAConfiguredMandatorySandbox(t *testing.T) {
 	// Not parallel: the dispatch fixture pins environment variables.
 	fixture := newDispatchFixture(t)
@@ -555,6 +556,7 @@ func TestDispatchRefusesAnUnsupportedHarnessUnderAConfiguredMandatorySandbox(t *
 	}
 }
 
+//nolint:paralleltest // newDispatchFixture pins process-wide environment variables (WB_PROJECTS_ROOT and the provider credential), so the test cannot run in parallel.
 func TestDispatchAdmitsMatchingContainedDshWithoutHostProbes(t *testing.T) {
 	// Not parallel: the dispatch fixture pins environment variables.
 	fixture := newDispatchFixture(t)
@@ -612,6 +614,7 @@ func TestDispatchAdmitsMatchingContainedDshWithoutHostProbes(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // newDispatchFixture pins process-wide environment variables (WB_PROJECTS_ROOT and the provider credential), so the test cannot run in parallel.
 func TestDispatchKeepsLegacyDshCapabilitiesWithoutAMandatoryPolicy(t *testing.T) {
 	// Not parallel: the dispatch fixture pins environment variables.
 	fixture := newDispatchFixture(t)
@@ -644,6 +647,7 @@ func TestDispatchKeepsLegacyDshCapabilitiesWithoutAMandatoryPolicy(t *testing.T)
 	}
 }
 
+//nolint:paralleltest // newDispatchFixture pins process-wide environment variables (WB_PROJECTS_ROOT and the provider credential), so the test cannot run in parallel.
 func TestDispatchRefusesAContainedLifetimeBeyondTheMaximumBeforeCreatingAWorktree(t *testing.T) {
 	// Not parallel: the dispatch fixture pins environment variables.
 	fixture := newDispatchFixture(t)
@@ -670,6 +674,7 @@ func TestDispatchRefusesAContainedLifetimeBeyondTheMaximumBeforeCreatingAWorktre
 	}
 }
 
+//nolint:paralleltest // its subtests each build a newDispatchFixture, which pins process-wide environment variables; a parallel ancestor would forbid t.Setenv in those subtests.
 func TestDispatchRefusesAPlanWhosePolicyDoesNotMatchConfiguration(t *testing.T) {
 	// Not parallel: the dispatch fixture pins environment variables, and the
 	// subtests replace that fixture's configuration per case.
@@ -692,6 +697,7 @@ func TestDispatchRefusesAPlanWhosePolicyDoesNotMatchConfiguration(t *testing.T) 
 		},
 	}
 	for name, testCase := range cases {
+		//nolint:paralleltest // newDispatchFixture pins process-wide environment variables (WB_PROJECTS_ROOT and the provider credential), so this subtest cannot run in parallel.
 		t.Run(name, func(t *testing.T) {
 			fixture := newDispatchFixture(t)
 			fixture.deps.LoadConfig = func() (Config, error) {

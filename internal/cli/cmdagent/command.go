@@ -392,6 +392,10 @@ func printAgentStatusText(writer io.Writer, result agents.Result) error {
 		lines = append(lines, "finished: "+result.FinishedAt.Local().Format(time.RFC3339),
 			fmt.Sprintf("duration: %s", (time.Duration(result.DurationMS)*time.Millisecond).Round(time.Millisecond)))
 	}
+	// worker alive describes the recorded harness transport process only. For a
+	// contained run that is the host Docker client, reaped during contained
+	// validation, so this line can read "not running" while validation work
+	// continues; the state and validation lines below describe that work.
 	lines = append(lines, fmt.Sprintf("process:  owner %s, worker %s", aliveWord(result.OwnerAlive), aliveWord(result.WorkerAlive)))
 	if result.ExitCode != nil {
 		lines = append(lines, fmt.Sprintf("exit:     %d", *result.ExitCode))

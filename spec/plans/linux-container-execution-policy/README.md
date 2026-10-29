@@ -20,8 +20,9 @@ and fail-closed admission are implemented, and a candidate branch now implements
 the native runtime: a verified keyless image, one global per-user execution
 slot, a bounded namespace lifetime, host Git and validation handoff after the
 namespace is proved absent, and live native lifecycle proofs on a Linux host.
-Those proofs are **local candidate evidence**: nothing here claims the feature is
-merged, released, CI-verified or globally activated, and no image is published.
+Those proofs are **local candidate evidence**: local proofs alone do not
+establish CI, release, installation or policy activation; operators need the
+exact corresponding receipts, and no image is published.
 
 The policy is deliberately small and closed: mode, immutable image, memory and
 memory-plus-swap bounds, CPUs, PIDs and `max_parallel`. A profile, task type,
