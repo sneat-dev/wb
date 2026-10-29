@@ -27,7 +27,12 @@ func migCovNewApplyCampaign(t *testing.T, declaredModule, modulePath string, fil
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "github")
 	t.Setenv(wbhome.EnvOverride, filepath.Join(githubDir, ".wb"))
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	configHome := filepath.Join(root, "config")
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	// The fixture runs the real go command, so keep its telemetry sidecar out
+	// of the temporary tree this test cleans up (see
+	// disableGoTelemetryForFixture).
+	disableGoTelemetryForFixture(t, configHome)
 	// The hand-built campaign bypasses normalizeCampaignOptions, so supply the
 	// projects root the campaign derives placement and state from.
 	if strings.TrimSpace(options.GitHubDir) == "" {

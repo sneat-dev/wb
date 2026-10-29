@@ -130,6 +130,10 @@ func TestCampaignUsesConfiguredSharedRootAndKeepsRegisteredResumePath(t *testing
 	configHome := t.TempDir()
 	sharedRoot := filepath.Join(t.TempDir(), "shared-worktrees")
 	t.Setenv("XDG_CONFIG_HOME", configHome)
+	// The campaign runs the real go command, so keep its telemetry sidecar out
+	// of the temporary tree this test cleans up (see
+	// disableGoTelemetryForFixture).
+	disableGoTelemetryForFixture(t, configHome)
 	writeCampaignFile(t, filepath.Join(configHome, "wb", "worktrees.yaml"), "version: 1\nworktrees:\n  root: "+sharedRoot+"\n")
 	report, err := RunCampaign(test.spec, test.sourceRoot, CampaignOptions{
 		GitHubDir: test.githubDir, Apply: true, Verify: VerifyNone, CloneURL: test.cloneURL,
@@ -484,7 +488,12 @@ func newCampaignIntegrationFixture(t *testing.T) campaignIntegrationFixture {
 	t.Setenv(wbhome.EnvOverride, filepath.Join(root, "github"))
 	// Pin the machine-local worktrees configuration too, so the campaign's
 	// store mode is this fixture's default and never the developer's own file.
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	configHome := filepath.Join(root, "config")
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	// The fixture runs the real go command, so keep its telemetry sidecar out
+	// of the temporary tree this test cleans up (see
+	// disableGoTelemetryForFixture).
+	disableGoTelemetryForFixture(t, configHome)
 	remotes := filepath.Join(root, "remotes")
 	providerSource := filepath.Join(root, "source", "provider")
 	consumerSource := filepath.Join(root, "source", "consumer")
