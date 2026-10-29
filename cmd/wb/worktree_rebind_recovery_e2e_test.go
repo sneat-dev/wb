@@ -5,10 +5,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -341,5 +343,90 @@ func TestE2ECollaborationRebindRefusesLiveOwnerAndRecoversAfterExit(t *testing.T
 	recovered, found, err := service.Store.Load(current)
 	if err != nil || !found || recovered.Owner != "wbs-recovery-caller" || recovered.OwnerEpoch != 2 || recovered.Revision != 2 {
 		t.Fatalf("recovery after exit = %+v, %t, %v", recovered, found, err)
+	}
+}
+
+// TestE2ECollaborationRebindRequiresNativeGenerationAndProtectsLegacyOwner
+// exercises the real registry, lock and reused Git administrative directory.
+//
+//nolint:paralleltest // The fixture configures process-wide Git and WB environment.
+func TestE2ECollaborationRebindRequiresNativeGenerationAndProtectsLegacyOwner(t *testing.T) {
+	root, projects, canonical, inv := rebindReuseFixture(t)
+	service, err := newCollaborationService(inv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retired, current, retiredRoot, currentRoot := retainReusedRegistration(t, projects, root, canonical)
+	owner := exec.Command("sleep", "120")
+	if err := owner.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = owner.Process.Kill(); _ = owner.Wait() })
+	directory := filepath.Join(projects, ".wb", session.DirName)
+	record, err := session.Register(directory, session.Record{PID: owner.Process.Pid, Runtime: "codex", WBSessionID: "wbs-retired-generation", StartedAt: time.Unix(1, 0).UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.ProcessStartedAt.IsZero() {
+		t.Fatal("native process generation unavailable")
+	}
+	nativeStart := record.ProcessStartedAt
+	if _, err := session.Register(directory, session.Record{PID: os.Getpid(), Runtime: "codex", WBSessionID: "wbs-new-recovery-caller"}); err != nil {
+		t.Fatal(err)
+	}
+	initializeStaleOwnership(t, service, retired, record.WBSessionID)
+	before, err := os.ReadFile(staleSnapshotPath(projects, retired))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Semantic StartedAt may legitimately predate a live process. A legacy
+	// registration without a native observation cannot authorize recovery.
+	record.ProcessStartedAt = time.Time{}
+	raw, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, strconv.Itoa(record.PID)+".json")
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if status, err := service.Ports.OwnerStatus(record.WBSessionID); err != nil || status != "unknown" {
+		t.Fatalf("legacy owner=%q,%v", status, err)
+	}
+	args := []string{currentRoot, "--take-inactive-ownership", "--expected-root", retiredRoot, "--expected-owner", record.WBSessionID, "--expected-owner-epoch", "1", "--expected-revision", "1", "--reason", "native generation proves recorded owner PID reuse"}
+	out, err := executeCollaborationCommand(t, newWorktreeRebindCmd(collaborationFactory(inv)), args...)
+	if err == nil || !strings.Contains(err.Error(), "proven inactive") || out != "" {
+		t.Fatalf("legacy owner recovery was not refused: %q,%v", out, err)
+	}
+	if after, err := os.ReadFile(staleSnapshotPath(projects, retired)); err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("legacy refusal changed custody: %v", err)
+	}
+	// A different recorded native generation is positive identity evidence.
+	// This private fixture simulates retained generation metadata, without
+	// waiting for OS PID recycling or treating a runtime name as authority.
+	record.ProcessStartedAt = nativeStart.Add(-time.Hour)
+	raw, err = json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if status, err := service.Ports.OwnerStatus(record.WBSessionID); err != nil || status != "inactive" {
+		t.Fatalf("retired native generation=%q,%v", status, err)
+	}
+	if _, live, err := session.LookupExact(directory, record.PID); err != nil || live {
+		t.Fatalf("retired exact record=%t,%v", live, err)
+	}
+	out, err = executeCollaborationCommand(t, newWorktreeRebindCmd(collaborationFactory(inv)), args...)
+	if err != nil || !strings.Contains(out, "owner wbs-retired-generation -> wbs-new-recovery-caller") {
+		t.Fatalf("native generation recovery=%q,%v", out, err)
+	}
+	recovered, found, err := service.Store.Load(current)
+	if err != nil || !found || recovered.Owner != "wbs-new-recovery-caller" || recovered.OwnerEpoch != 2 || recovered.Revision != 2 || len(recovered.OwnerChanges) != 2 || len(recovered.CheckoutRebinds) != 1 {
+		t.Fatalf("recovery audit=%+v,%t,%v", recovered, found, err)
+	}
+	if !session.ProcessAlive(owner.Process.Pid) {
+		t.Fatal("rebind affected the unrelated live process now occupying the old PID")
 	}
 }
