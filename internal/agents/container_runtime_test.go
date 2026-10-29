@@ -1503,7 +1503,7 @@ func TestContainerRuntimeUnreapedAttachRetainsTheDurableBlock(t *testing.T) {
 	if openErr != nil {
 		t.Fatalf("OpenContainerSlot after failed cleanup: %v", openErr)
 	}
-	defer func() { _ = slot.Close() }()
+	t.Cleanup(func() { _ = slot.Close() })
 	reservation, ok := slot.Reservation()
 	if !ok {
 		t.Fatal("an unreaped attach client must retain the durable reservation even after its container is removed")

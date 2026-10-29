@@ -517,7 +517,7 @@ func TestExecuteContainedKeepsAnOperatorStopAsCancellationWhenTheSetupPoolExpire
 	}
 	ctx := context.Background()
 	setupCtx, cancelSetup := context.WithDeadline(ctx, time.Now().Add(-time.Second))
-	defer cancelSetup()
+	t.Cleanup(cancelSetup)
 	fake := &fakeContainedRuntime{prepareHomeFn: func(ctx context.Context) error { return ctx.Err() }}
 	result := executeContained(ctx, setupCtx, store, record.AgentID, &record, DefaultOwnerDeps(), func(Record) error { return nil }, fake, Credential{}, ContainedDshLaunch{}, containedDshDefaultBaseURL)
 	if result.ExecutionStatus != StatusCancelled || result.Category != FailureCancelled {
@@ -535,7 +535,7 @@ func TestExecuteContainedKeepsAnOrdinaryProbeFailureAsConfiguration(t *testing.T
 	store, record := containedOwnerRecord(t, &policy, worktree, gitCommon)
 	ctx := context.Background()
 	setupCtx, cancelSetup := context.WithTimeout(ctx, time.Minute)
-	defer cancelSetup()
+	t.Cleanup(cancelSetup)
 	fake := &fakeContainedRuntime{probeErr: errors.New("dsh overlay is invalid")}
 	result := executeContained(ctx, setupCtx, store, record.AgentID, &record, DefaultOwnerDeps(), func(Record) error { return nil }, fake, Credential{}, ContainedDshLaunch{}, containedDshDefaultBaseURL)
 	if result.ExecutionStatus != StatusFailed || result.Category != FailureConfig {
@@ -552,9 +552,9 @@ func TestContainedRuntimeOpenFailureClassifiesTheActualCause(t *testing.T) {
 	const agentID = "agt-runtime-open-classification"
 	live := context.Background()
 	expiredSetup, cancelExpired := context.WithDeadline(live, time.Now().Add(-time.Second))
-	defer cancelExpired()
+	t.Cleanup(cancelExpired)
 	liveSetup, cancelLive := context.WithTimeout(live, time.Minute)
-	defer cancelLive()
+	t.Cleanup(cancelLive)
 
 	t.Run("expired setup pool", func(t *testing.T) {
 		t.Parallel()
@@ -1030,7 +1030,7 @@ func TestContainedGitMetadataContextSurvivesACancelledOwnerButStaysFinite(t *tes
 	parent, cancel := context.WithCancel(context.Background())
 	cancel()
 	metadataCtx, stop := containedGitMetadataContext(parent, DefaultOwnerDeps())
-	defer stop()
+	t.Cleanup(stop)
 	if metadataCtx.Err() != nil {
 		t.Fatalf("the metadata context was cancelled with the owner: %v", metadataCtx.Err())
 	}

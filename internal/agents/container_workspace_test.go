@@ -154,11 +154,11 @@ func TestContainerWorkspacePlansExactTrustedMountsAndMasks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenContainerRuntime with a trusted workspace: %v", err)
 	}
-	defer func() {
+	t.Cleanup(func() {
 		if err := runtime.Close(); err != nil {
 			t.Fatalf("Close: %v", err)
 		}
-	}()
+	})
 
 	createArgs := fake.createCall(t)
 	var gotBinds, gotTmpfs []string
@@ -638,7 +638,7 @@ func TestContainerWorkerCommandKeepsTheCredentialOutOfArgv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenContainerRuntime: %v", err)
 	}
-	defer func() { _ = runtime.Close() }()
+	t.Cleanup(func() { _ = runtime.Close() })
 
 	credential := Credential{EnvName: "DEEPSEEK_API_KEY", Value: "fake-provider-value"}
 	command, err := runtime.WorkerCommand(context.Background(), credential, []string{"/usr/bin/env"})
@@ -736,7 +736,7 @@ func TestContainerRuntimePrepareWorkerHomeIsUnprivilegedAndBounded(t *testing.T)
 	if err != nil {
 		t.Fatalf("OpenContainerRuntime: %v", err)
 	}
-	defer func() { _ = runtime.Close() }()
+	t.Cleanup(func() { _ = runtime.Close() })
 
 	if err := runtime.PrepareWorkerHome(context.Background()); err != nil {
 		t.Fatalf("PrepareWorkerHome: %v", err)

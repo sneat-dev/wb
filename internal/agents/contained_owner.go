@@ -528,7 +528,7 @@ func executeContained(ctx, setupCtx context.Context, store Store, agentID string
 	if outcome, ok := containedCancellationOutcome(ctx, store, agentID); ok {
 		return finishHarness(outcome)
 	}
-	if validation.record.Status != ValidationPassed && !(validation.skippedWithoutSteps && validation.record.Status == ValidationSkipped) {
+	if validation.record.Status != ValidationPassed && (!validation.skippedWithoutSteps || validation.record.Status != ValidationSkipped) {
 		return finishHarness(containedResult{
 			State: StateFailed, ExecutionStatus: StatusFailed,
 			Failure: "objective validation did not pass", Category: FailureValidation, ExitCode: code,
