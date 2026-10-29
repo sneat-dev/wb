@@ -6,6 +6,11 @@ import (
 	"testing"
 )
 
+// containerTransportTestID is a full 64-character lowercase hex container ID for
+// this platform-neutral file. The Linux-only slot fixture defines its own ID and
+// must not be required here.
+const containerTransportTestID = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
 // TestContainerTransportReservedCredentialNamesRefusesOwnedVariables proves the
 // transport, worker environment, fixed machine names and every reserved prefix
 // can never carry a provider credential, while an ordinary name still can.
@@ -99,7 +104,7 @@ func TestContainerWorkerCommandRefusesAnUnverifiedRuntime(t *testing.T) {
 	t.Parallel()
 	ready := func() *ContainerRuntime {
 		return &ContainerRuntime{
-			containerID: testContainerID,
+			containerID: containerTransportTestID,
 			ownerUser:   "501:20",
 			dockerPath:  "/test/docker",
 			workspace:   containerWorkspacePlan{worktreeDir: "/worktree"},
@@ -114,7 +119,7 @@ func TestContainerWorkerCommandRefusesAnUnverifiedRuntime(t *testing.T) {
 		{"closed runtime", func() *ContainerRuntime { runtime := ready(); runtime.closed = true; return runtime }, []string{"/bin/true"}, "runtime is closed"},
 		{"no verified container", func() *ContainerRuntime { return &ContainerRuntime{} }, []string{"/bin/true"}, "no verified container"},
 		{"no workspace worktree", func() *ContainerRuntime {
-			return &ContainerRuntime{containerID: testContainerID}
+			return &ContainerRuntime{containerID: containerTransportTestID}
 		}, []string{"/bin/true"}, "no workspace worktree"},
 		{"empty argv", ready, nil, "non-empty worker argv"},
 		{"NUL argument", ready, []string{"/bin/true", "a\x00b"}, "NUL byte"},
@@ -139,42 +144,56 @@ func TestContainerWorkerCommandRefusesAnUnverifiedRuntime(t *testing.T) {
 
 // TestContainerWorkerCommandCarriesOnlyTheCredentialNameInArgv proves a valid
 // command targets the verified container, keeps the fixed worker environment,
-// and puts the credential value only in the Docker client environment.
+// and puts the credential value only in the Docker client environment, both when
+// no context is supplied and when the caller supplies one.
 func TestContainerWorkerCommandCarriesOnlyTheCredentialNameInArgv(t *testing.T) {
 	t.Parallel()
-	runtime := &ContainerRuntime{
-		containerID:  testContainerID,
-		ownerUser:    "501:20",
-		dockerPath:   "/test/docker",
-		transportEnv: []string{"PATH=/usr/bin:/bin"},
-		workspace:    containerWorkspacePlan{worktreeDir: "/worktree"},
+	cases := []struct {
+		name string
+		ctx  context.Context
+	}{
+		{"no context supplied", nil},
+		{"context supplied", context.Background()},
 	}
-	command, err := runtime.WorkerCommand(nil, Credential{EnvName: "WB_PROVIDER_KEY", Value: "secret"}, []string{"/bin/true", "arg"})
-	if err != nil {
-		t.Fatalf("WorkerCommand: %v", err)
-	}
-	if command == nil {
-		t.Fatal("a verified runtime must build a command")
-	}
-	if command.Path != "/test/docker" {
-		t.Fatalf("command path = %q, want the verified docker tool", command.Path)
-	}
-	argv := strings.Join(command.Args, " ")
-	if !strings.Contains(argv, testContainerID) {
-		t.Fatalf("argv = %q, want the verified container ID", argv)
-	}
-	if strings.Contains(argv, "secret") {
-		t.Fatalf("argv = %q, must not carry the credential value", argv)
-	}
-	if !strings.Contains(argv, "--env WB_PROVIDER_KEY") {
-		t.Fatalf("argv = %q, want the credential environment name", argv)
-	}
-	environment := strings.Join(command.Env, " ")
-	if !strings.Contains(environment, "WB_PROVIDER_KEY=secret") {
-		t.Fatalf("client environment = %q, want the credential value", environment)
-	}
-	if !strings.Contains(environment, "PATH=/usr/bin:/bin") {
-		t.Fatalf("client environment = %q, want the captured transport", environment)
+	for _, testCase := range cases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			runtime := &ContainerRuntime{
+				containerID:  containerTransportTestID,
+				ownerUser:    "501:20",
+				dockerPath:   "/test/docker",
+				transportEnv: []string{"PATH=/usr/bin:/bin"},
+				workspace:    containerWorkspacePlan{worktreeDir: "/worktree"},
+			}
+			command, err := runtime.WorkerCommand(testCase.ctx, Credential{EnvName: "WB_PROVIDER_KEY", Value: "secret"}, []string{"/bin/true", "arg"})
+			if err != nil {
+				t.Fatalf("WorkerCommand: %v", err)
+			}
+			if command == nil {
+				t.Fatal("a verified runtime must build a command")
+			}
+			if command.Path != "/test/docker" {
+				t.Fatalf("command path = %q, want the verified docker tool", command.Path)
+			}
+			argv := strings.Join(command.Args, " ")
+			if !strings.Contains(argv, containerTransportTestID) {
+				t.Fatalf("argv = %q, want the verified container ID", argv)
+			}
+			if strings.Contains(argv, "secret") {
+				t.Fatalf("argv = %q, must not carry the credential value", argv)
+			}
+			if !strings.Contains(argv, "--env WB_PROVIDER_KEY") {
+				t.Fatalf("argv = %q, want the credential environment name", argv)
+			}
+			environment := strings.Join(command.Env, " ")
+			if !strings.Contains(environment, "WB_PROVIDER_KEY=secret") {
+				t.Fatalf("client environment = %q, want the credential value", environment)
+			}
+			if !strings.Contains(environment, "PATH=/usr/bin:/bin") {
+				t.Fatalf("client environment = %q, want the captured transport", environment)
+			}
+		})
 	}
 }
 
@@ -185,7 +204,7 @@ func TestPrepareWorkerHomeRefusesAnUnverifiedRuntime(t *testing.T) {
 	t.Parallel()
 	ready := func() *ContainerRuntime {
 		return &ContainerRuntime{
-			containerID: testContainerID,
+			containerID: containerTransportTestID,
 			ownerUser:   "501:20",
 			limits:      ContainerVerifiedLimits{MemoryBytes: 1 << 30},
 			commands:    &containerCommands{command: func(context.Context, []string) ([]byte, error) { return nil, nil }},
@@ -200,10 +219,10 @@ func TestPrepareWorkerHomeRefusesAnUnverifiedRuntime(t *testing.T) {
 		{"closed runtime", func() *ContainerRuntime { runtime := ready(); runtime.closed = true; return runtime }, "runtime is closed"},
 		{"no verified container", func() *ContainerRuntime { return &ContainerRuntime{} }, "no verified container"},
 		{"unverified limits", func() *ContainerRuntime {
-			return &ContainerRuntime{containerID: testContainerID, commands: &containerCommands{}}
+			return &ContainerRuntime{containerID: containerTransportTestID, commands: &containerCommands{}}
 		}, "limits have not been verified"},
 		{"unavailable transport", func() *ContainerRuntime {
-			return &ContainerRuntime{containerID: testContainerID, limits: ContainerVerifiedLimits{MemoryBytes: 1 << 30}, commands: &containerCommands{}}
+			return &ContainerRuntime{containerID: containerTransportTestID, limits: ContainerVerifiedLimits{MemoryBytes: 1 << 30}, commands: &containerCommands{}}
 		}, "command transport is unavailable"},
 	}
 	for _, testCase := range cases {
@@ -221,28 +240,49 @@ func TestPrepareWorkerHomeRefusesAnUnverifiedRuntime(t *testing.T) {
 	}
 }
 
-// TestPrepareWorkerHomeRunsWithADefaultContextWhenNoneIsSupplied proves a nil
-// context becomes a bounded background context rather than reaching the exec
-// with a nil context.
-func TestPrepareWorkerHomeRunsWithADefaultContextWhenNoneIsSupplied(t *testing.T) {
+// TestPrepareWorkerHomeUsesABoundedContextWhetherOrNotOneIsSupplied proves a nil
+// context becomes a bounded background context rather than reaching the exec with
+// a nil context, and that a supplied context stays bounded and live.
+func TestPrepareWorkerHomeUsesABoundedContextWhetherOrNotOneIsSupplied(t *testing.T) {
 	t.Parallel()
-	var seenContext context.Context
-	runtime := &ContainerRuntime{
-		containerID: testContainerID,
-		ownerUser:   "501:20",
-		limits:      ContainerVerifiedLimits{MemoryBytes: 1 << 30},
-		commands: &containerCommands{command: func(ctx context.Context, _ []string) ([]byte, error) {
-			seenContext = ctx
-			return nil, nil
-		}},
+	cases := []struct {
+		name string
+		ctx  context.Context
+	}{
+		{"no context supplied", nil},
+		{"context supplied", context.Background()},
 	}
-	if err := runtime.PrepareWorkerHome(nil); err != nil {
-		t.Fatalf("PrepareWorkerHome: %v", err)
-	}
-	if seenContext == nil {
-		t.Fatal("the preparation must use a non-nil context")
-	}
-	if _, hasDeadline := seenContext.Deadline(); !hasDeadline {
-		t.Fatal("the preparation must be bounded by a deadline")
+	for _, testCase := range cases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			var seenContext context.Context
+			var seenLive bool
+			runtime := &ContainerRuntime{
+				containerID: containerTransportTestID,
+				ownerUser:   "501:20",
+				limits:      ContainerVerifiedLimits{MemoryBytes: 1 << 30},
+				commands: &containerCommands{command: func(ctx context.Context, _ []string) ([]byte, error) {
+					seenContext = ctx
+					seenLive = ctx != nil && ctx.Err() == nil
+					return nil, nil
+				}},
+			}
+			if err := runtime.PrepareWorkerHome(testCase.ctx); err != nil {
+				t.Fatalf("PrepareWorkerHome: %v", err)
+			}
+			if seenContext == nil {
+				t.Fatal("the preparation must use a non-nil context")
+			}
+			if _, hasDeadline := seenContext.Deadline(); !hasDeadline {
+				t.Fatal("the preparation must be bounded by a deadline")
+			}
+			if !seenLive {
+				t.Fatal("the preparation must reach the exec with a live bounded context")
+			}
+			if testCase.ctx != nil && testCase.ctx.Err() != nil {
+				t.Fatal("a supplied context must not be cancelled by the preparation")
+			}
+		})
 	}
 }

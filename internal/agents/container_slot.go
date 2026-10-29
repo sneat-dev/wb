@@ -461,7 +461,7 @@ func validateContainerReservation(reservation ContainerReservation, loaded bool)
 		return fmt.Errorf("container ID %q is not a full 64-character lowercase hex ID", reservation.ContainerID)
 	}
 	if reservation.DaemonID != "" && !containerDaemonIDPattern.MatchString(reservation.DaemonID) {
-		return fmt.Errorf("Docker Engine ID %q is not a bounded safe identity", reservation.DaemonID)
+		return fmt.Errorf("container reservation Docker Engine ID %q is not a bounded safe identity", reservation.DaemonID)
 	}
 	if !loaded && reservation.DaemonID == "" {
 		return errors.New("a new container reservation must bind the Docker Engine identity that will own the container")

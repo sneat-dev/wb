@@ -599,13 +599,6 @@ func resolveWorktree(ctx context.Context, request DispatchRequest, operation str
 	}, nil
 }
 
-// resolveExistingTarget turns `current` or an explicit path into the facts a run
-// records. It never creates or cleans anything, and it keeps the legacy
-// marker-based behaviour used when the operator declared no mandatory sandbox.
-func resolveExistingTarget(ctx context.Context, request DispatchRequest, deps DispatchDeps) (worktreeResolution, error) {
-	return resolveExistingTargetWithPolicy(ctx, request, deps, false)
-}
-
 // resolveExistingTargetWithPolicy resolves current/path targets. Under a
 // mandatory sandbox the editable .git pointer and .worktree.md marker cannot
 // grant host mounts: the exact checkout must be an entry in WB's own managed

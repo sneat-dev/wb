@@ -125,22 +125,36 @@ func TestContainerRuntimeRefusesUnusableRuntimeOptions(t *testing.T) {
 	})
 }
 
-// TestContainerRuntimeOpenRefusesAnUnpinnedDaemon covers the open-time refusal
-// of a context that cannot be pinned and of a daemon identity that cannot be
-// read. The command seam is injected; no real Docker is touched.
+// TestContainerRuntimeOpenRefusesAnUnpinnedDaemon covers a healthy open with no
+// context as well as with a supplied one, the open-time refusal of a context
+// that cannot be pinned and of a daemon identity that cannot be read. The
+// command seam is injected; no real Docker is touched.
 func TestContainerRuntimeOpenRefusesAnUnpinnedDaemon(t *testing.T) {
 	t.Parallel()
 	policy := executionTestPolicy()
 
-	t.Run("a nil context still opens normally", func(t *testing.T) {
+	t.Run("a healthy runtime opens and closes", func(t *testing.T) {
 		t.Parallel()
-		fake := newReadyFake(t, policy)
-		runtime, err := OpenContainerRuntime(nil, testContainerRuntimeOptions(testContainerSlotStateDir(t), fake))
-		if err != nil {
-			t.Fatalf("OpenContainerRuntime with a nil context: %v", err)
+		cases := []struct {
+			name string
+			ctx  context.Context
+		}{
+			{"no context supplied", nil},
+			{"context supplied", context.Background()},
 		}
-		if err := runtime.Close(); err != nil {
-			t.Fatalf("Close: %v", err)
+		for _, testCase := range cases {
+			testCase := testCase
+			t.Run(testCase.name, func(t *testing.T) {
+				t.Parallel()
+				fake := newReadyFake(t, policy)
+				runtime, err := OpenContainerRuntime(testCase.ctx, testContainerRuntimeOptions(testContainerSlotStateDir(t), fake))
+				if err != nil {
+					t.Fatalf("OpenContainerRuntime with %s: %v", testCase.name, err)
+				}
+				if err := runtime.Close(); err != nil {
+					t.Fatalf("Close: %v", err)
+				}
+			})
 		}
 	})
 
