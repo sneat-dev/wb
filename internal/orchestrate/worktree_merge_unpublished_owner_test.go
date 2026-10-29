@@ -13,7 +13,7 @@ func TestUnpublishedOwnerReceiptPolicyContracts(t *testing.T) {
 	r.Lane = worktreeMergeLaneID(r.Repository, r.Target)
 	r.ID = worktreeMergeOperationID(r.Lane, r.Sources)
 	r.Candidate.Task = r.ID
-	for _, status := range []WorktreeMergeStatus{WorktreeMergeValidationFailed, WorktreeMergePreparing} {
+	for _, status := range []WorktreeMergeStatus{WorktreeMergeValidationFailed, WorktreeMergePreparing, WorktreeMergePrepared} {
 		copy := r
 		copy.Status = status
 		if err := validateUnpublishedValidationFailureReceipt(copy, path); err != nil {
@@ -34,7 +34,8 @@ func TestUnpublishedOwnerReceiptPolicyContracts(t *testing.T) {
 		{"lane", func(r *WorktreeMergeReceipt) { r.Lane = "different" }, "exact unpublished"},
 		{"phase", func(r *WorktreeMergeReceipt) { r.Phase = "unknown" }, "exact unpublished"},
 		{"unfinished land", func(r *WorktreeMergeReceipt) { r.Phase = WorktreeMergePhaseLand; r.Status = WorktreeMergePreparing }, "exact unpublished"},
-		{"status", func(r *WorktreeMergeReceipt) { r.Status = WorktreeMergePrepared }, "exact unpublished"},
+		{"status", func(r *WorktreeMergeReceipt) { r.Status = WorktreeMergeConflict }, "exact unpublished"},
+		{"prepared land", func(r *WorktreeMergeReceipt) { r.Phase = WorktreeMergePhaseLand; r.Status = WorktreeMergePrepared }, "exact unpublished"},
 		{"landing", func(r *WorktreeMergeReceipt) { r.LandingSHA = r.TargetSHA }, "exact unpublished"},
 		{"pr", func(r *WorktreeMergeReceipt) { r.PullRequest = "17" }, "exact unpublished"},
 		{"published", func(r *WorktreeMergeReceipt) { r.PublishedCandidateSHA = r.Candidate.SHA }, "exact unpublished"},

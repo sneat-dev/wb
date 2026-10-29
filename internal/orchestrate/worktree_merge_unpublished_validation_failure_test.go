@@ -101,6 +101,92 @@ func TestAcknowledgeDiscardedInterruptedPreparingFreesLane(t *testing.T) {
 	}
 }
 
+func TestAcknowledgeDiscardedPreparedCandidateFreesLane(t *testing.T) {
+	fixture := newEngineFixture(t)
+	writeEngineGoModule(t, fixture.canonical, "package app\n")
+	runEngineGit(t, fixture.canonical, "add", "go.mod", "app.go")
+	runEngineGit(t, fixture.canonical, "commit", "-m", "test: add Go validation fixture")
+	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+	source := createMergeSource(t, fixture, "retained-prepared-source", "feature/retained-prepared", "candidate.go", "package app\n\nfunc Candidate() {}\n")
+
+	prepared, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir,
+		Sources:      []string{source.WorktreeDir},
+		Target:       "main",
+		Model:        "test-model",
+		AgentRuntime: "test",
+	})
+	if err != nil || prepared.Status != WorktreeMergePrepared {
+		t.Fatalf("prepare = %+v err=%v", prepared, err)
+	}
+	if _, err := AcknowledgeUnpublishedValidationFailure(context.Background(), WorktreeMergeUnpublishedValidationFailureAcknowledgementOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: prepared.ReceiptPath,
+	}); err == nil || !strings.Contains(err.Error(), "prove discarded candidate") {
+		t.Fatalf("prepared receipt with a live candidate was accepted: %v", err)
+	}
+	aborted, err := worktrees.Abort(context.Background(), worktrees.AbortOptions{
+		ProjectsRoot: fixture.githubDir,
+		Task:         prepared.Candidate.Task,
+		Base:         "main",
+		Disposition:  worktrees.AbortDiscarded,
+		DeleteRemote: true,
+		Apply:        true,
+	})
+	if err != nil || len(aborted) != 1 || !aborted[0].Applied || !aborted[0].WorktreeGone || !aborted[0].BranchDeleted {
+		t.Fatalf("abort candidate = %+v err=%v", aborted, err)
+	}
+
+	ack, err := AcknowledgeUnpublishedValidationFailure(context.Background(), WorktreeMergeUnpublishedValidationFailureAcknowledgementOptions{
+		ProjectsRoot: fixture.githubDir,
+		Receipt:      prepared.ReceiptPath,
+		Apply:        true,
+		Actor:        "reviewer",
+		Reason:       "validated unpublished candidate was deliberately discarded",
+	})
+	if err != nil || ack.CandidateCleanupBacklog == "" {
+		t.Fatalf("acknowledge discarded prepared candidate = %+v err=%v", ack, err)
+	}
+	if len(ack.PreservedSources) != 1 || ack.PreservedSources[0].SHA != prepared.Sources[0].SHA {
+		t.Fatalf("preserved source evidence = %+v", ack.PreservedSources)
+	}
+	if _, err := os.Stat(source.WorktreeDir); err != nil {
+		t.Fatalf("preserved source worktree was touched: %v", err)
+	}
+	receiptBefore, err := os.ReadFile(prepared.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LandWorktreeMerge(context.Background(), WorktreeMergeLandOptions{ProjectsRoot: fixture.githubDir, Receipt: prepared.ReceiptPath}); err == nil || !strings.Contains(err.Error(), "retired unpublished-attempt acknowledgement") {
+		t.Fatalf("acknowledged prepared receipt was replayed: %v", err)
+	}
+	if receiptAfter, err := os.ReadFile(prepared.ReceiptPath); err != nil || !bytes.Equal(receiptBefore, receiptAfter) {
+		t.Fatalf("refused replay rewrote the acknowledged receipt: %v", err)
+	}
+	ackBytes, err := os.ReadFile(ack.AcknowledgementPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ack.AcknowledgementPath, bytes.Replace(ackBytes, []byte(ack.Reason), []byte("tampered"), 1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LandWorktreeMerge(context.Background(), WorktreeMergeLandOptions{ProjectsRoot: fixture.githubDir, Receipt: prepared.ReceiptPath}); err == nil || !strings.Contains(err.Error(), "invalid immutable identity") {
+		t.Fatalf("tampered acknowledgement did not block replay: %v", err)
+	}
+	if err := os.WriteFile(ack.AcknowledgementPath, ackBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	next, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir,
+		Sources:      []string{source.WorktreeDir},
+		Target:       "main",
+		Model:        "test-model",
+		AgentRuntime: "test",
+	})
+	if err != nil || next.Status != WorktreeMergePrepared || next.ReceiptPath == prepared.ReceiptPath {
+		t.Fatalf("fresh prepare after discarded prepared acknowledgement = %+v err=%v", next, err)
+	}
+}
+
 func TestAcknowledgeUnpublishedValidationFailureFreesLane(t *testing.T) {
 	fixture := newEngineFixture(t)
 	writeEngineGoModule(t, fixture.canonical, "package app\n")

@@ -26,8 +26,9 @@ const (
 // historical receipt and Work Logs remain immutable; the sidecar records fresh
 // proof that the candidate never reached the remote target and that every exact
 // receipted source remains clean and actively claimed. An interrupted preparing
-// attempt is accepted only when WB's private cleanup backlog proves its exact
-// candidate was deliberately discarded.
+// attempt, or a validated prepared attempt that was never landed, is accepted
+// only when WB's private cleanup backlog proves its exact candidate was
+// deliberately discarded.
 type WorktreeMergeUnpublishedValidationFailureAcknowledgement struct {
 	SchemaVersion           int                               `json:"schema_version"`
 	ID                      string                            `json:"id"`
@@ -102,11 +103,11 @@ func acknowledgeUnpublishedValidationFailure(ctx context.Context, options Worktr
 		if err != nil {
 			return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, err
 		}
-	} else if receipt.Status == WorktreeMergePreparing {
+	} else if discardedCandidateRequired(receipt) {
 		proof, proofErr := worktrees.FindDiscardedLifecycleBacklogProof(ctx, options.ProjectsRoot, receipt.Repository, receipt.Target,
 			receipt.Candidate.Task, receipt.Candidate.Worktree, receipt.Candidate.Branch, receipt.Candidate.SHA)
 		if proofErr != nil {
-			return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, fmt.Errorf("prove discarded interrupted candidate: %w", proofErr)
+			return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, fmt.Errorf("prove discarded candidate: %w", proofErr)
 		}
 		candidateCleanupBacklog = proof.Path
 		resolvedRoot, canonicalErr := resolveCanonical(options.ProjectsRoot, receipt.Repository)
@@ -256,7 +257,7 @@ func requireRetiredUnpublishedLandCandidate(ctx context.Context, projectsRoot st
 func validateUnpublishedValidationFailureReceipt(receipt WorktreeMergeReceipt, receiptPath string) error {
 	validPhase := receipt.Phase == WorktreeMergePhasePrepare || receipt.Phase == WorktreeMergePhaseLand && receipt.Status == WorktreeMergeValidationFailed
 	if receipt.ReceiptPath != receiptPath || receipt.ID == "" || receipt.Lane == "" || receipt.Lane != worktreeMergeLaneID(receipt.Repository, receipt.Target) ||
-		!validPhase || (receipt.Status != WorktreeMergeValidationFailed && receipt.Status != WorktreeMergePreparing) || receipt.LandingSHA != "" || receipt.PullRequest != "" || receipt.PublishedCandidateSHA != "" ||
+		!validPhase || (receipt.Status != WorktreeMergeValidationFailed && !discardedCandidateRequired(receipt)) || receipt.LandingSHA != "" || receipt.PullRequest != "" || receipt.PublishedCandidateSHA != "" ||
 		receipt.Repository == "" || receipt.Target == "" || receipt.TargetSHA == "" || receipt.Candidate.Task == "" || receipt.Candidate.Worktree == "" || receipt.Candidate.Branch == "" || receipt.Candidate.SHA == "" ||
 		!worktreeMergeOperationIDMatchesRecordedSourceSet(receipt) || receipt.Candidate.Task != receipt.ID || len(receipt.Sources) == 0 {
 		return fmt.Errorf("receipt %s is not an exact unpublished prepare or failed-land receipt", receiptPath)
@@ -267,6 +268,14 @@ func validateUnpublishedValidationFailureReceipt(receipt WorktreeMergeReceipt, r
 		}
 	}
 	return nil
+}
+
+// discardedCandidateRequired reports whether a prepare receipt can be retired
+// only by proving its candidate was discarded to completion: an interrupted
+// preparing attempt, or a prepared attempt whose validated candidate was
+// abandoned before landing. A validation_failed candidate is instead retained.
+func discardedCandidateRequired(receipt WorktreeMergeReceipt) bool {
+	return receipt.Phase == WorktreeMergePhasePrepare && (receipt.Status == WorktreeMergePreparing || receipt.Status == WorktreeMergePrepared)
 }
 
 func unpublishedValidationFailureAcknowledgementPath(receiptPath string) string {
@@ -340,7 +349,7 @@ func readUnpublishedValidationFailureAcknowledgement(path string, receipt Worktr
 		ack.Candidate != receipt.Candidate || !sameWorktreeMergeSources(ack.Sources, receipt.Sources) || ack.CurrentTargetSHA == "" || ack.Actor == "" || ack.Reason == "" || ack.RecordedAt.IsZero() || ack.ID != unpublishedValidationFailureAcknowledgementID(ack) {
 		return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, fmt.Errorf("unpublished-validation-failure acknowledgement %s has invalid immutable identity", path)
 	}
-	if receipt.Status == WorktreeMergePreparing && ack.CandidateCleanupBacklog == "" {
+	if discardedCandidateRequired(receipt) && ack.CandidateCleanupBacklog == "" {
 		return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, fmt.Errorf("unpublished-validation-failure acknowledgement %s lacks discarded candidate cleanup evidence", path)
 	}
 	if err := validateUnpublishedSourceProofCoverage(ack, receipt); err != nil {
