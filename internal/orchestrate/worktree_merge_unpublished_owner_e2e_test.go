@@ -279,7 +279,7 @@ func TestE2EUnpublishedOwnerNativeDiscardedProofAndCanonicalOrdering(t *testing.
 			return worktrees.CanonicalRepositoryPath(root, repo)
 		}
 		_, err := acknowledgeUnpublishedValidationFailure(t.Context(), o, readWorktreeMergeReceipt, defaultRunner, worktreeMergeReceiptSHA256, persistUnpublishedValidationFailureAcknowledgement, canonical)
-		if err == nil || !strings.Contains(err.Error(), "prove discarded interrupted candidate") || canonicalCalls != 0 {
+		if err == nil || !strings.Contains(err.Error(), "prove discarded candidate") || canonicalCalls != 0 {
 			t.Fatalf("native backlog must precede canonical: %v calls=%d", err, canonicalCalls)
 		}
 		if err := os.WriteFile(proof.Path, before, 0o600); err != nil {

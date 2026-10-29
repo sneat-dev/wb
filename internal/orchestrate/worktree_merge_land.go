@@ -49,6 +49,11 @@ func landWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions, sa
 	} else if acknowledged {
 		return receipt, fmt.Errorf("merge receipt %s has an unpublished-conflict preservation acknowledgement; it cannot be replayed", receiptPath)
 	}
+	if acknowledged, ackErr := hasUnpublishedValidationFailureAcknowledgement(receipt); ackErr != nil {
+		return receipt, ackErr
+	} else if acknowledged {
+		return receipt, fmt.Errorf("merge receipt %s has a retired unpublished-attempt acknowledgement; it cannot be replayed", receiptPath)
+	}
 	if options.StopBeforeMerge && options.Route != WorktreeMergeRoutePullRequest {
 		return receipt, fmt.Errorf("stop-before-merge requires the pull-request route")
 	}

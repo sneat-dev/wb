@@ -121,7 +121,7 @@ func TestAcknowledgeDiscardedPreparedCandidateFreesLane(t *testing.T) {
 	}
 	if _, err := AcknowledgeUnpublishedValidationFailure(context.Background(), WorktreeMergeUnpublishedValidationFailureAcknowledgementOptions{
 		ProjectsRoot: fixture.githubDir, Receipt: prepared.ReceiptPath,
-	}); err == nil || !strings.Contains(err.Error(), "prove discarded interrupted candidate") {
+	}); err == nil || !strings.Contains(err.Error(), "prove discarded candidate") {
 		t.Fatalf("prepared receipt with a live candidate was accepted: %v", err)
 	}
 	aborted, err := worktrees.Abort(context.Background(), worktrees.AbortOptions{
@@ -151,6 +151,29 @@ func TestAcknowledgeDiscardedPreparedCandidateFreesLane(t *testing.T) {
 	}
 	if _, err := os.Stat(source.WorktreeDir); err != nil {
 		t.Fatalf("preserved source worktree was touched: %v", err)
+	}
+	receiptBefore, err := os.ReadFile(prepared.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LandWorktreeMerge(context.Background(), WorktreeMergeLandOptions{ProjectsRoot: fixture.githubDir, Receipt: prepared.ReceiptPath}); err == nil || !strings.Contains(err.Error(), "retired unpublished-attempt acknowledgement") {
+		t.Fatalf("acknowledged prepared receipt was replayed: %v", err)
+	}
+	if receiptAfter, err := os.ReadFile(prepared.ReceiptPath); err != nil || !bytes.Equal(receiptBefore, receiptAfter) {
+		t.Fatalf("refused replay rewrote the acknowledged receipt: %v", err)
+	}
+	ackBytes, err := os.ReadFile(ack.AcknowledgementPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ack.AcknowledgementPath, bytes.Replace(ackBytes, []byte(ack.Reason), []byte("tampered"), 1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LandWorktreeMerge(context.Background(), WorktreeMergeLandOptions{ProjectsRoot: fixture.githubDir, Receipt: prepared.ReceiptPath}); err == nil || !strings.Contains(err.Error(), "invalid immutable identity") {
+		t.Fatalf("tampered acknowledgement did not block replay: %v", err)
+	}
+	if err := os.WriteFile(ack.AcknowledgementPath, ackBytes, 0o600); err != nil {
+		t.Fatal(err)
 	}
 	next, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
 		ProjectsRoot: fixture.githubDir,

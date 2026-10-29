@@ -107,7 +107,7 @@ func acknowledgeUnpublishedValidationFailure(ctx context.Context, options Worktr
 		proof, proofErr := worktrees.FindDiscardedLifecycleBacklogProof(ctx, options.ProjectsRoot, receipt.Repository, receipt.Target,
 			receipt.Candidate.Task, receipt.Candidate.Worktree, receipt.Candidate.Branch, receipt.Candidate.SHA)
 		if proofErr != nil {
-			return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, fmt.Errorf("prove discarded interrupted candidate: %w", proofErr)
+			return WorktreeMergeUnpublishedValidationFailureAcknowledgement{}, fmt.Errorf("prove discarded candidate: %w", proofErr)
 		}
 		candidateCleanupBacklog = proof.Path
 		resolvedRoot, canonicalErr := resolveCanonical(options.ProjectsRoot, receipt.Repository)
