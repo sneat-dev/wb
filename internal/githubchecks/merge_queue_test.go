@@ -125,11 +125,11 @@ func TestOnlyARefusedPolicyReadIsAnAcceptedMergeQueuePolicyGap(t *testing.T) {
 		"read active branch rules for target main: HTTP 502":                                                                                false,
 		`merge queue ruleset 4 on main names merge method "OCTOPUS", which WB does not recognise`:                                           false,
 	} {
-		if got := IsPolicyUnavailableByPlan(errors.New(message)); got != want {
-			t.Errorf("IsPolicyUnavailableByPlan(%q) = %t, want %t", message, got, want)
+		if got := IsTargetPolicyRead403(errors.New(message)); got != want {
+			t.Errorf("IsTargetPolicyRead403(%q) = %t, want %t", message, got, want)
 		}
 	}
-	if IsPolicyUnavailableByPlan(nil) {
+	if IsTargetPolicyRead403(nil) {
 		t.Error("a nil error is not a policy gap")
 	}
 }

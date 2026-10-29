@@ -803,7 +803,7 @@ func requiredChecksReceipt(ctx context.Context, options PullRequestWaitOptions, 
 			freshnessAuthority = strings.Trim(freshnessAuthority+"+"+MergeQueueFreshnessAuthority, "+")
 		}
 		if reason != "" {
-			if !options.AllowUnfenced || !isGitHubPolicyPlan403(reason) {
+			if !options.AllowUnfenced || !isTargetPolicyRead403(reason) {
 				return nil, "", "", "", reason
 			}
 			branchChecks = nil
@@ -845,7 +845,7 @@ func requiredChecksReceipt(ctx context.Context, options PullRequestWaitOptions, 
 	return checks, authority, freshnessAuthority, policyUnavailable, ""
 }
 
-func isGitHubPolicyPlan403(reason string) bool {
+func isTargetPolicyRead403(reason string) bool {
 	lower := strings.ToLower(reason)
 	return strings.Contains(lower, "http 403") && (strings.Contains(lower, "branch protection") || strings.Contains(lower, "branch rules") || strings.Contains(lower, "required-status-check policy"))
 }
@@ -910,6 +910,23 @@ type ActiveBranchRule struct {
 	} `json:"parameters"`
 }
 
+// readTargetBranchPolicy reads the target branch's classic protection view,
+// whose protected flag every target-policy read depends on.
+func readTargetBranchPolicy(ctx context.Context, repository, target string) (githubBranchPolicyView, error) {
+	response, err := githubobserver.Get(ctx, githubobserver.GetRequest{Repository: strings.TrimSpace(repository), Target: strings.TrimSpace(target), Endpoint: "repos/" + repository + "/branches/" + url.PathEscape(target)})
+	if err != nil {
+		return githubBranchPolicyView{}, fmt.Errorf("read target branch protection for %s: %v", target, err)
+	}
+	var branch githubBranchPolicyView
+	if err := json.Unmarshal(response.Body, &branch); err != nil {
+		return githubBranchPolicyView{}, fmt.Errorf("decode target branch protection for %s: %v", target, err)
+	}
+	if branch.Protected == nil {
+		return githubBranchPolicyView{}, fmt.Errorf("target branch protection for %s omitted the protected policy receipt", target)
+	}
+	return branch, nil
+}
+
 // RequiredChecks reads the target's required checks and server-enforced
 // freshness authority from classic branch protection and every active rule.
 // A non-empty third result is the reason that policy could not be read.
@@ -918,23 +935,13 @@ func RequiredChecks(ctx context.Context, repository, target string, requireServe
 }
 
 // requiredChecksPolicy is RequiredChecks that also sets rulesetsUnavailable
-// to GitHub's refusal when the repository's plan offers no rulesets: the
-// target then has no ruleset, only classic protection. A target classic
-// protection still protects contradicts that plan gate, so it fails closed
-// rather than skip rules that may exist.
+// to GitHub's refusal when the repository's plan offers no rulesets and
+// activeRulesCorroborated accepts that the target therefore has none.
 func requiredChecksPolicy(ctx context.Context, repository, target string, requireServerFreshness bool, rulesetsUnavailable *string) ([]RequiredRemoteCheck, string, string) {
 	branchEndpoint := "repos/" + repository + "/branches/" + url.PathEscape(target)
-	branchOutputRawResponse, branchErr := githubobserver.Get(ctx, githubobserver.GetRequest{Dir: "", Repository: strings.TrimSpace(repository), Target: strings.TrimSpace(target), Head: strings.TrimSpace(""), Endpoint: branchEndpoint, FreshWindow: 0})
-	branchOutputRaw := branchOutputRawResponse.Body
-	if branchErr != nil {
-		return nil, "", fmt.Sprintf("read target branch protection for %s: %v", target, branchErr)
-	}
-	var branch githubBranchPolicyView
-	if err := json.Unmarshal(branchOutputRaw, &branch); err != nil {
-		return nil, "", fmt.Sprintf("decode target branch protection for %s: %v", target, err)
-	}
-	if branch.Protected == nil {
-		return nil, "", fmt.Sprintf("target branch protection for %s omitted the protected policy receipt", target)
+	branch, err := readTargetBranchPolicy(ctx, repository, target)
+	if err != nil {
+		return nil, "", err.Error()
 	}
 	required := map[string]RequiredRemoteCheck{}
 	freshnessAuthorities := make([]string, 0)
@@ -980,16 +987,11 @@ func requiredChecksPolicy(ctx context.Context, repository, target string, requir
 		}
 	}
 
-	pages, rulesErr := ActiveRules(ctx, repository, target)
-	if IsBranchPolicyUnavailableByPlan(rulesErr) {
-		if *branch.Protected {
-			return nil, "", fmt.Sprintf("read active branch rules for target %s: %v; classic protection still protects %s, so the plan gate is not corroborated", target, rulesErr, target)
-		}
-		*rulesetsUnavailable, pages, rulesErr = rulesErr.Error(), nil, nil
-	}
+	pages, unavailable, rulesErr := activeRulesCorroborated(ctx, repository, target, func() (bool, error) { return *branch.Protected, nil })
 	if rulesErr != nil {
-		return nil, "", fmt.Sprintf("read active branch rules for target %s: %v", target, rulesErr)
+		return nil, "", rulesErr.Error()
 	}
+	*rulesetsUnavailable = unavailable
 	for _, page := range pages {
 		for _, rule := range page {
 			ruleType := strings.TrimSpace(rule.Type)
