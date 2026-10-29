@@ -16,7 +16,9 @@ func processAlive(pid int) bool {
 	}
 	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
 	if err != nil {
-		return errors.Is(err, windows.ERROR_ACCESS_DENIED)
+		// Only an invalid PID proves absence. Other failures, including access
+		// denial, leave a possibly live owner protected.
+		return !errors.Is(err, windows.ERROR_INVALID_PARAMETER)
 	}
 	defer func() { _ = windows.CloseHandle(handle) }()
 	var exitCode uint32

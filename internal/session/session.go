@@ -61,6 +61,9 @@ type Record struct {
 	WBPath    string `json:"wb_path,omitempty"`
 
 	StartedAt time.Time `json:"started_at"`
+	// ProcessStartedAt is WB's native observation, never a caller clock. Old
+	// registrations lack it and remain unknown while their PID is occupied.
+	ProcessStartedAt time.Time `json:"process_started_at,omitzero"`
 	// Lifecycle is the local registry projection. Parked sessions remain
 	// addressable but are never considered live/claimable.
 	Lifecycle       string `json:"lifecycle,omitempty"`
@@ -78,6 +81,7 @@ type View struct {
 const (
 	StateLive    = "live"
 	StateGone    = "gone"
+	StateUnknown = "unknown"
 	StateParked  = "parked"
 	StateResumed = "resumed"
 )
@@ -110,20 +114,24 @@ func NewID() (string, error) {
 	return fmt.Sprintf("wbs-%x", random[:]), nil
 }
 
+// ProcessAlive reports whether a PID exists or cannot be proved absent. This
+// raw probe does not establish a recorded session's identity: readers compare
+// its WB-observed generation with the current kernel start time. Permission
+// and unknown probe errors protect a possibly live process on every platform.
+func ProcessAlive(pid int) bool { return processAlive(pid) }
+
 // Register writes a session record, replacing any record for the same PID.
 // Re-registering is deliberately allowed: a session that restarts its harness
 // or corrects its model should not have to find and delete the old file.
-// ProcessAlive reports whether a recorded process identity still exists. A PID
-// is only ever a liveness coordinate, never an identity, and a permission error
-// still proves the process exists. It is exported so that every WB subsystem
-// answers this question the same way on every platform.
-func ProcessAlive(pid int) bool { return processAlive(pid) }
-
 func Register(dir string, record Record) (Record, error) {
 	return registerWithMachineAndMode(dir, record, os.Hostname, os.Chmod)
 }
 
 func registerWithMachineAndMode(dir string, record Record, hostnameForMachine func() (string, error), chmod func(string, os.FileMode) error) (Record, error) {
+	return registerWithProcessObservation(dir, record, hostnameForMachine, chmod, processAlive, processStartTime)
+}
+
+func registerWithProcessObservation(dir string, record Record, hostnameForMachine func() (string, error), chmod func(string, os.FileMode) error, alive func(int) bool, start func(int) (time.Time, bool)) (Record, error) {
 	if record.PID <= 0 {
 		return Record{}, fmt.Errorf("a session must declare a positive PID")
 	}
@@ -145,10 +153,20 @@ func registerWithMachineAndMode(dir string, record Record, hostnameForMachine fu
 		record.NativeHarnessID = record.AgentID
 	}
 
-	// Re-registering a PID is an update to the same declared session unless a
-	// caller supplies a preallocated identity explicitly. Preserve the stable
-	// fields that cannot be rediscovered from the process itself.
-	if previous, ok := readRecord(recordPath(dir, record.PID)); ok {
+	// Preserve unspecified identity metadata only when the previous native
+	// process generation is corroborated. A shared PID or semantic StartedAt
+	// cannot associate a new declaration with an unknown prior session. Explicit
+	// preallocated/handoff fields remain the caller's supplied declaration.
+	previous, exists := readRecord(recordPath(dir, record.PID))
+	previousLive := exists && recordProcessState(previous, alive, start) == StateLive
+	// Bind inherited metadata to the very observation that will be persisted.
+	// The PID may recycle or become unreadable after the first corroboration.
+	observed, known := start(record.PID)
+	record.ProcessStartedAt = time.Time{}
+	if known {
+		record.ProcessStartedAt = observed
+	}
+	if previousLive && known && observed.Equal(previous.ProcessStartedAt) {
 		sameSession := record.WBSessionID == "" || record.WBSessionID == previous.WBSessionID
 		if record.WBSessionID == "" {
 			record.WBSessionID = previous.WBSessionID
@@ -477,7 +495,7 @@ func List(dir string) ([]View, error) {
 		if !ok {
 			continue
 		}
-		viewState := state(record.PID)
+		viewState := state(record)
 		if marker, ok := readResumedMarker(dir, record.WBSessionID); ok {
 			record.Lifecycle, record.ParkedSessionID = "resumed", marker.ParkedSessionID
 			viewState = StateResumed
@@ -523,14 +541,7 @@ func Lookup(dir string, pid int) (Record, bool) {
 	if !ok {
 		return Record{}, false
 	}
-	return record, record.Lifecycle != "parked" && record.Lifecycle != "resumed" && !resumed(dir, record.WBSessionID) && !parked(dir, record.WBSessionID) && state(record.PID) == StateLive
-}
-
-func state(pid int) string {
-	if processAlive(pid) {
-		return StateLive
-	}
-	return StateGone
+	return record, record.Lifecycle != "parked" && record.Lifecycle != "resumed" && !resumed(dir, record.WBSessionID) && !parked(dir, record.WBSessionID) && state(record) == StateLive
 }
 
 // ResolveForProcess finds the registered session that owns a process, by

@@ -18,11 +18,13 @@ type exactRecordIO struct {
 	stat   func(*os.File, *unix.Stat_t) error
 	read   func(*os.File) ([]byte, error)
 	rewind func(*os.File) (int64, error)
+	state  func(Record) string
 }
 
 func nativeExactRecordIO() exactRecordIO {
 	return exactRecordIO{
-		stat: func(file *os.File, stat *unix.Stat_t) error { return unix.Fstat(int(file.Fd()), stat) },
+		state: state,
+		stat:  func(file *os.File, stat *unix.Stat_t) error { return unix.Fstat(int(file.Fd()), stat) },
 		read: func(file *os.File) ([]byte, error) {
 			return io.ReadAll(io.LimitReader(file, maxExactSessionRecordBytes+1))
 		},
@@ -111,5 +113,9 @@ func lookupExactWithIO(dir string, pid int, access exactRecordIO) (Record, bool,
 	if record.NativeHarnessID == "" {
 		record.NativeHarnessID = record.AgentID
 	}
-	return record, state(pid) == StateLive, nil
+	processState := access.state(record)
+	if processState == StateUnknown {
+		return record, false, fmt.Errorf("recorded session process instance is unknown")
+	}
+	return record, processState == StateLive, nil
 }
