@@ -24,9 +24,9 @@ func initGCFixture(t *testing.T) (projectsRoot, home, worktree string) {
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	gcGit(t, root, "clone", remote, canonical)
-	gcGit(t, canonical, "config", "user.email", "wb-test@example.com")
-	gcGit(t, canonical, "config", "user.name", "wb-test")
+	// One clone writes the identity into the new repository's config, so later
+	// commits made inside its worktrees need no further git config processes.
+	gcGit(t, root, "clone", "--config", "user.email=wb-test@example.com", "--config", "user.name=wb-test", remote, canonical)
 	if err := os.WriteFile(filepath.Join(canonical, "README.md"), []byte("# app\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func installGCFakeGh(t *testing.T) {
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
-func TestWorktreeGCCLIPlansAndRefuses(t *testing.T) {
+func TestCleanCLIPlansAndRefuses(t *testing.T) {
 	// Not t.Parallel(): t.Setenv for PATH and WB_HOME forbids it.
 	projectsRoot, home, worktree := initGCFixture(t)
 
@@ -91,7 +91,7 @@ func TestWorktreeGCCLIPlansAndRefuses(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	plan := runWB(t, "worktree", "gc", "--projects-root", projectsRoot, "--skip-sizes")
+	plan := runWB(t, "clean", "--projects-root", projectsRoot, "--skip-sizes")
 	if plan.exitCode != exitFindings {
 		t.Fatalf("a refused checkout must exit 1: exit=%d stdout=%s stderr=%s", plan.exitCode, plan.stdout, plan.stderr)
 	}
@@ -115,7 +115,7 @@ func TestWorktreeGCCLIPlansAndRefuses(t *testing.T) {
 	}
 
 	// Nothing changes with --apply: a dirty checkout is refused, not forced.
-	applied := runWB(t, "worktree", "gc", "--projects-root", projectsRoot, "--skip-sizes", "--apply")
+	applied := runWB(t, "clean", "--projects-root", projectsRoot, "--skip-sizes", "--apply")
 	if applied.exitCode != exitFindings {
 		t.Fatalf("apply exit = %d stdout=%s stderr=%s", applied.exitCode, applied.stdout, applied.stderr)
 	}
@@ -124,36 +124,40 @@ func TestWorktreeGCCLIPlansAndRefuses(t *testing.T) {
 	}
 }
 
-func TestWorktreeGCCLIEmitsAStableJSONPlan(t *testing.T) {
+func TestCleanCLIEmitsAStableJSONPlan(t *testing.T) {
 	projectsRoot, _, _ := initGCFixture(t)
 
-	result := runWB(t, "worktree", "gc", "--projects-root", projectsRoot, "--skip-sizes", "--format", "json")
+	result := runWB(t, "clean", "--projects-root", projectsRoot, "--skip-sizes", "--format", "json")
 	if result.exitCode != exitFindings {
 		t.Fatalf("exit = %d stderr=%s", result.exitCode, result.stderr)
 	}
-	var outcome struct {
+	var clean struct {
 		SchemaVersion int  `json:"schema_version"`
 		Apply         bool `json:"apply"`
-		Entries       []struct {
-			Task              string   `json:"task"`
-			Class             string   `json:"class"`
-			Eligible          bool     `json:"eligible"`
-			Reason            string   `json:"reason"`
-			SanctionedCommand string   `json:"sanctioned_command"`
-			Evidence          []string `json:"evidence"`
-		} `json:"entries"`
-		Reclaimable struct {
-			ApparentBytes int64 `json:"apparent_bytes"`
-			UnsharedBytes int64 `json:"unshared_bytes"`
-		} `json:"reclaimable"`
+		Worktrees     struct {
+			Entries []struct {
+				Task              string   `json:"task"`
+				Class             string   `json:"class"`
+				Eligible          bool     `json:"eligible"`
+				Reason            string   `json:"reason"`
+				SanctionedCommand string   `json:"sanctioned_command"`
+				Evidence          []string `json:"evidence"`
+			} `json:"entries"`
+			Reclaimable struct {
+				ApparentBytes int64 `json:"apparent_bytes"`
+				UnsharedBytes int64 `json:"unshared_bytes"`
+			} `json:"reclaimable"`
+			Totals map[string]int `json:"totals"`
+		} `json:"worktrees"`
 		Totals map[string]int `json:"totals"`
 	}
-	if err := json.Unmarshal([]byte(result.stdout), &outcome); err != nil {
-		t.Fatalf("decode gc JSON: %v\n%s", err, result.stdout)
+	if err := json.Unmarshal([]byte(result.stdout), &clean); err != nil {
+		t.Fatalf("decode clean JSON: %v\n%s", err, result.stdout)
 	}
-	if outcome.SchemaVersion != 1 || outcome.Apply {
-		t.Fatalf("envelope identity = %#v", outcome)
+	if clean.SchemaVersion != 1 || clean.Apply || clean.Totals["refused"] != 1 {
+		t.Fatalf("envelope identity = %#v", clean)
 	}
+	outcome := clean.Worktrees
 	if len(outcome.Entries) != 1 || outcome.Entries[0].Class != "dirty" || outcome.Entries[0].Eligible {
 		t.Fatalf("entries = %#v", outcome.Entries)
 	}
@@ -166,8 +170,8 @@ func TestWorktreeGCCLIEmitsAStableJSONPlan(t *testing.T) {
 }
 
 // gc's help is the contract an agent reads before it reaches for raw Git.
-func TestWorktreeGCHelpStatesItsEvidenceAndItsRefusals(t *testing.T) {
-	command := newWorktreeGCCmd(&invocation{})
+func TestCleanHelpStatesItsEvidenceAndItsRefusals(t *testing.T) {
+	command := newCleanCmd(&invocation{})
 	for _, wanted := range []string{
 		"--allow-residue",
 		"--apply",
@@ -179,7 +183,7 @@ func TestWorktreeGCHelpStatesItsEvidenceAndItsRefusals(t *testing.T) {
 		"Work Logs and event logs are never touched",
 	} {
 		if !strings.Contains(command.Long, wanted) {
-			t.Errorf("wb worktree gc help does not mention %q", wanted)
+			t.Errorf("wb clean help does not mention %q", wanted)
 		}
 	}
 	if command.Flags().Lookup("force") != nil {

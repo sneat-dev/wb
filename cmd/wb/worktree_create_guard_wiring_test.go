@@ -3,11 +3,12 @@ package main
 import (
 	"bytes"
 	"errors"
-	"github.com/spf13/cobra"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 func TestWorktreeCreateGuardRootBindingsUseActualPolicyAndLazyProjectsRoot(t *testing.T) {

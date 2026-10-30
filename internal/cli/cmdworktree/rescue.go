@@ -4,12 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
+
 	"github.com/sneat-dev/wb/internal/canonicalrescue"
 	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/sneat-dev/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/repofilter"
 	"github.com/spf13/cobra"
-	"sort"
-	"strings"
 )
 
 type RescueOperations struct {
@@ -121,7 +122,7 @@ func runFleetRescueReport(runtime shared.Runtime, ops RescueOperations, cmd *cob
 	options := canonicalrescue.Options{ProjectsRoot: flags.ProjectsRoot}
 	var dirty []canonicalrescue.Report
 	for _, repository := range repositories {
-		if flags.Filter != "" && !strings.Contains(repository.Slug(), flags.Filter) {
+		if flags.Filter != "" && !repofilter.Match(flags.Filter, repository.Slug()) {
 			continue
 		}
 		// The clone's real path, as discovery found it: a host-level clone

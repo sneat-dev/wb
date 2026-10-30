@@ -116,7 +116,7 @@ func TestWorktreeBranchFlagsRejectBeforeAnyWorkStarts(t *testing.T) {
 }
 
 func TestWorktreeCleanupDefaultsToSafeDryRun(t *testing.T) {
-	command := newWorktreeCleanupCmd(&invocation{})
+	command := newWorktreeRetireCmd(&invocation{})
 	olderThan := command.Flags().Lookup("older-than")
 	if olderThan == nil || olderThan.DefValue != (24*time.Hour).String() {
 		t.Fatalf("--older-than default = %#v, want %s", olderThan, 24*time.Hour)
@@ -132,12 +132,8 @@ func TestWorktreeCleanupDefaultsToSafeDryRun(t *testing.T) {
 	if resumeInterrupted == nil || resumeInterrupted.DefValue != "false" {
 		t.Fatalf("--resume-interrupted = %#v, want default false", resumeInterrupted)
 	}
-	if err := command.Args(command, nil); err == nil || !strings.Contains(err.Error(), "--all-merged") {
-		t.Fatalf("cleanup without selection error = %v", err)
-	}
-	retireShells := command.Flags().Lookup("retire-shells")
-	if retireShells == nil || retireShells.DefValue != "false" {
-		t.Fatalf("--retire-shells = %#v, want default false", retireShells)
+	if err := command.Args(command, nil); err == nil || !strings.Contains(err.Error(), "wb clean retires every finished item") {
+		t.Fatalf("retire without selection error = %v", err)
 	}
 	recoverStages := command.Flags().Lookup("recover-stages")
 	if recoverStages == nil || recoverStages.DefValue != "false" {
@@ -146,39 +142,19 @@ func TestWorktreeCleanupDefaultsToSafeDryRun(t *testing.T) {
 }
 
 func TestWorktreeCleanupAcceptsSeveralExplicitTaskNames(t *testing.T) {
-	command := newWorktreeCleanupCmd(&invocation{})
+	command := newWorktreeRetireCmd(&invocation{})
 	if err := command.Args(command, []string{"landed-app", "landed-lib"}); err != nil {
 		t.Fatalf("cleanup should accept an exact set of task names: %v", err)
 	}
 }
 
-// TestWorktreeCleanupRetireShellsRejectsIncompatibleSelectors proves
-// --retire-shells sweeps every task on its own: it cannot be pointed at one
-// named task or combined with --all-merged, both of which select worktrees
-// to inspect rather than task directories to sweep.
-func TestWorktreeCleanupRetireShellsRejectsIncompatibleSelectors(t *testing.T) {
-	command := newWorktreeCleanupCmd(&invocation{})
-	if err := command.Flags().Set("retire-shells", "true"); err != nil {
-		t.Fatal(err)
-	}
-	if err := command.Args(command, []string{"some-task"}); err == nil || !strings.Contains(err.Error(), "--retire-shells") {
-		t.Fatalf("--retire-shells with a task argument error = %v", err)
-	}
-	if err := command.Flags().Set("all-merged", "true"); err != nil {
-		t.Fatal(err)
-	}
-	if err := command.Args(command, nil); err == nil || !strings.Contains(err.Error(), "--all-merged") {
-		t.Fatalf("--retire-shells with --all-merged error = %v", err)
-	}
-}
-
-// TestWorktreeCleanupRetireShellsPlansThenAppliesAnEmptyPreExistingShell is
+// TestCleanPlansThenRetiresAnEmptyPreExistingShell is
 // the CLI-level regression for the founder's fleet audit: 626 of 755 task
 // directories had no real checkout under them, each left with an empty
 // owner-namespace directory by a cleanup that predates the terminal-
-// namespace-residue fix. `wb worktree cleanup --retire-shells` is the
+// namespace-residue fix. `wb clean` is the
 // retroactive fix for those pre-existing shells, dry-run by default.
-func TestWorktreeCleanupRetireShellsPlansThenAppliesAnEmptyPreExistingShell(t *testing.T) {
+func TestCleanPlansThenRetiresAnEmptyPreExistingShell(t *testing.T) {
 	root := t.TempDir()
 	home := filepath.Join(root, "projects", ".wb")
 	worktreesRoot := filepath.Join(home, "worktrees")
@@ -190,12 +166,12 @@ func TestWorktreeCleanupRetireShellsPlansThenAppliesAnEmptyPreExistingShell(t *t
 	t.Setenv(wbhome.EnvMigrationCompat, "")
 
 	var stdout, stderr bytes.Buffer
-	planArgs := []string{"worktree", "cleanup", "--retire-shells", "--projects-root", filepath.Join(root, "projects")}
+	planArgs := []string{"clean", "--projects-root", filepath.Join(root, "projects")}
 	if code := run(planArgs, &stdout, &stderr); code != exitOK {
 		t.Fatalf("run(%q) exit = %d, stdout=%s stderr=%s", planArgs, code, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "would retire") || !strings.Contains(stdout.String(), "old-task") {
-		t.Fatalf("dry-run stdout = %q, want it to name old-task as would-retire", stdout.String())
+	if !strings.Contains(stdout.String(), "1 empty shells to retire") {
+		t.Fatalf("dry-run stdout = %q, want it to plan the empty shell", stdout.String())
 	}
 	if _, statErr := os.Stat(shellDir); statErr != nil {
 		t.Fatalf("dry run removed the shell: %v", statErr)
@@ -203,15 +179,15 @@ func TestWorktreeCleanupRetireShellsPlansThenAppliesAnEmptyPreExistingShell(t *t
 
 	stdout.Reset()
 	stderr.Reset()
-	applyArgs := []string{"worktree", "cleanup", "--retire-shells", "--apply", "--projects-root", filepath.Join(root, "projects")}
+	applyArgs := []string{"clean", "--apply", "--projects-root", filepath.Join(root, "projects")}
 	if code := run(applyArgs, &stdout, &stderr); code != exitOK {
 		t.Fatalf("run(%q) exit = %d, stdout=%s stderr=%s", applyArgs, code, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "retired") || !strings.Contains(stdout.String(), "old-task") || !strings.Contains(stdout.String(), "1 retired") {
-		t.Fatalf("apply stdout = %q, want it to name old-task as retired", stdout.String())
+	if !strings.Contains(stdout.String(), "1 empty shells retired") {
+		t.Fatalf("apply stdout = %q, want it to report the retired shell", stdout.String())
 	}
 	if _, statErr := os.Stat(filepath.Join(worktreesRoot, "old-task")); !os.IsNotExist(statErr) {
-		t.Fatalf("task directory still exists after --retire-shells --apply: err=%v", statErr)
+		t.Fatalf("task directory still exists after wb clean --apply: err=%v", statErr)
 	}
 }
 
@@ -222,7 +198,7 @@ func TestWorktreeLifecycleHelpExplainsNetworkAndCleanupSafety(t *testing.T) {
 			t.Errorf("worktree list help does not mention %q", wanted)
 		}
 	}
-	cleanup := newWorktreeCleanupCmd(&invocation{})
+	cleanup := newWorktreeRetireCmd(&invocation{})
 	for _, wanted := range []string{"default is a dry-run", "freshly fetched exact", "awaiting_push", "force-with-lease", "before any remote or local deletion", "requires --remote", "implicit age window is zero", "--resume-interrupted", "conclusively dead", "--superseded-by", "trusted-reviewer receipt"} {
 		if !strings.Contains(cleanup.Long, wanted) {
 			t.Errorf("worktree cleanup help does not mention %q", wanted)
@@ -294,7 +270,7 @@ func TestNamedCleanupApplyReturnsFindingsForNonEmptyArtifactOnlyBacklog(t *testi
 	t.Setenv(wbhome.EnvOverride, projects)
 
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"--projects-root", projects, "worktree", "cleanup", task, "--apply", "--remote", "--format", "json"}, &stdout, &stderr)
+	code := run([]string{"--projects-root", projects, "worktree", "retire", task, "--apply", "--remote", "--format", "json"}, &stdout, &stderr)
 	if code != exitFindings {
 		t.Fatalf("non-empty artifact-only cleanup exit=%d, want %d; stdout=%s stderr=%s", code, exitFindings, stdout.String(), stderr.String())
 	}
@@ -317,7 +293,7 @@ func TestNamedCleanupApplyReturnsFindingsForNonEmptyArtifactOnlyBacklog(t *testi
 // rather than reporting success.
 func TestNamedCleanupApplyFailsWhenNothingWasRetired(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"--projects-root", t.TempDir(), "worktree", "cleanup", "delivered-task", "--apply"}, &stdout, &stderr)
+	code := run([]string{"--projects-root", t.TempDir(), "worktree", "retire", "delivered-task", "--apply"}, &stdout, &stderr)
 	if code == exitOK {
 		t.Fatalf("named cleanup of an absent task succeeded: stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
@@ -395,18 +371,20 @@ func TestCreateAliasSharesWorktreeCreateContract(t *testing.T) {
 // regression test for the "matchups renamed to competios" defect: a worktree
 // whose on-disk repository-name segment no longer matches its canonical
 // clone's current name (the leftover of a real GitHub repository rename)
-// must not abort `wb worktree cleanup`. It must instead be reported as a
+// must not abort `wb clean`. It must instead be reported as a
 // clear warning on stderr while the command still exits 0.
 func TestWorktreeCleanupWarnsOnMalformedCandidateInsteadOfAborting(t *testing.T) {
 	root := t.TempDir()
 	projects, _ := setUpMismatchedWorktreeFixture(t, root)
 
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"--projects-root", projects, "worktree", "cleanup", "--all-merged", "--non-interactive"}, &stdout, &stderr)
-	if code != exitOK {
-		t.Fatalf("cleanup with a malformed candidate must not fail the command: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	code := run([]string{"--projects-root", projects, "clean", "--non-interactive"}, &stdout, &stderr)
+	// The branch the malformed checkout holds is a kept branch row, a finding;
+	// what must not happen is an abort (usage or a failed walk).
+	if code != exitOK && code != exitFindings || !strings.Contains(stdout.String(), "branches without a worktree") {
+		t.Fatalf("clean with a malformed candidate must not fail the command: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "warning: cleanup skipped malformed candidate") ||
+	if !strings.Contains(stderr.String(), "warning: clean skipped malformed candidate") ||
 		!strings.Contains(stderr.String(), `"old-repo-name"`) ||
 		!strings.Contains(stderr.String(), `"renamed-repo"`) {
 		t.Fatalf("cleanup did not clearly warn about the malformed candidate: stderr=%s", stderr.String())
@@ -422,8 +400,8 @@ func TestWorktreeCleanupFilterExcludesMalformedCandidateOutsideSelection(t *test
 	projects, _ := setUpMismatchedWorktreeFixture(t, root)
 
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"--projects-root", projects, "--filter", "unrelated", "worktree", "cleanup", "--all-merged", "--non-interactive"}, &stdout, &stderr)
-	if code != exitOK {
+	code := run([]string{"--projects-root", projects, "--filter", "renamed-repo", "clean", "--non-interactive"}, &stdout, &stderr)
+	if code != exitOK && code != exitFindings || !strings.Contains(stdout.String(), "branches without a worktree") {
 		t.Fatalf("filtered cleanup must not fail: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
 	if strings.Contains(stderr.String(), "warning:") {

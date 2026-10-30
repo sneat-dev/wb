@@ -9,7 +9,7 @@ describe('copy button words and names', () => {
 
   it('finds the wb verb of a command text, also behind ssh, and stops at the first value or flag', () => {
     expect(commandVerb("wb pr land 'sneat-dev/wb#12'")).toBe('wb pr land')
-    expect(commandVerb('wb worktree gc')).toBe('wb worktree gc')
+    expect(commandVerb('wb clean')).toBe('wb clean')
     expect(commandVerb('wb self-update')).toBe('wb self-update')
     expect(commandVerb("wb fleet status --filter='o/r'")).toBe('wb fleet status')
     expect(commandVerb('wb remote publish --dry-run')).toBe('wb remote publish')

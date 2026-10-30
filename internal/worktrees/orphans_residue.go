@@ -21,7 +21,7 @@ import (
 //
 // Detection here is read-only and deliberately has no removal path of its own.
 // Removal already has an owner: the cleanup backlog record naming that exact
-// path, applied by `wb worktree cleanup`. A second way to delete a checkout,
+// path, applied by `wb worktree retire`. A second way to delete a checkout,
 // for a state that is meant to be rare, is how rarely-exercised code goes
 // wrong.
 
@@ -159,7 +159,7 @@ func inspectResidue(projectsRoot, root, layout, task, repository, path string, r
 	if canonicalExists {
 		residue.CanonicalDir = canonical
 		residue.Evidence = append(residue.Evidence, "canonical clone "+canonical+" does not list it")
-		residue.Remedy = "wb worktree cleanup " + task + " --apply finishes a removal WB interrupted; if it reports nothing, this checkout predates WB's recovery journal and needs a look before it is removed"
+		residue.Remedy = "wb worktree retire " + task + " --apply finishes a removal WB interrupted; if it reports nothing, this checkout predates WB's recovery journal and needs a look before it is removed"
 	} else {
 		residue.Evidence = append(residue.Evidence, "no canonical clone at "+canonical)
 		residue.Remedy = "inspect " + path + " and remove it by hand once its work is confirmed on origin"

@@ -2,8 +2,9 @@ package cmdworktree
 
 import (
 	"fmt"
-	"github.com/sneat-dev/wb/internal/worktrees"
 	"io"
+
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 func writeRename(out io.Writer, results []worktrees.RenameResult, apply bool) error {

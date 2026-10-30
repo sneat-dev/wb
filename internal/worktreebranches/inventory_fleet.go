@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/repofilter"
 )
 
 type RetiredInventory struct {
@@ -32,7 +34,7 @@ func (service InventoryService) DiscoverBranchRepositories(projectsRoot, filter 
 	}
 	filtered := make([]Repository, 0, len(repositories))
 	for _, repository := range repositories {
-		if strings.Contains(repository.Slug, filter) {
+		if repofilter.Match(filter, repository.Slug) {
 			filtered = append(filtered, repository)
 		}
 	}

@@ -123,7 +123,7 @@ func PlanRetiredArchivePreflight(ctx context.Context, sourceRepository string, i
 		return plan, nil
 	}
 	plan.Outcome = "planned"
-	plan.WorkLogExport = "plain private Work Log capture is available through wb worktree retire --apply"
+	plan.WorkLogExport = "plain private Work Log capture is available through wb worktree retire --preserve branch --apply"
 	return plan, nil
 }
 

@@ -2,6 +2,7 @@ package cmdworktree
 
 import (
 	"context"
+
 	"github.com/sneat-dev/wb/internal/graduation"
 	"github.com/spf13/cobra"
 )
@@ -27,7 +28,7 @@ func NewReceipt(deps ReceiptDependencies) *cobra.Command {
 	command.Flags().StringVar(&paths.CIWait, "ci-wait", "", "JSON from wb ci wait --json for the exact target revision")
 	command.Flags().StringVar(&paths.RemoteTarget, "remote-target", "", "JSON from wb verify receipt remote-target")
 	command.Flags().StringVar(&paths.DeployedRevision, "deployed-revision", "", "closed external deployment-provider JSON receipt")
-	command.Flags().StringVar(&paths.TerminalCleanup, "terminal-cleanup", "", "cleanup.json from wb worktree cleanup --apply --remote")
+	command.Flags().StringVar(&paths.TerminalCleanup, "terminal-cleanup", "", "cleanup.json from wb worktree retire --apply --remote")
 	command.Flags().StringVar(&paths.Output, "output", "", "create this new JSON receipt file as well as writing stdout")
 	command.AddCommand(newReceiptRemoteTarget(deps))
 	return command

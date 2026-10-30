@@ -3,12 +3,13 @@ package cmdbranch
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/sneat-dev/wb/internal/worktrees"
-	"gopkg.in/yaml.v3"
 	"io"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/worktrees"
+	"gopkg.in/yaml.v3"
 )
 
 func printBranchList(out io.Writer, outcome worktrees.BranchListOutcome) error {
@@ -154,56 +155,4 @@ func printDispositionTotals(out io.Writer, totals map[string]int) error {
 		}
 	}
 	return nil
-}
-
-func printBranchCleanup(out io.Writer, outcome worktrees.BranchCleanupOutcome) error {
-	if len(outcome.Results) == 0 {
-		_, err := fmt.Fprintln(out, "no branches matched")
-		return err
-	}
-	currentRepository := ""
-	deleted, eligible := 0, 0
-	for _, result := range outcome.Results {
-		if result.Repository != currentRepository {
-			currentRepository = result.Repository
-			if _, err := fmt.Fprintf(out, "\n%s\n", currentRepository); err != nil {
-				return err
-			}
-		}
-		switch {
-		case result.Applied:
-			deleted++
-			if _, err := fmt.Fprintf(out, "  deleted      %s %s (%s)\n", result.Scope, result.Branch, result.ShortSHA); err != nil {
-				return err
-			}
-		case result.Eligible:
-			eligible++
-			if _, err := fmt.Fprintf(out, "  would delete %s %s (%s)\n", result.Scope, result.Branch, result.ShortSHA); err != nil {
-				return err
-			}
-		case result.Error != "":
-			if _, err := fmt.Fprintf(out, "  failed       %s %s: %s\n", result.Scope, result.Branch, result.Error); err != nil {
-				return err
-			}
-		default:
-			// A whole-repository disposition (for example unreadable, when the
-			// exact origin target itself could not be fetched) carries no Scope
-			// or Branch — it is the only row printed for that repository, so it
-			// must name the repository inline rather than relying solely on the
-			// group header above, which is easy to lose when rows are grepped or
-			// scrolled past.
-			if _, err := fmt.Fprintf(out, "  skip         %s %s %s (%s): %s\n", result.Repository, result.Scope, result.Branch, result.Disposition, result.SkipReason); err != nil {
-				return err
-			}
-		}
-	}
-	if _, err := fmt.Fprintln(out); err != nil {
-		return err
-	}
-	if outcome.Apply {
-		_, err := fmt.Fprintf(out, "%d deleted\n", deleted)
-		return err
-	}
-	_, err := fmt.Fprintf(out, "%d eligible; dry-run only, pass --apply to delete\n", eligible)
-	return err
 }

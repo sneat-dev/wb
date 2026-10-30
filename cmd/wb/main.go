@@ -98,6 +98,7 @@ The fastest agent workflow is:
   Open fleet dashboard  wb dashboard
   Land and clean up     wb land <worktree>...
   Land an open PR       wb pr land <owner/repo#n>
+  Clean up the fleet    wb clean            (dry run; --apply retires)
 
 wb create/wb land are root-level aliases for wb worktree create/wb worktree
 land, built from the same code so they never drift apart. wb land takes
@@ -197,7 +198,7 @@ func newRootCmdFor(inv *invocation) *cobra.Command {
 		},
 	}
 	root.PersistentFlags().StringVar(&inv.projectsRoot, "projects-root", defaultProjectsRoot(), "root dir containing {host}/{org}/{repo} clones")
-	root.PersistentFlags().StringVar(&inv.filterFlag, "filter", "", "only repos whose org/name contains this substring")
+	root.PersistentFlags().StringVar(&inv.filterFlag, "filter", "", "only repos whose org/name contains this substring, or matches this glob (e.g. 'datatug/*')")
 	root.PersistentFlags().StringArrayVar(&inv.extraOrgs, "org", nil, "additional GitHub owner to query (repeatable)")
 	root.PersistentFlags().BoolVar(&inv.nonInteractive, "non-interactive", false, "never use a terminal UI or wait for input, even on a terminal")
 	root.PersistentFlags().BoolVar(&inv.quiet, "quiet", false, "print only the outcome and any refusal, with no progress lines, so the verb's output never needs a pipe (also WB_QUIET=1)")
@@ -211,6 +212,7 @@ func newRootCmdFor(inv *invocation) *cobra.Command {
 		groupedRootCommand(newWorktreeCmd(inv), rootGroupAgent),
 		groupedRootCommand(newCreateCmd(inv), rootGroupAgent),
 		groupedRootCommand(newLandCmd(inv), rootGroupAgent),
+		groupedRootCommand(newCleanCmd(inv), rootGroupAgent),
 		groupedRootCommand(newPRCmd(inv), rootGroupAgent),
 		groupedRootCommand(newBranchCmd(inv), rootGroupAgent),
 		groupedRootCommand(newSessionCmd(inv), rootGroupAgent),
@@ -297,20 +299,20 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"peers block": true, "peers unblock": true, "peers disconnect": true,
 		"layout audit": true, "layout clean": true, "layout migrate": true, "archive clean": true,
 		"worktree abort": true, "worktree create": true, "create": true, "worktree guard": true, "worktree marker": true, "worktree rescue": true,
-		"worktree active": true, "worktree list": true, "worktree cleanup": true, "worktree retire": true, "worktree gc": true, "worktree relocate": true, "worktree rename": true,
+		"worktree active": true, "worktree list": true, "worktree retire": true, "clean": true, "worktree relocate": true, "worktree rename": true,
 		"worktree land": true, "land": true,
 		"pr land": true, "pr create": true, "pr update": true,
 		"pr batch add": true, "integration merge": true,
 		"worktree merge acknowledge-unpublished-conflict": true,
 		"worktree merge": true, "worktree merge prepare": true, "worktree merge land": true, "worktree merge resume": true, "worktree merge revert": true, "worktree merge acknowledge-landed-failed": true, "worktree merge acknowledge-stranded-landing": true, "worktree merge acknowledge-absorbed-conflict": true, "worktree merge acknowledge-retired-prepare-candidate": true, "worktree merge seal-validation-failed": true, "worktree merge supersede-validation-failed": true, "worktree merge prepare-conflict-replacement": true,
-		"worktree orphans": true, "worktree backfill": true, "worktree adopt": true, "worktree log": true, "worktree info": true,
+		"worktree backfill": true, "worktree adopt": true, "worktree log": true, "worktree info": true,
 		"worktree own": true,
 		"stream start": true, "stream join": true, "stream status": true, "stream end": true, "stream delete": true, "stream sync": true,
 		"session register": true, "session list": true, "session prune": true, "session move": true, "session receive": true, "session receive-park": true, "session park": true, "session resume": true,
 		"agent dispatch": true, "agent status": true, "agent await": true, "agent list": true, "agent logs": true, "agent stop": true,
 		"session send": true, "session recall": true, "session receive-message": true,
 		"task offload": true, "task park": true, "task pickup": true,
-		"branch list": true, "branch count": true, "branch cleanup": true, "branch quarantine": true,
+		"branch list": true, "branch count": true, "branch quarantine": true,
 		"worktree log init": true, "worktree log steer": true, "worktree log show": true,
 		"worktree log checkpoint": true, "worktree log refresh": true, "worktree log integrate": true,
 		"worktree log handoff": true, "worktree log recover": true, "worktree log finalize": true,
@@ -325,19 +327,19 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"hooks lifecycle backfill": true,
 		"coverage":                 true, "verify": true, "check": true, "status": true,
 		"fleet": true, "fleet overview": true, "fleet stats": true, "fleet status": true, "fleet merge-policy": true, "fleet default-branch": true, "remote publish": true,
-		"worktree active": true, "worktree list": true, "worktree cleanup": true, "worktree retire": true, "worktree gc": true, "worktree relocate": true, "worktree rename": true,
+		"worktree active": true, "worktree list": true, "worktree retire": true, "clean": true, "worktree relocate": true, "worktree rename": true,
 		"worktree summary": true, "worktree abort": true, "worktree marker": true, "worktree rescue": true, "worktree adopt": true,
-		"branch list": true, "branch count": true, "branch cleanup": true, "branch quarantine": true,
+		"branch list": true, "branch count": true, "branch quarantine": true,
 		"archive clean": true,
 	},
-	"org": {"sync": true, "run": true, "deps graph": true, "deps set": true, "deps bump": true, "deps publish npm": true, "deps drift": true, "fleet prs": true, "fleet merge-policy": true, "fleet default-branch": true},
+	"org": {"clean": true, "sync": true, "run": true, "deps graph": true, "deps set": true, "deps bump": true, "deps publish npm": true, "deps drift": true, "fleet prs": true, "fleet merge-policy": true, "fleet default-branch": true},
 	// --quiet is consumed by the lifecycle verbs whose progress lines made a
 	// caller pipe their output through tail, which hid a refusal's exit status.
 	// wb run and worktree guard keep their own local --quiet.
 	"quiet": {
 		"create": true, "worktree create": true, "land": true, "worktree land": true,
 		"worktree merge": true, "worktree merge prepare": true, "worktree merge land": true, "worktree merge resume": true, "worktree merge revert": true,
-		"pr create": true, "pr land": true, "worktree cleanup": true,
+		"pr create": true, "pr land": true, "worktree retire": true,
 	},
 	// This is a root rendering/input-safety guarantee. Commands without a TUI
 	// still consume it by inheriting the non-blocking contract; rejecting it

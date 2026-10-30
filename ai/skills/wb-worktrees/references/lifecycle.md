@@ -2,7 +2,7 @@
 
 For a hygiene request — deleting merged branches, removing stale or leftover
 worktrees, or sweeping historic leftovers across the fleet — read
-[cleanup.md](cleanup.md) first. It carries the decision table, the traps that
+[clean.md](clean.md) first. It carries the decision table, the traps that
 make a sweep find nothing, and how to read a skip reason. This file is the
 per-task lifecycle contract those commands enforce.
 
@@ -109,15 +109,15 @@ checks finish, then `merge land` or `merge resume` with the durable receipt.
 For work landed outside `wb worktree merge --cleanup`, always inspect the dry run:
 
 ```sh
-wb worktree cleanup <task>
-wb worktree cleanup <task-a> <task-b> --parallel 2
-wb worktree cleanup --all-merged
-wb worktree cleanup fair-split
-wb worktree cleanup fair-split --resume-interrupted
+wb worktree retire <task>
+wb worktree retire <task-a> <task-b> --parallel 2
+wb clean
+wb worktree retire fair-split
+wb worktree retire fair-split --resume-interrupted
 ```
 
 A specifically named task, or exact named batch, defaults to immediate eligibility (`--older-than 0`)
-because this is its terminalization journey. `--all-merged` fleet sweeping
+because this is its terminalization journey. `wb clean` fleet sweeping
 keeps the 24-hour grace window unless explicitly overridden.
 
 `--resume-interrupted` is named-task-only: it validates the exact descriptor
@@ -154,7 +154,7 @@ to the immutable terminal and proceeds. Only a `landed` terminal without a
 successor or exotic evidence (handoff, dirty capture, supersession) can be
 advanced this way — a `not_landed`/failure terminal still refuses closed,
 exactly as before. The same command that was refused is the one that now
-succeeds: rerun `wb worktree cleanup <task> --apply --remote` as-is.
+succeeds: rerun `wb worktree retire <task> --apply --remote` as-is.
 
 A force-pushed rebase breaks that descendance check outright: replaying the
 sealed commits onto a moved target gives them new SHAs and a new parent
@@ -191,10 +191,10 @@ refuses only its own candidate and says which check refused it.
 Apply only after reading the plan:
 
 ```sh
-wb worktree cleanup <task> --apply --remote --older-than 0
-wb worktree cleanup fair-split --apply --remote --older-than 0
-wb worktree cleanup <task-a> <task-b> --apply --remote --parallel 2
-wb worktree cleanup task-a task-b --apply --remote --parallel 2
+wb worktree retire <task> --apply --remote --older-than 0
+wb worktree retire fair-split --apply --remote --older-than 0
+wb worktree retire <task-a> <task-b> --apply --remote --parallel 2
+wb worktree retire task-a task-b --apply --remote --parallel 2
 ```
 
 For a named terminal task or batch, `--apply` refuses without `--remote` while
@@ -223,7 +223,7 @@ control-plane entries instead of treating them as legacy repository
 worktrees. The dry run reports an exact disposition. Apply descriptor-safely
 archives a recognized empty stage outside the active task; a non-empty,
 symlinked, or invalid stage remains explicit blocking cleanup backlog. Never
-delete or move that evidence manually. Use `wb worktree cleanup <task>
+delete or move that evidence manually. Use `wb worktree retire <task>
 --recover-stages` to inventory and privately archive it with a deterministic
 receipt; rerun normal cleanup only after the recovery receipt reports success.
 
@@ -380,8 +380,9 @@ normal terminal state is zero cleanup backlog, not apparently-finished branches.
 
 ## Retire a worktree while preserving its source and Work Log
 
-`wb worktree retire <task>` previews a retirement. After checking the plan,
-run `wb worktree retire <task> --apply`. For a coordinated task, use
+`wb worktree retire <task> --preserve branch` previews retirement of work that
+did not land. After checking the plan, run
+`wb worktree retire <task> --preserve branch --apply`. For a coordinated task, use
 `--filter <owner/repository>` to select one repository at a time. WB commits
 remaining source changes with normal hooks, pushes the exact source commit to
 the `retired/*` branch namespace by default, or to

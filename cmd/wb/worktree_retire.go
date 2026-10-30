@@ -3,8 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/sneat-dev/wb/internal/cli/cmdworktree"
 	"io"
+
+	"github.com/sneat-dev/wb/internal/cli/cmdworktree"
 
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -12,13 +13,33 @@ import (
 )
 
 func newWorktreeRetireCmd(inv *invocation) *cobra.Command {
-	command := cmdworktree.NewRetire(newCLIRuntime(inv), cmdworktree.RetireDependencies{Run: worktrees.Retire, Admit: requireMutationAdmission, CheckOwnership: func(ctx context.Context, root, task string) error {
-		return retireCheckRemoteOwnership(ctx, defaultRemoteDeps(), root, task)
-	}, ReleaseWhenComplete: func(command *cobra.Command, root, task string) bool {
-		result := retireReleaseClaim(command.Context(), root, task, remoteClaimWriter(command), worktrees.ListWithDiagnostics, func(root, task string, out io.Writer) autoReleaseResult { return releaseRemoteClaim(root, task, out) })
-		return result.Leaked()
-	}})
+	command := cmdworktree.NewRetire(newCLIRuntime(inv), cmdworktree.RetireDependencies{
+		Run: func(ctx context.Context, options worktrees.CleanupOptions) (worktrees.CleanupOutcome, error) {
+			return cleanupWorktreeTasks(ctx, options)
+		},
+		Recover: func(ctx context.Context, options worktrees.RetiredStageRecoveryOptions) (worktrees.RetiredStageRecoveryOutcome, error) {
+			return recoverRetiredStages(ctx, options)
+		},
+		Progress: func(command *cobra.Command, verbose bool) cmdworktree.InventoryProgress {
+			p := newInventoryProgress(inv, command.ErrOrStderr(), verbose)
+			return cmdworktree.InventoryProgress{Report: p.report, Finish: p.finish}
+		},
+		Release: func(command *cobra.Command, root, task string) bool {
+			result := releaseRemoteClaim(root, task, outcomeClaimWriter(command, inv.quiet))
+			return exitNonZeroOnReleaseLeak && result.Leaked()
+		},
+		Resolve: worktrees.ResolveRetireName,
+		Branch:  worktrees.BranchCleanup,
+		Preserve: cmdworktree.PreserveDependencies{Run: worktrees.Retire, Admit: requireMutationAdmission, CheckOwnership: func(ctx context.Context, root, task string) error {
+			return retireCheckRemoteOwnership(ctx, defaultRemoteDeps(), root, task)
+		}, ReleaseWhenComplete: func(command *cobra.Command, root, task string) bool {
+			result := retireReleaseClaim(command.Context(), root, task, remoteClaimWriter(command), worktrees.ListWithDiagnostics, func(root, task string, out io.Writer) autoReleaseResult { return releaseRemoteClaim(root, task, out) })
+			return result.Leaked()
+		}},
+	})
 	addMutationAdmissionFlags(command)
+	setDiscoveryTerms(command, "retire one task branch finished landed merged remove worktree delete branch preserve unlanded abandon")
+	markQuietVerb(command)
 	return command
 }
 

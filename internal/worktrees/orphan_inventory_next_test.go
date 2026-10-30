@@ -72,7 +72,7 @@ func TestOrphanResidueRetainsNativeEvidence(t *testing.T) {
 		t.Fatalf("registered residue: %+v", got)
 	}
 	got := inspectResidue(root, root, LayoutCurrent, "task", "acme/app", checkout, nil)
-	if got == nil || got.CanonicalDir != canonical || !evidenceContains(got.Evidence, "no Git metadata") || !strings.Contains(got.Remedy, "cleanup task") {
+	if got == nil || got.CanonicalDir != canonical || !evidenceContains(got.Evidence, "no Git metadata") || !strings.Contains(got.Remedy, "retire task") {
 		t.Fatalf("canonical residue: %+v", got)
 	}
 	if got := inspectResidue(root, root, LayoutCurrent, "task", "absent/app", checkout, nil); got != nil {

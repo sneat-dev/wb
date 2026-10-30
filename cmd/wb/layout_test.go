@@ -2,11 +2,12 @@ package main
 
 import (
 	"encoding/json"
-	"github.com/sneat-dev/wb/internal/testenv"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func TestLayoutAuditAndCleanCLI(t *testing.T) {

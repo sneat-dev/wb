@@ -1109,6 +1109,7 @@ internal/orchestrate::TestAcknowledgeAbsorbedConflictRefusals/source worktree st
 internal/orchestrate::TestAcknowledgeAbsorbedConflictRefusals/wrong status refuses	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/orchestrate::TestAcknowledgeAbsorbedConflictTamperedAcknowledgementLeavesLaneBlocked	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/orchestrate::TestAcknowledgeDiscardedInterruptedPreparingFreesLane	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/orchestrate::TestAcknowledgeDiscardedPreparedCandidateFreesLane	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/orchestrate::TestAcknowledgeLandedFailedValidationPreservesAdvancedSources	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/orchestrate::TestAcknowledgeLandedFailureAcceptsOlderClaimBaseOnlyWhenItIsAnAncestor	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/orchestrate::TestAcknowledgeLandedFailureRefusesNonAncestorClaimBaseAndIdentityMismatch	kept serial because a nested subtest must stay serial: non-ancestor claim base

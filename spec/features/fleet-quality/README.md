@@ -128,7 +128,7 @@ producer documents into one graduation receipt: a one-repository
 `wb check --profile ci --format json` report, a direct final-target
 `wb ci wait --json` receipt, an exact `wb verify receipt remote-target`
 observation, an external deployed-revision receipt, and the real
-`wb worktree cleanup --apply --remote` report. Every component MUST resolve to
+`wb worktree retire --apply --remote` report. Every component MUST resolve to
 the same repository and full Git revision. The local report MUST bind its
 passed lint, test, and build mechanisms to an unchanged clean checkout at that
 revision; PR-only CI is not final-target CI; and the deployment provider's

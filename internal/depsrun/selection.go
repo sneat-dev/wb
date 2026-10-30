@@ -13,6 +13,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/deps"
 	"github.com/sneat-dev/wb/internal/progress"
+	"github.com/sneat-dev/wb/internal/repofilter"
 )
 
 func (service *Service) Select(_ context.Context, request Selection) ([]deps.Repository, error) {
@@ -52,7 +53,7 @@ func (service *Service) Select(_ context.Context, request Selection) ([]deps.Rep
 		if !matchesDependencyRepository(slug, request.Match, expression) {
 			return nil, fmt.Errorf("repository %s does not match selected filters", slug)
 		}
-		if request.Filter != "" && !strings.Contains(slug, request.Filter) {
+		if request.Filter != "" && !repofilter.Match(request.Filter, slug) {
 			return nil, fmt.Errorf("repository %s does not match --filter %q", slug, request.Filter)
 		}
 		progress.Report(reporter, progress.Event{Operation: "deps", Phase: "select_repositories", Repository: slug, State: progress.Completed, Completed: 1, Total: 1})

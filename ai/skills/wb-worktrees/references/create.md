@@ -267,6 +267,6 @@ If Work Log publication fails after Git publishes coordinated worktrees, WB
 returns typed exact outcomes, writes durable cleanup receipts when possible,
 rolls back every asset published by that invocation, and terminalizes written
 claims append-only. If rollback cannot be proven, inspect the reported exact
-path/backlog with `wb worktree list` and `wb worktree cleanup`; never guess or
+path/backlog with `wb worktree list` and `wb worktree retire`; never guess or
 delete it with raw Git. Prompt and identifier errors are rejected before
 mutation.

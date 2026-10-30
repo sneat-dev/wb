@@ -90,5 +90,5 @@ func LockedReason(state LockOwnerState, pid int, resumeCommand string) string {
 
 // resumeInterruptedCommand is the exact recovery invocation for one task.
 func ResumeInterruptedCommand(task string) string {
-	return "wb worktree cleanup " + task + " --resume-interrupted"
+	return "wb worktree retire " + task + " --resume-interrupted"
 }

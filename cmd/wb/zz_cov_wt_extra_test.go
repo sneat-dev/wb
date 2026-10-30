@@ -239,7 +239,7 @@ func TestCwWtWorktreeCleanupWritesArtifactAndQuarantineWarnings(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stdout, stderr, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{projectsRoot: projects}) }, "gc-cli")
+	stdout, stderr, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRetireCmd(&invocation{projectsRoot: projects}) }, "gc-cli")
 	if err != nil {
 		t.Fatalf("cleanup with residue: %v", err)
 	}
@@ -251,7 +251,7 @@ func TestCwWtWorktreeCleanupWritesArtifactAndQuarantineWarnings(t *testing.T) {
 	}
 
 	// The same residue is a first-class artefact in the json envelope.
-	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{projectsRoot: projects}) }, "gc-cli", "--format", "json")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRetireCmd(&invocation{projectsRoot: projects}) }, "gc-cli", "--format", "json")
 	if err != nil {
 		t.Fatalf("cleanup json with residue: %v", err)
 	}

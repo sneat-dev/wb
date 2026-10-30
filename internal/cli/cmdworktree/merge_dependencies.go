@@ -2,13 +2,14 @@ package cmdworktree
 
 import (
 	"context"
+	"io"
+	"time"
+
 	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/sneat-dev/wb/internal/hostload"
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/retiredcandidateack"
 	"github.com/spf13/cobra"
-	"io"
-	"time"
 )
 
 type MergeOperations struct {

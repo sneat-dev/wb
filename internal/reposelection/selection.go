@@ -8,10 +8,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/repofilter"
 )
 
 type Target struct{ Repository, Path string }
@@ -92,7 +92,7 @@ func selectWith(request Request, deps dependencies) ([]Target, error) {
 // Match combines substring, glob and regular-expression repository filters.
 // An invalid glob does not match; Select reports invalid syntax before discovery.
 func Match(repository, filter, glob string, expression *regexp.Regexp) bool {
-	if filter != "" && !strings.Contains(repository, filter) {
+	if filter != "" && !repofilter.Match(filter, repository) {
 		return false
 	}
 	if glob != "" {

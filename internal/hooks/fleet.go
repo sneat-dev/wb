@@ -3,9 +3,9 @@ package hooks
 import (
 	"fmt"
 	"sort"
-	"strings"
 
 	"github.com/sneat-dev/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/repofilter"
 )
 
 // LocalRepos scans and selects local repositories using hook fleet semantics.
@@ -19,7 +19,7 @@ func localReposWith(root, filter string, scan func(string) ([]discover.Repo, err
 	}
 	selected := repos[:0]
 	for _, repo := range repos {
-		if filter == "" || strings.Contains(repo.Slug(), filter) {
+		if filter == "" || repofilter.Match(filter, repo.Slug()) {
 			selected = append(selected, repo)
 		}
 	}

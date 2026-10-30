@@ -222,7 +222,7 @@ func candidateGroups(projectsRoot, home string) []group {
 		{
 			name: "worktrees", kind: "worktree",
 			roots: append(worktreeRoots(projectsRoot), filepath.Join(home, "worktrees")),
-			note:  "may hold unlanded work; retire with wb worktree gc, never rm",
+			note:  "may hold unlanded work; retire with wb clean, never rm",
 		},
 		{
 			name: "go-build-cache", kind: "cache",

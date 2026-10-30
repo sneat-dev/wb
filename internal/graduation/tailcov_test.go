@@ -155,7 +155,7 @@ func TestTailCovComposeRejectsMalformedEvidence(t *testing.T) {
 				inputs.TerminalCleanup.Diagnostics = []worktrees.ListDiagnostic{{Path: "/worktrees/graduation", Message: "unreadable"}}
 				return now
 			},
-			want: "applied wb worktree cleanup --remote report",
+			want: "applied wb worktree retire --remote report",
 		},
 		"cleanup report repeats one repository": {
 			change: func(inputs *Inputs, now time.Time) time.Time {

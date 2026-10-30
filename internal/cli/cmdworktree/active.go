@@ -3,11 +3,12 @@ package cmdworktree
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"time"
+
 	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/sneat-dev/wb/internal/worktreerun"
 	"github.com/spf13/cobra"
-	"io"
-	"time"
 )
 
 // NewActive constructs compact local and cross-machine overlap preflight.

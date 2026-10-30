@@ -20,6 +20,7 @@ import (
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/githubobserver"
+	"github.com/sneat-dev/wb/internal/repofilter"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -300,7 +301,7 @@ func (service *Service) discoverRemoteMergePolicyFleet(filter string, explicitOw
 				return nil, fmt.Errorf("invalid --repo %q; use owner/repository", slug)
 			}
 			normalized := owner + "/" + name
-			if seen[normalized] || (filter != "" && !strings.Contains(normalized, filter)) {
+			if seen[normalized] || (filter != "" && !repofilter.Match(filter, normalized)) {
 				continue
 			}
 			seen[normalized] = true
@@ -347,7 +348,7 @@ func (service *Service) discoverRemoteMergePolicyFleet(filter string, explicitOw
 			return nil, fmt.Errorf("list GitHub repositories for %s: %w", owner, err)
 		}
 		for _, repo := range listed {
-			if filter == "" || strings.Contains(repo.Slug(), filter) {
+			if filter == "" || repofilter.Match(filter, repo.Slug()) {
 				repo.Remote = true
 				repos = append(repos, repo)
 			}

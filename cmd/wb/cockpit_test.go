@@ -5,11 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/sneat-dev/wb/internal/cli/cmdcockpit"
-	"github.com/sneat-dev/wb/internal/cockpit"
-	"github.com/sneat-dev/wb/internal/cockpitrun"
-	"github.com/sneat-dev/wb/internal/daemonruntime"
-	"github.com/spf13/pflag"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -17,6 +12,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/cli/cmdcockpit"
+	"github.com/sneat-dev/wb/internal/cockpit"
+	"github.com/sneat-dev/wb/internal/cockpitrun"
+	"github.com/sneat-dev/wb/internal/daemonruntime"
+	"github.com/spf13/pflag"
 )
 
 func TestCockpitExportThroughTheRootCommand(t *testing.T) {

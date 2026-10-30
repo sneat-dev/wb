@@ -55,6 +55,7 @@ func branchInventoryService() worktreebranches.InventoryService {
 		FetchTarget:      fetchRemoteTargetHead,
 		IsAncestor:       isAncestor,
 		ContentContained: contentContained,
+		LandingReverted:  landingReverted,
 		CommitTree:       commitTree,
 		Supersession: func(ctx context.Context, path string, repository worktreebranches.Repository, ref worktreebranches.BranchRef, base, targetSHA string) (*worktreebranches.SupersessionEvidence, string) {
 			receipt, rejection := supersessionReceiptForEntry(ctx, path, ListResult{Repository: repository.Slug, Branch: ref.Name, HeadSHA: ref.SHA,

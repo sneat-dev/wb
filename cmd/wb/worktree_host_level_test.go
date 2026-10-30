@@ -185,12 +185,12 @@ func TestWorktreeRescueFleetFindsAHostLevelClone(t *testing.T) {
 //
 //	$ wb worktree create <task> <owner>/<repo> --base main ...
 //	created ...: <projects-root>/.worktrees/<task>/github.com/<owner>/<repo>
-//	$ wb worktree cleanup <task> --apply
+//	$ wb worktree retire <task> --apply
 //	error: cleanup worktree ... has unsupported hierarchy
 //
 // `wb worktree create` writes the default central-store host-level layout
 // (no ~/.config/wb/worktrees.yaml present, exactly the report's own note),
-// and `wb worktree cleanup --apply` must retire that exact path once the
+// and `wb worktree retire --apply` must retire that exact path once the
 // branch has landed, rather than refusing it.
 func TestWorktreeCreateThenCleanupApplyRetiresHostLevelWorktree(t *testing.T) {
 	root := t.TempDir()
@@ -201,9 +201,9 @@ func TestWorktreeCreateThenCleanupApplyRetiresHostLevelWorktree(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	gcGit(t, root, "clone", remote, canonical)
-	gcGit(t, canonical, "config", "user.email", "wb-test@example.com")
-	gcGit(t, canonical, "config", "user.name", "wb-test")
+	// One clone writes the identity into the new repository's config, so later
+	// commits made inside its worktrees need no further git config processes.
+	gcGit(t, root, "clone", "--config", "user.email=wb-test@example.com", "--config", "user.name=wb-test", remote, canonical)
 	if err := os.WriteFile(filepath.Join(canonical, "README.md"), []byte("# app\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +263,7 @@ func TestWorktreeCreateThenCleanupApplyRetiresHostLevelWorktree(t *testing.T) {
 	ownerDir := filepath.Dir(worktree)
 	hostDir := filepath.Dir(ownerDir)
 
-	cleaned := runWB(t, "worktree", "cleanup", task, "--apply", "--remote", "--projects-root", projectsRoot, "--format", "json")
+	cleaned := runWB(t, "worktree", "retire", task, "--apply", "--remote", "--projects-root", projectsRoot, "--format", "json")
 	if cleaned.exitCode != exitOK {
 		t.Fatalf("cleanup exit = %d stderr=%s stdout=%s", cleaned.exitCode, cleaned.stderr, cleaned.stdout)
 	}

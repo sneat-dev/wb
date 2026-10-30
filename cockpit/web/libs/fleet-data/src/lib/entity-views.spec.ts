@@ -52,7 +52,7 @@ describe('entity panels', () => {
     expect(panel?.commands.map((c) => [c.title, c.command.ok && c.command.text, c.command.ok && c.command.needsEdit])).toEqual([
       ['List worktrees', "wb worktree list 'fix-ci'", false],
       ['Commit and open pull request', "wb pr create 'fix-ci' --commit-all --message=<<<edit:message>>>", true],
-      ['Plan cleanup (dry run)', "wb worktree cleanup 'fix-ci'", false],
+      ['Plan cleanup (dry run)', "wb worktree retire 'fix-ci'", false],
     ])
     expect(panel?.raw).toEqual([modelOf().worktreeById('w1')])
     expect(buildWorktreePanel(modelOf(), 'nope')).toBeUndefined()

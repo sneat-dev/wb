@@ -1,8 +1,9 @@
 package main
 
 import (
-	"github.com/sneat-dev/wb/internal/reposelection"
 	"regexp"
+
+	"github.com/sneat-dev/wb/internal/reposelection"
 )
 
 // Temporary adapters preserve private root fields while status/fleet/remote

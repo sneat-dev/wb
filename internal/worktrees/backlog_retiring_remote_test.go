@@ -58,7 +58,7 @@ func strandAtRetiringRemoteDisposition(t *testing.T, fixture *gitFixture, task, 
 }
 
 // A record sealed at retiring_remote must be discoverable. Before this it was
-// dropped by the loader's stage switch, so `wb worktree cleanup <task>`
+// dropped by the loader's stage switch, so `wb worktree retire <task>`
 // answered "was not found" and the record could never be finished by any route.
 func TestRetiringRemoteBacklogIsResumable(t *testing.T) {
 	fixture := newGitFixture(t)

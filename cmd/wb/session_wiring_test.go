@@ -6,13 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/sneat-dev/wb/internal/session"
-	"github.com/sneat-dev/wb/internal/sessionrun"
-	"github.com/sneat-dev/wb/internal/worktrees"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/session"
+	"github.com/sneat-dev/wb/internal/sessionrun"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 func TestSessionRootDefaultsUseLazyPrivateRootAndDetachedReadPolicy(t *testing.T) {

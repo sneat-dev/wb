@@ -3,7 +3,7 @@
 //
 // It exists because "the agent is done" had no sanctioned expression. An agent
 // that finished either left its checkout for a later sweep — the residue
-// `wb worktree gc` has to clean up — or hand-rolled `git worktree remove`,
+// `wb clean` has to clean up — or hand-rolled `git worktree remove`,
 // which loses the claim, the Work Log seal and any uncommitted work in one
 // step. `wb worktree end` is the one verb that does all three correctly.
 //

@@ -1,9 +1,10 @@
 package cmdworktree
 
 import (
-	"github.com/sneat-dev/wb/internal/worktrees"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 func TestCwWtFormatCanonicalFreshness(t *testing.T) {

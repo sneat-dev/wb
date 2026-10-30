@@ -143,7 +143,7 @@ func TestCwCovWorktreeGCCommandInProcess(t *testing.T) {
 	t.Setenv("WB_HOME", t.TempDir())
 	root := t.TempDir()
 
-	stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newWorktreeGCCmd(&invocation{projectsRoot: root}) }, "--skip-sizes")
+	stdout, _, err := cwCovExec(t, root, func() *cobra.Command { return newCleanCmd(&invocation{projectsRoot: root}) }, "--skip-sizes")
 	if code := exitCodeOf(t, err); code != exitOK {
 		t.Fatalf("empty gc exit = %d\n%s", code, stdout)
 	}
@@ -151,7 +151,7 @@ func TestCwCovWorktreeGCCommandInProcess(t *testing.T) {
 		t.Errorf("empty gc output = %q", stdout)
 	}
 
-	stdout, _, err = cwCovExec(t, root, func() *cobra.Command { return newWorktreeGCCmd(&invocation{projectsRoot: root}) }, "--skip-sizes", "--format", "json")
+	stdout, _, err = cwCovExec(t, root, func() *cobra.Command { return newCleanCmd(&invocation{projectsRoot: root}) }, "--skip-sizes", "--format", "json")
 	if code := exitCodeOf(t, err); code != exitOK {
 		t.Fatalf("empty gc --format json exit = %d", code)
 	}
@@ -166,10 +166,10 @@ func TestCwCovWorktreeGCCommandInProcess(t *testing.T) {
 	}
 
 	// The two refusals the command makes before doing any work.
-	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newWorktreeGCCmd(&invocation{projectsRoot: root}) }, "--session-freshness", "-1s"); exitCodeOf(t, err) != exitUsage {
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newCleanCmd(&invocation{projectsRoot: root}) }, "--session-freshness", "-1s"); exitCodeOf(t, err) != exitUsage {
 		t.Fatalf("negative --session-freshness exit = %v, want usage", err)
 	}
-	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newWorktreeGCCmd(&invocation{projectsRoot: root}) }, "--format", "toml"); err == nil ||
+	if _, _, err := cwCovExec(t, root, func() *cobra.Command { return newCleanCmd(&invocation{projectsRoot: root}) }, "--format", "toml"); err == nil ||
 		!strings.Contains(err.Error(), `unsupported format "toml"`) {
 		t.Fatalf("unknown --format error = %v, want a named format refusal", err)
 	}

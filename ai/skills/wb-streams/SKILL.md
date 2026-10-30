@@ -177,7 +177,7 @@ With no name, every stream is listed. Flags: `--format`.
 Closes or retargets every still-open pull request against the stream branches,
 closes each member's own draft pull request, deletes `origin/stream/<name>`,
 releases the leases, and retires every stream worktree through
-`wb worktree cleanup`.
+`wb worktree retire`.
 
 **Ending publishes, bumps and merges nothing.**
 

@@ -19,6 +19,7 @@ import (
 	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/locallink"
+	"github.com/sneat-dev/wb/internal/repofilter"
 	"github.com/sneat-dev/wb/internal/repopath"
 	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/streams"
@@ -93,7 +94,7 @@ type ListOptions struct {
 	// is why nothing in WB could ever retire one: the measured sweep showed 50
 	// inventory rows for 60 checkouts. Callers that mutate a branch — cleanup,
 	// merge — leave this false, so a detached checkout stays outside their
-	// reach exactly as before; `wb worktree list` and `wb worktree gc` set it.
+	// reach exactly as before; `wb worktree list` and `wb clean` set it.
 	IncludeDetached bool
 	// TTL, when positive, marks a checkout older than this as expired. It is
 	// pure reporting: nothing acts on it, and its purpose is that "this task
@@ -683,7 +684,7 @@ type CleanupOutcome struct {
 	Recovery    *InterruptedLockRecovery     `json:"recovery,omitempty"`
 	// ResolvedTasks are the physical task namespaces Cleanup actually
 	// inspected after expanding any logical effort aliases (session-resume-*
-	// member directories). A named `wb worktree cleanup <effort>` invocation
+	// member directories). A named `wb worktree retire <effort>` invocation
 	// must judge apply success against these identities, not the pre-resolution
 	// selector that produced them.
 	ResolvedTasks []string `json:"resolved_tasks,omitempty"`
@@ -1549,7 +1550,7 @@ func listCanonicalLocalLayout(
 				rootArtifacts = append(rootArtifacts, artifact)
 			} else {
 				artifact.Disposition = dispositionEmptyUnscopedLocalRetiredStage
-				artifact.Reason = "empty retired canonical local sibling stage is terminal residue; no task cleanup owns it, so wb worktree gc --apply removes it directly"
+				artifact.Reason = "empty retired canonical local sibling stage is terminal residue; no task cleanup owns it, so wb clean --apply removes it directly"
 			}
 			artifacts = append(artifacts, artifact)
 			continue
@@ -2659,16 +2660,7 @@ func filterMatchesClaimRepository(home, filter, path string, claim workLogClaim)
 }
 
 func filterMatches(filter string, candidates ...string) bool {
-	if filter == "" {
-		return true
-	}
-	filter = strings.ToLower(filter)
-	for _, candidate := range candidates {
-		if candidate != "" && strings.Contains(strings.ToLower(candidate), filter) {
-			return true
-		}
-	}
-	return false
+	return repofilter.Match(filter, candidates...)
 }
 
 func isGitRoot(ctx context.Context, path string) bool {
@@ -2918,10 +2910,19 @@ func (run *cleanupRun) verifyTasksFound() error {
 					return fmt.Errorf("WB worktree task %q has incomplete scoped discovery; cannot prove absence while %s: %s", task, diagnostic.Path, diagnostic.Message)
 				}
 			}
-			return fmt.Errorf("WB worktree task %q was not found", task)
+			return &TaskNotFoundError{Task: task}
 		}
 	}
 	return nil
+}
+
+// TaskNotFoundError reports a named task with no checkout and no backlog. The
+// name may still be a branch: `wb worktree retire` resolves it (see
+// ResolveRetireName) before giving up.
+type TaskNotFoundError struct{ Task string }
+
+func (err *TaskNotFoundError) Error() string {
+	return fmt.Sprintf("WB worktree task %q was not found", err.Task)
 }
 
 // buildResults scores every listed candidate's cleanup eligibility, appends

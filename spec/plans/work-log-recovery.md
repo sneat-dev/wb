@@ -373,7 +373,7 @@ naming those children in the refusal.
 **Depends-On:** task-12, task-15
 **Status:** complete
 
-Add read-only `wb worktree orphans` covering the current `<WB_HOME>/worktrees`
+Add read-only `wb clean` covering the current `<WB_HOME>/worktrees`
 hierarchy, the legacy `<projects-root>/.wb` hierarchy, and worktrees registered
 to a canonical clone but living outside both. Report per worktree: effort
 identity and parent, branch, base, last commit and age, dirty state, whether the

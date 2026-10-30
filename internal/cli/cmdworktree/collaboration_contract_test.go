@@ -4,12 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"github.com/sneat-dev/wb/internal/cli/shared"
-	"github.com/sneat-dev/wb/internal/worktreecollab"
-	"github.com/spf13/cobra"
 	"io"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/cli/shared"
+	"github.com/sneat-dev/wb/internal/worktreecollab"
+	"github.com/spf13/cobra"
 )
 
 type collaborationRecording struct {

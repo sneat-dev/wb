@@ -124,7 +124,7 @@ func TestE2ECheckoutOfAnotherBranchInACanonicalCloneRaisesNoGuardWarning(t *test
 	}
 }
 
-// The incident: `wb worktree cleanup` of a landed task, with the canonical
+// The incident: `wb worktree retire` of a landed task, with the canonical
 // clone on another agent's branch, clean or dirty. The merged remote branch is
 // deleted and the worktree retired, and the other agent's work is untouched.
 //
@@ -166,7 +166,7 @@ printf '[{"number":17,"url":"https://github.com/acme/app/pull/17","state":"MERGE
 `, head))
 			environment := append(append([]string(nil), fixture.env...), "PATH="+ghDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 			cleanup := runWBUpgrade(t, fixture.binary, environment, "--projects-root", fixture.projects,
-				"worktree", "cleanup", "landed", "--apply", "--remote", "--older-than", "0s")
+				"worktree", "retire", "landed", "--apply", "--remote", "--older-than", "0s")
 			if cleanup.exitCode != exitOK {
 				t.Fatalf("cleanup with the canonical clone on another branch (dirty=%t): exit=%d\nstdout=%s\nstderr=%s", test.dirty, cleanup.exitCode, cleanup.stdout, cleanup.stderr)
 			}

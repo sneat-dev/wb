@@ -2,8 +2,9 @@ package main
 
 import (
 	"context"
-	"github.com/sneat-dev/wb/internal/checkoutsetup"
 	"io"
+
+	"github.com/sneat-dev/wb/internal/checkoutsetup"
 
 	"github.com/spf13/cobra"
 
@@ -61,9 +62,7 @@ func newWorktreeCmd(inv *invocation) *cobra.Command {
 		{newWorktreeMergeCmd(inv), "finish"},
 		{newWorktreeLandCmd(inv), "finish"},
 		{newWorktreeEndCmd(inv), "finish"},
-		{newWorktreeCleanupCmd(inv), "finish"},
 		{newWorktreeRetireCmd(inv), "finish"},
-		{newWorktreeGCCmd(inv), "finish"},
 		{newWorktreeAbortCmd(inv), "finish"},
 		{newWorktreeSummaryCmd(inv), "inspect"},
 		{newWorktreeActiveCmd(inv), "inspect"},
@@ -79,7 +78,6 @@ func newWorktreeCmd(inv *invocation) *cobra.Command {
 		{newWorktreeRenameCmd(inv), "admin"},
 		{newWorktreeCorrectIdentityCmd(inv), "admin"},
 		{newWorktreeSetCmd(inv), "admin"},
-		{newWorktreeOrphansCmd(inv), "admin"},
 		{newWorktreeBackfillCmd(inv), "admin"},
 	}
 	for _, child := range children {
@@ -217,33 +215,12 @@ func newWorktreeAdoptCmd(inv *invocation) *cobra.Command {
 	return command
 }
 
-func newWorktreeOrphansCmd(inv *invocation) *cobra.Command {
-	return cmdworktree.NewOrphans(newCLIRuntime(inv), worktrees.Orphans)
-}
-
 func newWorktreeListCmd(inv *invocation) *cobra.Command {
 	return cmdworktree.NewList(newCLIRuntime(inv), worktrees.ListWithDiagnostics)
 }
 
 func newWorktreeSummaryCmd(inv *invocation) *cobra.Command {
 	return cmdworktree.NewSummary(newCLIRuntime(inv), worktrees.ListWithDiagnostics)
-}
-
-func newWorktreeCleanupCmd(inv *invocation) *cobra.Command {
-	command := cmdworktree.NewCleanup(newCLIRuntime(inv), cmdworktree.CleanupDependencies{Run: func(ctx context.Context, options worktrees.CleanupOptions) (worktrees.CleanupOutcome, error) {
-		return cleanupWorktreeTasks(ctx, options)
-	}, Shells: worktrees.RetireTaskShells, Recover: func(ctx context.Context, options worktrees.RetiredStageRecoveryOptions) (worktrees.RetiredStageRecoveryOutcome, error) {
-		return recoverRetiredStages(ctx, options)
-	}, Progress: func(command *cobra.Command, verbose bool) cmdworktree.InventoryProgress {
-		p := newInventoryProgress(inv, command.ErrOrStderr(), verbose)
-		return cmdworktree.InventoryProgress{Report: p.report, Finish: p.finish}
-	}, Release: func(command *cobra.Command, root, task string) bool {
-		result := releaseRemoteClaim(root, task, outcomeClaimWriter(command, inv.quiet))
-		return exitNonZeroOnReleaseLeak && result.Leaked()
-	}})
-	setDiscoveryTerms(command, "cleanup clean up retire remove landed merged worktrees branches tasks")
-	markQuietVerb(command)
-	return command
 }
 
 func newWorktreeRenameCmd(inv *invocation) *cobra.Command {

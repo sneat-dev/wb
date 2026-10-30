@@ -24,6 +24,7 @@ import (
 	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/gitremote"
+	"github.com/sneat-dev/wb/internal/repofilter"
 	"github.com/sneat-dev/wb/internal/wbconfig"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"gopkg.in/yaml.v3"
@@ -740,7 +741,7 @@ func (service *Service) defaultBranchLocalClones(inv Scope, filter string) (defa
 		return result, fmt.Errorf("scan local canonical clones: %w", err)
 	}
 	for _, clone := range local {
-		if filter != "" && !strings.Contains(clone.Slug(), filter) {
+		if filter != "" && !repofilter.Match(filter, clone.Slug()) {
 			continue
 		}
 		if clone.Host != "" && !strings.EqualFold(clone.Host, "github.com") {
@@ -813,7 +814,7 @@ func (service *Service) discoverDefaultBranchFleet(filter string, Owners, exact 
 				return nil, nil, fmt.Errorf("invalid --repo %q; use owner/repository", slug)
 			}
 			key := strings.ToLower(owner + "/" + name)
-			if seen[key] || (filter != "" && !strings.Contains(owner+"/"+name, filter)) {
+			if seen[key] || (filter != "" && !repofilter.Match(filter, owner+"/"+name)) {
 				continue
 			}
 			seen[key] = true
@@ -870,7 +871,7 @@ func (service *Service) discoverDefaultBranchFleet(filter string, Owners, exact 
 		}
 		for _, repo := range listed {
 			key := strings.ToLower(repo.Slug())
-			if seen[key] || (filter != "" && !strings.Contains(repo.Slug(), filter)) {
+			if seen[key] || (filter != "" && !repofilter.Match(filter, repo.Slug())) {
 				continue
 			}
 			seen[key] = true

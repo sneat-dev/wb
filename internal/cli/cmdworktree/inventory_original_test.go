@@ -2,10 +2,11 @@ package cmdworktree
 
 import (
 	"bytes"
-	"github.com/sneat-dev/wb/internal/worktrees"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 func TestCwWtPrintWorktreeListStates(t *testing.T) {

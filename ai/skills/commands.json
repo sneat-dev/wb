@@ -16,6 +16,11 @@
     "ci": [
       "wb-ci"
     ],
+    "clean": [
+      "wb",
+      "wb-worktrees",
+      "wb-branches"
+    ],
     "cockpit": [
       "wb-daemon"
     ],

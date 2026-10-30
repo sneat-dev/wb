@@ -1,10 +1,11 @@
 package main
 
 import (
+	"io"
+
 	cockpitfleet "github.com/sneat-dev/wb/internal/cockpit/fleet"
 	"github.com/sneat-dev/wb/internal/cockpitoptions"
 	"github.com/sneat-dev/wb/internal/wbconfig"
-	"io"
 )
 
 func cockpitFleetOptions(projectsRoot, home, configPath string, config wbconfig.CockpitConfig, logs io.Writer, hostname func() (string, error)) cockpitfleet.Options {

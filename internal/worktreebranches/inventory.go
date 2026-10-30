@@ -43,16 +43,21 @@ type SupersessionEvidence struct {
 // InventoryPorts supplies host, repository, Git and hosted-PR observations.
 // An inventory service has no package-global callbacks or hidden Git runner.
 type InventoryPorts struct {
-	Discover            func(string) ([]Repository, error)
-	ListInUse           func(context.Context, string, string) ([]BranchUse, error)
-	Git                 worktreeproof.GitQuery
-	CheckedOut          func(context.Context, string) (map[string]bool, string)
-	InUse               func(context.Context, string, string) (map[string]string, string)
-	OpenHeadPull        func(context.Context, string, string, string, string) (*PullRequest, error)
-	OpenBasePull        func(context.Context, string, string, string) (*PullRequest, error)
-	FetchTarget         func(context.Context, string, string) (string, error)
-	IsAncestor          func(context.Context, string, string, string) (bool, error)
-	ContentContained    func(context.Context, string, string, string) (bool, error)
+	Discover         func(string) ([]Repository, error)
+	ListInUse        func(context.Context, string, string) ([]BranchUse, error)
+	Git              worktreeproof.GitQuery
+	CheckedOut       func(context.Context, string) (map[string]bool, string)
+	InUse            func(context.Context, string, string) (map[string]string, string)
+	OpenHeadPull     func(context.Context, string, string, string, string) (*PullRequest, error)
+	OpenBasePull     func(context.Context, string, string, string) (*PullRequest, error)
+	FetchTarget      func(context.Context, string, string) (string, error)
+	IsAncestor       func(context.Context, string, string, string) (bool, error)
+	ContentContained func(context.Context, string, string, string) (bool, error)
+	// LandingReverted reports whether the target reverted a landing commit:
+	// a commit after it carries Git's revert message or one of markers
+	// (GitHub's "Reverts owner/repo#N"), or every path it changed is back to
+	// its pre-landing content.
+	LandingReverted     func(ctx context.Context, repositoryPath, landing, target string, markers ...string) (bool, error)
 	CommitTree          func(context.Context, string, string) (string, error)
 	Supersession        func(context.Context, string, Repository, BranchRef, string, string) (*SupersessionEvidence, string)
 	SupersessionDigest  func(string) (string, error)

@@ -2,10 +2,11 @@ package cmdworktree
 
 import (
 	"fmt"
-	"github.com/sneat-dev/wb/internal/worktrees"
 	"io"
 	"strings"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 func writeInventoryList(out io.Writer, results []worktrees.ListResult) error {

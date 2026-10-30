@@ -2,12 +2,13 @@ package main
 
 import (
 	"context"
+	"io"
+
 	"github.com/sneat-dev/wb/internal/agentrun"
 	"github.com/sneat-dev/wb/internal/buildinfo"
 	"github.com/sneat-dev/wb/internal/checkoutmarker"
 	"github.com/sneat-dev/wb/internal/checkoutsetup"
 	"github.com/sneat-dev/wb/internal/worktrees"
-	"io"
 )
 
 func newAgentService() *agentrun.Service {

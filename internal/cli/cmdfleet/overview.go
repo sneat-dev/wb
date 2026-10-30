@@ -99,7 +99,7 @@ attention, clone layout, and managed WB worktrees.
 
 This is intentionally a rollup, not a worklist. Use wb fleet status for Git
 attention detail, wb layout audit for placement findings, and
-wb worktree orphans for linked-worktree debt outside the managed hierarchy.`,
+wb clean for linked-worktree debt outside the managed hierarchy.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			report, err := deps.Stats(cmd.Context(), request(runtime, options, depth, false))

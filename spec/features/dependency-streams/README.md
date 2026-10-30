@@ -184,7 +184,7 @@ binding. Nothing in P0 depends on a P1 or P2 requirement.
 
 | # | Verb / change | Why here |
 |---|---|---|
-| 1 | `wb worktree gc` + inventory fixes (`detached-review`, silent stage/lock purge, `landed + residue`, merged-ness by patch identity, owner/age/TTL, no force flag) | Directive 8; pure-local; 10 detached review checkouts are invisible to wb today, on a disk at 89% |
+| 1 | `wb clean` + inventory fixes (`detached-review`, silent stage/lock purge, `landed + residue`, merged-ness by patch identity, owner/age/TTL, no force flag) | Directive 8; pure-local; 10 detached review checkouts are invisible to wb today, on a disk at 89% |
 | 2 | `wb pr land` — cleanup by default + `--keep`, vendored `gh` API calls (2.45), explicit `--subject`, and `mechanical-bumps-are-not-reviewed` | The measured root cause: the opt-in `--cleanup` never ran because the merge stage broke on the installed `gh` |
 | 3 | `wb disk` + `wb cache prune` | Directive 8; `stream start`'s disk floor depends on them |
 | 4 | Exit-code + JSON-envelope contract, applied to 1–3 and everything after | Retrofitting it later means rewriting every skill section |
@@ -257,7 +257,7 @@ a merged-but-untagged library is not the same problem as a consumer left behind.
 `wb stream end <name>` MUST remove every live link the stream created,
 restoring each consumer to its published dependency versions, before delegating
 worktree removal to the existing
-[`wb worktree cleanup`](../worktree-lifecycle/README.md). It MUST refuse to
+[`wb worktree retire`](../worktree-lifecycle/README.md). It MUST refuse to
 report success while any link remains. Ending a stream MUST NOT publish, bump,
 or merge anything.
 
@@ -1420,7 +1420,7 @@ about it."*
 
 #### REQ: worktree-gc-classifies-by-pull-request-state
 
-`wb worktree gc` MUST classify every worktree by **pull request state, not by
+`wb clean` MUST classify every worktree by **pull request state, not by
 Git ancestry alone** — a squash merge leaves no ancestry evidence, so a merged
 branch looks unmerged to `git`. A worktree with a clean tree whose pull request
 is merged or closed, or which is a detached review checkout, MUST be removable.
@@ -1452,7 +1452,7 @@ to 99% of disk usage."*
 
 #### REQ: work-and-event-logs-are-never-pruned
 
-`wb worktree gc` and `wb cache prune` MUST NEVER delete work logs or stream event
+`wb clean` and `wb cache prune` MUST NEVER delete work logs or stream event
 logs. They are small — 17 MB across the fleet — and they are the source for every
 report in this Feature. They may be compressed, rotated, or uploaded; they may
 not be discarded.
@@ -1528,7 +1528,7 @@ with the residual commits listed.
 
 #### REQ: gc-is-the-safety-net-and-is-measured
 
-`wb worktree gc` MUST be the safety net rather than the primary mechanism, and
+`wb clean` MUST be the safety net rather than the primary mechanism, and
 `wb report stream` MUST carry **worktrees abandoned per stream** as a metric with
 a target of **0**. A rising number means a landing verb stopped cleaning up, and
 that is the thing to fix rather than to sweep.
@@ -1602,7 +1602,7 @@ named in code as never-prunable rather than merely omitted from a default list.
 
 #### REQ: gc-refusals-never-escalate
 
-`wb worktree gc` MUST expose no force flag. `--allow-residue` and
+`wb clean` MUST expose no force flag. `--allow-residue` and
 `--superseded-by` are the only widenings, and both MUST print the evidence they
 widen past. `unpushed` — a tip commit the commit→PR index does not know — MUST
 always refuse and say "never pushed" explicitly, because it is the only class
@@ -1675,7 +1675,7 @@ The founder: *"Don't forget to update wb ai skills once implemented."*
 
 A verb an agent cannot discover is a verb that does not exist. Every new or
 changed verb in this Feature — P0's `stream start/status/sync/end`,
-`deps propagate local/remote`, `pr land`, `worktree gc/review/end`,
+`deps propagate local/remote`, `pr land`, `clean`, `worktree review/end`,
 `session end`, `disk`, `cache prune`, `report export`, `stats savings` — and, in
 their own phases, `review request/record/probe`, `report fleet/publish`, `serve`,
 `stats calibrate` — MUST ship **in the same pull request** as
@@ -2212,7 +2212,7 @@ has verified that `wb --version` reports the released tag.
 **Given** one clean worktree whose pull request was **squash**-merged (so `git`
 shows its branch as unmerged), one dirty worktree, one claimed worktree with an
 open pull request, and a stale `.wb-retired-stage-*` directory
-**When** the operator runs `wb worktree gc`
+**When** the operator runs `wb clean`
 **Then** the squash-merged one is classified removable on pull-request evidence,
 the dirty and claimed ones are kept and listed with their reason and their owner,
 age and TTL, the retired-stage leftover is purged, every refusal names the
@@ -2285,7 +2285,7 @@ line reports both; the same totals appear in `wb stats savings` and in
 a task whose branch was renamed after landing, a worktree merged but holding one
 residual local commit, and a three-repository task where one repository holds
 residue
-**When** the operator runs `wb worktree list` and then `wb worktree gc`
+**When** the operator runs `wb worktree list` and then `wb clean`
 **Then** the stage and lock artefacts are purged silently with no `info:` line
 per artefact; the detached checkout appears in the inventory and is classified
 `detached-review` and eligible; the renamed branch produces a warning on the
@@ -2490,7 +2490,7 @@ suite runs, which is the property that matters.
 - Free-text `worktree --comment` as a status of record: an unverifiable second
   source of truth beside the Work Log. `wb worktree log checkpoint`, which
   carries observed Git evidence, already covers the useful habit.
-- Delete-worktree-deletes-branch with a force-delete escape. `wb branch cleanup`
+- Delete-worktree-deletes-branch with a force-delete escape. `wb clean`
   proving containment in the exact origin target is strictly safer.
 - UI-only parent/child nesting: a stream relationship must be real state that
   governs landing order, not a display tree.

@@ -31,7 +31,7 @@ func TestResidueHintNamesACommandThatParses(t *testing.T) {
 	if err := command.ParseFlags(args); err != nil {
 		t.Fatalf("hint %q names a flag the verb rejects: %v", hint, err)
 	}
-	if got := command.CommandPath(); got != "wb worktree gc" {
-		t.Fatalf("hint resolves to %q, want wb worktree gc", got)
+	if got := command.CommandPath(); got != "wb clean" {
+		t.Fatalf("hint resolves to %q, want wb clean", got)
 	}
 }

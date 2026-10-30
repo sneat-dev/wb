@@ -3,14 +3,15 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"github.com/sneat-dev/wb/internal/agentguard"
-	"github.com/sneat-dev/wb/internal/worktrees"
-	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
 	"io"
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/agentguard"
+	"github.com/sneat-dev/wb/internal/worktrees"
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 // quietVerbs are the lifecycle verbs the quiet mode exists for
@@ -21,7 +22,7 @@ var quietVerbs = []string{
 	"land", "worktree land",
 	"worktree merge", "worktree merge prepare", "worktree merge land", "worktree merge resume", "worktree merge revert",
 	"pr create", "pr land",
-	"worktree cleanup",
+	"worktree retire",
 }
 
 func TestQuietIsConsumedByExactlyTheLifecycleVerbs(t *testing.T) {
@@ -146,7 +147,7 @@ func TestQuietEnvironmentReachesOnlyTheVerbsThatConsumeIt(t *testing.T) {
 		args []string
 		want bool
 	}{
-		{[]string{"worktree", "cleanup", "--all-merged", "--projects-root", t.TempDir()}, true},
+		{[]string{"worktree", "retire", "absent-task", "--recover-stages", "--projects-root", t.TempDir()}, true},
 		{[]string{"worktree", "list", "--projects-root", t.TempDir()}, false},
 		{[]string{"commands"}, false},
 	} {
@@ -237,7 +238,7 @@ func TestWorktreeCleanupQuietKeepsOutcomeAndWarningsAndDropsCommentary(t *testin
 			return autoReleaseResult{Outcome: "released"}
 		}
 		var stdout, stderr bytes.Buffer
-		command := newWorktreeCleanupCmd(&invocation{projectsRoot: t.TempDir(), quiet: test.quiet})
+		command := newWorktreeRetireCmd(&invocation{projectsRoot: t.TempDir(), quiet: test.quiet})
 		command.SetOut(&stdout)
 		command.SetErr(&stderr)
 		command.SetArgs([]string{"fixture-task", "--apply", "--verbose"})

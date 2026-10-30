@@ -18,12 +18,12 @@ func TestBranchCommandIsASiblingOfWorktreeNotNestedUnderIt(t *testing.T) {
 	if branch.Parent().Name() == "worktree" {
 		t.Fatal("wb branch must not be nested under wb worktree")
 	}
-	worktreeCleanup, _, err := root.Find([]string{"worktree", "cleanup"})
+	worktreeCleanup, _, err := root.Find([]string{"worktree", "retire"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if worktreeCleanup.Flags().Lookup("scope") != nil {
-		t.Fatal("wb worktree cleanup must not gain a branch-scope flag")
+		t.Fatal("wb worktree retire must not gain a branch-scope flag")
 	}
 }
 
@@ -50,9 +50,9 @@ func TestBranchListRejectsUnsupportedScopeAndOnlyAsUsageErrors(t *testing.T) {
 	}
 }
 
-func TestBranchCleanupRejectsUnsupportedScopeAsFindings(t *testing.T) {
+func TestCleanRejectsUnsupportedScopeAsFindings(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	args := []string{"branch", "cleanup", "--scope", "bogus", "--projects-root", t.TempDir()}
+	args := []string{"clean", "--scope", "bogus", "--projects-root", t.TempDir()}
 	if code := run(args, &stdout, &stderr); code != exitFindings && code != exitUsage {
 		t.Fatalf("run(%q) exit = %d, stderr=%s", args, code, stderr.String())
 	}
@@ -91,20 +91,20 @@ func TestBranchCountEmptyProjectsRootReportsZeroTotals(t *testing.T) {
 	}
 }
 
-func TestBranchCleanupDryRunOnEmptyProjectsRootWritesNoReport(t *testing.T) {
+func TestCleanOnAnEmptyProjectsRootIsAFindingNotAnEmptySuccess(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
-	args := []string{"branch", "cleanup", "--projects-root", root}
-	if code := run(args, &stdout, &stderr); code != exitOK {
+	args := []string{"clean", "--filter", "nomatch/*", "--projects-root", root}
+	if code := run(args, &stdout, &stderr); code != exitFindings || !strings.Contains(stderr.String(), "0 repositories matched --filter nomatch/*") {
 		t.Fatalf("run(%q) exit = %d, stderr=%s", args, code, stderr.String())
 	}
 	if strings.Contains(stdout.String(), "report:") {
-		t.Fatalf("dry run reported a report path: %s", stdout.String())
+		t.Fatalf("an unmatched selection reported a report path: %s", stdout.String())
 	}
 }
 
-// TestBranchCleanupUnreadableSkipRowNamesRepository is the CLI-level
-// regression for the founder's `wb branch cleanup --scope all` report: 41
+// TestCleanUnreadableBranchRowNamesRepository is the CLI-level
+// regression for the founder's `wb clean --scope all` report: 41
 // rows read exactly "  skip           (unreadable): disposition unreadable
 // is never eligible for --apply" with no repository, no branch, and no
 // underlying cause — nothing an operator could act on. specscore/winget-pkgs
@@ -112,16 +112,16 @@ func TestBranchCleanupDryRunOnEmptyProjectsRootWritesNoReport(t *testing.T) {
 // the whole repository was reported unreadable in a single row with empty
 // Scope and Branch; that row must still name the repository and the real
 // fetch failure inline, not rely solely on the group header above it.
-func TestBranchCleanupUnreadableSkipRowNamesRepository(t *testing.T) {
+func TestCleanUnreadableBranchRowNamesRepository(t *testing.T) {
 	projects := setUpRenameCLIFixture(t)
 	var stdout, stderr bytes.Buffer
 	// "does-not-exist" was never pushed, so fetching it from origin fails
 	// exactly as it did for the repository with no refs/heads/main.
 	args := []string{
-		"branch", "cleanup", "--scope", "all", "--base", "does-not-exist",
+		"clean", "--scope", "remote", "--base", "does-not-exist",
 		"--projects-root", projects,
 	}
-	if code := run(args, &stdout, &stderr); code != exitOK {
+	if code := run(args, &stdout, &stderr); code != exitFindings {
 		t.Fatalf("run(%q) exit = %d, stdout=%s stderr=%s", args, code, stdout.String(), stderr.String())
 	}
 	out := stdout.String()

@@ -26,7 +26,7 @@ the first. There is no chain of custody.
 with plain `git worktree add` has no `.wb/local/` state, so there is no owner,
 no PID, and no way for WB to know it is alive. This is not hypothetical: at
 the time of writing, all four linked worktrees in the fleet are in exactly
-that state, and `wb worktree orphans` classifies them purely on commit age
+that state, and `wb clean` classifies them purely on commit age
 (`orphanDisposition`, `orphans.go:354` — `now.Sub(LastCommit) < staleAfter`
 means `active`). The word "likely" in its output is load-bearing.
 
@@ -145,7 +145,7 @@ keeping one definition of what version means.
 
 ## Consequences
 
-`wb worktree orphans` is not changed here, but this makes a later improvement
+`wb clean` is not changed here, but this makes a later improvement
 possible: with a declared PID it could report `active (PID n live)` versus
 `orphaned (PID n gone)` instead of guessing from commit age, and `unknown`
 for worktrees carrying no declaration — which is the honest answer for the

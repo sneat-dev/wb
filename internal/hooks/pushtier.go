@@ -85,7 +85,7 @@ func ParseRefUpdates(r io.Reader) ([]RefUpdate, error) {
 // and every line deletes a remote ref. Such a push sends nothing from the
 // checkout it runs in, so no property of that checkout (its branch, its
 // working tree) can make it unsafe: it is how `wb pr land`, `wb worktree land`
-// and `wb worktree cleanup` retire a merged branch from the canonical clone,
+// and `wb worktree retire` retire a merged branch from the canonical clone,
 // whatever that clone has checked out (sneat-dev/wb#824).
 func OnlyRemoteRefDeletions(r io.Reader) (bool, error) {
 	updates, err := ParseRefUpdates(r)

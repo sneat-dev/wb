@@ -3,12 +3,13 @@ package cmdworktree
 import (
 	"context"
 	"fmt"
+	"io"
+	"strings"
+
 	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/sneat-dev/wb/internal/worktreerun"
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
-	"io"
-	"strings"
 )
 
 type CreateDependencies struct {

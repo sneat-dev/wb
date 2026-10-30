@@ -1,6 +1,8 @@
 package main
 
 import (
+	"io"
+
 	"github.com/sneat-dev/wb/internal/buildinfo"
 	"github.com/sneat-dev/wb/internal/checkoutmarker"
 	"github.com/sneat-dev/wb/internal/checkoutsetup"
@@ -8,7 +10,6 @@ import (
 	"github.com/sneat-dev/wb/internal/fleetsync"
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
-	"io"
 )
 
 func newWorktreeMarkerCmd(inv *invocation) *cobra.Command {

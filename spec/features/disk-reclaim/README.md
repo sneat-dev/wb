@@ -29,7 +29,7 @@ was 25 GB (untrimmed main-module packages key on their absolute directory, so
 each worktree may cache its own copy; Go trims only after 5 unused days).
 Temp held 6.3 GB of `wb-*`, 2.7 GB of `go-build*` and 1.9 GB of `t.TempDir`
 directories left by killed processes (#641 fixed one leak). `wb disk` cannot
-reclaim; the deleting verbs (`wb worktree gc`, `wb cleanup`,
+reclaim; the deleting verbs (`wb clean`,
 `wb layout clean`, `wb hooks lifecycle gc`) touch no caches or temp.
 
 ## Behavior
@@ -53,7 +53,7 @@ unparsable `--budget` or a `--min-age` below its floor.
 | `scratch` | temp-directory entries `wb-*`, `wb/<task>`, `go-build*`, `t.TempDir` shapes | REQ: scratch-ownership |
 | `node-package-store` | the pnpm store; the npm cache | `pnpm store prune` and `npm cache verify`, each skipped with `skipped: busy` while any `pnpm`/`npm` process runs |
 | `wb-state` | lifecycle receipts; session records of exited processes | `wb hooks lifecycle gc`; `wb session prune` (no planning form, so `not-planned` in plan mode) |
-| `worktrees` | WB-managed checkouts | `wb worktree gc` with default flags, never `--allow-residue` |
+| `worktrees` | WB-managed checkouts | `wb clean` with default flags, never `--allow-residue` |
 | `lifecycle-artifacts` | executor artifacts in worktrees, over budget | oldest last-receipt first; never a canonical checkout, a checkout with a pending or running execution, or a checkout claimed by a live lane |
 
 The Go module cache, Work Logs and fleet events are report-only (network to

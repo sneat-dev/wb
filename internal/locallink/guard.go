@@ -257,7 +257,7 @@ type LiveLinkSource struct {
 // HasLiveLinkSource reports every open stream whose consumer still links to
 // this worktree as its unpublished source.
 //
-// `wb worktree cleanup` — and any verb that removes a managed worktree as
+// `wb worktree retire` — and any verb that removes a managed worktree as
 // part of landing, such as the cleanup step of `wb pr land` and
 // `wb worktree merge` — MUST refuse a worktree this reports on, naming the
 // offending stream, consumer, and link kind, and pointing at the command

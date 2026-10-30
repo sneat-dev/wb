@@ -38,7 +38,7 @@ func squashAbsorbedNoWorktreeFixture(t *testing.T) (fixture *gitFixture, head, l
 	gitTest(t, fixture.canonical, "push", "origin", "main")
 
 	// The worktree and local branch are already gone; only the remote branch
-	// survives. This mirrors the bug report exactly: wb worktree cleanup
+	// survives. This mirrors the bug report exactly: wb worktree retire
 	// --absorbed-by is unavailable because there is no worktree left.
 	gitTest(t, fixture.canonical, "branch", "-D", "codex/bookius-extraction")
 	return fixture, head, landingSHA

@@ -3,9 +3,10 @@ package cmdworktree
 import (
 	"bytes"
 	"encoding/json"
-	"github.com/sneat-dev/wb/internal/worktrees"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 func TestCwWtEncodeLogVerbResult(t *testing.T) {

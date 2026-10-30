@@ -69,7 +69,7 @@ describe('WorktreePanelView', () => {
     expect(entries.map((entry) => text(entry.querySelector('.title')))).toEqual(['List worktrees', 'Commit and open pull request', 'Plan cleanup (dry run)', 'List this branch', 'Plan branch cleanup (dry run)', 'Land acme/r1#5'])
     const code = entries.map((entry) => text(entry.querySelector('code')))
     expect(code[3]).toContain("wb branch list --repo='acme/r1' --branch='topic'")
-    expect(code[4]).toContain("wb branch cleanup --repo='acme/r1' --branch='topic'")
+    expect(code[4]).toContain("wb clean --repo='acme/r1' --branch='topic'")
     expect(code[5]).toContain("wb pr land 'acme/r1#5'")
     expect(root.textContent).not.toContain('--apply')
   })

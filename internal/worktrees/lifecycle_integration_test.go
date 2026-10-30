@@ -1318,7 +1318,7 @@ func prepareDeletedTargetRecoveryFixture(t *testing.T, task string) (*gitFixture
 
 // TestCleanupRetiresTaskNamespaceResidueOnTerminalApply is the regression
 // for the founder's fleet audit: after an otherwise fully successful
-// `wb worktree cleanup <task> --apply --remote` (worktree removed, local
+// `wb worktree retire <task> --apply --remote` (worktree removed, local
 // branch deleted, remote branch deleted, integration confirmed), the task
 // directory survived containing an empty owner-namespace directory (for
 // example acme/) and a `.wb-retired-lock-<32hex>` file — residue found,

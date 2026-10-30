@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"strings"
 
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/gitops"
+	"github.com/sneat-dev/wb/internal/repofilter"
 )
 
 type BackfillPlan struct {
@@ -39,7 +39,7 @@ func backfillWith(ctx context.Context, root, filter string, apply bool, deps Bac
 	plan := BackfillPlan{Apply: apply, Scanned: len(repositories)}
 	var events []Event
 	for _, repository := range repositories {
-		if filter != "" && !strings.Contains(strings.ToLower(repository.Slug()), strings.ToLower(filter)) {
+		if filter != "" && !repofilter.Match(filter, repository.Slug()) {
 			continue
 		}
 		identity, err := deps.Identity(repository.Path)

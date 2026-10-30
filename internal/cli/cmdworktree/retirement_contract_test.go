@@ -30,18 +30,18 @@ func retirementExecute(command *cobra.Command, args []string, out, errOut io.Wri
 func retirementProgress() InventoryProgress {
 	return InventoryProgress{Report: func(worktrees.ListProgress) {}, Finish: func() {}}
 }
-func retirementCleanupDeps(out worktrees.CleanupOutcome) CleanupDependencies {
-	return CleanupDependencies{Run: func(context.Context, worktrees.CleanupOptions) (worktrees.CleanupOutcome, error) { return out, nil }, Progress: func(*cobra.Command, bool) InventoryProgress { return retirementProgress() }, Release: func(*cobra.Command, string, string) bool { return false }}
+func retirementCleanupDeps(out worktrees.CleanupOutcome) RetireDependencies {
+	return RetireDependencies{Run: func(context.Context, worktrees.CleanupOptions) (worktrees.CleanupOutcome, error) { return out, nil }, Progress: func(*cobra.Command, bool) InventoryProgress { return retirementProgress() }, Release: func(*cobra.Command, string, string) bool { return false }}
 }
 
 func TestRetirementCleanupSelectorAndEarlyErrors(t *testing.T) {
 	t.Parallel()
-	for _, args := range [][]string{nil, {"--recover-stages"}, {"x", "--recover-stages", "--all-merged"}, {"x", "--recover-stages", "--retire-shells"}, {"x", "--retire-shells"}, {"--retire-shells", "--all-merged"}, {"x", "--all-merged"}, {"x", "--format=invalid"}, {"--all-merged", "--resume-interrupted"}, {"x", "y", "--resume-interrupted"}} {
+	for _, args := range [][]string{nil, {"--recover-stages"}, {"x", "--recover-stages", "--preserve=branch"}, {"x", "y", "--preserve=branch"}, {"x", "--all-merged"}, {"x", "--format=invalid"}, {"x", "y", "--resume-interrupted"}} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			t.Parallel()
-			command := NewCleanup(shared.Runtime{Flags: func() shared.Flags { t.Fatal("flags read for invalid selectors/format"); return shared.Flags{} }}, CleanupDependencies{}) // resume-count validation reads flags after format.
+			command := NewRetire(shared.Runtime{Flags: func() shared.Flags { t.Fatal("flags read for invalid selectors/format"); return shared.Flags{} }}, RetireDependencies{}) // resume-count validation reads flags after format.
 			if strings.Contains(strings.Join(args, " "), "resume-interrupted") {
-				command = NewCleanup(shared.Runtime{Flags: func() shared.Flags { return shared.Flags{} }}, CleanupDependencies{})
+				command = NewRetire(shared.Runtime{Flags: func() shared.Flags { return shared.Flags{} }}, RetireDependencies{})
 			}
 			if err := retirementExecute(command, args, io.Discard, io.Discard); err == nil {
 				t.Fatal("invalid selector accepted")
@@ -51,7 +51,7 @@ func TestRetirementCleanupSelectorAndEarlyErrors(t *testing.T) {
 }
 func TestRetirementCleanupOptionsAndCompletion(t *testing.T) {
 	t.Parallel()
-	for _, args := range [][]string{{"logical", "--apply", "--remote", "--resume-interrupted", "--base=chosen", "--report-dir=report", "--absorbed-by=42", "--superseded-by=receipt", "--parallel=3", "--verbose"}, {"physical", "--older-than=2h", "--workers=2", "--format=json"}, {"--all-merged"}} {
+	for _, args := range [][]string{{"logical", "--apply", "--remote", "--resume-interrupted", "--base=chosen", "--report-dir=report", "--absorbed-by=42", "--superseded-by=receipt", "--parallel=3", "--verbose"}, {"physical", "--older-than=2h", "--workers=2", "--format=json"}} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			t.Parallel()
 			root := "before"
@@ -70,9 +70,6 @@ func TestRetirementCleanupOptionsAndCompletion(t *testing.T) {
 				if args[0] == "physical" && (o.OlderThan != 2*time.Hour || o.Workers != 2 || o.RequireRemoteRetirement) {
 					t.Fatalf("age options %+v", o)
 				}
-				if args[0] == "--all-merged" && (!o.AllMerged || o.OlderThan != 24*time.Hour || len(o.Tasks) != 0) {
-					t.Fatalf("sweep options %+v", o)
-				}
 				return worktrees.CleanupOutcome{ResolvedTasks: []string{"physical"}, Results: []worktrees.CleanupResult{{ListResult: worktrees.ListResult{Task: "physical"}, Applied: true}}}, nil
 			}
 			deps.Progress = func(_ *cobra.Command, verbose bool) InventoryProgress {
@@ -85,7 +82,7 @@ func TestRetirementCleanupOptionsAndCompletion(t *testing.T) {
 				}
 				return false
 			}
-			command := NewCleanup(retirementRuntime(&root), deps)
+			command := NewRetire(retirementRuntime(&root), deps)
 			root = "parsed"
 			if err := retirementExecute(command, args, io.Discard, io.Discard); err != nil {
 				t.Fatal(err)
@@ -104,7 +101,7 @@ func TestRetirementCleanupFailuresDiagnosticsAndReleaseOrder(t *testing.T) {
 	deps.Run = func(context.Context, worktrees.CleanupOptions) (worktrees.CleanupOutcome, error) {
 		return worktrees.CleanupOutcome{}, want
 	}
-	if err := retirementExecute(NewCleanup(retirementRuntime(&root), deps), []string{"task"}, io.Discard, io.Discard); err != want {
+	if err := retirementExecute(NewRetire(retirementRuntime(&root), deps), []string{"task"}, io.Discard, io.Discard); err != want {
 		t.Fatalf("domain error %v", err)
 	}
 	outcomes := []worktrees.CleanupOutcome{
@@ -120,7 +117,7 @@ func TestRetirementCleanupFailuresDiagnosticsAndReleaseOrder(t *testing.T) {
 				for _, stream := range []string{"out", "err"} {
 					for allow := 0; allow < 5; allow++ {
 						deps := retirementCleanupDeps(outcome)
-						command := NewCleanup(retirementRuntime(&root), deps)
+						command := NewRetire(retirementRuntime(&root), deps)
 						out, errOut := io.Writer(io.Discard), io.Writer(io.Discard)
 						writer := &cwWtFailWriter{Allow: allow}
 						if stream == "out" {
@@ -159,7 +156,7 @@ func TestRetirementCleanupFailuresDiagnosticsAndReleaseOrder(t *testing.T) {
 				}
 				return kind == "leak"
 			}
-			err := retirementExecute(NewCleanup(retirementRuntime(&root), deps), args, &out, io.Discard)
+			err := retirementExecute(NewRetire(retirementRuntime(&root), deps), args, &out, io.Discard)
 			if (kind == "none" || kind == "leak") != (err != nil) {
 				t.Fatalf("kind %s error %v", kind, err)
 			}
@@ -176,22 +173,13 @@ func TestRetirementShellAndStageBranches(t *testing.T) {
 	t.Parallel()
 	root := "private"
 	want := errors.New("native stage refused")
-	for _, mode := range []string{"shell", "stage"} {
+	for _, mode := range []string{"stage"} {
 		for _, format := range []string{"text", "json"} {
 			for _, fail := range []bool{false, true} {
 				t.Run(fmt.Sprint(mode, format, fail), func(t *testing.T) {
 					t.Parallel()
 					deps := retirementCleanupDeps(worktrees.CleanupOutcome{})
-					args := []string{"--retire-shells", "--apply", "--format=" + format}
-					deps.Shells = func(_ context.Context, o worktrees.RetireShellsOptions) (worktrees.RetireShellsOutcome, error) {
-						if o.ProjectsRoot != root || o.Filter != "only" || !o.Apply {
-							t.Fatalf("shell options %+v", o)
-						}
-						if fail {
-							return worktrees.RetireShellsOutcome{}, want
-						}
-						return worktrees.RetireShellsOutcome{}, nil
-					}
+					var args []string
 					deps.Recover = func(_ context.Context, o worktrees.RetiredStageRecoveryOptions) (worktrees.RetiredStageRecoveryOutcome, error) {
 						if o.ProjectsRoot != root || !o.Apply {
 							t.Fatalf("stage options %+v", o)
@@ -201,11 +189,9 @@ func TestRetirementShellAndStageBranches(t *testing.T) {
 						}
 						return worktrees.RetiredStageRecoveryOutcome{ReceiptPath: "private receipt", Results: []worktrees.RetiredStageRecoveryResult{{Applied: true}, {Eligible: true}, {}}}, nil
 					}
-					if mode == "stage" {
-						args = []string{"one", "two", "--recover-stages", "--apply", "--format=" + format}
-					}
+					args = []string{"one", "two", "--recover-stages", "--apply", "--format=" + format}
 					for allow := 0; allow < 10; allow++ {
-						err := retirementExecute(NewCleanup(retirementRuntime(&root), deps), args, &cwWtFailWriter{Allow: allow}, io.Discard)
+						err := retirementExecute(NewRetire(retirementRuntime(&root), deps), args, &cwWtFailWriter{Allow: allow}, io.Discard)
 						if fail {
 							if err != want {
 								t.Fatalf("effect error %v", err)
@@ -275,7 +261,7 @@ func TestRetirementAbortOptionsStatesAndReleasePrecedence(t *testing.T) {
 		t.Fatal(err)
 	}
 }
-func TestRetirementGCOptionsFinishAndFindings(t *testing.T) {
+func TestCleanCommandBindsSelectorsFinishesProgressAndReportsFindings(t *testing.T) {
 	t.Parallel()
 	root := "before"
 	want := errors.New("gc refused")
@@ -284,21 +270,21 @@ func TestRetirementGCOptionsFinishAndFindings(t *testing.T) {
 			t.Parallel()
 			r := root
 			finishes := 0
-			deps := GCDependencies{Progress: func(*cobra.Command, bool) InventoryProgress {
+			deps := CleanDependencies{Progress: func(*cobra.Command, bool) InventoryProgress {
 				return InventoryProgress{Report: func(worktrees.ListProgress) {}, Finish: func() { finishes++ }}
-			}, Run: func(_ context.Context, o worktrees.GCOptions) (worktrees.GCOutcome, error) {
-				if o.ProjectsRoot != "parsed" || o.Filter != "only" || !reflect.DeepEqual(o.Tasks, []string{"task"}) || !o.Apply || !o.AllowResidue || o.SupersededBy != "receipt" || !o.SkipDetached || !o.SkipSizes || !o.DeleteRemote || o.Base != "chosen" || o.OlderThan != time.Hour || o.TTL != 2*time.Hour || o.SessionFreshness != worktrees.DisableSessionFreshness || o.ResidueDepth != 4 || o.Workers != 2 {
+			}, Run: func(_ context.Context, o worktrees.CleanOptions) (worktrees.CleanOutcome, error) {
+				if o.ProjectsRoot != "parsed" || o.Filter != "only" || !reflect.DeepEqual(o.Tasks, []string{"task"}) || !o.Apply || !o.AllowResidue || o.SupersededBy != "receipt" || !o.SkipDetached || !o.SkipSizes || o.Scope != "all" || o.Only != "landed" || o.Repository != "acme/app" || o.Branch != "topic" || o.Base != "chosen" || o.OlderThan != time.Hour || o.TTL != 2*time.Hour || o.SessionFreshness != worktrees.DisableSessionFreshness || o.ResidueDepth != 4 || o.Workers != 2 {
 					t.Fatalf("options %+v", o)
 				}
 				o.Progress(worktrees.ListProgress{})
 				if kind == "error" {
-					return worktrees.GCOutcome{}, want
+					return worktrees.CleanOutcome{}, want
 				}
-				return worktrees.GCOutcome{Totals: map[string]int{"refused": map[bool]int{true: 1, false: 0}[kind == "refused"]}}, nil
+				return worktrees.CleanOutcome{Totals: map[string]int{"refused": map[bool]int{true: 1, false: 0}[kind == "refused"]}}, nil
 			}}
-			command := NewGC(retirementRuntime(&r), deps)
+			command := NewClean(retirementRuntime(&r), deps)
 			r = "parsed"
-			args := []string{"task", "--apply", "--allow-residue", "--superseded-by=receipt", "--skip-detached", "--skip-sizes", "--remote", "--base=chosen", "--older-than=1h", "--ttl=2h", "--session-freshness=0", "--residue-depth=4", "--parallel=2", "--verbose"}
+			args := []string{"--task=task", "--apply", "--allow-residue", "--superseded-by=receipt", "--skip-detached", "--skip-sizes", "--scope=all", "--only=landed", "--repo=acme/app", "--branch=topic", "--base=chosen", "--older-than=1h", "--ttl=2h", "--session-freshness=0", "--residue-depth=4", "--parallel=2", "--verbose"}
 			out := io.Writer(io.Discard)
 			if kind == "json" {
 				args = append(args, "--format=json")
@@ -333,14 +319,14 @@ func TestRetirementGCOptionsFinishAndFindings(t *testing.T) {
 		})
 	}
 	// JSON writer errors win over findings.
-	deps := GCDependencies{Progress: func(*cobra.Command, bool) InventoryProgress { return retirementProgress() }, Run: func(context.Context, worktrees.GCOptions) (worktrees.GCOutcome, error) {
-		return worktrees.GCOutcome{Totals: map[string]int{"refused": 1}}, nil
+	deps := CleanDependencies{Progress: func(*cobra.Command, bool) InventoryProgress { return retirementProgress() }, Run: func(context.Context, worktrees.CleanOptions) (worktrees.CleanOutcome, error) {
+		return worktrees.CleanOutcome{Totals: map[string]int{"refused": 1}}, nil
 	}}
-	if err := retirementExecute(NewGC(retirementRuntime(&root), deps), []string{"--format=json"}, &cwWtFailWriter{}, io.Discard); err != errCwWtWrite {
+	if err := retirementExecute(NewClean(retirementRuntime(&root), deps), []string{"--format=json"}, &cwWtFailWriter{}, io.Discard); err != errCwWtWrite {
 		t.Fatal(err)
 	}
 }
-func TestRetirementRetireAdmissionOwnershipReleaseAndOutput(t *testing.T) {
+func TestRetirePreserveAdmitsChecksOwnershipReleasesAndReports(t *testing.T) {
 	t.Parallel()
 	root := "private"
 	want := errors.New("retire refused")
@@ -348,7 +334,7 @@ func TestRetirementRetireAdmissionOwnershipReleaseAndOutput(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			t.Parallel()
 			var order []string
-			deps := RetireDependencies{Admit: func(_ *cobra.Command, apply bool) (worktrees.AgentIdentity, func(), error) {
+			deps := RetireDependencies{Preserve: PreserveDependencies{Admit: func(_ *cobra.Command, apply bool) (worktrees.AgentIdentity, func(), error) {
 				order = append(order, "admit")
 				if !apply {
 					t.Fatal("apply lost")
@@ -379,7 +365,7 @@ func TestRetirementRetireAdmissionOwnershipReleaseAndOutput(t *testing.T) {
 					phase = "plan"
 				}
 				return worktrees.RetireResult{Task: "task", Phase: phase}, nil
-			}}
+			}}}
 			args := []string{"task", "--apply", "--message=message", "--preserve=tag"}
 			out := io.Writer(io.Discard)
 			if kind == "json" || kind == "jsonwriter" {

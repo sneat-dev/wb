@@ -2,12 +2,13 @@ package cmdworktree
 
 import (
 	"encoding/json"
+	"strings"
+	"testing"
+
 	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/sneat-dev/wb/internal/worktreerun"
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
-	"strings"
-	"testing"
 )
 
 func TestWorktreeCreateJSONDisabledShapeIsPlainArray(t *testing.T) {

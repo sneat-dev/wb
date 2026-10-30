@@ -235,7 +235,7 @@ func abortWithPorts(ctx context.Context, options AbortOptions, ports abortPorts)
 		backlogQuarantine = quarantined
 	}
 	// A detached checkout is the shape every pull-request review leaves behind,
-	// and `wb worktree gc` names abort as the way to retire one. Reading the
+	// and `wb clean` names abort as the way to retire one. Reading the
 	// inventory without it would make the named command fail on the exact
 	// shape it was named for.
 	listed, err := ports.list(ctx, ListOptions{

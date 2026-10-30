@@ -23,7 +23,8 @@ func TestInventoryClassificationReceiptsAndSupersession(t *testing.T) {
 	landingAncestor := true
 	content := true
 	contentTarget := true
-	var contentTargetErr error
+	var contentTargetErr, revertErr error
+	reverted := false
 	targetTreeErr := false
 	queryPR := true
 	attested := false
@@ -45,6 +46,12 @@ func TestInventoryClassificationReceiptsAndSupersession(t *testing.T) {
 				return landingAncestor, ancestorErr
 			}
 			return ancestor, ancestorErr
+		},
+		LandingReverted: func(_ context.Context, _ string, _ string, _ string, markers ...string) (bool, error) {
+			if len(markers) != 1 || markers[0] != "Reverts org/repo#7" {
+				t.Errorf("revert markers = %q", markers)
+			}
+			return reverted, revertErr
 		},
 		ContentContained: func(_ context.Context, _ string, _, destination string) (bool, error) {
 			if destination == target {
@@ -172,6 +179,28 @@ func TestInventoryClassificationReceiptsAndSupersession(t *testing.T) {
 	if got, note := service.ClassifyLandingReceipt(ctx, repo, ref, "main", target, nil); got != nil || !strings.Contains(note, "target has since diverged") {
 		t.Fatalf("target diverged: %#v %q", got, note)
 	}
+	// A squash-merged branch whose tip is exactly the merged pull request's
+	// head stays receipted after the target moves on: nothing was committed
+	// after the reviewed head, and the landing commit carries it in full.
+	pr.HeadSHA = sha
+	if got, note := service.ClassifyLandingReceipt(ctx, repo, ref, "main", target, nil); got != pr || note != ExactHeadReceiptNote {
+		t.Fatalf("exact-head receipt: %#v %q", got, note)
+	}
+	sweep.Receipts = true
+	if got := classify(); got.Disposition != BranchReceipted || !got.ExactHeadReceipt || !strings.Contains(got.Evidence, "exact head") {
+		t.Fatalf("exact-head classification: %#v", got)
+	}
+	sweep.Receipts = false
+	reverted = true
+	if got, note := service.ClassifyLandingReceipt(ctx, repo, ref, "main", target, nil); got != nil || !strings.Contains(note, "target has since diverged") {
+		t.Fatalf("a reverted exact-head landing must stay blocked: %#v %q", got, note)
+	}
+	reverted, revertErr = false, errors.New("log failed")
+	if got, note := service.ClassifyLandingReceipt(ctx, repo, ref, "main", target, nil); got != nil || !strings.Contains(note, "revert check") {
+		t.Fatalf("a failed revert check must fail closed: %#v %q", got, note)
+	}
+	revertErr = nil
+	pr.HeadSHA = ""
 	contentTarget = true
 	if got, note := service.ClassifyLandingReceipt(ctx, repo, ref, "main", target, nil); got == nil || note != "" {
 		t.Fatalf("receipt: %#v %q", got, note)

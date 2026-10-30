@@ -23,7 +23,7 @@ func requireUnprivilegedTaskWalkTest(t *testing.T) {
 // its own read returned an error from listLayout, which discarded every other
 // task already verified in that run — the founder saw a fourteen-minute
 // --all-merged sweep thrown away by one directory a concurrent cleanup had
-// legitimately removed. `wb worktree orphans` already refuses to let one
+// legitimately removed. `wb clean` already refuses to let one
 // unreadable directory hide the fleet; this is the same guarantee for the
 // inventory that cleanup itself selects from.
 func TestListSurvivesATaskDirectoryItCannotRead(t *testing.T) {

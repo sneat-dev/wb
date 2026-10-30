@@ -42,7 +42,7 @@ func TestStubbedWorktreeCleanupApplyReleasesClaimsOnlyThroughTheStub(t *testing.
 	requested, released := stubCleanupEngine(t, worktrees.CleanupOutcome{Results: []worktrees.CleanupResult{
 		{ListResult: worktrees.ListResult{Task: "fixture-landed-task", Repository: "acme/app"}, Eligible: true, Applied: true, RemoteDeleted: true},
 	}})
-	command := newWorktreeCleanupCmd(&invocation{projectsRoot: t.TempDir()})
+	command := newWorktreeRetireCmd(&invocation{projectsRoot: t.TempDir()})
 	command.SetOut(&bytes.Buffer{})
 	command.SetErr(&bytes.Buffer{})
 	command.SetArgs([]string{"fixture-landed-task", "fixture-skipped-task", "--apply", "--remote"})
@@ -60,7 +60,7 @@ func TestStubbedWorktreeCleanupApplyReleasesClaimsOnlyThroughTheStub(t *testing.
 
 // A base the operator names is the target the head is judged against; a base
 // left at its default is only the fallback for a worktree with no recorded
-// one. Reported 2026-10-02: `wb worktree cleanup <task> --base main` answered
+// one. Reported 2026-10-02: `wb worktree retire <task> --base main` answered
 // with the base recorded in the task's claim.
 //
 //nolint:paralleltest // swaps the package-level cleanup engine and claim release.
@@ -74,11 +74,11 @@ func TestWorktreeCleanupTreatsOnlyANamedBaseAsTheExplicitTarget(t *testing.T) {
 		{name: "default", args: []string{"fixture-stacked-task"}, base: "main"},
 		{name: "named", args: []string{"fixture-stacked-task", "--base", "main"}, base: "main", explicit: true},
 		{name: "named with equals", args: []string{"--base=release", "fixture-stacked-task"}, base: "release", explicit: true},
-		{name: "fleet sweep", args: []string{"--all-merged", "--base", "main"}, base: "main", explicit: true},
+		{name: "several named tasks", args: []string{"fixture-one", "fixture-two", "--base", "main"}, base: "main", explicit: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			requested, released := stubCleanupEngine(t, worktrees.CleanupOutcome{})
-			command := newWorktreeCleanupCmd(&invocation{projectsRoot: t.TempDir()})
+			command := newWorktreeRetireCmd(&invocation{projectsRoot: t.TempDir()})
 			command.SetOut(&bytes.Buffer{})
 			command.SetErr(&bytes.Buffer{})
 			command.SetArgs(test.args)
@@ -105,15 +105,15 @@ func TestWorktreeCleanupSweepWithANamedBasePrintsThatTargetOnEveryLine(t *testin
 		{ListResult: worktrees.ListResult{Task: "fixture-one", Repository: "acme/app", IntegrationProof: proof}, Eligible: true},
 		{ListResult: worktrees.ListResult{Task: "fixture-two", Repository: "acme/lib", IntegrationProof: proof + " (recorded base integration)"}, Eligible: true},
 	}})
-	command := newWorktreeCleanupCmd(&invocation{projectsRoot: t.TempDir()})
+	command := newWorktreeRetireCmd(&invocation{projectsRoot: t.TempDir()})
 	var stdout bytes.Buffer
 	command.SetOut(&stdout)
 	command.SetErr(&bytes.Buffer{})
-	command.SetArgs([]string{"--all-merged", "--base", "release"})
+	command.SetArgs([]string{"fixture-one", "fixture-two", "--base", "release"})
 	if err := command.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if len(*requested) != 1 || !(*requested)[0].AllMerged || !(*requested)[0].ExplicitBase || (*requested)[0].Base != "release" {
+	if len(*requested) != 1 || len((*requested)[0].Tasks) != 2 || !(*requested)[0].ExplicitBase || (*requested)[0].Base != "release" {
 		t.Fatalf("cleanup options = %#v", *requested)
 	}
 	want := "would remove fixture-one acme/app (" + proof + ")\n" +

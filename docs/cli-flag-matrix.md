@@ -126,7 +126,8 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `archive clean` | yes | yes | rejected | yes |
 | `repo status` | rejected | rejected | rejected | yes |
 | `repo transfer cleanup` | yes | rejected | rejected | yes |
-| `worktree active`, `list`, `cleanup`, `gc`, `relocate`, `rename`, `summary` | yes | yes | rejected | yes |
+| `worktree active`, `list`, `retire`, `relocate`, `rename`, `summary` | yes | yes | rejected | yes |
+| `clean` (root; leaf selectors `--repo`, `--branch`, repeatable `--task`, `--scope`, `--only`) | yes | yes (substring or glob, e.g. `'datatug/*'`) | yes; repeatable, and here it narrows to exact owners of local clones rather than adding owners to query | yes |
 | `worktree join`, `leave`, `take-ownership`, `transfer-ownership`, `rebind`, `message send`, `message inbox`, `message ack` | yes | rejected | rejected | yes |
 | `pr create` | yes | rejected | rejected | yes |
 | `pr update` | yes | rejected | rejected | yes |
@@ -144,12 +145,11 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `land` (root alias), `worktree land` | yes | rejected | rejected | yes |
 | `worktree merge`, `merge prepare` (including `--rebatch-receipt` and target-fenced `--rebatch-published-target-sha`, with read-only `--rebatch-audit-only`), `merge land`, `merge resume` (including PR-only `--stop-before-merge`), `merge revert`, `merge acknowledge-landed-failed`, `merge acknowledge-missing-cleanup`, `merge acknowledge-target-absorbed`, `merge acknowledge-stranded-landing`, `merge acknowledge-absorbed-conflict`, `merge acknowledge-retired-prepare-candidate`, `merge acknowledge-retired-publication`, `merge acknowledge-retired-unpublished-validation-failure`, `merge acknowledge-receipt-collision`, `merge adopt-published-candidate`, `merge seal-validation-failed`, `merge supersede-validation-failed`, `merge prepare-published-forward-repair` | yes | rejected | rejected | yes |
 | `worktree log init`, `steer`, `show`, `checkpoint`, `refresh`, `integrate`, `handoff`, `recover`, `finalize`, `sync`, `archive` | yes | rejected | rejected | yes |
-| `worktree orphans`, `backfill` | yes | rejected | rejected | yes |
+| `worktree backfill` | yes | rejected | rejected | yes |
 | `worktree adopt` | yes | yes with `--all-external`; rejected with a path | rejected | yes |
 | `worktree checkpoint-fetch` | rejected | rejected | rejected | yes |
 | `worktree set` | rejected | rejected | rejected | yes |
 | `branch list`, `count` | yes | yes | yes; exact owner of locally discovered canonical clones only | yes |
-| `branch cleanup` | yes | yes | rejected | yes |
 | `branch quarantine` (leaf flags include `--annotate`, `--description`, repeatable `--replacement`, and `--retention`) | yes | yes | rejected | yes |
 | `branch archive-target` | rejected | rejected | rejected | yes |
 | `version`, `self-update`, `install`, `upgrade` | rejected | rejected | rejected | yes |
@@ -157,7 +157,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | hidden `skills hook run` | rejected | rejected | rejected | yes |
 | `commands` | rejected | rejected | rejected | yes |
 
-`branch list --with-prs` opts into GitHub PR history for selected remote branch rows, including in-use branches; protected, unreadable, and retired rows are excluded. Its default list path does not query PRs; `branch cleanup` checks open PRs for eligible remote deletion candidates.
+`branch list --with-prs` opts into GitHub PR history for selected remote branch rows, including in-use branches; protected, unreadable, and retired rows are excluded. Its default list path does not query PRs; `clean` checks open PRs for eligible remote deletion candidates.
 
 ## `archive clean` command flags
 
@@ -235,7 +235,7 @@ reason. `--apply` records which tasks an inclusion covered in its manifest;
   errors, exit codes, and the `--format json` document are unchanged. It is
   consumed only by `create`, `worktree create`, `land`, `worktree land`,
   `worktree merge` (and `prepare`, `land`, `resume`, `revert`), `pr create`,
-  `pr land`, and `worktree cleanup`; every other command rejects it before it
+  `pr land`, and `worktree retire`; every other command rejects it before it
   starts, except `run` and `worktree guard`, which keep their own local
   `--quiet`. `WB_QUIET=1` has the same effect on the consuming verbs and none
   elsewhere. It differs from `--non-interactive`: that removes terminal-only UI

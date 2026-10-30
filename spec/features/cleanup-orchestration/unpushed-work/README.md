@@ -59,7 +59,7 @@ larger report:
 [Cleanup Orchestration](../README.md) defines the output contract, exit codes,
 and `--filter` semantics this command obeys; they are not restated here.
 
-`wb unpushed` MUST NOT be a precondition of `wb cleanup`: the orchestrator's
+`wb unpushed` MUST NOT be a precondition of `wb clean`: the orchestrator's
 own refusals
 ([branch-hygiene#req:evidence-class-taxonomy](../../branch-hygiene/README.md)
 and
@@ -91,7 +91,7 @@ It MUST accept the root `--filter`, `--projects-root`, and `--non-interactive`
 flags and MUST be registered for `filter` and `projects-root` in
 `persistentFlagSupport` and `docs/cli-flag-matrix.md`.
 
-The `--parallel` default of `8` is higher than `wb cleanup`'s `4` because this
+The `--parallel` default of `8` is higher than `wb clean`'s `4` because this
 command performs no network I/O and no mutation, so the only contended resource
 is local disk.
 
@@ -115,7 +115,7 @@ repository.
 Not fetching is the fail-safe choice here, and this is the reason the command
 can be fast. A stale remote-tracking ref can only make WB believe a commit is
 *less* published than it is, so the error direction is over-reporting risk. The
-opposite default is required of `wb cleanup`
+opposite default is required of `wb clean`
 ([cleanup-orchestration#req:fetch-before-every-decision](../README.md)), where
 a stale ref makes WB believe work is *more* landed than it is and the error
 direction is deletion.

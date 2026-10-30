@@ -139,7 +139,7 @@ The numbered procedure below describes what the verb does under the hood, and
 is the fallback **only when the verb itself refuses**. When that happens,
 report the exact refusal text and file a `sneat-dev/wb` issue instead of
 hand-rolling the equivalent `gh pr merge` / ancestry-check / `git push
---delete` / `wb worktree cleanup` steps by hand — that reimplementation is
+--delete` / `wb worktree retire` steps by hand — that reimplementation is
 exactly the failure this fast path exists to replace.
 
 For a clean conflict-free handoff, start with `wb worktree merge`; this is the
@@ -414,8 +414,8 @@ than a fictional queue.
    return only after the owning product records an explicit verified-status
    change.
 7. Collect required release evidence before terminalization. Then, for every
-   landed task, inspect `wb worktree cleanup <task>` and apply
-   `wb worktree cleanup <task> --apply --remote --older-than 0`. WB seals the
+   landed task, inspect `wb worktree retire <task>` and apply
+   `wb worktree retire <task> --apply --remote --older-than 0`. WB seals the
    Work Log, archives lifecycle evidence, removes the exact local worktree and
    branch, and retires an exact unchanged remote source branch. This applies
    unchanged to the source candidates a batch absorbed: when the target rejects

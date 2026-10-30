@@ -22,16 +22,16 @@ export function pullRequestCreate(task: string, target: CommandTarget, message: 
 }
 
 /**
- * The fleet-wide cleanup's dry-run plan: `wb worktree gc`, which plans by default and retires only with `--apply`
+ * The fleet-wide cleanup's dry-run plan: `wb clean`, which plans by default and retires only with `--apply`
  * (never part of a template). It names no task, so nothing in it is left to edit.
  */
 export function worktreeGc(target: CommandTarget = {}): CopyCommand {
-  return command(target, wb('worktree', 'gc'))
+  return command(target, wb('clean'))
 }
 
 /** The dry-run plan; never with `--apply`. */
 export function worktreeCleanup(task: string, target: CommandTarget = {}): CopyCommand {
-  return command(target, [...wb('worktree', 'cleanup'), { value: task }])
+  return command(target, [...wb('worktree', 'retire'), { value: task }])
 }
 
 // ---- pull request ----
@@ -71,7 +71,7 @@ export function branchList(repository: string, branch?: string, target: CommandT
 
 /** The dry-run plan; never with `--apply`. */
 export function branchCleanup(repository: string, branch: string, target: CommandTarget = {}): CopyCommand {
-  return command(target, [...wb('branch', 'cleanup'), { flag: '--repo', value: repository }, { flag: '--branch', value: branch }])
+  return command(target, [...wb('clean'), { flag: '--repo', value: repository }, { flag: '--branch', value: branch }])
 }
 
 // ---- dispatched run and session ----

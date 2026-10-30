@@ -2,10 +2,11 @@ package cmdworktree
 
 import (
 	"errors"
+	"io"
+
 	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/sneat-dev/wb/internal/worktreeend"
 	"github.com/spf13/cobra"
-	"io"
 )
 
 func NewEnd(runtime shared.Runtime, factory func(string, io.Writer) (*worktreeend.Engine, error)) *cobra.Command {
@@ -26,7 +27,7 @@ In order, and the order is the contract:
   2. capture uncommitted work and print where it went, BEFORE anything is
      removed
   3. seal a closing note into the Work Log
-  4. retire each worktree through the existing 'wb worktree cleanup' transaction
+  4. retire each worktree through the existing 'wb worktree retire' transaction
   5. release the fleet-wide claim, but only once every worktree is gone
 
 A dirty worktree is NOT a refusal. Refusing one would leave exactly the choice

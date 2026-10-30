@@ -3,11 +3,12 @@ package main
 import (
 	"context"
 	"errors"
-	"github.com/sneat-dev/wb/internal/cli/cmdworktree"
-	"github.com/sneat-dev/wb/internal/orchestrate"
 	"io"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/cli/cmdworktree"
+	"github.com/sneat-dev/wb/internal/orchestrate"
 )
 
 // A landing whose merge succeeded but whose cleanup failed exits with its own

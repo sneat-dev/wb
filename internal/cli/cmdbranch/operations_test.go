@@ -17,7 +17,7 @@ import (
 
 func TestCommandsBindParsedOptionsContextAndIndependentStreams(t *testing.T) {
 	t.Parallel()
-	for _, kind := range []string{"list", "count", "cleanup", "quarantine", "archive-target"} {
+	for _, kind := range []string{"list", "count", "quarantine", "archive-target"} {
 		t.Run(kind, func(t *testing.T) {
 			t.Parallel()
 			flags := shared.Flags{ProjectsRoot: "before", Filter: "before"}
@@ -31,13 +31,6 @@ func TestCommandsBindParsedOptionsContextAndIndependentStreams(t *testing.T) {
 					t.Fatal(o, got)
 				}
 				return worktrees.BranchListOutcome{Diagnostics: []string{"inventory note"}}, nil
-			}
-			deps.Cleanup = func(got context.Context, o worktrees.BranchCleanupOptions) (worktrees.BranchCleanupOutcome, error) {
-				called = true
-				if got != ctx || o.ProjectsRoot != "after" || o.Filter != "late" || o.Progress != &stderr || o.Base != "release" || o.Scope != "all" || !o.Apply || !o.Receipts || o.OlderThan != 2*time.Hour || o.Repository != "acme/app" || o.Branch != "task/old" || o.AbsorbedBy != "42" || o.SupersededBy != "receipt.json" || o.ReportDir != "reports" || !reflect.DeepEqual(o.PeerEvidence, []string{"one", "two"}) || !reflect.DeepEqual(o.RequireHosts, []string{"mac", "linux"}) {
-					t.Fatal(o, got)
-				}
-				return worktrees.BranchCleanupOutcome{ReportPath: "reports/result.json"}, nil
 			}
 			deps.Quarantine = func(got context.Context, o worktrees.BranchQuarantineOptions) (worktrees.BranchQuarantineOutcome, error) {
 				called = true
@@ -63,8 +56,6 @@ func TestCommandsBindParsedOptionsContextAndIndependentStreams(t *testing.T) {
 				if kind == "list" {
 					args = append(args, "--branch=retired/old", "--include-retired", "--with-prs")
 				}
-			case "cleanup":
-				args = append(args, "--base=release", "--scope=all", "--older-than=2h", "--branch=task/old", "--apply", "--receipts", "--absorbed-by=42", "--superseded-by=receipt.json", "--report-dir=reports", "--peer-evidence=one,two", "--require-host=mac,linux")
 			case "quarantine":
 				args = append(args, "--branch=task/old", "--sha=abc", "--reason=operator reason", "--description=preserved work", "--replacement=PR #113", "--replacement=commit abc123", "--retention=delete after verification", "--annotate", "--apply", "--report-dir=reports")
 			}
@@ -78,25 +69,19 @@ func TestCommandsBindParsedOptionsContextAndIndependentStreams(t *testing.T) {
 			if (kind == "list" || kind == "count") && stderr.String() != "diagnostic: inventory note\n" {
 				t.Fatal(stderr.String())
 			}
-			if kind == "cleanup" && !strings.Contains(out.String(), "report: reports/result.json\n") {
-				t.Fatal(out.String())
-			}
 		})
 	}
 }
 
 func TestCommandsReturnOperationErrorsBeforeRendering(t *testing.T) {
 	t.Parallel()
-	for _, kind := range []string{"list", "count", "cleanup", "quarantine", "archive-target"} {
+	for _, kind := range []string{"list", "count", "quarantine", "archive-target"} {
 		t.Run(kind, func(t *testing.T) {
 			t.Parallel()
 			failure := errors.New("operation refused")
 			deps := depsForTest()
 			deps.List = func(context.Context, worktrees.BranchListOptions) (worktrees.BranchListOutcome, error) {
 				return worktrees.BranchListOutcome{}, failure
-			}
-			deps.Cleanup = func(context.Context, worktrees.BranchCleanupOptions) (worktrees.BranchCleanupOutcome, error) {
-				return worktrees.BranchCleanupOutcome{}, failure
 			}
 			deps.Quarantine = func(context.Context, worktrees.BranchQuarantineOptions) (worktrees.BranchQuarantineOutcome, error) {
 				return worktrees.BranchQuarantineOutcome{}, failure
@@ -123,9 +108,6 @@ func TestInvalidFormatsAndExtraArgumentsNeverCallOperations(t *testing.T) {
 	deps := Dependencies{List: func(context.Context, worktrees.BranchListOptions) (worktrees.BranchListOutcome, error) {
 		t.Fatal("list called")
 		return worktrees.BranchListOutcome{}, nil
-	}, Cleanup: func(context.Context, worktrees.BranchCleanupOptions) (worktrees.BranchCleanupOutcome, error) {
-		t.Fatal("cleanup called")
-		return worktrees.BranchCleanupOutcome{}, nil
 	}, Quarantine: func(context.Context, worktrees.BranchQuarantineOptions) (worktrees.BranchQuarantineOutcome, error) {
 		t.Fatal("quarantine called")
 		return worktrees.BranchQuarantineOutcome{}, nil
@@ -133,7 +115,7 @@ func TestInvalidFormatsAndExtraArgumentsNeverCallOperations(t *testing.T) {
 		t.Fatal("archive called")
 		return worktrees.RetiredArchivePlan{}, nil
 	}}
-	for _, kind := range []string{"list", "count", "cleanup", "quarantine", "archive-target"} {
+	for _, kind := range []string{"list", "count", "quarantine", "archive-target"} {
 		for _, arg := range []string{"extra", "--format=toml"} {
 			if kind == "quarantine" && strings.HasPrefix(arg, "--format") {
 				continue
@@ -151,11 +133,8 @@ func TestInvalidFormatsAndExtraArgumentsNeverCallOperations(t *testing.T) {
 
 func TestReportWriterErrorsAndUnrepresentableDatesRetainIdentity(t *testing.T) {
 	t.Parallel()
-	for _, kind := range []string{"list", "count", "cleanup", "archive-target"} {
+	for _, kind := range []string{"list", "count", "archive-target"} {
 		for _, format := range []string{"text", "json", "yaml"} {
-			if kind == "cleanup" && format == "yaml" {
-				continue
-			}
 			t.Run(kind+format, func(t *testing.T) {
 				t.Parallel()
 				failure := errors.New("report writer refused")
@@ -229,16 +208,13 @@ func TestQuarantineRowsAndReportPropagateEveryWriterFailure(t *testing.T) {
 
 func TestLateTextWriterErrorsPrecedeDiagnosticsAndReportPaths(t *testing.T) {
 	t.Parallel()
-	for _, kind := range []string{"list", "count", "cleanup"} {
+	for _, kind := range []string{"list", "count"} {
 		t.Run(kind, func(t *testing.T) {
 			t.Parallel()
 			failure := errors.New("late writer refused")
 			deps := depsForTest()
 			deps.List = func(context.Context, worktrees.BranchListOptions) (worktrees.BranchListOutcome, error) {
 				return worktrees.BranchListOutcome{Entries: []worktrees.BranchEntry{{Repository: "acme/app", Branch: "task/old"}}, Totals: map[string]int{"contained": 1}, Diagnostics: []string{"later diagnostic"}}, nil
-			}
-			deps.Cleanup = func(context.Context, worktrees.BranchCleanupOptions) (worktrees.BranchCleanupOutcome, error) {
-				return worktrees.BranchCleanupOutcome{ReportPath: "report.json"}, nil
 			}
 			beforeFailure := 1
 			if kind == "list" {
@@ -255,13 +231,5 @@ func TestLateTextWriterErrorsPrecedeDiagnosticsAndReportPaths(t *testing.T) {
 				t.Fatal(err, stderr.String())
 			}
 		})
-	}
-}
-func TestCleanupDryRunReportsEligibleCountWithoutClaimingDeletion(t *testing.T) {
-	t.Parallel()
-	var out bytes.Buffer
-	outcome := worktrees.BranchCleanupOutcome{Results: []worktrees.BranchCleanupResult{{BranchEntry: worktrees.BranchEntry{Repository: "acme/app", Branch: "task/one"}, Eligible: true}}}
-	if err := printBranchCleanup(&out, outcome); err != nil || !strings.Contains(out.String(), "1 eligible; dry-run only, pass --apply to delete\n") || strings.Contains(out.String(), "1 deleted") {
-		t.Fatal(err, out.String())
 	}
 }

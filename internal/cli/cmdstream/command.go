@@ -309,7 +309,7 @@ func newStreamEndCmd(runtime shared.Runtime, deps Dependencies) *cobra.Command {
 		Long: `End a stream: close or retarget every still-open pull request against its
 stream branches, close each member's own draft pull request, release the stream
 leases, and retire every stream worktree through the existing
-'wb worktree cleanup' path.
+'wb worktree retire' path.
 
 Ending publishes, bumps and merges nothing.
 

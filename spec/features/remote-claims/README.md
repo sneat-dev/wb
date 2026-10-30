@@ -23,7 +23,7 @@ status: Implementing
   claim time, and staleness.
 - `wb remote status` includes a `claims` line per machine and in `--json`.
 - `wb worktree create` attempts a best-effort claim automatically;
-  `wb worktree cleanup --apply`/`wb worktree abort --apply` release
+  `wb worktree retire --apply`/`wb worktree abort --apply` release
   best-effort. `--no-claim` opts a worktree out of the automatic claim.
 
 Design: `docs/superpowers/specs/2026-08-24-remote-claims-design.md` (builds on
@@ -152,7 +152,7 @@ trail for the claim itself.
 
 #### REQ: claim-auto-release-on-cleanup-and-abort
 
-`wb worktree cleanup <task> --apply` and `wb worktree abort <task> --apply`
+`wb worktree retire <task> --apply` and `wb worktree abort <task> --apply`
 (discarded or handoff outcomes) MUST attempt to release the claim
 best-effort, only when it is held by this exact `login/machine`. A release
 failure MUST print a `release skipped: …` line and MUST NOT change the
@@ -200,7 +200,7 @@ absent.
 **Requirements:** remote-claims#req:claim-auto-on-worktree-create, remote-claims#req:claim-auto-outcome-visibility, remote-claims#req:claim-auto-release-on-cleanup-and-abort, remote-claims#req:claim-auto-never-forces
 
 `wb worktree create` attempts a best-effort claim (opt out with
-`--no-claim`) and `wb worktree cleanup`/`abort --apply` attempt a
+`--no-claim`) and `wb worktree retire`/`abort --apply` attempt a
 best-effort release; both report their outcome — the create outcome lands
 in stdout and `--format json`'s `remote_claim` field, never in the Work
 Log — and neither ever changes the host command's exit code or reaches for

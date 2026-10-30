@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
 	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
@@ -55,7 +56,7 @@ If 'wb worktree log finalize --apply' already sealed the exact worktree as
 landed before its branch was rebased onto a moved target (force-pushed with
 lease) and only the rebased head ever landed, --absorbed-by's proof above
 still verifies that landing; --disposition discarded then appends the same
-additive cleanup record 'wb worktree cleanup' writes for an advanced
+additive cleanup record 'wb worktree retire' writes for an advanced
 terminal instead of trying to reseal the immutable "landed" terminal as
 "discarded" at a different commit, which used to refuse with "immutable
 terminal conflicts with requested transition". The original finalize
@@ -84,7 +85,7 @@ or a final commit was inspected, and --remote is rejected.
 
 --filter (see the root flag) narrows which repositories in the task are
 touched, the same "owner/repository slug contains this substring" semantics
-as wb branch cleanup --filter. A repository --filter excludes is left
+as wb clean --filter. A repository --filter excludes is left
 completely untouched and still reported, so one repository blocked on
 something abort cannot fix no longer makes the rest of the task un-abortable.
 The task remains non-terminal — and the remote claim, if any, is not

@@ -49,6 +49,12 @@ type OrphanOptions struct {
 	StaleAfter time.Duration
 	// Now is injectable so ages are deterministic under test.
 	Now time.Time
+	// Select, when set, keeps only canonical clones whose owner/name it
+	// accepts. Skip, when set, leaves out a linked worktree another classifier
+	// already owns: `wb clean` classifies every checkout WB's inventory sees
+	// with the one landing classifier and asks this sweep only about the rest.
+	Select func(repository string) bool
+	Skip   func(path string) bool
 }
 
 // OrphanWorktree is one linked worktree and everything known about it.
@@ -166,6 +172,9 @@ func Orphans(ctx context.Context, options OrphanOptions) (OrphanReport, error) {
 	registered := map[string]bool{}
 	for _, clone := range clones {
 		residueRoots[filepath.Join(clone.path, ".worktrees")] = LayoutLocal
+		if options.Select != nil && !options.Select(clone.repository) {
+			continue
+		}
 		linked, err := linkedWorktreesOf(ctx, clone.path)
 		if err != nil {
 			report.Unscanned = append(report.Unscanned, fmt.Sprintf("%s: %v", clone.path, err))
@@ -173,6 +182,9 @@ func Orphans(ctx context.Context, options OrphanOptions) (OrphanReport, error) {
 		}
 		for _, worktree := range linked {
 			registered[filepath.Clean(worktree.path)] = true
+			if options.Skip != nil && options.Skip(worktree.path) {
+				continue
+			}
 			entry := inspectOrphan(ctx, home, clone, worktree, currentRoot, legacyRoot, base, staleAfter, now)
 			families[entry.RootEffort] = append(families[entry.RootEffort], entry)
 		}

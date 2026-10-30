@@ -1265,131 +1265,6 @@
       "notes": "The command is an archive-target visibility preflight only. It does not make a remote retirement eligible or perform one."
     },
     {
-      "id": "wb.branch.cleanup",
-      "feature_refs": [
-        "spec/features/branch-hygiene/README.md"
-      ],
-      "since": "unreleased",
-      "surfaces": {
-        "runtime": {
-          "status": "Full",
-          "commands": [
-            {
-              "path": "wb branch cleanup",
-              "flags": [
-                "--absorbed-by",
-                "--apply",
-                "--base",
-                "--branch",
-                "--format",
-                "--older-than",
-                "--peer-evidence",
-                "--repo",
-                "--receipts",
-                "--report-dir",
-                "--require-host",
-                "--scope",
-                "--superseded-by"
-              ],
-              "modes": [
-                "Dry-run plan is the default; --apply is required for every deletion in every scope",
-                "Only the contained disposition is ever eligible; absorbed is never eligible under any flag combination",
-                "--absorbed-by <pr-or-commit> verifies an explicit landing pull request or commit with the same attested-absorption proof `wb worktree cleanup --absorbed-by` performs, reclassifying a content-proven squash-absorbed branch receipted (never absorbed) even when its worktree is already gone",
-                "Local deletion is a compare-and-delete (git update-ref -d) against the exact SHA the plan recorded",
-                "Remote deletion uses force-with-lease against the observed SHA and fails closed without pull-request evidence",
-                "A branch checked out in any linked worktree, or named by a live WB Work Log claim, is always in-use and never deleted here",
-                "Immediately before each deletion WB refetches the exact target and re-verifies containment; a branch that moved between plan and apply refuses only itself",
-                "An apply attempt writes a durable JSON plan below --report-dir before its first destructive Git operation and updates it with each outcome",
-                "--superseded-by requires exact --repo and --branch, validates a trusted reviewer receipt, archives and restores the exact source head before deletion, and rechecks receipt bytes and all guards",
-                "Reviewed retirement in remote or all scope requires fresh machine-generated --peer-evidence for every explicit --require-host; missing, stale, mismatched, or unsafe evidence refuses deletion immediately before the leased push",
-                "Recovery reports are rejected inside the source clone or any linked worktree and through symlink ancestors; the manifest records fsynced SHA-bound bundle and receipt digests plus an independent restore verification"
-              ]
-            }
-          ],
-          "limitation": null
-        },
-        "help": {
-          "status": "Full",
-          "anchors": [
-            {
-              "command": "wb branch cleanup --help",
-              "contains": [
-                "dry-run plan",
-                "absorbed is never eligible",
-                "force-with-lease",
-                "compare-and-delete",
-                "pull-request evidence",
-                "never removes, moves, or modifies any working tree",
-                "--receipts",
-                "--absorbed-by",
-                "--superseded-by",
-                "--peer-evidence",
-                "--require-host"
-              ]
-            }
-          ],
-          "limitation": null
-        },
-        "ai_skill": {
-          "status": "Full",
-          "skills": [
-            {
-              "path": "ai/skills/wb-branches/SKILL.md",
-              "marker": "## Compare-and-delete, never `git branch -d`/`-D`",
-              "examples": [
-                "wb branch cleanup",
-                "wb branch cleanup --scope all --apply --older-than 0",
-                "wb branch cleanup --scope remote --absorbed-by 123"
-              ]
-            }
-          ],
-          "limitation": null
-        },
-        "tests": {
-          "status": "Full",
-          "references": [
-            {
-              "path": "internal/worktrees/branches_test.go",
-              "name": "TestBranchCleanupNeverDeletesAbsorbedUnderAnyFlagCombination",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/branches_test.go",
-              "name": "TestBranchCleanupDeletesOnlyContainedAndRefusesInUse",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/branches_test.go",
-              "name": "TestBranchCleanupRefusesMovedLocalBranchWithoutAbortingSweep",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/branches_test.go",
-              "name": "TestBranchCleanupRemoteFailsClosedWithoutPullRequestEvidence",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/branches_absorbed_by_test.go",
-              "name": "TestBranchCleanupAbsorbedByRetiresContentProvenSquashAbsorbedRemoteBranch",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/branches_absorbed_by_test.go",
-              "name": "TestBranchCleanupAbsorbedByRefusesResidualNotPresentInLandingCommit",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/branches_absorbed_by_test.go",
-              "name": "TestBranchCleanupAbsorbedByRefusesRefDrift",
-              "kind": "integration"
-            }
-          ],
-          "limitation": null
-        }
-      },
-      "notes": "absorbed is permanently report-only: patch-id/tree equality proves identical content exists upstream, not that this branch's work is still present in the target now. No flag ever makes the absorbed disposition itself eligible; --receipts and --absorbed-by only ever move a candidate to receipted BEFORE absorbed is assigned, and only via an independent, stronger proof (a real GitHub landing receipt, or an operator-attested landing commit proving it is exactly where the work entered the target), never via patch-id."
-    },
-    {
       "id": "wb.branch.count",
       "feature_refs": [
         "spec/features/branch-hygiene/README.md"
@@ -2061,6 +1936,325 @@
       "notes": "Landing on a merge-queue target hands the merge to GitHub's queue, which tests the merge group (current target plus the queued pull requests) before merging; WB's receipt is the pull request's own green checks, the pinned enqueue, and the merge commit verified on the base."
     },
     {
+      "id": "wb.clean",
+      "feature_refs": [
+        "spec/features/cleanup-orchestration/README.md",
+        "spec/features/branch-hygiene/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb clean",
+              "flags": [
+                "--allow-residue",
+                "--apply",
+                "--base",
+                "--branch",
+                "--format",
+                "--older-than",
+                "--only",
+                "--parallel",
+                "--repo",
+                "--residue-depth",
+                "--scope",
+                "--session-freshness",
+                "--skip-detached",
+                "--skip-sizes",
+                "--superseded-by",
+                "--task",
+                "--ttl",
+                "--verbose"
+              ],
+              "modes": [
+                "One fleet verb for finished work: WB checkouts, branches that no longer have a checkout, and linked worktrees WB does not manage, in one dry-run report; --apply retires the eligible ones",
+                "Selectors narrow the dry run and --apply through one predicate: root --filter (owner/name substring, or a glob such as 'datatug/*'), repeatable root --org, --repo, --branch, repeatable --task, --scope local|remote|all, --only <class> (or landed), --older-than",
+                "A selection that matches no local repository exits 1 with '0 repositories matched <selectors>', never an empty success",
+                "Branches without a checkout are classified with landing receipts on: contained and receipted (including a squash-merged branch whose tip is exactly the merged pull request's head, unless the target reverted the landing) are retired; absorbed by patch-id or tree alone, unique, open-pr and unpushed are never retired",
+                "Unmanaged linked worktrees are reported and never removed; every WB-managed checkout is classified by the one landing classifier, so no two verbs disagree about one head",
+                "--parallel bounds both phases: repositories are inspected and retired that many at a time, never two retirements in one clone or one task at once",
+                "Merged-ness is decided by commit identity — GitHub's commit-to-pull-request index for the head, then for its ancestors — never by branch-name ancestry, because a squash merge leaves none",
+                "Classifies every checkout as contained, landed-clean, landed-residue, detached-review, detached-unknown, open-pr, dirty, claimed-live, unpushed, or unmerged, and prints the evidence behind the class",
+                "A detached review checkout at a landed pull request's head is eligible; a detached head with no landing association is refused and says whether origin has the commit at all",
+                "A landed branch holding local commits past the landed head is reported as landed + residue with those commits listed, and is retirable only under --allow-residue",
+                "A branch renamed since its claim produces a warning on the receipt rather than a refusal, because landing evidence is commit-based",
+                "No force flag exists; --allow-residue and --superseded-by are the only two widenings and both print the evidence they widen past — the residual commits, or the receipt and the reviewer after every bound head is re-verified",
+                "Every refusal names a command that exists and works on that shape, decided from three-valued WB management: managed (WB wrote the manifest), unmanaged (the manifest does not validate), or unknown (no manifest). Absence of evidence is unknown, never unmanaged, so a checkout WB cannot identify is treated with the same care as one it owns",
+                "A dirty checkout is captured before anything is removed: a managed one names wb worktree abort, which seals the Work Log first, and every other one names only the git stash that preserves the changes — no removal is named at all, and the row warns that removing the checkout without the capture destroys them",
+                "A removal WB names for a checkout it does not own never carries --force, so Git itself refuses if the tree turns out to hold changes; the row additionally prints the git branch invocation that keeps an otherwise unreferenced detached commit",
+                "The inventory's own lifecycle artifacts and the empty task husks a removal leaves are reported in the dry run and retired under --apply, scoped to the tasks the run selected, so the debris gc's own advice creates is planned before it is swept and a named-task run never sweeps the fleet on its behalf",
+                "The in-use guard applies to every checkout, including one with no owner registration at all — a review checkout, a git worktree add checkout, or one whose registering process exited — because those are exactly the checkouts a sweep removed while they were in use",
+                "In use is decided from four activity signals — a heartbeat every wb command run inside the checkout refreshes, a file Git reports as changed, a Work Log event, or a commit — and the newest wins, because a lane may be doing only one kind of work. A live process id counts for nothing on its own: ids are recycled, and the question is about the worktree. --session-freshness 0 disables the rule, the same spelling as --older-than 0, while an unset window keeps the safe default",
+                "A landing walk that hits its --residue-depth bound is reported as unclassified with a larger depth named, never silently as unlanded",
+                "The reclaim footer is one accounting unit over the whole sweep, so a store file two worktrees both link is counted once and is unshared exactly when every link to it is inside the retired set",
+                "Removal is delegated to the ordinary cleanup transaction, one repository at a time, so a coordinated task retires per repository and names the repositories left behind",
+                "An unpushed head is never retired by any flag: it is the only class that can lose work",
+                "Work Logs and event logs are never deleted",
+                "Every size is reported apparent and unshared, and the reclaim footer counts only unshared bytes, because pnpm hard-links node_modules into its store",
+                "Exit code 0 when nothing needed attention, 1 when something was kept, 2 on a usage error"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb clean --help",
+              "contains": [
+                "--filter",
+                "--org",
+                "--scope",
+                "--only",
+                "0 repositories",
+                "commit identity",
+                "detached-review",
+                "landed-residue",
+                "receipted",
+                "unmanaged",
+                "no force flag",
+                "--parallel"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/references/clean.md",
+              "marker": "# Clean up finished worktrees and branches",
+              "examples": [
+                "wb clean",
+                "wb clean --filter 'datatug/*' --only landed",
+                "wb clean --scope all --apply",
+                "wb clean --task <task> --allow-residue --apply"
+              ]
+            },
+            {
+              "path": "ai/skills/wb-branches/SKILL.md",
+              "marker": "## Compare-and-delete, never `git branch -d`/`-D`",
+              "examples": [
+                "wb clean --scope all --apply --older-than 0"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/worktrees/clean_e2e_test.go",
+              "name": "TestE2ECleanFilterSelectsOneOwnerOfAMultiOrgFleet",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/clean_e2e_test.go",
+              "name": "TestE2ECleanApplyRetiresOnlyWhatTheDryRunSelected",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/clean_test.go",
+              "name": "TestCleanComposesWorktreesBranchesAndUnmanagedUnderOneSelection",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/worktrees/clean_test.go",
+              "name": "TestGCApplyNeverRunsTwoRetirementsForOneRepositoryOrTaskAtOnce",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/worktrees/branches_exact_head_e2e_test.go",
+              "name": "TestE2EBranchCleanupRetiresASquashMergedExactHeadAfterTheTargetMovedOn",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/branches_exact_head_e2e_test.go",
+              "name": "TestE2EBranchCleanupExactHeadRecheckRefusesARevertOrAMovedRef",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/cli/cmdworktree/clean_retire_test.go",
+              "name": "TestCleanCommandTurnsAnUnmatchedSelectionIntoAFinding",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCClassifiesASquashMergedWorktreeRemovable",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCApplyRetiresTheSquashMergedWorktreeAndKeepsTheWorkLog",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCKeepsDirtyAndOpenPullRequestCheckoutsWithOwnerAgeAndSanctionedCommand",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCInventoriesAndRetiresADetachedReviewCheckout",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCRefusesADetachedCheckoutWithNoLanding",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCReportsLandedWithResidueAndRetiresItOnlyWithAllowResidue",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCPurgesTerminalArtefactsSilentlyOnItsOwnReadPath",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCHasNoForceShapedOption",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCDetachedUnknownSanctionedCommandActuallyRetiresThatShape",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCDirtySanctionedCommandWorksOnADirtyDetachedCheckout",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCKeepsAClaimedLiveCheckoutEvenWhenItsWorkLanded",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCNamesARepositoryHeldBackByTheGraceWindow",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCMeasuresFreshnessFromActivityNotFromAProcessId",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCKeepsADetachedReviewCheckoutSomeoneIsUsing",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestActivityIgnoresATimestampInTheFuture",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestNegativeSessionFreshnessDisablesRatherThanInverts",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCSeesAnEditedFileAsActivity",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCSessionFreshnessZeroDisablesTheInUseRule",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestHeartbeatIsScopedToTheDirectoryTheCommandRanIn",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCRetiresAClaimedDetachedCheckoutWhoseClaimNamesABranch",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCPlansEmptyShellsAndScopesThemToTheNamedTask",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestWorktreeManagementSeparatesAbsentFromInvalid",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/diskusage/diskusage_test.go",
+              "name": "TestWalkCountsAnInodeSharedBetweenTwoTreesExactlyOnce",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/worktrees/terminal_artefacts_test.go",
+              "name": "TestPurgeTerminalArtefactsRemovesEmptyStageAndInertLock",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/worktrees/branches_test.go",
+              "name": "TestBranchCleanupNeverDeletesAbsorbedUnderAnyFlagCombination",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/branches_test.go",
+              "name": "TestBranchCleanupDeletesOnlyContainedAndRefusesInUse",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/branches_test.go",
+              "name": "TestBranchCleanupRefusesMovedLocalBranchWithoutAbortingSweep",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/branches_test.go",
+              "name": "TestBranchCleanupRemoteFailsClosedWithoutPullRequestEvidence",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/branches_absorbed_by_test.go",
+              "name": "TestBranchCleanupAbsorbedByRetiresContentProvenSquashAbsorbedRemoteBranch",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/branches_absorbed_by_test.go",
+              "name": "TestBranchCleanupAbsorbedByRefusesResidualNotPresentInLandingCommit",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/branches_absorbed_by_test.go",
+              "name": "TestBranchCleanupAbsorbedByRefusesRefDrift",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/orphans_test.go",
+              "name": "TestOrphansSeeEveryLayoutGeneration",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/orphans_test.go",
+              "name": "TestOrphansRecommendRemovalOnlyForLandedWork",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "The safety net rather than the mechanism: a rising count of retirable items means a landing verb stopped cleaning up after itself. It replaces the former gc, orphans, merged-sweep and bare-branch retirement verbs (2026-10-29 naming decision, spec/features/cleanup-orchestration); wb worktree retire is the per-item transaction it delegates to."
+    },
+    {
       "id": "wb.clone-layout.audit",
       "feature_refs": [
         "spec/plans/work-log-recovery.md"
@@ -2543,10 +2737,10 @@
               ]
             },
             {
-              "path": "wb worktree cleanup",
+              "path": "wb worktree retire",
               "flags": [
                 "--absorbed-by",
-                "--all-merged",
+                "--allow-residue",
                 "--apply",
                 "--base",
                 "--format",
@@ -2555,14 +2749,13 @@
                 "--report-dir",
                 "--recover-stages",
                 "--resume-interrupted",
-                "--retire-shells",
                 "--superseded-by",
                 "--verbose",
                 "--parallel"
               ],
               "modes": [
                 "Corroborates exact direct-push or pull-request integration and terminalizes managed worktree/branch debt",
-                "Accepts one or more exact named tasks, so a merger can retire its completed batch without widening to --all-merged",
+                "Accepts one or more exact named tasks, so a merger can retire its completed batch without widening to a wb clean fleet sweep",
                 "Streams per-candidate inventory progress and bounds concurrent inspections so a fleet-wide sweep is observable and not serial on the network",
                 "--parallel bounds the apply phase as well as inspection: selected independent tasks are applied concurrently across canonical repositories and serially within one, a coordinated task takes every repository it spans in one global order, one failure is isolated, and concurrent remote branch deletions stay bounded",
                 "Recovers only one explicitly named task lock when exact metadata and a conclusively dead PID prove it is interrupted",
@@ -2608,7 +2801,7 @@
               ]
             },
             {
-              "command": "wb worktree cleanup --help",
+              "command": "wb worktree retire --help",
               "contains": [
                 "freshly fetched exact",
                 "requires --remote",
@@ -2634,7 +2827,7 @@
               "marker": "# WB merge",
               "examples": [
                 "wb worktree list --github --format json",
-                "wb worktree cleanup <task> --apply --remote --older-than 0",
+                "wb worktree retire <task> --apply --remote --older-than 0",
                 "wb worktree merge <source-worktree...> --route auto --cleanup --format json"
               ]
             }
@@ -5687,7 +5880,7 @@
                 "Separates what removing a category would actually reclaim from what its trees appear to hold. Git worktrees share objects with their canonical clone and pnpm hard-links store entries into every consumer, so apparent size overstates a reclaim; every category is measured in one accounting walk so content linked into two is counted once.",
                 "Raises findings for headroom below --minimum-available, for scratch that belongs to no task, and for roots that could not be measured \u2014 so a partial measurement is never mistaken for a tidy machine.",
                 "--skip-sizes reports roots and filesystem headroom without walking trees, because measuring a multi-gigabyte cache costs minutes of IO and the free-space figure is often the whole answer.",
-                "Reports only. Retiring a worktree remains wb worktree gc, which knows what holds unlanded work."
+                "Reports only. Retiring a worktree remains wb clean, which knows what holds unlanded work."
               ]
             }
           ],
@@ -10336,7 +10529,7 @@
               ]
             },
             {
-              "path": "wb worktree cleanup",
+              "path": "wb worktree retire",
               "flags": [
                 "--filter"
               ],
@@ -10482,7 +10675,7 @@
               ]
             },
             {
-              "path": "wb worktree cleanup",
+              "path": "wb worktree retire",
               "flags": [
                 "--quiet"
               ],
@@ -12299,7 +12492,7 @@
               "modes": [
                 "Closes or retargets every still-open pull request against the stream branches before the branch could be deleted, asserting each effect by re-reading the pull request",
                 "Deletes origin/stream/<name> as well as the local checkout, so the scaffolding it claims to remove includes the remote branch",
-                "Closes each member's own draft pull request, releases the leases of members that were actually retired, and retires every worktree through wb worktree cleanup",
+                "Closes each member's own draft pull request, releases the leases of members that were actually retired, and retires every worktree through wb worktree retire",
                 "Ending publishes, bumps and merges nothing",
                 "Without --apply it reports exactly what it would do and changes nothing",
                 "Refuses (exit 2) while any local link is live, naming the exact wb deps propagate local --undo per link",
@@ -14479,7 +14672,7 @@
                 "Writes a task directory, reconstructed manifest, and Work Log claim for an external (pre-WB) worktree, reusing backfill's ReconstructManifest rather than duplicating it",
                 "Additive like backfill: the working tree, its index, and its checked-out branch are never moved, modified, or otherwise touched; only a small registration entry is created under the WB home",
                 "Selects a single worktree path or --all-external, honours root --filter; an already-claimed worktree is a no-op reported already_adopted",
-                "After adoption, wb worktree cleanup/abort apply their full existing safety checks unchanged: dirty, unlanded, an open pull request, a held lock, and awaiting_push are all still refused",
+                "After adoption, wb worktree retire/abort apply their full existing safety checks unchanged: dirty, unlanded, an open pull request, a held lock, and awaiting_push are all still refused",
                 "Dry run by default"
               ]
             }
@@ -14507,7 +14700,7 @@
           "status": "Full",
           "skills": [
             {
-              "path": "ai/skills/wb-worktrees/references/cleanup.md",
+              "path": "ai/skills/wb-worktrees/references/clean.md",
               "marker": "## Trap 1: cleanup only sees WB-managed tasks",
               "examples": [
                 "wb worktree adopt --all-external --filter acme/ --apply"
@@ -14597,7 +14790,7 @@
               ]
             },
             {
-              "path": "ai/skills/wb-worktrees/references/cleanup.md",
+              "path": "ai/skills/wb-worktrees/references/clean.md",
               "marker": "## Trap 1: cleanup only sees WB-managed tasks",
               "examples": [
                 "wb worktree backfill --base main --format json"
@@ -14687,214 +14880,6 @@
         }
       },
       "notes": "Cross-machine retrieval side of 'wb worktree log checkpoint'. Never a landing receipt: proves a commit reached the remote, never that it merged anywhere."
-    },
-    {
-      "id": "wb.worktree.cleanup",
-      "feature_refs": [
-        "spec/features/work-log/README.md",
-        "spec/features/worktree-lifecycle/README.md"
-      ],
-      "since": "unreleased",
-      "surfaces": {
-        "runtime": {
-          "status": "Full",
-          "commands": [
-            {
-              "path": "wb worktree cleanup",
-              "flags": [
-                "--absorbed-by",
-                "--all-merged",
-                "--apply",
-                "--base",
-                "--format",
-                "--older-than",
-                "--remote",
-                "--report-dir",
-                "--recover-stages",
-                "--resume-interrupted",
-                "--retire-shells",
-                "--superseded-by",
-                "--verbose",
-                "--parallel"
-              ],
-              "modes": [
-                "Exact fetched origin target proves integration with or without a merged PR",
-                "Work absorbed into a differently named integration branch is proved by a merged pull-request receipt for the immutable source commit plus local merge-tree containment in both the landing commit and the fetched target",
-                "--absorbed-by names which landing receipt to verify for a cherry-picked absorption and additionally requires the named commit to be exactly where the work entered the target",
-                "Named terminal cleanup defaults to immediate eligibility and requires explicit lease-safe remote branch retirement whenever the observed origin branch still exists; a candidate whose origin branch is already gone has nothing left to retire and is cleaned without --remote",
-                "One or more exact named tasks may be cleaned as a bounded-parallel batch without widening to --all-merged",
-                "Coordinated task preflight and durable seal precede every deletion",
-                "A matching immutable landed terminal and sealed outbox from wb worktree log finalize --apply authorize cleanup without either record being rewritten",
-                "Apply is bounded-parallel by canonical repository under --parallel; one Git writer per clone is preserved, a selected task failure is isolated, and the report stays in walk order regardless of completion order",
-                "cleanup plans inspect and apply resumes a durable post-removal exact-ref backlog",
-                "The durable backlog directory is shared by every task on the machine, so a record is selected before it is validated: one unreadable or unvalidatable record belonging to another task can no longer refuse every lane's cleanup. A record this run IS responsible for and cannot validate is quarantined and named on the report rather than acted on or silently skipped",
-                "--resume-interrupted recovers only one explicitly named task after exact lock metadata and a conclusively dead PID are proven",
-                "An empty recognized .wb-retired-stage-* directory and an inert .wb-retired-lock-* file are terminal debris: they are purged unconditionally and silently on the inventory read path, dry run included, and reported only as a purge receipt rather than as cleanup backlog. A task holding a live .lock is left entirely alone, and a non-empty or invalid stage remains explicit blocking backlog",
-                "--recover-stages inventories non-empty retired stages without following links, records Git identity and a deterministic private receipt, and archives only an unchanged exact stage under --apply",
-                "--retire-shells sweeps every task directory for a pre-existing empty shell (owner-namespace directory and/or retired lock, no live checkout) and retires it, dry-run by default",
-                "--superseded-by accepts only a trusted-reviewer receipt binding exact source/target heads, replacement PRs or commits, and a complete reviewed residual inventory; source or target drift and any unclassified residual refuse closed",
-                "A never-published integration-lane candidate is still refused unless its worktree-merge receipt carries a validated `wb worktree merge acknowledge-absorbed-conflict` acknowledgement bound to the receipt's unchanged bytes with a target head ancestor of the fetched origin target; a missing/stale/tampered one keeps refusing with a hint naming the receipt, a valid one reports `proof: absorbed_conflict_acknowledgement`"
-              ]
-            }
-          ],
-          "limitation": null
-        },
-        "help": {
-          "status": "Full",
-          "anchors": [
-            {
-              "command": "wb worktree cleanup --help",
-              "contains": [
-                "--all-merged",
-                "--older-than",
-                "--remote",
-                "--absorbed-by",
-                "--superseded-by",
-                "--resume-interrupted",
-                "conclusively dead",
-                "named [task...]",
-                ".wb-retired-stage-*"
-              ]
-            }
-          ],
-          "limitation": null
-        },
-        "ai_skill": {
-          "status": "Full",
-          "skills": [
-            {
-              "path": "ai/skills/wb-worktrees/references/lifecycle.md",
-              "marker": "## Plan cleanup",
-              "examples": [
-                "wb worktree cleanup fair-split",
-                "wb worktree cleanup fair-split --apply --remote --older-than 0",
-                "wb worktree cleanup task-a task-b --apply --remote --parallel 2"
-              ]
-            },
-            {
-              "path": "ai/skills/wb-worktrees/references/cleanup.md",
-              "marker": "## Pick the command by what you were asked",
-              "examples": [
-                "wb worktree cleanup --all-merged",
-                "wb worktree cleanup --all-merged --older-than 0"
-              ]
-            }
-          ],
-          "limitation": null
-        },
-        "tests": {
-          "status": "Full",
-          "references": [
-            {
-              "path": "internal/worktrees/lifecycle_integration_test.go",
-              "name": "TestCleanupMergedTaskWithRealGitData",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/lifecycle_integration_test.go",
-              "name": "TestCleanupAcceptsAlreadyFinalizedLandedClaim",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/supersession_test.go",
-              "name": "TestCleanupSupersessionRefusesAnUnclassifiedResidual",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/supersession_test.go",
-              "name": "TestCleanupSupersessionDryRunAndApplyShareReviewedEvidence",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/supersession_test.go",
-              "name": "TestCleanupSupersessionRefusesTargetDrift",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/supersession_test.go",
-              "name": "TestCleanupSupersessionRefusesChangedSourceRef",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/supersession_test.go",
-              "name": "TestCleanupSupersessionRefusesUnreviewedResidual",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/lifecycle_integration_test.go",
-              "name": "TestCleanupAcceptsExactDirectPushIntegrationWithoutPullRequest",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/lifecycle_integration_test.go",
-              "name": "TestCleanupResumesExactBranchAfterFailureFollowingWorktreeRemoval",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/lifecycle_backlog_quarantine_test.go",
-              "name": "TestCleanupSurvivesAnInvalidBacklogRecordBelongingToAnotherTask",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/lifecycle_backlog_quarantine_test.go",
-              "name": "TestCleanupQuarantinesAnInvalidRecordItIsResponsibleFor",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/lifecycle_integration_test.go",
-              "name": "TestReadPathPurgesExactEmptyRetiredStageWithoutPoisoningFilteredRepository",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/lifecycle_integration_test.go",
-              "name": "TestCleanupKeepsNonEmptyRetiredStageAsExplicitBlockingBacklog",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/lifecycle_integration_test.go",
-              "name": "TestCleanupRetiresATaskLeftHoldingOnlyAPurgedStage",
-              "kind": "integration"
-            },
-            {
-              "path": "cmd/wb/worktree_test.go",
-              "name": "TestNamedCleanupApplyReturnsFindingsForNonEmptyArtifactOnlyBacklog",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/cleanup_remote_retirement_test.go",
-              "name": "TestNamedCleanupRefusesWhileTheOriginBranchStillExists",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/cleanup_remote_retirement_test.go",
-              "name": "TestNamedCleanupProceedsWhenTheOriginBranchIsAlreadyGone",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/lifecycle_integration_test.go",
-              "name": "TestCleanupResumeInterruptedNamedTaskPlansThenAppliesExactDeadLock",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/lifecycle_integration_test.go",
-              "name": "TestCleanupRetiresTaskNamespaceResidueOnTerminalApply",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/shell_retirement_test.go",
-              "name": "TestRetireTaskShellsAppliesToEmptyPreExistingShell",
-              "kind": "integration"
-            },
-            {
-              "path": "cmd/wb/worktree_test.go",
-              "name": "TestWorktreeCleanupRetireShellsPlansThenAppliesAnEmptyPreExistingShell",
-              "kind": "integration"
-            }
-          ],
-          "limitation": null
-        }
-      },
-      "notes": "The age window applies to merged-PR evidence; exact direct-push integration is checked against the fetched remote target."
     },
     {
       "id": "wb.worktree.correct-identity",
@@ -15167,7 +15152,7 @@
                 "Captures uncommitted work as a git stash commit in the repository the worktree was cut from, BEFORE anything is removed, and prints the exact recoverable SHA",
                 "A dirty worktree is not a refusal; a capture that fails stops the removal, because retiring a checkout whose work could not be preserved loses data irrecoverably",
                 "Seals a closing note into the Work Log; a note that cannot be sealed never strands the worktree",
-                "Retires each worktree through the existing wb worktree cleanup transaction, so cleanup's own guards still apply -- including recognizing a validated `wb worktree merge acknowledge-absorbed-conflict` acknowledgement as landing proof for a never-pushed integration candidate",
+                "Retires each worktree through the existing wb worktree retire transaction, so cleanup's own guards still apply -- including recognizing a validated `wb worktree merge acknowledge-absorbed-conflict` acknowledgement as landing proof for a never-pushed integration candidate",
                 "Releases the fleet-wide claim only once every worktree is gone",
                 "Without --apply it reports exactly what it would do and changes nothing"
               ]
@@ -15237,229 +15222,7 @@
           "limitation": null
         }
       },
-      "notes": "Every lane contract already told agents to end with this verb; until now it did not exist, so an agent either left residue for wb worktree gc or hand-rolled a removal that loses the claim, the Work Log seal and any uncommitted work."
-    },
-    {
-      "id": "wb.worktree.gc",
-      "feature_refs": [
-        "spec/features/dependency-streams/README.md"
-      ],
-      "since": "unreleased",
-      "surfaces": {
-        "runtime": {
-          "status": "Full",
-          "commands": [
-            {
-              "path": "wb worktree gc",
-              "flags": [
-                "--allow-residue",
-                "--apply",
-                "--base",
-                "--format",
-                "--older-than",
-                "--parallel",
-                "--remote",
-                "--residue-depth",
-                "--session-freshness",
-                "--skip-detached",
-                "--skip-sizes",
-                "--superseded-by",
-                "--ttl",
-                "--verbose"
-              ],
-              "modes": [
-                "Dry-run plan is the default; --apply is required to retire anything",
-                "Merged-ness is decided by commit identity \u2014 GitHub's commit-to-pull-request index for the head, then for its ancestors \u2014 never by branch-name ancestry, because a squash merge leaves none",
-                "Classifies every checkout as contained, landed-clean, landed-residue, detached-review, detached-unknown, open-pr, dirty, claimed-live, unpushed, or unmerged, and prints the evidence behind the class",
-                "A detached review checkout at a landed pull request's head is eligible; a detached head with no landing association is refused and says whether origin has the commit at all",
-                "A landed branch holding local commits past the landed head is reported as landed + residue with those commits listed, and is retirable only under --allow-residue",
-                "A branch renamed since its claim produces a warning on the receipt rather than a refusal, because landing evidence is commit-based",
-                "No force flag exists; --allow-residue and --superseded-by are the only two widenings and both print the evidence they widen past \u2014 the residual commits, or the receipt and the reviewer after every bound head is re-verified",
-                "Every refusal names a command that exists and works on that shape, decided from three-valued WB management: managed (WB wrote the manifest), unmanaged (the manifest does not validate), or unknown (no manifest). Absence of evidence is unknown, never unmanaged, so a checkout WB cannot identify is treated with the same care as one it owns",
-                "A dirty checkout is captured before anything is removed: a managed one names wb worktree abort, which seals the Work Log first, and every other one names only the git stash that preserves the changes \u2014 no removal is named at all, and the row warns that removing the checkout without the capture destroys them",
-                "A removal WB names for a checkout it does not own never carries --force, so Git itself refuses if the tree turns out to hold changes; the row additionally prints the git branch invocation that keeps an otherwise unreferenced detached commit",
-                "The inventory's own lifecycle artifacts and the empty task husks a removal leaves are reported in the dry run and retired under --apply, scoped to the tasks the run selected, so the debris gc's own advice creates is planned before it is swept and a named-task run never sweeps the fleet on its behalf",
-                "The in-use guard applies to every checkout, including one with no owner registration at all \u2014 a review checkout, a git worktree add checkout, or one whose registering process exited \u2014 because those are exactly the checkouts a sweep removed while they were in use",
-                "In use is decided from four activity signals \u2014 a heartbeat every wb command run inside the checkout refreshes, a file Git reports as changed, a Work Log event, or a commit \u2014 and the newest wins, because a lane may be doing only one kind of work. A live process id counts for nothing on its own: ids are recycled, and the question is about the worktree. --session-freshness 0 disables the rule, the same spelling as --older-than 0, while an unset window keeps the safe default",
-                "A landing walk that hits its --residue-depth bound is reported as unclassified with a larger depth named, never silently as unlanded",
-                "The reclaim footer is one accounting unit over the whole sweep, so a store file two worktrees both link is counted once and is unshared exactly when every link to it is inside the retired set",
-                "Removal is delegated to the ordinary cleanup transaction, one repository at a time, so a coordinated task retires per repository and names the repositories left behind",
-                "An unpushed head is never retired by any flag: it is the only class that can lose work",
-                "Work Logs and event logs are never deleted",
-                "Every size is reported apparent and unshared, and the reclaim footer counts only unshared bytes, because pnpm hard-links node_modules into its store",
-                "Exit code 0 when nothing needed attention, 1 when something was kept, 2 on a usage error"
-              ]
-            }
-          ],
-          "limitation": null
-        },
-        "help": {
-          "status": "Full",
-          "anchors": [
-            {
-              "command": "wb worktree gc --help",
-              "contains": [
-                "--allow-residue",
-                "--apply",
-                "landed + residue",
-                "commit identity",
-                "detached-review",
-                "no force flag",
-                "apparent and unshared"
-              ]
-            }
-          ],
-          "limitation": null
-        },
-        "ai_skill": {
-          "status": "Full",
-          "skills": [
-            {
-              "path": "ai/skills/wb-worktrees/references/gc.md",
-              "marker": "# Worktree garbage collection",
-              "examples": [
-                "wb worktree gc",
-                "wb worktree gc --apply",
-                "wb worktree gc --format json",
-                "wb worktree gc my-task --allow-residue --apply"
-              ]
-            }
-          ],
-          "limitation": null
-        },
-        "tests": {
-          "status": "Full",
-          "references": [
-            {
-              "path": "internal/worktrees/gc_test.go",
-              "name": "TestGCClassifiesASquashMergedWorktreeRemovable",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/gc_test.go",
-              "name": "TestGCApplyRetiresTheSquashMergedWorktreeAndKeepsTheWorkLog",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/gc_test.go",
-              "name": "TestGCKeepsDirtyAndOpenPullRequestCheckoutsWithOwnerAgeAndSanctionedCommand",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/gc_test.go",
-              "name": "TestGCInventoriesAndRetiresADetachedReviewCheckout",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/gc_test.go",
-              "name": "TestGCRefusesADetachedCheckoutWithNoLanding",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/gc_test.go",
-              "name": "TestGCReportsLandedWithResidueAndRetiresItOnlyWithAllowResidue",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/gc_test.go",
-              "name": "TestGCPurgesTerminalArtefactsSilentlyOnItsOwnReadPath",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/gc_test.go",
-              "name": "TestGCHasNoForceShapedOption",
-              "kind": "unit"
-            },
-            {
-              "path": "internal/worktrees/gc_test.go",
-              "name": "TestGCDetachedUnknownSanctionedCommandActuallyRetiresThatShape",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/gc_test.go",
-              "name": "TestGCDirtySanctionedCommandWorksOnADirtyDetachedCheckout",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/gc_test.go",
-              "name": "TestGCKeepsAClaimedLiveCheckoutEvenWhenItsWorkLanded",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/gc_test.go",
-              "name": "TestGCNamesARepositoryHeldBackByTheGraceWindow",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/gc_test.go",
-              "name": "TestGCMeasuresFreshnessFromActivityNotFromAProcessId",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/gc_test.go",
-              "name": "TestGCKeepsADetachedReviewCheckoutSomeoneIsUsing",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/gc_test.go",
-              "name": "TestActivityIgnoresATimestampInTheFuture",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/gc_test.go",
-              "name": "TestNegativeSessionFreshnessDisablesRatherThanInverts",
-              "kind": "unit"
-            },
-            {
-              "path": "internal/worktrees/gc_test.go",
-              "name": "TestGCSeesAnEditedFileAsActivity",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/gc_test.go",
-              "name": "TestGCSessionFreshnessZeroDisablesTheInUseRule",
-              "kind": "unit"
-            },
-            {
-              "path": "internal/worktrees/gc_test.go",
-              "name": "TestHeartbeatIsScopedToTheDirectoryTheCommandRanIn",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/gc_test.go",
-              "name": "TestGCRetiresAClaimedDetachedCheckoutWhoseClaimNamesABranch",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/gc_test.go",
-              "name": "TestGCPlansEmptyShellsAndScopesThemToTheNamedTask",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/gc_test.go",
-              "name": "TestWorktreeManagementSeparatesAbsentFromInvalid",
-              "kind": "unit"
-            },
-            {
-              "path": "internal/diskusage/diskusage_test.go",
-              "name": "TestWalkCountsAnInodeSharedBetweenTwoTreesExactlyOnce",
-              "kind": "unit"
-            },
-            {
-              "path": "internal/worktrees/terminal_artefacts_test.go",
-              "name": "TestPurgeTerminalArtefactsRemovesEmptyStageAndInertLock",
-              "kind": "unit"
-            },
-            {
-              "path": "cmd/wb/worktree_gc_test.go",
-              "name": "TestWorktreeGCCLIPlansAndRefuses",
-              "kind": "integration"
-            }
-          ],
-          "limitation": null
-        }
-      },
-      "notes": "The safety net rather than the mechanism: a rising count of retirable checkouts means a landing verb stopped cleaning up after itself. Deliberately not a mode of wb worktree cleanup \u2014 cleanup answers 'retire this named task', gc answers 'what is finished anywhere', and gc's classification is what makes a squash-merged or detached checkout visible to cleanup's own transaction at all."
+      "notes": "Every lane contract already told agents to end with this verb; until now it did not exist, so an agent either left residue for wb clean or hand-rolled a removal that loses the claim, the Work Log seal and any uncommitted work."
     },
     {
       "id": "wb.worktree.guard",
@@ -19004,83 +18767,6 @@
       "notes": "Opt-in local cooperation. Messages and acknowledgements do not prove work completion; no edit lease, daemon, idle wakeup or automatic Git operation isolation is installed."
     },
     {
-      "id": "wb.worktree.orphans",
-      "feature_refs": [
-        "spec/features/work-log/README.md"
-      ],
-      "since": "unreleased",
-      "surfaces": {
-        "runtime": {
-          "status": "Full",
-          "commands": [
-            {
-              "path": "wb worktree orphans",
-              "flags": [
-                "--base",
-                "--stale-days",
-                "--only",
-                "--format"
-              ],
-              "modes": [
-                "Read-only enumeration of every linked worktree across all layout generations, grouped by root effort, with a recommended disposition and its evidence. A declared owner's liveness is preferred over the commit-age heuristic."
-              ]
-            }
-          ],
-          "limitation": null
-        },
-        "help": {
-          "status": "Full",
-          "anchors": [
-            {
-              "command": "wb worktree orphans --help",
-              "contains": [
-                "--only",
-                "--stale-days"
-              ]
-            }
-          ],
-          "limitation": null
-        },
-        "ai_skill": {
-          "status": "Full",
-          "skills": [
-            {
-              "path": "ai/skills/wb-worktrees/references/guard.md",
-              "marker": "# Guard and recover a checkout",
-              "examples": [
-                "wb worktree orphans --only remove"
-              ]
-            },
-            {
-              "path": "ai/skills/wb-worktrees/references/cleanup.md",
-              "marker": "## Triage first: what is actually out there",
-              "examples": [
-                "wb worktree orphans --only review"
-              ]
-            }
-          ],
-          "limitation": null
-        },
-        "tests": {
-          "status": "Full",
-          "references": [
-            {
-              "path": "internal/worktrees/orphans_test.go",
-              "name": "TestOrphansSeeEveryLayoutGeneration",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/orphans_test.go",
-              "name": "TestOrphansRecommendRemovalOnlyForLandedWork",
-              "kind": "integration"
-            }
-          ],
-          "limitation": null
-        }
-      },
-      "notes": "Triage prefers declared owner liveness over commit age: a live session is proof and reports active, an exited one reports decide, and an unstated owner falls back to age with evidence that says it is inferred. Unstated is deliberately distinct from gone. Removal is recommended only for branches already contained in the remote target, and never for a worktree holding uncommitted work."
-    },
-    {
       "id": "wb.worktree.own",
       "feature_refs": [
         "spec/features/work-log/README.md"
@@ -19589,7 +19275,9 @@
     {
       "id": "wb.worktree.retire",
       "feature_refs": [
-        "spec/features/branch-hygiene/README.md"
+        "spec/features/branch-hygiene/README.md",
+        "spec/features/work-log/README.md",
+        "spec/features/worktree-lifecycle/README.md"
       ],
       "since": "unreleased",
       "surfaces": {
@@ -19599,17 +19287,46 @@
             {
               "path": "wb worktree retire",
               "flags": [
+                "--absorbed-by",
+                "--allow-residue",
                 "--apply",
+                "--base",
                 "--format",
+                "--initiator",
                 "--json",
                 "--message",
-                "--preserve",
                 "--mode",
-                "--initiator"
+                "--older-than",
+                "--parallel",
+                "--peer-evidence",
+                "--preserve",
+                "--recover-stages",
+                "--remote",
+                "--repo",
+                "--report-dir",
+                "--require-host",
+                "--resume-interrupted",
+                "--superseded-by",
+                "--verbose"
               ],
               "modes": [
-                "Dry-run is the default; --apply commits outstanding source changes with normal hooks",
-                "Preserves the exact source commit at retired/* as a branch by default, or as refs/tags/retired/* with --preserve=tag, then archives actual plain Work Log files and worktree metadata in the configured private organization retirement repository",
+                "Per-item transaction: retires named tasks, or a branch name resolved to the task whose checkout holds it, or a bare branch ref no checkout holds, on the same landing evidence wb clean uses",
+                "Dry-run is the default; --apply removes worktrees and exact local branches, and --remote also deletes an unchanged origin branch with force-with-lease",
+                "Exact fetched origin target proves integration with or without a merged PR",
+                "Work absorbed into a differently named integration branch is proved by a merged pull-request receipt for the immutable source commit plus local merge-tree containment in both the landing commit and the fetched target",
+                "--absorbed-by names which landing receipt to verify for a cherry-picked absorption and additionally requires the named commit to be exactly where the work entered the target",
+                "Named terminal cleanup defaults to immediate eligibility and requires explicit lease-safe remote branch retirement whenever the observed origin branch still exists; a candidate whose origin branch is already gone has nothing left to retire and is cleaned without --remote",
+                "Coordinated task preflight and durable seal precede every deletion",
+                "A matching immutable landed terminal and sealed outbox from wb worktree log finalize --apply authorize cleanup without either record being rewritten",
+                "Apply is bounded-parallel by canonical repository under --parallel; one Git writer per clone is preserved, a selected task failure is isolated, and the report stays in walk order regardless of completion order",
+                "cleanup plans inspect and apply resumes a durable post-removal exact-ref backlog",
+                "The durable backlog directory is shared by every task on the machine, so a record is selected before it is validated: one unreadable or unvalidatable record belonging to another task can no longer refuse every lane's cleanup. A record this run IS responsible for and cannot validate is quarantined and named on the report rather than acted on or silently skipped",
+                "--resume-interrupted recovers only one explicitly named task after exact lock metadata and a conclusively dead PID are proven",
+                "An empty recognized .wb-retired-stage-* directory and an inert .wb-retired-lock-* file are terminal debris: they are purged unconditionally and silently on the inventory read path, dry run included, and reported only as a purge receipt rather than as cleanup backlog. A task holding a live .lock is left entirely alone, and a non-empty or invalid stage remains explicit blocking backlog",
+                "--recover-stages inventories non-empty retired stages without following links, records Git identity and a deterministic private receipt, and archives only an unchanged exact stage under --apply",
+                "--superseded-by accepts only a trusted-reviewer receipt binding exact source/target heads, replacement PRs or commits, and a complete reviewed residual inventory; source or target drift and any unclassified residual refuse closed",
+                "A never-published integration-lane candidate is still refused unless its worktree-merge receipt carries a validated `wb worktree merge acknowledge-absorbed-conflict` acknowledgement bound to the receipt's unchanged bytes with a target head ancestor of the fetched origin target; a missing/stale/tampered one keeps refusing with a hint naming the receipt, a valid one reports `proof: absorbed_conflict_acknowledgement`",
+                "--preserve branch|tag retires one task whose work did not land: Preserves the exact source commit at retired/* as a branch by default, or as refs/tags/retired/* with --preserve=tag, then archives actual plain Work Log files and worktree metadata in the configured private organization retirement repository",
                 "Verifies both remote receipts before deleting the original remote ref with an exact lease and removing the local worktree and branch",
                 "Refuses open pull requests, competing ownership, changed refs, and unavailable or public retirement repositories; interrupted applies resume from durable intent"
               ]
@@ -19628,7 +19345,15 @@
                 "--apply",
                 "--preserve",
                 "--mode",
-                "--initiator"
+                "--initiator",
+                "--older-than",
+                "--remote",
+                "--absorbed-by",
+                "--superseded-by",
+                "--resume-interrupted",
+                "conclusively dead",
+                ".wb-retired-stage-*",
+                "resolved as a branch"
               ]
             }
           ],
@@ -19639,9 +19364,19 @@
           "skills": [
             {
               "path": "ai/skills/wb-worktrees/references/lifecycle.md",
-              "marker": "wb worktree retire",
+              "marker": "## Plan cleanup",
               "examples": [
-                "wb worktree retire <task> --apply"
+                "wb worktree retire fair-split",
+                "wb worktree retire fair-split --apply --remote --older-than 0",
+                "wb worktree retire task-a task-b --apply --remote --parallel 2"
+              ]
+            },
+            {
+              "path": "ai/skills/wb-worktrees/references/clean.md",
+              "marker": "## Retire one item",
+              "examples": [
+                "wb worktree retire <task> --apply --remote",
+                "wb worktree retire <task> --preserve branch --apply"
               ]
             }
           ],
@@ -19651,15 +19386,130 @@
           "status": "Full",
           "references": [
             {
+              "path": "internal/worktrees/lifecycle_integration_test.go",
+              "name": "TestCleanupMergedTaskWithRealGitData",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/lifecycle_integration_test.go",
+              "name": "TestCleanupAcceptsAlreadyFinalizedLandedClaim",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/supersession_test.go",
+              "name": "TestCleanupSupersessionRefusesAnUnclassifiedResidual",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/supersession_test.go",
+              "name": "TestCleanupSupersessionDryRunAndApplyShareReviewedEvidence",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/supersession_test.go",
+              "name": "TestCleanupSupersessionRefusesTargetDrift",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/supersession_test.go",
+              "name": "TestCleanupSupersessionRefusesChangedSourceRef",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/supersession_test.go",
+              "name": "TestCleanupSupersessionRefusesUnreviewedResidual",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/lifecycle_integration_test.go",
+              "name": "TestCleanupAcceptsExactDirectPushIntegrationWithoutPullRequest",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/lifecycle_integration_test.go",
+              "name": "TestCleanupResumesExactBranchAfterFailureFollowingWorktreeRemoval",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/lifecycle_backlog_quarantine_test.go",
+              "name": "TestCleanupSurvivesAnInvalidBacklogRecordBelongingToAnotherTask",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/lifecycle_backlog_quarantine_test.go",
+              "name": "TestCleanupQuarantinesAnInvalidRecordItIsResponsibleFor",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/lifecycle_integration_test.go",
+              "name": "TestReadPathPurgesExactEmptyRetiredStageWithoutPoisoningFilteredRepository",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/lifecycle_integration_test.go",
+              "name": "TestCleanupKeepsNonEmptyRetiredStageAsExplicitBlockingBacklog",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/lifecycle_integration_test.go",
+              "name": "TestCleanupRetiresATaskLeftHoldingOnlyAPurgedStage",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/worktree_test.go",
+              "name": "TestNamedCleanupApplyReturnsFindingsForNonEmptyArtifactOnlyBacklog",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/cleanup_remote_retirement_test.go",
+              "name": "TestNamedCleanupRefusesWhileTheOriginBranchStillExists",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/cleanup_remote_retirement_test.go",
+              "name": "TestNamedCleanupProceedsWhenTheOriginBranchIsAlreadyGone",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/lifecycle_integration_test.go",
+              "name": "TestCleanupResumeInterruptedNamedTaskPlansThenAppliesExactDeadLock",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/lifecycle_integration_test.go",
+              "name": "TestCleanupRetiresTaskNamespaceResidueOnTerminalApply",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/shell_retirement_test.go",
+              "name": "TestRetireTaskShellsAppliesToEmptyPreExistingShell",
+              "kind": "integration"
+            },
+            {
               "path": "internal/worktrees/retire_test.go",
               "name": "TestRetireBareRemotePreservesSourceAndPlainWorkLog",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/cli/cmdworktree/clean_retire_test.go",
+              "name": "TestRetireResolvesABranchNameToItsTask",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/cli/cmdworktree/clean_retire_test.go",
+              "name": "TestRetireRetiresABareBranchNoCheckoutHolds",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/worktrees/clean_e2e_test.go",
+              "name": "TestE2EResolveRetireNameReadsTheRealInventory",
               "kind": "integration"
             }
           ],
           "limitation": null
         }
       },
-      "notes": "Retirement preserves the source commit in the original repository and records actual plain Work Log files and worktree metadata in a separate private organization repository."
+      "notes": "The per-item transaction wb clean delegates to. Landed work retires on its landing evidence; work that never landed retires only with --preserve, which records the source commit in the original repository and the plain Work Log files and worktree metadata in a separate private organization repository first."
     },
     {
       "id": "wb.worktree.set",

@@ -92,7 +92,7 @@ func TestCleanupEndToEndCreateThenApplyRetiresHostLevelWorktree(t *testing.T) {
 	}
 }
 
-// TestGCApplyRetiresAMergedHostLevelWorktree proves `wb worktree gc --apply`
+// TestGCApplyRetiresAMergedHostLevelWorktree proves `wb clean --apply`
 // — the remedy #594 itself named as failing — also resolves the host-level
 // layout, since GC's own removal path is Cleanup underneath.
 func TestGCApplyRetiresAMergedHostLevelWorktree(t *testing.T) {

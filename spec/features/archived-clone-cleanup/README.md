@@ -44,7 +44,7 @@ was not checked out plus a lone unpushed commit on another.
 (never a name pattern, never a cached/stale local list), and reports, per
 clone, whether it is deletable and exactly why or why not. It is a dry-run
 plan by default; `--apply` is required to actually delete anything, matching
-the `wb layout clean` / `wb branch cleanup` / `wb worktree cleanup` convention
+the `wb layout clean` / `wb clean` / `wb worktree retire` convention
 of "plan by default, explicit apply to mutate".
 
 A clone is eligible for deletion only when **every** one of these holds:

@@ -156,7 +156,7 @@ Policies (Bash/Write/Edit/MultiEdit/NotebookEdit, unless noted):
     session.
   - Masked exit status (Bash): refuses a state-changing wb verb ('create',
     'land', 'pr create', 'pr land', 'worktree create'/'land'/'merge', and a
-    'worktree cleanup'/'gc' with --apply, among others) whose output is piped
+    'worktree retire' or 'clean' with --apply, among others) whose output is piped
     into another command ('|' or '|&', including '2>&1 |', through a path to
     wb, inside a subshell, '$( )' or a 'bash -c' payload). A pipeline reports
     only its last command's status, so the verb's refusal exits 0 and an '&&'

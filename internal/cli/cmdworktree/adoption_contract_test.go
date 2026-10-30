@@ -5,14 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/sneat-dev/wb/internal/cli/shared"
-	"github.com/sneat-dev/wb/internal/worktrees"
-	"github.com/spf13/cobra"
 	"io"
 	"reflect"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/sneat-dev/wb/internal/cli/shared"
+	"github.com/sneat-dev/wb/internal/worktrees"
+	"github.com/spf13/cobra"
 )
 
 type adoptionContextKey struct{}
@@ -67,16 +67,6 @@ func TestAdoptionContractsUseLazyOptionsAndAdmissionLifetime(t *testing.T) {
 	if !reflect.DeepEqual(order, []string{"admit", "operation", "release"}) {
 		t.Fatalf("order=%v", order)
 	}
-	orphans := NewOrphans(runtime, func(got context.Context, o worktrees.OrphanOptions) (worktrees.OrphanReport, error) {
-		if got != ctx || !reflect.DeepEqual(o, worktrees.OrphanOptions{ProjectsRoot: "after", Base: "topic", StaleAfter: 3 * 24 * time.Hour}) {
-			t.Fatalf("orphans context/options=%v/%+v", got, o)
-		}
-		return worktrees.OrphanReport{}, nil
-	})
-	orphans.SetContext(ctx)
-	if out, err := adoptionExecute(orphans, "--base", "topic", "--stale-days", "3", "--only", "remove"); err != nil || !strings.Contains(out, "0 worktrees") {
-		t.Fatalf("orphans=%q/%v", out, err)
-	}
 }
 
 func TestAdoptionContractsDefaultsJSONAndOrdinaryValidationErrors(t *testing.T) {
@@ -84,7 +74,6 @@ func TestAdoptionContractsDefaultsJSONAndOrdinaryValidationErrors(t *testing.T) 
 	runtime := shared.Runtime{Flags: func() shared.Flags { return shared.Flags{ProjectsRoot: "root", Filter: "filter"} }}
 	backResults := []worktrees.BackfillResult{{Action: worktrees.BackfillSkipped, Path: "private"}}
 	adoptResults := []worktrees.AdoptResult{{Action: worktrees.AdoptWouldAdopt, Path: "private"}}
-	orphanReport := worktrees.OrphanReport{Unscanned: []string{"private"}}
 	factories := []struct {
 		name string
 		make func() *cobra.Command
@@ -112,14 +101,6 @@ func TestAdoptionContractsDefaultsJSONAndOrdinaryValidationErrors(t *testing.T) 
 				return func() {}, nil
 			})
 		}, []string{"--all-external"}, adoptResults},
-		{"orphans", func() *cobra.Command {
-			return NewOrphans(runtime, func(_ context.Context, o worktrees.OrphanOptions) (worktrees.OrphanReport, error) {
-				if o.Base != "main" || o.StaleAfter != 14*24*time.Hour {
-					t.Fatalf("defaults=%+v", o)
-				}
-				return orphanReport, nil
-			})
-		}, []string{"--only", "remove"}, orphanReport},
 	}
 	for _, tc := range factories {
 		t.Run(tc.name, func(t *testing.T) {
@@ -172,14 +153,6 @@ func TestAdoptionContractsPreserveOperationAdmissionAndWriterErrors(t *testing.T
 				return []worktrees.AdoptResult{{Action: worktrees.AdoptWouldAdopt, Task: "task"}}, nil
 			}, func(*cobra.Command, bool) (func(), error) { return func() { released++ }, nil })
 		}, []string{"--all-external"}},
-		{"orphans", func(fail bool) *cobra.Command {
-			return NewOrphans(runtime, func(context.Context, worktrees.OrphanOptions) (worktrees.OrphanReport, error) {
-				if fail {
-					return worktrees.OrphanReport{}, boom
-				}
-				return worktrees.OrphanReport{}, nil
-			})
-		}, nil},
 	}
 	for _, tc := range factories {
 		if out, err := adoptionExecute(tc.make(true), tc.args...); err != boom || out != "" {

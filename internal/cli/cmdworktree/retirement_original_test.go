@@ -3,13 +3,14 @@ package cmdworktree
 import (
 	"bytes"
 	"errors"
+	"strings"
+	"testing"
+	"time"
+
 	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/sneat-dev/wb/internal/diskusage"
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
-	"strings"
-	"testing"
-	"time"
 )
 
 func TestClosedAuditSuffixNamesTheRecordOnlyWhenOneExists(t *testing.T) {
@@ -55,7 +56,7 @@ func TestCwCovPrintWorktreeGCRendersEveryRowShape(t *testing.T) {
 			"retired": 2, "eligible": 3, "refused": 1, "purged_artefacts": 4, "retired_shells": 5,
 		},
 	}
-	command := NewGC(shared.Runtime{}, GCDependencies{})
+	command := NewClean(shared.Runtime{}, CleanDependencies{})
 	var out bytes.Buffer
 	command.SetOut(&out)
 	if err := printWorktreeGC(command, outcome); err != nil {
@@ -148,7 +149,7 @@ func TestCwWtCleanupTaskNameHelpers(t *testing.T) {
 
 func TestCwWtFormatWorktreeGCOutcomeInProcess(t *testing.T) {
 	t.Parallel()
-	command := NewGC(shared.Runtime{}, GCDependencies{})
+	command := NewClean(shared.Runtime{}, CleanDependencies{})
 	var out bytes.Buffer
 	command.SetOut(&out)
 	outcome := worktrees.GCOutcome{
@@ -157,7 +158,7 @@ func TestCwWtFormatWorktreeGCOutcomeInProcess(t *testing.T) {
 			{
 				Task: "alpha", Repository: "acme/app", WorktreeDir: "/tmp/wt/alpha",
 				Class: "dirty", Reason: "uncommitted changes", Evidence: []string{"a.go"},
-				Warnings: []string{"branch renamed"}, SanctionedCommand: "wb worktree cleanup alpha",
+				Warnings: []string{"branch renamed"}, SanctionedCommand: "wb worktree retire alpha",
 				Management: "unmanaged", Error: "boom",
 			},
 			{Task: "beta", Repository: "acme/app", Class: "unpushed", Reason: "never pushed", Management: "managed"},
@@ -177,7 +178,7 @@ func TestCwWtFormatWorktreeGCOutcomeInProcess(t *testing.T) {
 	text := out.String()
 	for _, want := range []string{
 		"dirty", "uncommitted changes", "evidence: [a.go]", "warning: branch renamed",
-		"resolve with: wb worktree cleanup alpha", "WB management: unmanaged", "error: boom",
+		"resolve with: wb worktree retire alpha", "WB management: unmanaged", "error: boom",
 		"partial: task gamma retired [a] and left [b] behind",
 		"artifact stage /tmp/stage: quarantined",
 		"shell alpha /tmp/shell: shell failed",
@@ -205,54 +206,6 @@ func TestCwWtFormatWorktreeGCOutcomeInProcess(t *testing.T) {
 	}
 	if got := out.String(); !strings.Contains(got, "no WB worktrees") {
 		t.Fatalf("empty gc output = %q", got)
-	}
-}
-
-func TestCwWtPrintRetireTaskShells(t *testing.T) {
-	t.Parallel()
-	outcome := worktrees.RetireShellsOutcome{
-		Results: []worktrees.RetiredShell{
-			{Task: "applied", Path: "/tmp/a", Applied: true},
-			{Task: "eligible", Path: "/tmp/b", Eligible: true},
-			{Task: "failed", Path: "/tmp/c", Error: "boom"},
-			{Task: "skipped", Path: "/tmp/d", Reason: "still has members"},
-		},
-		Totals: map[string]int{"retired": 1, "would_retire": 2},
-	}
-	var out bytes.Buffer
-	if err := printRetireTaskShells(cwWtCmd(&out), outcome); err != nil {
-		t.Fatal(err)
-	}
-	text := out.String()
-	for _, want := range []string{
-		"retired      applied /tmp/a", "would retire eligible /tmp/b",
-		"failed       failed /tmp/c: boom", "skip         skipped /tmp/d: still has members",
-		"2 would retire",
-	} {
-		if !strings.Contains(text, want) {
-			t.Errorf("shells output missing %q:\n%s", want, text)
-		}
-	}
-	out.Reset()
-	outcome.Apply = true
-	if err := printRetireTaskShells(cwWtCmd(&out), outcome); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out.String(), "1 retired") {
-		t.Fatalf("shells apply output = %q", out.String())
-	}
-	out.Reset()
-	if err := printRetireTaskShells(cwWtCmd(&out), worktrees.RetireShellsOutcome{}); err != nil {
-		t.Fatal(err)
-	}
-	if got := out.String(); got != "no WB task directories found\n" {
-		t.Fatalf("empty shells = %q", got)
-	}
-
-	for allow := 0; allow < 2; allow++ {
-		if err := printRetireTaskShells(cwWtCmdWriter(&cwWtFailWriter{Allow: allow}), outcome); err == nil {
-			t.Fatalf("printRetireTaskShells with %d writes allowed returned nil", allow)
-		}
 	}
 }
 
@@ -312,14 +265,14 @@ func TestCwWtPrintWorktreeGCPropagatesWriteFailures(t *testing.T) {
 		Totals:       map[string]int{"retired": 1},
 	}
 	for allow := 0; allow < 11; allow++ {
-		command := NewGC(shared.Runtime{}, GCDependencies{})
+		command := NewClean(shared.Runtime{}, CleanDependencies{})
 		command.SetOut(&cwWtFailWriter{Allow: allow})
 		if err := printWorktreeGC(command, outcome); err == nil {
 			t.Fatalf("printWorktreeGC with %d writes allowed returned nil, want write failure", allow)
 		}
 	}
 	// An empty outcome still writes one line.
-	command := NewGC(shared.Runtime{}, GCDependencies{})
+	command := NewClean(shared.Runtime{}, CleanDependencies{})
 	command.SetOut(&cwWtFailWriter{Allow: 0})
 	if err := printWorktreeGC(command, worktrees.GCOutcome{}); err == nil {
 		t.Fatal("empty printWorktreeGC did not propagate the write failure")
@@ -336,19 +289,6 @@ func TestCwWtWriterSweepCleanupRenameShellsAdopt(t *testing.T) {
 	}
 	cwWtSweepWrites(t, 8, func(writer *cwWtFailWriter) error {
 		return printWorktreeCleanup(cwWtCmdWriter(writer), cleanup, false)
-	})
-
-	shells := worktrees.RetireShellsOutcome{
-		Results: []worktrees.RetiredShell{
-			{Task: "a", Path: "/tmp/a", Applied: true},
-			{Task: "b", Path: "/tmp/b", Eligible: true},
-			{Task: "c", Path: "/tmp/c", Error: "boom"},
-			{Task: "d", Path: "/tmp/d", Reason: "still has members"},
-		},
-		Totals: map[string]int{"would_retire": 1},
-	}
-	cwWtSweepWrites(t, 8, func(writer *cwWtFailWriter) error {
-		return printRetireTaskShells(cwWtCmdWriter(writer), shells)
 	})
 
 }

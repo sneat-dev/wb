@@ -104,7 +104,8 @@ wb worktree info [path]      # redacted identity + digests for one worktree
 wb worktree log [path]       # dump initial prompt + local work log for an agent
                              # (mutating verbs: init|steer|show|checkpoint|…)
 wb worktree list [task]      # inspect local WB task worktrees
-wb worktree cleanup <task...> # plan or apply safe merged-task cleanup
+wb clean [selectors]         # plan, or with --apply retire, every finished worktree and branch
+wb worktree retire <task|branch>... # plan or apply retirement of one finished item
 wb worktree rename <old> <new> # plan or apply explicit audited worktree recycle
 wb worktree abort <task>     # hand off, retain, or discard an interrupted claim
 wb self-update [flags]       # update the installed wb binary (alias: wb update)
@@ -334,7 +335,7 @@ resetting, or fast-forwarding the canonical checkout or any local base branch;
 this is safe when local `main` is stale, checked out in another worktree, or
 contains active local work. More generally, which branch a canonical clone has
 checked out is never a WB precondition: `wb pr land`, `wb worktree land`,
-`wb worktree cleanup` and the managed hooks work whatever branch it is on, clean
+`wb worktree retire` and the managed hooks work whatever branch it is on, clean
 or dirty (only uncommitted work is protected, and a push that merely deletes
 remote refs, which is how a merged branch is retired, sends nothing from the
 clone and passes the guard unconditionally). By default, a worktree is created in the central
@@ -531,10 +532,10 @@ seven-day active/recent/history view.
 After every PR in a coordinated task has merged, plan cleanup first:
 
 ```sh
-wb worktree cleanup bots-e2e
-wb worktree cleanup bots-e2e --apply --remote --older-than 0
+wb worktree retire bots-e2e
+wb worktree retire bots-e2e --apply --remote --older-than 0
 # Retire an exact completed batch without widening the scope to every merged task.
-wb worktree cleanup bots-web bots-api bots-worker --apply --remote --parallel 3
+wb worktree retire bots-web bots-api bots-worker --apply --remote --parallel 3
 ```
 
 Cleanup is a dry run by default. It removes nothing unless every repository in
@@ -554,16 +555,16 @@ below the authoritative WB home (normally `~/.wb/reports/worktree-cleanup/`)
 before removing exact worktree and branch refs; remote retirement uses
 force-with-lease against the observed source-branch SHA.
 
-The inventory walk that `wb worktree list --github` and `wb worktree cleanup`
+The inventory walk that `wb worktree list --github` and `wb worktree retire`
 both build resolves each repository's exact `origin/<target>` over the network,
 so a large fleet spends nearly all of its wall time waiting rather than
 computing. `--parallel` bounds how many repositories are inspected at once:
 
 ```sh
-wb worktree cleanup --all-merged --parallel 16
-wb worktree cleanup bots-web bots-api bots-worker --parallel 3
+wb clean --parallel 16
+wb worktree retire bots-web bots-api bots-worker --parallel 3
 wb worktree list --github --parallel 4
-wb worktree cleanup --all-merged --parallel 1   # fully sequential
+wb clean --parallel 1   # fully sequential
 ```
 
 It defaults to `8`, matching `wb sync`, which does the same `git`/`gh` work per
@@ -622,7 +623,7 @@ Cleanup separately classifies WB-owned `.wb-stage-*` and
 run and descriptor-safely archived outside the active task on apply. A
 non-empty, symlinked, or invalid stage remains explicit blocking cleanup
 backlog; it is never reinterpreted as a legacy repository worktree or silently
-discarded. Run `wb worktree cleanup <task> --recover-stages` for explicit
+discarded. Run `wb worktree retire <task> --recover-stages` for explicit
 audited recovery: WB inventories content and Git identity without following
 links, emits a deterministic private receipt, and with `--apply` archives the
 exact stage before normal cleanup can retire the task. Changed or ambiguous
@@ -1234,7 +1235,7 @@ remains on stdout, and `--non-interactive` suppresses the live line. `wb fleet`
 / `stats` always include layout placement counts and
 managed worktree rollups. Pass `--remote` for sync-drift counts or `--hooks`
 for managed-hook findings. Use `wb layout audit` for the placement worklist,
-`wb sync --dry-run` for GitHub reconciliation, and `wb worktree orphans` for
+`wb sync --dry-run` for GitHub reconciliation, and `wb clean` for
 linked-worktree debt outside managed tasks.
 
 ### `wb layout` — clone placement under projects-root

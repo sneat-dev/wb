@@ -3,9 +3,9 @@ package hooks
 import (
 	"fmt"
 	"sort"
-	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/repofilter"
 	"github.com/sneat-dev/wb/internal/streambranch"
 )
 
@@ -105,7 +105,7 @@ func Measure(events []Event, days int, repositoryFilter string, now time.Time) P
 	}
 	byBlock := map[string]*BlockMetrics{}
 	for _, event := range events {
-		if repositoryFilter != "" && !strings.Contains(strings.ToLower(event.Repository), strings.ToLower(repositoryFilter)) {
+		if repositoryFilter != "" && !repofilter.Match(repositoryFilter, event.Repository) {
 			continue
 		}
 		day := event.Timestamp.In(location)

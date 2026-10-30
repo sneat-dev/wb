@@ -633,7 +633,7 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 			"gh api repos/" + options.Repository + "/pulls/" + number + "  (verify merged)",
 			"gh api repos/" + options.Repository + "/compare/…  (verify the merge is on the base)",
 			"gh api --method DELETE repos/" + options.Repository + "/git/refs/heads/…",
-			"wb worktree cleanup <task> --apply",
+			"wb worktree retire <task> --apply",
 		},
 	}
 
@@ -1036,7 +1036,7 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		// name the one part GitHub cannot do.
 		if result.AutoMergeArmed {
 			result.Reason = waited.Reason + "; auto-merge is armed, so this lands without WB once checks pass"
-			result.SanctionedCommand = "wb worktree gc --apply  (after GitHub merges it)"
+			result.SanctionedCommand = "wb clean --apply  (after GitHub merges it)"
 			if options.Keep {
 				result.SanctionedCommand = "none: GitHub merges it when the checks pass"
 			}
@@ -1381,7 +1381,7 @@ func finalizeLandedPullRequest(ctx context.Context, options PullRequestLandOptio
 			// The landing itself succeeded and must be reported as such; a
 			// checkout that could not be retired is a finding, with the verb
 			// that finishes it named.
-			return landedIncomplete(options, result, number, "cleanup-incomplete", cleanupErr.Error(), "wb worktree gc --apply"), nil
+			return landedIncomplete(options, result, number, "cleanup-incomplete", cleanupErr.Error(), "wb clean --apply"), nil
 		}
 		reportPullRequestLandProgress(options.OperationProgress, "cleanup", progress.Completed, "tasks", len(tasks), len(tasks))
 	} else if !options.Keep {
@@ -1544,7 +1544,7 @@ func landPreflightRefusal(view githubchecks.PullRequestView, repository, number 
 		return &landRefusal{
 			code:    LandRefusalNotOpen,
 			reason:  "pull request is already merged as " + shortMergeRevision(view.MergeCommitSHA),
-			command: "wb worktree gc --apply",
+			command: "wb clean --apply",
 		}
 	case !strings.EqualFold(view.State, "open"):
 		return &landRefusal{

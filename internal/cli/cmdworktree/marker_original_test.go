@@ -2,11 +2,12 @@ package cmdworktree
 
 import (
 	"errors"
+	"strings"
+	"testing"
+
 	"github.com/sneat-dev/wb/internal/checkoutmarker"
 	"github.com/sneat-dev/wb/internal/checkoutsetup"
 	"github.com/spf13/cobra"
-	"strings"
-	"testing"
 )
 
 type markerFailureWriter struct{ Allow, Writes int }

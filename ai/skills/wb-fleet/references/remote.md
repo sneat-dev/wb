@@ -92,7 +92,7 @@ is configured: it prints the outcome (acquired, refreshed, held by another
 — warn and proceed, held by you elsewhere — warn and proceed, took over a
 stale claim, or skipped because the store is unreachable) and includes it
 as the `remote_claim` field of `--format json` output; it never fails the
-command. Pass `--no-claim` to skip the attempt. `wb worktree cleanup
+command. Pass `--no-claim` to skip the attempt. `wb worktree retire
 --apply` and `wb worktree abort --apply` (discarded or handoff dispositions
 only — not_landed keeps the claim because the task is expected to resume)
 release the claim best-effort the same way, printing `release skipped: …`

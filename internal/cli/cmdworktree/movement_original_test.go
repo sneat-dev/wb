@@ -5,12 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/sneat-dev/wb/internal/cli/shared"
-	"github.com/sneat-dev/wb/internal/worktrees"
-	"github.com/spf13/cobra"
 	"io"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/cli/shared"
+	"github.com/sneat-dev/wb/internal/worktrees"
+	"github.com/spf13/cobra"
 )
 
 // These are explicit operation/admission/marker/progress recorders, not native move proof.

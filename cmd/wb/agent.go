@@ -2,11 +2,12 @@ package main
 
 import (
 	"context"
+	"os"
+
 	"github.com/sneat-dev/wb/internal/agents"
 	"github.com/sneat-dev/wb/internal/cli/cmdagent"
 	"github.com/sneat-dev/wb/internal/wbconfig"
 	"github.com/spf13/cobra"
-	"os"
 )
 
 func newAgentCmd(inv *invocation) *cobra.Command {

@@ -22,7 +22,7 @@ locks, receipts, and reports — lives under `<root>/.wb`; `WB_HOME` selects
 nothing. Every one of those paths defers to
 [`projects-root-layout`](../projects-root-layout/README.md). `wb worktree list`
 reports local Git state with optional GitHub PR evidence and each checkout's
-placement; `wb worktree cleanup` safely plans or applies removal of clean task
+placement; `wb worktree retire` safely plans or applies removal of clean task
 worktrees and exact merged branch refs.
 
 ## Problem
@@ -200,9 +200,12 @@ restore can remove local work.
 
 #### REQ: dry-run-default
 
-`wb worktree cleanup` MUST require one task or `--all-merged` and MUST be a dry
-run unless `--apply` is explicit. A 24-hour merged-PR safety window MUST apply
-by default; zero MUST explicitly disable it.
+`wb worktree retire` MUST require one or more named tasks or branches (the
+fleet sweep is `wb clean`, see
+[cleanup-orchestration](../cleanup-orchestration/README.md#req-clean-is-the-one-fleet-verb))
+and MUST be a dry run unless `--apply` is explicit. A named task defaults to an
+immediate (zero) merged-PR window; `wb clean` applies a 24-hour window by
+default, and zero MUST explicitly disable it.
 
 #### REQ: exact-remote-target-evidence
 
@@ -393,7 +396,7 @@ same receipt.
 
 #### REQ: incremental-sweep-progress
 
-A fleet-wide sweep — `wb worktree cleanup --all-merged`, or any inventory run
+A fleet-wide sweep — `wb clean`, or any inventory run
 with `--github` — fetches and queries a hosted API once per candidate and can
 run for minutes. Such a run MUST emit incremental progress to **stderr**,
 flushed per event rather than buffered until the report is complete. Each event
@@ -487,11 +490,11 @@ open MUST be reported with the permission needed, never worked around by name.
 An apply report MUST record that WB, rather than Git, removed the checkout.
 
 Because a checkout Git no longer registers is invisible to every enumeration
-that reads Git's worktree registry, `wb worktree orphans` MUST additionally
+that reads Git's worktree registry, `wb clean` MUST additionally
 walk WB's own worktrees roots and report each checkout there that no canonical
 clone lists, with the evidence for the claim and the exact command that
 finishes it. That sweep MUST stay read-only and MUST NOT gain a removal path
-of its own: removal is owned by the backlog record and `wb worktree cleanup`.
+of its own: removal is owned by the backlog record and `wb worktree retire`.
 It MUST report only a recognizable repository checkout — one carrying Git
 metadata, or one whose path names a repository that has a canonical clone — so
 that a task's own working directories are never reported as lost work.
@@ -707,13 +710,13 @@ write remains fail-closed and leaves Git state in place.
 
 - Should a future cleanup mode archive reports after a retention period?
 - **Resolved 2026-08-29 in issue #97:** supersession is an explicit,
-  named-task-only `wb worktree cleanup --superseded-by <receipt.json>` path.
+  named-task-only `wb worktree retire --superseded-by <receipt.json>` path.
   WB accepts only a trusted-reviewer receipt binding exact source and target
   heads, replacement PRs or commits, a complete reviewed residual inventory,
   and the approving actor/receipt ID. It rechecks the receipt at dry-run and
   apply boundaries, refuses any missing or unreviewed classification or ref
   drift, embeds the receipt in the terminal Work Log, and never exposes the
-  disposition to `--all-merged` sweeps.
+  disposition to `wb clean` fleet sweeps.
 
 ---
 *This document follows the https://specscore.md/feature-specification*

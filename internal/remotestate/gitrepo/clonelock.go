@@ -20,7 +20,7 @@ import (
 var cloneLockTimeout = 2 * time.Minute
 
 // cloneLock serializes every WB process on this machine that touches one
-// wb-state clone directory. Without it, two `wb worktree cleanup` (or any
+// wb-state clone directory. Without it, two `wb worktree retire` (or any
 // other remote-touching) invocations running concurrently — the ordinary
 // case for the shared clone under `~/projects/.wb/remote-store/<owner>/<name>` — interleave
 // their git commands in the same working tree: one process's `git fetch`

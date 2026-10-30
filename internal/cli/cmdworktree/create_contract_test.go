@@ -5,14 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/sneat-dev/wb/internal/cli/shared"
-	"github.com/sneat-dev/wb/internal/worktreerun"
-	"github.com/sneat-dev/wb/internal/worktrees"
-	"github.com/spf13/cobra"
 	"io"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/cli/shared"
+	"github.com/sneat-dev/wb/internal/worktreerun"
+	"github.com/sneat-dev/wb/internal/worktrees"
+	"github.com/spf13/cobra"
 )
 
 type createContextKey struct{}

@@ -137,7 +137,7 @@ Prompt bodies are private local data. They MUST NOT be printed in normal output,
 entered into public projections, reports, hook metrics, source Git, or a
 Synchestra envelope; only the digest and ordinal may enter public state. A
 configured private per-organization retirement repository MAY accept the plain
-actual Work Log files when `wb worktree retire --apply` is explicitly invoked.
+actual Work Log files when `wb worktree retire --preserve branch --apply` is explicitly invoked.
 Local exact retention remains mandatory whether or not retirement is configured.
 
 #### REQ: sealed-archive-outlives-worktree
@@ -167,13 +167,13 @@ each value has one sealer:
 | `superseded` | cleanup or abort with a reviewed supersession receipt | other work replaced it |
 | `handoff`, `external_handoff` | `wb worktree abort --disposition handoff`; a session move | the work continues under a successor claim |
 | `orphaned` | `wb worktree abort --disposition orphaned` | the worktree, its branches and its registration were all gone |
-| `retired` | `wb worktree retire` | unlanded work was archived and its worktree removed |
+| `retired` | `wb worktree retire --preserve` | unlanded work was archived and its worktree removed |
 | `recycled`, `recycle_failed` | `wb worktree rename` | the worktree was reused under another task, or that reuse was rolled back |
 | `create_failed` | recovery of a failed `wb worktree create` | the worktree was never usable |
 
 Cleanup is the one path every landing ends in: `wb worktree land` (`wb land`),
 `wb pr land`, `wb pr create --land`, `wb worktree merge`, `wb worktree end`,
-`wb worktree cleanup` and `wb worktree gc` all remove a worktree through it, and
+`wb worktree retire` and `wb clean` all remove a worktree through it, and
 it is also what removes a worktree whose pull request was merged on GitHub by
 hand or by an auto-merge that completed after the verb exited. Cleanup therefore
 decides between `landed` and `removed` from what it proved, never from which
@@ -392,7 +392,7 @@ WB MUST provide the following deterministic command group:
 | `wb worktree log init` | Create or attach an Effort, record the manifest and prompt ordinal `0000` with its provenance, verify a WB-managed worktree, and acquire the initial claim. |
 | `wb worktree log steer` | Append the next prompt ordinal with its exact bytes, digest, and explicit source; the agent-facing verb for recording steering. |
 | `wb worktree set --prompt` | Human-facing alias of `log steer` that records a `human_declared` prompt; the remedy the commit gate names when it refuses. |
-| `wb worktree orphans` | Read-only enumeration of every reachable linked worktree across all layout generations, grouped by effort parentage, with reconstructed identity and a recommended disposition per family. |
+| `wb clean` | Read-only enumeration of every reachable linked worktree across all layout generations, grouped by effort parentage, with reconstructed identity and a recommended disposition per family. |
 | `wb worktree log show` | Read journal and live Git evidence without mutation; default text redacts private data and `--json` exposes the public projection only; once finalized, includes the redacted terminal record (disposition, `terminal_result`, `terminal_message`, `report_path`) without the report body. |
 | `wb worktree log checkpoint` | Append a typed progress/checkpoint event, observed Git evidence, optional nullable usage, and update both projections. |
 | `wb worktree log refresh` | Fetch and measure target-ref divergence without changing the claimed worktree; record target SHA and freshness evidence. |

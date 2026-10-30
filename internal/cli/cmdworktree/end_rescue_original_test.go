@@ -3,12 +3,13 @@ package cmdworktree
 import (
 	"bytes"
 	"fmt"
+	"strings"
+	"testing"
+
 	"github.com/sneat-dev/wb/internal/canonicalrescue"
 	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/sneat-dev/wb/internal/worktreeend"
 	"github.com/spf13/cobra"
-	"strings"
-	"testing"
 )
 
 func TestPrintWorktreeEndNotApplied(t *testing.T) {

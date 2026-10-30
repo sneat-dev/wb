@@ -20,7 +20,7 @@ func TestRetirementCleanupQuietRetainsMutationsAndEveryJSONArtifact(t *testing.T
 				deps := retirementCleanupDeps(outcome)
 				runtime := shared.Runtime{Flags: func() shared.Flags { return shared.Flags{ProjectsRoot: "private-root", Quiet: quiet} }}
 				var out, errOut bytes.Buffer
-				if err := retirementExecute(NewCleanup(runtime, deps), []string{"task", "--format=" + format}, &out, &errOut); err != nil {
+				if err := retirementExecute(NewRetire(runtime, deps), []string{"task", "--format=" + format}, &out, &errOut); err != nil {
 					t.Fatal(err)
 				}
 				if strings.Contains(errOut.String(), "unchanged-evidence") == quiet || !strings.Contains(errOut.String(), "mutation-evidence") {

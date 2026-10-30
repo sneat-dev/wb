@@ -27,6 +27,7 @@ import (
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/gitops"
+	"github.com/sneat-dev/wb/internal/repofilter"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktreeclaims"
 )
@@ -123,7 +124,7 @@ func cleanWithAbs(ctx context.Context, options Options, absolute func(string) (s
 	}
 	filtered := make([]discover.Repo, 0, len(repos))
 	for _, repo := range repos {
-		if options.Filter == "" || strings.Contains(repo.Slug(), options.Filter) {
+		if options.Filter == "" || repofilter.Match(options.Filter, repo.Slug()) {
 			filtered = append(filtered, repo)
 		}
 	}

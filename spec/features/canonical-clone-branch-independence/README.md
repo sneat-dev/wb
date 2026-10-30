@@ -38,7 +38,7 @@ from no branch), and never the branch name alone.
 A `git push` that only deletes remote refs sends nothing from the checkout it
 runs in, so the managed pre-push guard passes it without inspecting the
 checkout, whatever the clone's branch or state. That is the push `wb pr land`,
-`wb worktree land` and `wb worktree cleanup` use to retire a merged branch.
+`wb worktree land` and `wb worktree retire` use to retire a merged branch.
 
 A landing whose merge is verified on the base branch but whose canonical sync,
 branch retirement or cleanup did not finish is not "not landed". `wb pr land`,
@@ -88,7 +88,7 @@ invocation and any push that updates a ref MUST keep the full guard.
 
 #### REQ: cleanup-independent-of-the-canonical-branch
 
-`wb pr land`, `wb worktree land` and `wb worktree cleanup` MUST delete the
+`wb pr land`, `wb worktree land` and `wb worktree retire` MUST delete the
 merged remote branch, retire the worktree and release the claim when the
 canonical clone has any branch checked out, clean or dirty, and MUST leave the
 clone's branch and uncommitted work unchanged.
