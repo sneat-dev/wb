@@ -327,8 +327,8 @@ exit 30
 		t.Fatalf("commit check runs reason=%q pending=%t", reason, pending)
 	}
 	want := []RemoteCheck{
-		{Name: "check-run:strongo_workflow / Lint", Bucket: "pass", Conclusion: "success", Link: "https://github.com/acme/app/actions/runs/34707566599/job/103590281489", AppID: 15368, CheckRunID: 103590281489},
-		{Name: "check-run:strongo_workflow / Build & test", Bucket: "pass", Conclusion: "success", Link: "https://github.com/acme/app/actions/runs/34707566599/job/103590281623", AppID: 15368, CheckRunID: 103590281623},
+		{Name: "check-run:strongo_workflow / Lint", Bucket: "pass", Conclusion: "success", Link: "https://github.com/acme/app/actions/runs/34707566599/job/103590281489", AppID: 15368, CheckRunID: 103590281489, WorkflowID: 5447489, WorkflowEvent: "pull_request", WorkflowRunConclusion: "success"},
+		{Name: "check-run:strongo_workflow / Build & test", Bucket: "pass", Conclusion: "success", Link: "https://github.com/acme/app/actions/runs/34707566599/job/103590281623", AppID: 15368, CheckRunID: 103590281623, WorkflowID: 5447489, WorkflowEvent: "pull_request", WorkflowRunConclusion: "success"},
 	}
 	if !reflect.DeepEqual(checks, want) {
 		t.Fatalf("commit check runs = %#v, want %#v", checks, want)
@@ -376,9 +376,9 @@ exit 30
 		t.Fatalf("commit check runs reason=%q pending=%t", reason, pending)
 	}
 	want := []RemoteCheck{
-		{Name: "check-run:CI", Bucket: "fail", Conclusion: "failure", AppID: 15368, CheckRunID: 202},
-		{Name: "check-run:CI", Bucket: "pass", Conclusion: "success", AppID: 15368, CheckRunID: 203},
-		{Name: "workflow-run:300:pull_request", Bucket: "pending", Link: "https://github.com/acme/app/actions/runs/15"},
+		{Name: "check-run:CI", Bucket: "fail", Conclusion: "failure", AppID: 15368, CheckRunID: 202, WorkflowID: 100, WorkflowEvent: "pull_request", WorkflowRunConclusion: "failure"},
+		{Name: "check-run:CI", Bucket: "pass", Conclusion: "success", AppID: 15368, CheckRunID: 203, WorkflowID: 200, WorkflowEvent: "pull_request", WorkflowRunConclusion: "success"},
+		{Name: "workflow-run:300:pull_request", Bucket: "pending", Link: "https://github.com/acme/app/actions/runs/15", WorkflowID: 300, WorkflowEvent: "pull_request"},
 	}
 	if !reflect.DeepEqual(checks, want) {
 		t.Fatalf("commit check runs = %#v, want %#v", checks, want)
@@ -444,7 +444,7 @@ exit 30
 	})
 	want := []RemoteCheck{
 		{Name: "check-run:Third party", Bucket: "pass", Conclusion: "success", AppID: 7, CheckRunID: 51},
-		{Name: "workflow-run:300:pull_request", Bucket: "pending", Link: "https://github.com/acme/app/actions/runs/15"},
+		{Name: "workflow-run:300:pull_request", Bucket: "pending", Link: "https://github.com/acme/app/actions/runs/15", WorkflowID: 300, WorkflowEvent: "pull_request"},
 	}
 	if reason != "" || !pending || !reflect.DeepEqual(checks, want) {
 		t.Fatalf("jobless Actions run checks=%#v pending=%t reason=%q, want %#v", checks, pending, reason, want)
