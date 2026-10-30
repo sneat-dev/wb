@@ -31,7 +31,7 @@ func cleanTestPorts(repositories ...string) (cleanPorts, *[]GCOptions, *[]Branch
 			mu.Lock()
 			gcCalls = append(gcCalls, options)
 			mu.Unlock()
-			return GCOutcome{Entries: []GCEntry{{Task: "t", Repository: "acme/app", WorktreeDir: "/w/t"}}, Totals: map[string]int{"refused": 1, "eligible": 2, "retired": 3}}, nil
+			return GCOutcome{Entries: []GCEntry{{Task: "t", Repository: "acme/app", WorktreeDir: "/w/t"}}, Inventoried: []string{"/w/t", "/w/hidden-by-only"}, Totals: map[string]int{"refused": 1, "eligible": 2, "retired": 3}}, nil
 		},
 		branches: func(_ context.Context, options BranchCleanupOptions) (BranchCleanupOutcome, error) {
 			mu.Lock()
@@ -46,12 +46,19 @@ func cleanTestPorts(repositories ...string) (cleanPorts, *[]GCOptions, *[]Branch
 			}, Diagnostics: []string{"note"}, ReportPath: "report-" + options.Repository}, nil
 		},
 		orphans: func(_ context.Context, options OrphanOptions) (OrphanReport, error) {
-			if !options.Select("acme/app") || !options.Skip("/w/t") || options.Skip("/elsewhere") {
+			if !options.Select("acme/app") || !options.Skip("/w/t") || !options.Skip("/w/hidden-by-only") || options.Skip("/elsewhere") {
 				panic("orphan selection predicates lost")
 			}
-			return OrphanReport{Families: []OrphanFamily{{Worktrees: []OrphanWorktree{
-				{Path: "/elsewhere", Layout: LayoutExternal}, {Path: "/w/current", Layout: LayoutCurrent}, {Path: "/w/shared", Layout: LayoutShared}, {Path: "/w/legacy", Layout: LayoutLegacy}, {Path: "/w/local", Layout: LayoutLocal},
-			}}}, Unscanned: []string{"unreadable"}}, nil
+			var rows []OrphanWorktree
+			for _, row := range []OrphanWorktree{
+				{Path: "/elsewhere", Layout: LayoutExternal}, {Path: "/w/legacy-unseen", Layout: LayoutLegacy},
+				{Path: "/w/current", Layout: LayoutCurrent}, {Path: "/w/shared", Layout: LayoutShared}, {Path: "/w/hidden-by-only", Layout: LayoutLegacy},
+			} {
+				if !options.Skip(row.Path) {
+					rows = append(rows, row)
+				}
+			}
+			return OrphanReport{Families: []OrphanFamily{{Worktrees: rows}}, Unscanned: []string{"unreadable"}}, nil
 		},
 	}
 	return ports, &gcCalls, &branchCalls
@@ -95,7 +102,9 @@ func TestCleanComposesWorktreesBranchesAndUnmanagedUnderOneSelection(t *testing.
 	if len(outcome.Branches) != 6 || outcome.Totals["retired"] != 5 || outcome.Totals["eligible"] != 2 || outcome.Totals["refused"] != 5 {
 		t.Fatalf("branches %d totals %v", len(outcome.Branches), outcome.Totals)
 	}
-	if len(outcome.Unmanaged) != 1 || outcome.Unmanaged[0].Path != "/elsewhere" || outcome.Totals["unmanaged"] != 1 || len(outcome.UnmanagedUnscanned) != 1 {
+	// A legacy-layout worktree the inventory never saw is still reported; one
+	// it saw but --only hid is not.
+	if len(outcome.Unmanaged) != 2 || outcome.Unmanaged[0].Path != "/elsewhere" || outcome.Unmanaged[1].Path != "/w/legacy-unseen" || outcome.Totals["unmanaged"] != 2 || len(outcome.UnmanagedUnscanned) != 1 {
 		t.Fatalf("unmanaged %+v", outcome.Unmanaged)
 	}
 	if len(outcome.BranchDiagnostics) != 2 || len(outcome.BranchReports) != 2 || outcome.Refused() != 5 {

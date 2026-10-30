@@ -446,8 +446,8 @@ func cleanUnmanaged(ctx context.Context, run func(context.Context, OrphanOptions
 	// Unmanaged rows are only swept beside the checkouts (never for --scope
 	// remote), so the inventory is always present here.
 	seen := map[string]bool{}
-	for _, entry := range outcome.Worktrees.Entries {
-		seen[filepath.Clean(entry.WorktreeDir)] = true
+	for _, dir := range outcome.Worktrees.Inventoried {
+		seen[filepath.Clean(dir)] = true
 	}
 	for _, diagnostic := range outcome.Worktrees.Diagnostics {
 		seen[filepath.Clean(diagnostic.Path)] = true
@@ -465,10 +465,9 @@ func cleanUnmanaged(ctx context.Context, run func(context.Context, OrphanOptions
 	}
 	for _, family := range report.Families {
 		for _, worktree := range family.Worktrees {
-			if worktree.Layout != LayoutExternal {
-				// Under one of WB's own stores (current, shared, legacy, or
-				// repository-local): the inventory owns it, even when this pass
-				// did not show it as a row.
+			if worktree.Layout == LayoutCurrent || worktree.Layout == LayoutShared {
+				// Under WB's own store: the inventory owns it, even when it
+				// reported it as a diagnostic rather than a row.
 				continue
 			}
 			outcome.Unmanaged = append(outcome.Unmanaged, worktree)

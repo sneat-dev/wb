@@ -173,6 +173,10 @@ type GCOutcome struct {
 	// one holds residue is correct for a merge and wrong for a cleanup.
 	PartialTasks []GCPartialTask `json:"partial_tasks,omitempty"`
 	Totals       map[string]int  `json:"totals"`
+	// Inventoried is every checkout the walk saw, before Select and Only
+	// narrowed the rows; `wb clean` uses it so a managed checkout an --only
+	// class hid is never reported as unmanaged.
+	Inventoried []string `json:"-"`
 }
 
 // GCPartialTask records a coordinated task that retired per repository.
@@ -257,6 +261,7 @@ func gcObserved(ctx context.Context, options GCOptions, observe func(string)) (G
 		applySupersessionReceipt(ctx, options.SupersededBy, &listed.Results[index])
 	}
 	for _, result := range listed.Results {
+		outcome.Inventoried = append(outcome.Inventoried, result.WorktreeDir)
 		if options.Select != nil && !options.Select(result) {
 			continue
 		}

@@ -546,7 +546,8 @@ func landingReverted(ctx context.Context, repositoryPath, landing, target string
 		return false, nil
 	}
 	paths := strings.Split(trimmed, "\x00")
-	namedQuery := []string{"log", "--format=%H", "--fixed-strings", "--grep=This reverts commit " + landing}
+	// GitHub's marker carries a slug whose case may differ from the local one.
+	namedQuery := []string{"log", "--format=%H", "--fixed-strings", "--regexp-ignore-case", "--grep=This reverts commit " + landing}
 	for _, marker := range markers {
 		namedQuery = append(namedQuery, "--grep="+marker)
 	}

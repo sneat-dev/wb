@@ -95,7 +95,7 @@ func TestE2EBranchCleanupExactHeadRecheckRefusesARevertOrAMovedRef(t *testing.T)
 			case "github-revert":
 				// GitHub's Revert button squash-merges a pull request whose body
 				// names the reverted one, with no Git revert message.
-				gitTest(t, fixture.canonical, "commit", "-q", "--allow-empty", "-m", "Revert \"landed work (#7)\" (#8)", "-m", "Reverts acme/app#7")
+				gitTest(t, fixture.canonical, "commit", "-q", "--allow-empty", "-m", "Revert \"landed work (#7)\" (#8)", "-m", "Reverts ACME/App#7")
 			case "restored":
 				// Every landed path back to its pre-landing state, without
 				// Git's revert message.
