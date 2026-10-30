@@ -154,7 +154,7 @@ The receipt must bind the exact source and fetched target heads, replacement
 PRs or commits, every source residual with a machine-readable classification,
 and a trusted approving actor. Missing or unclassified residuals, changed refs,
 or missing approval refuse without deleting anything. This option is named-task
-only and never participates in --all-merged fleet sweeps.
+only and never participates in a wb clean fleet sweep.
 
 Reserved .wb-stage-* and .wb-retired-stage-* entries are first-class cleanup
 backlog. Apply descriptor-safely archives an exact recognized empty stage
@@ -304,6 +304,9 @@ quarantines only the exact held inode and completes the usual terminal flow.
 					return resolveErr
 				}
 				if task == "" {
+					if apply && repository == "" {
+						return runtime.ExitError(shared.ExitUsage, fmt.Sprintf("%q is not a WB task or a checkout's branch; retiring a bare branch with --apply needs --repo <owner/name>, so one name never retires branches across the fleet", notFound.Task))
+					}
 					if len(tasks) != 1 {
 						return fmt.Errorf("%w; it is not a checkout's branch either. Retire a bare branch on its own: wb worktree retire %s", err, notFound.Task)
 					}

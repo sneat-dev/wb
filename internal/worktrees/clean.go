@@ -419,6 +419,7 @@ func cleanBranches(ctx context.Context, run func(context.Context, BranchCleanupO
 	for index, branchOutcome := range outcomes {
 		if errs[index] != nil {
 			outcome.BranchDiagnostics = append(outcome.BranchDiagnostics, fmt.Sprintf("%s: %v", repositories[index], errs[index]))
+			outcome.Totals["branch_sweep_failures"]++
 			continue
 		}
 		for _, result := range branchOutcome.Results {
@@ -464,9 +465,10 @@ func cleanUnmanaged(ctx context.Context, run func(context.Context, OrphanOptions
 	}
 	for _, family := range report.Families {
 		for _, worktree := range family.Worktrees {
-			if worktree.Layout == LayoutCurrent || worktree.Layout == LayoutShared {
-				// Under WB's own store: the inventory owns it, even when it
-				// reported it as a diagnostic rather than a row.
+			if worktree.Layout != LayoutExternal {
+				// Under one of WB's own stores (current, shared, legacy, or
+				// repository-local): the inventory owns it, even when this pass
+				// did not show it as a row.
 				continue
 			}
 			outcome.Unmanaged = append(outcome.Unmanaged, worktree)
@@ -490,12 +492,15 @@ func summarizeClean(outcome *CleanOutcome) {
 		switch {
 		case branch.Applied:
 			outcome.Totals["retired"]++
-		case branch.Eligible:
+		case branch.Eligible && !outcome.Apply:
 			outcome.Totals["eligible"]++
 		default:
 			outcome.Totals["refused"]++
 		}
 	}
+	// A repository whose branch sweep failed was not cleaned: it is kept, so
+	// the pass exits 1 rather than reading as done.
+	outcome.Totals["refused"] += outcome.Totals["branch_sweep_failures"]
 	outcome.Totals["unmanaged"] = len(outcome.Unmanaged)
 }
 

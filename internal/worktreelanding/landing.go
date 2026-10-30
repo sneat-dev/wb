@@ -120,9 +120,9 @@ func LandedWithResidue(landing *LandingEvidence) bool {
 
 // ResidueReason explains why a checkout whose work landed is still held, and
 // names the verb that retires it: `wb clean --task <task> --allow-residue
-// --apply`, the only verb with that flag (sneat-dev/wb#814: the finding used to
-// say "rerun with --allow-residue", which `wb worktree retire`, the verb that
-// printed it, rejects).
+// --apply` (sneat-dev/wb#814: the finding used to say "rerun with
+// --allow-residue" on a verb that rejected the flag; `wb worktree retire` now
+// accepts it too).
 func ResidueReason(landing *LandingEvidence, task string) string {
 	if landing == nil {
 		return ""

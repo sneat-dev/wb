@@ -156,7 +156,7 @@ func TestRetireRetiresABareBranchNoCheckoutHolds(t *testing.T) {
 		wantErr string
 	}{
 		"planned":              {[]string{"datatug-io-cutover", "--remote", "--repo=datatug/websites", "--json"}, []worktrees.BranchCleanupResult{{BranchEntry: worktrees.BranchEntry{Branch: "datatug-io-cutover"}, Eligible: true}}, worktrees.BranchScopeAll, `"eligible": true`, ""},
-		"retired":              {[]string{"datatug-io-cutover", "--apply"}, []worktrees.BranchCleanupResult{{BranchEntry: worktrees.BranchEntry{Repository: "datatug/websites", Scope: "local", Branch: "datatug-io-cutover", Evidence: "receipt"}, Applied: true}}, worktrees.BranchScopeLocal, "retired datatug/websites local datatug-io-cutover: receipt", ""},
+		"retired":              {[]string{"datatug-io-cutover", "--apply", "--repo=datatug/websites"}, []worktrees.BranchCleanupResult{{BranchEntry: worktrees.BranchEntry{Repository: "datatug/websites", Scope: "local", Branch: "datatug-io-cutover", Evidence: "receipt"}, Applied: true}}, worktrees.BranchScopeLocal, "retired datatug/websites local datatug-io-cutover: receipt", ""},
 		"kept":                 {[]string{"datatug-io-cutover"}, []worktrees.BranchCleanupResult{{BranchEntry: worktrees.BranchEntry{Branch: "datatug-io-cutover"}, SkipReason: "unique"}}, worktrees.BranchScopeLocal, "keep", "was kept"},
 		"absent":               {[]string{"datatug-io-cutover"}, nil, worktrees.BranchScopeLocal, "", "needs --remote"},
 		"absent on origin too": {[]string{"datatug-io-cutover", "--remote"}, nil, worktrees.BranchScopeAll, "", "selected repositories"},
@@ -195,6 +195,9 @@ func TestRetireRetiresABareBranchNoCheckoutHolds(t *testing.T) {
 		if err := retirementExecute(NewRetire(retirementRuntime(&root), deps), args, &cwWtFailWriter{}, io.Discard); !errors.Is(err, errCwWtWrite) {
 			t.Fatalf("%v: %v", args, err)
 		}
+	}
+	if err := retirementExecute(NewRetire(retirementRuntime(&root), deps), []string{"datatug-io-cutover", "--apply"}, io.Discard, io.Discard); err == nil || !strings.Contains(err.Error(), "coded 2: ") || !strings.Contains(err.Error(), "needs --repo") {
+		t.Fatalf("a fleet-wide bare-branch apply must be refused: %v", err)
 	}
 	if err := retirementExecute(NewRetire(retirementRuntime(&root), deps), []string{"datatug-io-cutover", "other-task"}, io.Discard, io.Discard); err == nil || !strings.Contains(err.Error(), "Retire a bare branch on its own") {
 		t.Fatalf("a bare branch among several names must be named alone: %v", err)

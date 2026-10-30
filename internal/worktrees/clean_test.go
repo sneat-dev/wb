@@ -50,7 +50,7 @@ func cleanTestPorts(repositories ...string) (cleanPorts, *[]GCOptions, *[]Branch
 				panic("orphan selection predicates lost")
 			}
 			return OrphanReport{Families: []OrphanFamily{{Worktrees: []OrphanWorktree{
-				{Path: "/elsewhere", Layout: LayoutExternal}, {Path: "/w/current", Layout: LayoutCurrent}, {Path: "/w/shared", Layout: LayoutShared},
+				{Path: "/elsewhere", Layout: LayoutExternal}, {Path: "/w/current", Layout: LayoutCurrent}, {Path: "/w/shared", Layout: LayoutShared}, {Path: "/w/legacy", Layout: LayoutLegacy}, {Path: "/w/local", Layout: LayoutLocal},
 			}}}, Unscanned: []string{"unreadable"}}, nil
 		},
 	}
@@ -91,13 +91,14 @@ func TestCleanComposesWorktreesBranchesAndUnmanagedUnderOneSelection(t *testing.
 			t.Fatalf("branch options %+v", call)
 		}
 	}
-	if len(outcome.Branches) != 6 || outcome.Totals["retired"] != 5 || outcome.Totals["eligible"] != 4 || outcome.Totals["refused"] != 3 {
+	// Under --apply an eligible branch that did not retire failed: it is kept.
+	if len(outcome.Branches) != 6 || outcome.Totals["retired"] != 5 || outcome.Totals["eligible"] != 2 || outcome.Totals["refused"] != 5 {
 		t.Fatalf("branches %d totals %v", len(outcome.Branches), outcome.Totals)
 	}
 	if len(outcome.Unmanaged) != 1 || outcome.Unmanaged[0].Path != "/elsewhere" || outcome.Totals["unmanaged"] != 1 || len(outcome.UnmanagedUnscanned) != 1 {
 		t.Fatalf("unmanaged %+v", outcome.Unmanaged)
 	}
-	if len(outcome.BranchDiagnostics) != 2 || len(outcome.BranchReports) != 2 || outcome.Refused() != 3 {
+	if len(outcome.BranchDiagnostics) != 2 || len(outcome.BranchReports) != 2 || outcome.Refused() != 5 {
 		t.Fatalf("diagnostics %v reports %v", outcome.BranchDiagnostics, outcome.BranchReports)
 	}
 }
@@ -197,7 +198,7 @@ func TestCleanReportsEngineFailures(t *testing.T) {
 		return BranchCleanupOutcome{}, boom
 	}
 	outcome, err := cleanWithPorts(context.Background(), CleanOptions{Scope: CleanScopeRemote}, ports)
-	if err != nil || len(outcome.BranchDiagnostics) != 1 || !strings.Contains(outcome.BranchDiagnostics[0], "acme/app: boom") {
+	if err != nil || len(outcome.BranchDiagnostics) != 1 || !strings.Contains(outcome.BranchDiagnostics[0], "acme/app: boom") || outcome.Refused() != 1 {
 		t.Fatalf("a failing repository must be a diagnostic, not abort the sweep: %v %v", err, outcome.BranchDiagnostics)
 	}
 	ports, _, _ = cleanTestPorts("acme/app")

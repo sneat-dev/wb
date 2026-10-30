@@ -3,6 +3,7 @@ package worktreebranches
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/sneat-dev/wb/internal/worktreelanding"
@@ -117,6 +118,13 @@ func (service InventoryService) ClassifyAttestedReceipt(ctx context.Context, rep
 	return service.Ports.AttestedReceipt(ctx, repository, ref, base, targetSHA, absorbedBy)
 }
 
+// GitHubRevertMarker is the line GitHub's "Revert" button writes into the
+// body of the pull request that reverts pull request number of repository, and
+// so into its squash commit. A prefix match on a longer number fails closed.
+func GitHubRevertMarker(repository string, number int) string {
+	return "Reverts " + repository + "#" + strconv.Itoa(number)
+}
+
 // ExactHeadReceiptNote is the note ClassifyLandingReceipt returns beside a
 // receipt that holds only because the merged pull request's head is the
 // branch's exact tip.
@@ -165,7 +173,7 @@ func (service InventoryService) ClassifyLandingReceipt(ctx context.Context, repo
 		// target contains, so later edits on the target are the target's own
 		// history, not work this branch alone still holds. A revert of the
 		// landing is the one exception, and it stays blocked.
-		reverted, err := service.Ports.LandingReverted(ctx, repository.Path, pullRequest.MergeSHA, targetSHA)
+		reverted, err := service.Ports.LandingReverted(ctx, repository.Path, pullRequest.MergeSHA, targetSHA, GitHubRevertMarker(repository.Slug, pullRequest.Number))
 		if err != nil {
 			return nil, fmt.Sprintf("revert check of landing commit %s failed: %v", ShortSHA(pullRequest.MergeSHA), err)
 		}

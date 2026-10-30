@@ -54,9 +54,10 @@ type InventoryPorts struct {
 	IsAncestor       func(context.Context, string, string, string) (bool, error)
 	ContentContained func(context.Context, string, string, string) (bool, error)
 	// LandingReverted reports whether the target reverted a landing commit:
-	// a commit after it says so, or every path it changed is back to its
-	// pre-landing content.
-	LandingReverted     func(ctx context.Context, repositoryPath, landing, target string) (bool, error)
+	// a commit after it carries Git's revert message or one of markers
+	// (GitHub's "Reverts owner/repo#N"), or every path it changed is back to
+	// its pre-landing content.
+	LandingReverted     func(ctx context.Context, repositoryPath, landing, target string, markers ...string) (bool, error)
 	CommitTree          func(context.Context, string, string) (string, error)
 	Supersession        func(context.Context, string, Repository, BranchRef, string, string) (*SupersessionEvidence, string)
 	SupersessionDigest  func(string) (string, error)

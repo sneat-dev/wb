@@ -659,9 +659,11 @@ func summarizeGC(outcome *GCOutcome) {
 		switch {
 		case entry.Applied:
 			outcome.Totals["retired"]++
-		case entry.Eligible:
+		case entry.Eligible && !outcome.Apply:
 			outcome.Totals["eligible"]++
 		default:
+			// Under --apply an eligible row that did not retire failed, and a
+			// failure is something kept, not something still to do.
 			outcome.Totals["refused"]++
 		}
 	}

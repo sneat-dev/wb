@@ -127,7 +127,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `repo status` | rejected | rejected | rejected | yes |
 | `repo transfer cleanup` | yes | rejected | rejected | yes |
 | `worktree active`, `list`, `retire`, `relocate`, `rename`, `summary` | yes | yes | rejected | yes |
-| `clean` (root; leaf selectors `--repo`, `--branch`, repeatable `--task`, `--scope`, `--only`) | yes | yes (substring or glob, e.g. `'datatug/*'`) | yes; repeatable exact owner selector | yes |
+| `clean` (root; leaf selectors `--repo`, `--branch`, repeatable `--task`, `--scope`, `--only`) | yes | yes (substring or glob, e.g. `'datatug/*'`) | yes; repeatable, and here it narrows to exact owners of local clones rather than adding owners to query | yes |
 | `worktree join`, `leave`, `take-ownership`, `transfer-ownership`, `rebind`, `message send`, `message inbox`, `message ack` | yes | rejected | rejected | yes |
 | `pr create` | yes | rejected | rejected | yes |
 | `pr update` | yes | rejected | rejected | yes |

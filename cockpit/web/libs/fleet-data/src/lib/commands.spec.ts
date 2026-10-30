@@ -98,7 +98,6 @@ for (const capability of manifest.capabilities) {
 const REQUIRED_FLAGS: Record<string, string[]> = {
   'wb worktree create': ['--model', '--original-prompt-file'],
   'wb pr create': ['--commit-all', '--message'],
-  'wb clean': ['--repo', '--branch'],
   'wb agent dispatch': ['--repo', '--task', '--profile', '--new-worktree'],
   'wb remote enroll': ['--url', '--token-stdin'],
 }

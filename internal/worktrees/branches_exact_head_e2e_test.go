@@ -70,7 +70,7 @@ func TestE2EBranchCleanupOnlyNarrowsThePlan(t *testing.T) {
 
 //nolint:paralleltest // the git fixture pins HOME and WB_PROJECTS_ROOT with t.Setenv.
 func TestE2EBranchCleanupExactHeadRecheckRefusesARevertOrAMovedRef(t *testing.T) {
-	for _, change := range []string{"revert", "moved", "restored"} {
+	for _, change := range []string{"revert", "github-revert", "moved", "restored"} {
 		//nolint:paralleltest // each subcase builds its own process-wide Git/WB fixture environment.
 		t.Run(change, func(t *testing.T) {
 			fixture, head, landingSHA := divergedExactHeadFixture(t)
@@ -92,6 +92,10 @@ func TestE2EBranchCleanupExactHeadRecheckRefusesARevertOrAMovedRef(t *testing.T)
 				// The later edit makes a mechanical revert conflict, so the
 				// operator resolved it by hand; Git's message still names it.
 				gitTest(t, fixture.canonical, "commit", "-q", "--allow-empty", "-m", "Revert landed work", "-m", "This reverts commit "+landingSHA+".")
+			case "github-revert":
+				// GitHub's Revert button squash-merges a pull request whose body
+				// names the reverted one, with no Git revert message.
+				gitTest(t, fixture.canonical, "commit", "-q", "--allow-empty", "-m", "Revert \"landed work (#7)\" (#8)", "-m", "Reverts acme/app#7")
 			case "restored":
 				// Every landed path back to its pre-landing state, without
 				// Git's revert message.

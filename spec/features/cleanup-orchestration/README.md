@@ -247,7 +247,8 @@ landing receipts always on, retired by its compare-and-delete), and linked
 worktrees WB does not manage (reported as `unmanaged`, never removed). A branch a
 checkout holds and a protected branch MUST NOT be repeated as branch rows. The
 exit code MUST be `1` when anything was kept, `0` otherwise, and `2` on a usage
-error.
+error. Under `--apply`, an eligible item that failed to retire, and a repository
+whose branch sweep failed, MUST count as kept.
 
 #### REQ: clean-selectors-narrow-plan-and-apply
 
@@ -282,7 +283,10 @@ target, whose landing commit is contained in the fetched target and carries the
 branch's work in full, MUST be `receipted` and retirable even when the target
 has since changed the same files, unless the target reverted the landing: a
 later commit names it in Git's revert message, or every path the landing changed
-is back to its pre-landing content. The apply-time recheck MUST re-prove the
+is back to its pre-landing content, or a later commit carries GitHub's
+`Reverts <owner/repo>#<n>` line for that pull request. A revert later edited
+again is indistinguishable from an edit; the landing commit keeps its content.
+The apply-time recheck MUST re-prove the
 exact head, the content, and the absence of a revert against a fresh fetch.
 Absorbed by patch-id or tree alone MUST NOT qualify, a branch that is the head of
 an open pull request MUST NOT be retired, and nothing unpushed is ever retired.
@@ -300,7 +304,8 @@ that classifier did not see, as `unmanaged`.
 whose checkout has `<name>` as its branch and say so on stderr; refuse with
 every candidate task named when more than one does; and, when no checkout holds
 it, retire it as a bare branch ref on `wb clean`'s branch evidence (`--repo`
-narrows it, `--remote` includes origin).
+narrows it, `--remote` includes origin). Retiring a bare branch with `--apply`
+MUST require `--repo`, so one name never retires branches across the fleet.
 
 #### REQ: apply-is-parallel-per-repository-and-task
 

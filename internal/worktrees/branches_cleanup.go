@@ -164,17 +164,19 @@ func branchCleanupWithPorts(ctx context.Context, options BranchCleanupOptions, p
 		return BranchCleanupOutcome{}, err
 	}
 	sortBranchEntries(entries)
-	if normalized.Only != "" {
-		selected := entries[:0]
-		for _, entry := range entries {
-			if CleanClassSelected(normalized.Only, entry.Disposition) {
-				selected = append(selected, entry)
-			}
-		}
-		entries = selected
-	}
 
 	results := worktreebranches.PlanBranchCleanup(entries, sweep.branchPolicyOptions())
+	if normalized.Only != "" {
+		// Narrow after planning, so run-wide guards (no remote deletion at all
+		// when pull-request evidence is unavailable) still see every candidate.
+		selected := results[:0]
+		for _, result := range results {
+			if CleanClassSelected(normalized.Only, result.Disposition) {
+				selected = append(selected, result)
+			}
+		}
+		results = selected
+	}
 
 	if !normalized.Apply {
 		return BranchCleanupOutcome{
@@ -508,7 +510,8 @@ func recheckExactHeadReceipt(ctx context.Context, repositoryPath, currentSHA, fr
 		result.Error = withCause(fmt.Sprintf("landing commit %s no longer carries this branch's work in full", shortSHA(result.LandingSHA)), err)
 		return false
 	}
-	reverted, err := landingReverted(ctx, repositoryPath, result.LandingSHA, freshTarget)
+	reverted, err := landingReverted(ctx, repositoryPath, result.LandingSHA, freshTarget,
+		worktreebranches.GitHubRevertMarker(result.Repository, result.ReceiptPullRequest.Number))
 	if err != nil || reverted {
 		result.Outcome = "failed"
 		result.Error = withCause(fmt.Sprintf("landing commit %s was reverted on the freshly fetched target, or the revert check could not run; refusing", shortSHA(result.LandingSHA)), err)
@@ -526,11 +529,14 @@ func withCause(message string, err error) string {
 }
 
 // landingReverted reports whether target reverted landing: a later commit
-// names it in Git's own revert message, or every path landing changed is back
-// to its pre-landing content. A partial revert is indistinguishable from a
+// names it in Git's own revert message or carries one of markers (GitHub's
+// "Reverts owner/repo#N"), or every path landing changed is back to its
+// pre-landing content. A revert later edited again is indistinguishable from
+// an ordinary edit; the landing commit, which target contains, keeps its
+// content either way. A partial revert is indistinguishable from a
 // later edit and is not called a revert; the landing commit, which target
 // contains, still holds that content.
-func landingReverted(ctx context.Context, repositoryPath, landing, target string) (bool, error) {
+func landingReverted(ctx context.Context, repositoryPath, landing, target string, markers ...string) (bool, error) {
 	changed, err := git(ctx, repositoryPath, "diff", "--no-renames", "--name-only", "-z", landing+"^", landing)
 	if err != nil {
 		return false, err
@@ -540,8 +546,12 @@ func landingReverted(ctx context.Context, repositoryPath, landing, target string
 		return false, nil
 	}
 	paths := strings.Split(trimmed, "\x00")
+	namedQuery := []string{"log", "--format=%H", "--fixed-strings", "--grep=This reverts commit " + landing}
+	for _, marker := range markers {
+		namedQuery = append(namedQuery, "--grep="+marker)
+	}
 	queries := [][]string{
-		{"log", "--format=%H", "--fixed-strings", "--grep=This reverts commit " + landing, landing + ".." + target},
+		append(namedQuery, landing+".."+target),
 		append([]string{"diff", "--no-renames", "--name-only", landing + "^", target, "--"}, paths...),
 	}
 	answers := make([]string, 0, len(queries))

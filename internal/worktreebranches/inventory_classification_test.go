@@ -47,7 +47,12 @@ func TestInventoryClassificationReceiptsAndSupersession(t *testing.T) {
 			}
 			return ancestor, ancestorErr
 		},
-		LandingReverted: func(context.Context, string, string, string) (bool, error) { return reverted, revertErr },
+		LandingReverted: func(_ context.Context, _ string, _ string, _ string, markers ...string) (bool, error) {
+			if len(markers) != 1 || markers[0] != "Reverts org/repo#7" {
+				t.Errorf("revert markers = %q", markers)
+			}
+			return reverted, revertErr
+		},
 		ContentContained: func(_ context.Context, _ string, _, destination string) (bool, error) {
 			if destination == target {
 				return contentTarget, contentTargetErr
