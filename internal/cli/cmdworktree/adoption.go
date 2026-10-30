@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
 	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
-	"time"
 )
 
 // NewBackfill constructs the worktree backfill command.
@@ -71,10 +71,10 @@ func NewAdopt(runtime shared.Runtime, operation func(context.Context, worktrees.
 	command := &cobra.Command{
 		Use:   "adopt [path]",
 		Short: "Bring an external (pre-WB) worktree under WB management",
-		Long: `Give wb worktree cleanup and abort a task to act on for a worktree they
+		Long: `Give wb worktree retire and abort a task to act on for a worktree they
 currently refuse with "task ... was not found".
 
-wb worktree orphans already discovers and classifies every worktree with
+wb clean already discovers and classifies every worktree with
 layout "external" — a linked worktree Git knows about that was never created
 by wb. wb worktree backfill already gives one a manifest, but that is only
 the identity half of adoption: no task directory or Work Log claim exists for
@@ -89,7 +89,7 @@ already belongs to a WB task — adopted before, or created directly by
 wb worktree create — is a no-op, so re-running a sweep after an interruption
 is safe.
 
-After adoption, wb worktree cleanup <task> and wb worktree abort <task> apply
+After adoption, wb worktree retire <task> and wb worktree abort <task> apply
 their full existing safety checks unchanged: dirty, unlanded, an open pull
 request, a held lock, and awaiting_push are all still refused exactly as they
 are for a worktree wb created directly.
@@ -133,56 +133,8 @@ adoption is a mutation: --mode agent requires a live registered session, while
 		},
 	}
 	command.Flags().StringVar(&base, "base", "main", "remote target used while reconstructing a base ref")
-	command.Flags().BoolVar(&allExternal, "all-external", false, "adopt every worktree wb worktree orphans classifies as external")
+	command.Flags().BoolVar(&allExternal, "all-external", false, "adopt every external worktree (the unmanaged rows of wb clean)")
 	command.Flags().BoolVar(&apply, "apply", false, "write the task directory, manifest, and Work Log claim")
-	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
-	return command
-}
-
-// NewOrphans constructs the worktree orphans command.
-func NewOrphans(runtime shared.Runtime, operation func(context.Context, worktrees.OrphanOptions) (worktrees.OrphanReport, error)) *cobra.Command {
-	var base, format, only string
-	var staleDays int
-	command := &cobra.Command{
-		Use:   "orphans",
-		Short: "Explain every linked worktree and recommend what to do with it",
-		Long: `Read-only triage of every linked worktree reachable from the projects root.
-
-Discovery goes through each canonical clone's own Git worktree registry, so it
-sees all three layout generations at once: WB's current home, the legacy
-<projects-root>/.wb hierarchy, and pre-WB checkouts living anywhere else.
-
-Identity comes from a worktree's own manifest where one exists. Where none
-does, WB reconstructs what it can from path, branch, and commit evidence and
-labels the row as reconstructed rather than presenting it as a creation record.
-
-Rows group by root effort so a family of sub-agent worktrees is one subject. A
-family is recommended for removal only when every worktree in it has landed.
-This command never mutates anything.`,
-		Args: cobra.NoArgs,
-		RunE: func(command *cobra.Command, args []string) error {
-			if err := shared.RequireOutputFormat(format, "text", "json"); err != nil {
-				return err
-			}
-			report, err := operation(command.Context(), worktrees.OrphanOptions{
-				ProjectsRoot: runtime.Flags().ProjectsRoot,
-				Base:         base,
-				StaleAfter:   time.Duration(staleDays) * 24 * time.Hour,
-			})
-			if err != nil {
-				return err
-			}
-			if format == "json" {
-				encoder := json.NewEncoder(command.OutOrStdout())
-				encoder.SetIndent("", "  ")
-				return encoder.Encode(report)
-			}
-			return writeOrphans(command.OutOrStdout(), report, only)
-		},
-	}
-	command.Flags().StringVar(&base, "base", "main", "remote target a branch must be contained in to count as landed")
-	command.Flags().IntVar(&staleDays, "stale-days", 14, "days without a commit before unmerged work needs a decision")
-	command.Flags().StringVar(&only, "only", "", "show only families with this disposition: active, remove, review, or decide")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	return command
 }

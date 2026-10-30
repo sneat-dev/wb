@@ -4,12 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/sneat-dev/wb/internal/cli/shared"
-	"github.com/sneat-dev/wb/internal/worktreecollab"
-	"github.com/spf13/cobra"
 	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/sneat-dev/wb/internal/cli/shared"
+	"github.com/sneat-dev/wb/internal/worktreecollab"
+	"github.com/spf13/cobra"
 )
 
 // CollaborationOperations is the custody and messaging authority used by commands.

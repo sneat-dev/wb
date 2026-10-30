@@ -2,9 +2,10 @@ package main
 
 import (
 	"errors"
-	"github.com/spf13/cobra"
 	"io"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 func TestQualityFactoriesBindProductionOperationsAndChildren(t *testing.T) {

@@ -1,10 +1,11 @@
 package main
 
 import (
-	"github.com/sneat-dev/wb/internal/wbhome"
-	"github.com/spf13/cobra"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/spf13/cobra"
 )
 
 //nolint:paralleltest // The native default inventory reads process-wide HOME and WB_HOME, isolated with t.Setenv.

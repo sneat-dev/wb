@@ -4,13 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
+	"strings"
+	"testing"
+
 	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/worktreecollab"
 	"github.com/sneat-dev/wb/internal/worktreerun"
-	"io"
-	"strings"
-	"testing"
 )
 
 func TestInfoAdapterPreservesRedactionArgumentsAndErrors(t *testing.T) {

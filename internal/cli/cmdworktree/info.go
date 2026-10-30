@@ -4,14 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"strings"
+
 	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/worktreecollab"
 	"github.com/sneat-dev/wb/internal/worktreerun"
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
-	"io"
-	"strings"
 )
 
 // NewInfo constructs the redacted inspection command.

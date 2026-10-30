@@ -4,11 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
+	"testing"
+
 	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/sneat-dev/wb/internal/worktreecollab"
 	"github.com/sneat-dev/wb/internal/worktreerun"
-	"strings"
-	"testing"
 )
 
 // These are the original format and writer clauses of TestCollaborationInfoBoundaries.

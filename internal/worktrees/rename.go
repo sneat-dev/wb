@@ -416,7 +416,7 @@ type RenameOptions struct {
 	PreserveCachePaths []string
 	WorkLog            WorkLogOptions
 	// Apply performs the rename. The default is a dry-run plan, exactly like
-	// `wb worktree cleanup`.
+	// `wb worktree retire`.
 	Apply     bool
 	ReportDir string
 	Now       func() time.Time
@@ -576,7 +576,7 @@ func renameEligibility(entry ListResult) (bool, string) {
 	case entry.External:
 		// Rename relocates the worktree onto a new task/owner/repository path.
 		// An adopted worktree's entire point is staying exactly where it is;
-		// recycle it with `wb worktree cleanup`/`abort` instead.
+		// recycle it with `wb worktree retire`/`abort` instead.
 		return false, "adopted worktree cannot be renamed; it is not relocated under a WB worktrees root"
 	case !entry.Clean:
 		return false, "worktree has local changes"

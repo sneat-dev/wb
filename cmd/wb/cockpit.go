@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"net/http"
+
 	"github.com/sneat-dev/wb/internal/cli/cmdcockpit"
 	"github.com/sneat-dev/wb/internal/cockpit"
 	"github.com/sneat-dev/wb/internal/cockpitrun"
@@ -9,7 +11,6 @@ import (
 	"github.com/sneat-dev/wb/internal/daemonruntime"
 	"github.com/sneat-dev/wb/internal/wbconfig"
 	"github.com/spf13/cobra"
-	"net/http"
 )
 
 func newCockpitCmd(inv *invocation) *cobra.Command {

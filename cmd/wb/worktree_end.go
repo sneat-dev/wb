@@ -1,11 +1,12 @@
 package main
 
 import (
+	"io"
+
 	"github.com/sneat-dev/wb/internal/cli/cmdworktree"
 	"github.com/sneat-dev/wb/internal/worktreeend"
 	"github.com/sneat-dev/wb/internal/worktreerun"
 	"github.com/spf13/cobra"
-	"io"
 )
 
 func newWorktreeEndCmd(inv *invocation) *cobra.Command {

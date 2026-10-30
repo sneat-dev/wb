@@ -480,7 +480,7 @@ func TestOrchCovLandPreflightRefusalNamesEachBlockedState(t *testing.T) {
 			if refusal.command == "" || refusal.reason == "" {
 				t.Fatalf("refusal must name a sanctioned command and a reason: %+v", refusal)
 			}
-			if !strings.Contains(refusal.command, "acme/app") && !strings.Contains(refusal.command, "wb worktree gc") {
+			if !strings.Contains(refusal.command, "acme/app") && !strings.Contains(refusal.command, "wb clean") {
 				t.Fatalf("sanctioned command does not address the repository: %q", refusal.command)
 			}
 		})

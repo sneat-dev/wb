@@ -2,8 +2,9 @@ package main
 
 import (
 	"errors"
-	"github.com/sneat-dev/wb/internal/testenv"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 func snapshotTrees(t *testing.T, roots ...string) map[string][]byte {

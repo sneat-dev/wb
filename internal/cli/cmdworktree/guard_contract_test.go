@@ -5,12 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/sneat-dev/wb/internal/cli/shared"
-	"github.com/sneat-dev/wb/internal/worktrees"
 	"io"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/cli/shared"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 func TestGuardAdapterPreservesLazyNativeOptionsAndDefaultPath(t *testing.T) {

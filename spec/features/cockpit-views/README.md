@@ -694,12 +694,12 @@ template exists in the command manifest (`ai/capabilities.json`) with the flags 
 unit test parses every template against that manifest:
 
 - worktree and task: `wb worktree list '<task>'`; `wb pr create '<task>' --commit-all
-  --message='<message>'`; `wb worktree cleanup '<task>'`, the dry-run plan, never with `--apply`;
+  --message='<message>'`; `wb worktree retire '<task>'`, the dry-run plan, never with `--apply`;
 - pull request: `wb pr land '<owner/repository>#<number>'`;
 - repository: `wb worktree create '<task>' '<owner/repository>' --model='<model>'
   --original-prompt-file='<file>'` (that verb requires both flags); `wb branch list
   --repo='<owner/repository>'`; `wb fleet status --filter='<owner/repository>'`;
-- branch: `wb branch list --repo='<owner/repository>' --branch='<branch>'`; `wb branch cleanup
+- branch: `wb branch list --repo='<owner/repository>' --branch='<branch>'`; `wb clean
   --repo='<owner/repository>' --branch='<branch>'`, a dry-run plan that never carries `--apply`;
 - a dispatched run: `wb agent status '<agent-id>'`, `wb agent logs '<agent-id>'` and `wb agent
   stop '<agent-id>'`; a recorded successor session: `wb session send '<wb-session-id>'
@@ -3192,7 +3192,7 @@ Then merged repositories, tasks with state, the "Needs you" items, the ready-to-
   is undecided; today only dispatched runs offer Stop and Log.
 - Follow-ups required in `cockpit-actions`, to be specified there and not here:
   running "New task" from the Cockpit, Stop, Log and Reply on a run, and the cleanup
-  flow (`wb worktree gc` as the dry-run preview and `--apply` as the run, as a daemon
+  flow (`wb clean` as the dry-run preview and `--apply` as the run, as a daemon
   operation with progress).
 - The local `owner_state` of REQ:owner-state-vocabulary is the owner-process liveness, which the
   current local mapper does not read (it reads only the heartbeat). The contract task caches it per

@@ -4,13 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
+	"strings"
+	"testing"
+
 	"github.com/sneat-dev/wb/internal/checkoutsetup"
 	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
-	"io"
-	"strings"
-	"testing"
 )
 
 func TestMarkerCommandPreservesLazyInputAndOutputErrorCustody(t *testing.T) {

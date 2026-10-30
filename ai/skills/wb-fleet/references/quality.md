@@ -22,7 +22,7 @@ wb disk                    # full accounting, exits 1 on findings
 wb disk --skip-sizes       # headroom and roots only, no tree walk
 ```
 
-It reports; it never deletes. Retiring a worktree is `wb worktree gc`, which
+It reports; it never deletes. Retiring a worktree is `wb clean`, which
 knows what still holds unlanded work.
 
 `wb deadcode` answers a question the other three cannot: does every mechanism

@@ -2,6 +2,7 @@ package worktrees
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -263,5 +264,12 @@ func TestBranchCleanupInUseOutranksAReceipt(t *testing.T) {
 	result := resultFor(t, outcome, "feature/landed")
 	if result.Disposition != BranchInUse || result.Eligible || result.Applied {
 		t.Fatalf("in-use branch was not protected from receipts: %#v", result)
+	}
+}
+
+func TestWithCauseNamesTheErrorOnlyWhenThereIsOne(t *testing.T) {
+	t.Parallel()
+	if withCause("refused", nil) != "refused" || withCause("refused", errors.New("git failed")) != "refused: git failed" {
+		t.Fatal("cause formatting")
 	}
 }

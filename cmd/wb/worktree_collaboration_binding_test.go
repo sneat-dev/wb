@@ -1,10 +1,11 @@
 package main
 
 import (
-	"github.com/sneat-dev/wb/internal/session"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/session"
 )
 
 func TestWorktreeCollaborationRootBindingUsesLazyNativeFactoryAndRegistry(t *testing.T) {

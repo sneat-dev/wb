@@ -1,13 +1,14 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
+	"time"
+
 	"github.com/sneat-dev/wb/internal/cli/cmdquality"
 	"github.com/sneat-dev/wb/internal/quality"
 	"github.com/sneat-dev/wb/internal/qualityrun"
 	"github.com/spf13/cobra"
-	"os"
-	"path/filepath"
-	"time"
 )
 
 // qualityOptions temporarily preserves the selectors used by remaining root families.

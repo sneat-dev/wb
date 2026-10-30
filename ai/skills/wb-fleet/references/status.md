@@ -46,4 +46,4 @@ wb status <repository-path> --details --format yaml
 
 Do not infer remote freshness from status; use `wb sync --dry-run` when GitHub
 reconciliation is the actual question. For linked-worktree debt beyond managed
-WB tasks, use `wb worktree orphans`.
+WB tasks, use `wb clean`.

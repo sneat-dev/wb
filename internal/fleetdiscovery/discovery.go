@@ -4,10 +4,10 @@ package fleetdiscovery
 import (
 	"fmt"
 	"io"
-	"strings"
 	"sync"
 
 	"github.com/sneat-dev/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/repofilter"
 )
 
 // fleetOwners returns the authenticated user's login plus every org they
@@ -85,7 +85,7 @@ func (resolver Resolver) Discover(projectsRoot, filter string, resolveOwners fun
 	all := resolver.Reconcile(local, remote)
 	var out []discover.Repo
 	for _, r := range all {
-		if filter != "" && !strings.Contains(r.Slug(), filter) {
+		if filter != "" && !repofilter.Match(filter, r.Slug()) {
 			continue
 		}
 		out = append(out, r)

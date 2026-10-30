@@ -11,15 +11,17 @@ status: In Review
 
 ## Summary
 
-`wb cleanup` is one top-level entry point that retires a repository's
-worktrees, local branch refs, and remote branch refs as a single ordered
-lifecycle. It owns no eligibility rules of its own: it delegates to the scoped
-expert commands — [`wb worktree cleanup`](../worktree-lifecycle/README.md) and
-[`wb branch cleanup`](../branch-hygiene/README.md) — which remain available and
-unchanged. Its contribution is **sequencing and scale**: strictly serial inside
-one repository, because a checked-out branch cannot be deleted and a remote ref
-must not be deleted before dependent pull requests are retargeted; and bounded
-concurrency across repositories, because a serial fleet sweep is unusable.
+`wb clean` is the one top-level fleet verb that audits, and with `--apply`
+retires, finished work: WB worktrees, local and remote branches that no longer
+have a worktree, and the linked worktrees WB does not manage (reported, never
+removed). It owns no eligibility rules of its own: worktrees are classified by
+the landing classifier and removed through the per-item transaction
+[`wb worktree retire`](../worktree-lifecycle/README.md); bare branches are
+classified and retired by [Branch Hygiene](../branch-hygiene/README.md)'s
+evidence engine. Its contribution is **one verb, one selection, and scale**:
+every selector narrows the plan and the apply identically, and repositories are
+inspected and retired concurrently while one clone and one task are never
+written by two retirements at once.
 
 This feature also fixes the surrounding discovery and observability failure
 that made an agent hand-roll a 200-line raw-`git` sweep rather than use WB: one
@@ -53,7 +55,7 @@ landed and was then reverted.
 
 ### The scoped commands are correct and far too narrow
 
-`wb worktree cleanup` enumerates `<wb-home>/worktrees/<task>/...`, so anything
+`wb worktree retire` enumerates `<wb-home>/worktrees/<task>/...`, so anything
 without a WB task claim is not a skipped candidate — it is not a candidate.
 [Branch Hygiene](../branch-hygiene/README.md) closes the branch half of that
 gap. Nothing closes the ordering, the concurrency, or the preservation half.
@@ -101,7 +103,7 @@ Three of those rows are findings in their own right, not background:
 
 ### A serial sweep, a silent one, and a secretive one
 
-`wb worktree cleanup --all-merged` was run to completion as a dry run against
+`wb clean` was run to completion as a dry run against
 the whole fleet on 2026-08-19. The measurements:
 
 | Observation | Measured |
@@ -134,11 +136,11 @@ one:
 An operator needs those six lines first and the individual pull-request URLs on
 demand — not 107,690 bytes in arrival order. See `#req:grouped-end-of-run-summary`.
 
-`wb branch cleanup`, shipped the same evening in pull request #114 at
+`wb clean`, shipped the same evening in pull request #114 at
 `9d54694`, fixed the *silence* and left the *secrecy* untouched. Measured on
 the live fleet at repository 170 of 394 it had emitted 172 lines, all 172 of
 them `[170/394] scanning owner/repo` heartbeats and **none** of them a result —
-while a scoped `wb branch cleanup --filter dal-go --scope all` over one of the
+while a scoped `wb clean --filter dal-go --scope all` over one of the
 repositories already passed found 41 eligible branches that the sweep was
 holding in memory.
 
@@ -179,7 +181,7 @@ its branch. It remains the only path that may retire a branch belonging to a WB
 task.
 
 [Branch Hygiene](../branch-hygiene/README.md) owns `wb branch list` and
-`wb branch cleanup`, the branch evidence taxonomy, and the report-only
+`wb clean`, the branch evidence taxonomy, and the report-only
 permanence of the `absorbed` class. A separate lane is implementing it at the
 time of writing; **this feature must not modify it** and takes its taxonomy and
 its refusals as given.
@@ -197,26 +199,138 @@ classifies reachability, `wb audit` classifies disposition, `wb recover`
 classifies fate — so folding them into one document would produce exactly the
 unreviewable single command that
 [branch-hygiene](../branch-hygiene/README.md) refused to create when it
-declined to become a mode of `wb worktree cleanup`. Parent holds the contract,
+declined to become a mode of `wb worktree retire`. Parent holds the contract,
 child holds the evidence: each document stays reviewable and each rule is
 stated once.
 
 ## Behavior
 
+### Naming decision (founder, 2026-10-29)
+
+"Having both clean and cleanup on same level would be confusing. Don't worry
+about legacy - come up with best naming." The resulting surface, approved the
+same day, has no legacy aliases:
+
+| Verb | Role |
+|---|---|
+| `wb clean` | the one fleet verb: dry-run report by default, `--apply` retires; worktrees **and** branches without a worktree; `--filter`/`--org` like every fleet verb |
+| `wb worktree retire <task\|branch>` | the per-item transaction: the guarded, receipted removal `wb clean` delegates to, with `--remote`, `--absorbed-by`, `--superseded-by`, `--allow-residue`; `--preserve branch\|tag` retires work that never landed |
+| `wb branch list` | pure, read-only branch inventory |
+| `wb worktree end`, `wb worktree abort`, `wb land` | unchanged |
+
+`wb clean` absorbs and removes, with no hidden alias, the former
+`wb worktree gc` (its classifier and apply), `wb worktree orphans` (its
+unmanaged-worktree triage), `wb worktree cleanup --all-merged` (its fleet
+sweep) and `wb branch cleanup` (its bare-branch retirement). The former
+`wb worktree cleanup <task>` became `wb worktree retire <task>`, merged with
+the earlier preservation-only `wb worktree retire`, which is now its
+`--preserve` mode. The separate `cleanup` verb with `--stages` proposed below in
+`#req:top-level-cleanup-verb` is superseded by this naming: its staged
+orchestration remains a design for `wb clean`, not a second verb.
+
+The 2026-10-29 datatug audit (244 worktrees, about 110 branches without a
+worktree, wb 0.202.0) is the evidence for the requirements in the next
+section: a glob filter that silently matched nothing, a 10-minute serial
+apply, `orphans` refusing `--filter`, bare squash-merged branches no verb would
+retire, a task name that differed from its branch, two verbs disagreeing about
+one head, and a canonical sync blocked by a file the landing itself ignores.
+
+### `wb clean` (implemented)
+
+#### REQ: clean-is-the-one-fleet-verb
+
+WB MUST expose `wb clean` as a root command. A dry run MUST change nothing; only
+`--apply` retires. One pass MUST report three sections: WB checkouts (classified
+by the landing classifier and retired through the `wb worktree retire`
+transaction), branches with no worktree (classified by Branch Hygiene with
+landing receipts always on, retired by its compare-and-delete), and linked
+worktrees WB does not manage (reported as `unmanaged`, never removed). A branch a
+checkout holds and a protected branch MUST NOT be repeated as branch rows. The
+exit code MUST be `1` when anything was kept, `0` otherwise, and `2` on a usage
+error.
+
+#### REQ: clean-selectors-narrow-plan-and-apply
+
+`wb clean` MUST accept root `--filter` and repeatable root `--org`, and
+`--repo <owner/name>`, `--branch <name>`, repeatable `--task`, `--scope
+local|remote|all`, `--older-than`, `--only <class>|landed`, `--format
+text|json`, `--apply`, `--parallel`, `--projects-root`, `--allow-residue` and
+`--superseded-by`. Every selector MUST be applied through the same predicate in
+a dry run and under `--apply`, before classification, so an item outside the
+selection can neither appear in the report nor be retired. `--scope local`
+covers checkouts and local branches, `remote` covers remote branches only, and
+`all` covers both and retires a checkout's unchanged origin branch with it.
+
+#### REQ: unmatched-selection-is-a-finding
+
+When the selectors match no local repository, `wb clean` MUST exit `1` with
+`0 repositories matched <selectors>` naming each selector, never an empty
+successful report.
+
+#### REQ: filter-is-a-substring-or-a-glob
+
+Every fleet `--filter` MUST select an owner/name that contains the value as a
+case-insensitive substring, or, when the value carries a glob metacharacter
+(`*`, `?`, `[`), that matches it as a glob against the slug, the
+host-qualified slug, or the trailing segments of a checkout path. A malformed
+glob MUST be a usage error for `wb clean`.
+
+#### REQ: exact-head-squash-receipt
+
+A branch whose tip is exactly the head of a merged pull request into the
+target, whose landing commit is contained in the fetched target and carries the
+branch's work in full, MUST be `receipted` and retirable even when the target
+has since changed the same files, unless the target reverted the landing: a
+later commit names it in Git's revert message, or every path the landing changed
+is back to its pre-landing content. The apply-time recheck MUST re-prove the
+exact head, the content, and the absence of a revert against a fresh fetch.
+Absorbed by patch-id or tree alone MUST NOT qualify, a branch that is the head of
+an open pull request MUST NOT be retired, and nothing unpushed is ever retired.
+
+#### REQ: one-landing-classifier
+
+Every WB-managed checkout MUST be classified only by the landing classifier, in
+every verb that reports it, so two verbs cannot disagree about one head.
+Discovery through Git's worktree registry MAY name only the linked worktrees
+that classifier did not see, as `unmanaged`.
+
+#### REQ: retire-resolves-a-branch-name
+
+`wb worktree retire <name>` MUST, when `<name>` is not a task, retire the task
+whose checkout has `<name>` as its branch and say so on stderr; refuse with
+every candidate task named when more than one does; and, when no checkout holds
+it, retire it as a bare branch ref on `wb clean`'s branch evidence (`--repo`
+narrows it, `--remote` includes origin).
+
+#### REQ: apply-is-parallel-per-repository-and-task
+
+`wb clean --apply` MUST retire up to `--parallel` checkouts at once and MUST
+never run two retirements in one canonical clone, or for one task, at the same
+time; the keys MUST be taken in one global order so two workers cannot deadlock.
+Bare-branch retirement MUST run per repository, up to `--parallel` repositories
+at once. Each inventory walk MUST fetch a repository's target once however many
+tasks it holds; the apply-time transaction still re-fetches before removing.
+
 ### Command surface
 
 #### REQ: top-level-cleanup-verb
 
-WB MUST expose `wb cleanup` as a top-level command, not as `wb git cleanup`,
+*Superseded naming:* this requirement predates the 2026-10-29 naming decision
+above, which named its verb `wb clean` (it was proposed as a separate
+`cleanup` verb). Its staged flags below (`--stages`, `--fetch-parallel`,
+`--api-parallel`, `--api-reserve`, `--timeout`, `--preserve-dir`,
+`--fail-on`) remain a design for `wb clean`, not yet implemented. The paragraph
+that kept the scoped commands unchanged no longer holds: they were absorbed.
+
+WB MUST expose `wb clean` as a top-level command, not as `wb git cleanup`,
 and not as a subcommand of `wb worktree` or `wb branch`. Nearly everything WB
 does is Git at some level — `sync`, `status`, `deps`, `migrate` — so a `git`
 group would describe the substrate rather than select a subset, and a third
-`cleanup` leaf alongside `wb worktree cleanup` and `wb branch cleanup` would
+`cleanup` leaf alongside `wb worktree retire` and `wb clean` would
 make the discovery failure in the Problem section worse rather than better.
 
-`wb worktree cleanup` and `wb branch cleanup` MUST remain available with
-unchanged names, flags, and semantics. `wb cleanup` MUST NOT be introduced as a
-deprecation of either.
+(Superseded: the scoped worktree and branch sweeps were absorbed into
+`wb clean`, and `wb worktree retire` is the per-item transaction.)
 
 Flags, all of which MUST be accepted exactly as named:
 
@@ -237,23 +351,23 @@ Flags, all of which MUST be accepted exactly as named:
 | `--verbose` | bool | `false` | emit per-artifact informational lines on stderr |
 | `--fail-on` | string | `none` | `none` or `refusals`; selects the exit-code contract |
 
-`wb cleanup` MUST accept the root `--filter`, `--projects-root`, and
+`wb clean` MUST accept the root `--filter`, `--projects-root`, and
 `--non-interactive` flags, and MUST be registered for `filter` and
 `projects-root` in `persistentFlagSupport` in `cmd/wb/main.go` and in
 `docs/cli-flag-matrix.md`.
 
 `--stages` MUST be named `--stages` and MUST NOT be spelled `--scope`.
-`wb branch cleanup --scope` already means `local|remote|all`; reusing that
+`wb clean --scope` already means `local|remote|all`; reusing that
 spelling for a different value set on a safety-critical sibling is where a
 mistyped sweep becomes a deletion.
 
-`wb cleanup` MUST NOT define a bare `--remote` boolean. Remote deletion is
+`wb clean` MUST NOT define a bare `--remote` boolean. Remote deletion is
 selected only by including `remote-branch` in `--stages`, so the selection is
 visible in the invocation rather than implied by a second flag.
 
 #### REQ: dry-run-default
 
-`wb cleanup` MUST be a plan unless `--apply` is explicit. A plan MUST NOT
+`wb clean` MUST be a plan unless `--apply` is explicit. A plan MUST NOT
 delete a ref, remove a worktree, mutate a pull request, create a report
 directory, or write a preservation artifact. It MUST perform every read-only
 step of the run, including the stacked-pull-request enumeration required by
@@ -262,18 +376,18 @@ exactly what `--apply` would do.
 
 #### REQ: no-independent-eligibility
 
-`wb cleanup` MUST NOT contain its own eligibility, containment, protection, or
+`wb clean` MUST NOT contain its own eligibility, containment, protection, or
 age logic. Every worktree decision MUST be produced by the same engine that
-backs `wb worktree cleanup`, and every branch decision by the same engine that
-backs `wb branch cleanup`, called as libraries rather than reimplemented or
+backs `wb worktree retire`, and every branch decision by the same engine that
+backs `wb clean`, called as libraries rather than reimplemented or
 shelled out to.
 
-Consequently `wb cleanup` MUST NOT be able to delete anything a scoped command
+Consequently `wb clean` MUST NOT be able to delete anything a scoped command
 would refuse, in any flag combination. In particular it MUST NOT delete an
 `absorbed` branch, MUST NOT remove a worktree with uncommitted changes, MUST
 NOT delete a branch whose content is not provably contained in the freshly
 fetched exact target, and MUST NOT delete a remote branch without pull-request
-evidence. A divergence between `wb cleanup` and a scoped command on the same
+evidence. A divergence between `wb clean` and a scoped command on the same
 fixture is a defect, not a configuration.
 
 #### REQ: fetch-before-every-decision
@@ -344,7 +458,7 @@ remove.
 #### REQ: concurrency-lives-in-the-shared-inspection-path
 
 The concurrency this feature depends on MUST be implemented in the shared
-inspection layer in `internal/worktrees`, not in the `wb cleanup` command. A
+inspection layer in `internal/worktrees`, not in the `wb clean` command. A
 parallel orchestrator layered over a serial inspection engine interleaves two
 slow serial sweeps and buys nothing.
 
@@ -358,7 +472,7 @@ real network work — a `git fetch --no-tags origin refs/heads/<base>` and, with
 founder's worktree population that exceeded a 120-second foreground timeout.
 `wb branch list` has the same shape and meets the same wall.
 
-Implementing it there means `wb worktree cleanup`, `wb worktree list`, and
+Implementing it there means `wb worktree retire`, `wb worktree list`, and
 `wb branch list` inherit the improvement rather than each growing its own.
 
 **Inspection parallelises. Mutation does not.** These are separate phases with
@@ -544,14 +658,14 @@ claims.
 
 Therefore:
 
-1. `wb cleanup` and `wb audit` MUST enumerate the **union** of both records,
+1. `wb clean` and `wb audit` MUST enumerate the **union** of both records,
    across every hierarchy the layout resolver recognises
    ([worktree-lifecycle#req:migration-layout-compatibility](../worktree-lifecycle/README.md)).
 2. Every worktree row MUST carry a `known_by` field drawn from the closed set
    `both`, `git-only` (Git holds a registration WB's inventory does not know,
    including registrations whose directory is gone), `wb-only` (a directory in
    the WB home with no Git registration).
-3. `wb cleanup` MUST decide whether a branch is checked out from Git's
+3. `wb clean` MUST decide whether a branch is checked out from Git's
    registration set, never from WB's inventory alone. A `git-only` registration
    MUST make its branch `in-use` and therefore undeletable, and MUST carry the
    remedy that clears the registration.
@@ -561,7 +675,7 @@ Therefore:
 
 #### REQ: preconditions-gate-apply
 
-Before the first destructive operation **in a unit**, `wb cleanup --apply` MUST
+Before the first destructive operation **in a unit**, `wb clean --apply` MUST
 complete and verify that unit's preservation capture, and MUST complete the
 stacked-pull-request pre-flight for every branch that unit will retire, exactly
 as [Preservation and Pre-Flight](cleanup-preconditions/README.md) specifies. A
@@ -574,7 +688,7 @@ where the recoverable copy is.
 
 ### Output contract
 
-This section is normative for `wb cleanup`, `wb unpushed`, `wb audit`, and
+This section is normative for `wb clean`, `wb unpushed`, `wb audit`, and
 `wb recover` alike. Each child feature adds its own row schema; none restates
 these rules.
 
@@ -646,7 +760,7 @@ incrementality — are the next section.
 
 The founder's ruling on 2026-08-19 was direct: **"Yes, we need cli to report
 progress/status."** This is therefore a first-class part of the feature, not a
-presentation detail attached to the output contract. It binds `wb cleanup`,
+presentation detail attached to the output contract. It binds `wb clean`,
 `wb audit`, `wb unpushed`, and `wb recover`, and — because
 `#req:concurrency-lives-in-the-shared-inspection-path` puts the sweep engine in
 `internal/worktrees` — it binds every command that shares that engine.
@@ -655,12 +769,12 @@ presentation detail attached to the output contract. It binds `wb cleanup`,
 because a design can fix one and miss the other. That is exactly what
 happened.**
 
-| Defect | Question it answers | `wb worktree cleanup` | `wb branch cleanup` |
+| Defect | Question it answers | `wb worktree retire` | `wb clean` |
 |---|---|---|---|
 | **Liveness** | Is the command alive, and how far along is it? | **not solved** — zero bytes for 14 minutes | **solved** — `[N/total]` counter |
 | **Incrementality** | What has it found *so far*? | **not solved** | **not solved** |
 
-`wb branch list` and `wb branch cleanup` shipped in pull request #114, merged
+`wb branch list` and `wb clean` shipped in pull request #114, merged
 at `9d54694`, and they solved liveness properly. Measured on the live fleet at
 repository 170 of 394:
 
@@ -671,10 +785,10 @@ repository 170 of 394:
 | Result lines | **0** |
 
 Zero result lines after 170 repositories — and not because nothing had been
-found. A scoped `wb branch cleanup --filter dal-go --scope all` run over one of
+found. A scoped `wb clean --filter dal-go --scope all` run over one of
 the repositories already passed found **41 eligible branches**. Every finding
 was accumulating in memory, held until the run ended, exactly as
-`wb worktree cleanup` holds its 107,690 bytes.
+`wb worktree retire` holds its 107,690 bytes.
 
 **Incrementality is the more valuable of the two for a ten-to-twenty-minute
 fleet command.** It is what lets an operator act on partial results, spot a
@@ -690,12 +804,12 @@ layer serves both. Neither may grow its own.
 Every sweep MUST emit a liveness event to stderr as each candidate resolves,
 flushed at that moment, and MUST NOT buffer liveness output until the run
 completes. The measured failure this replaces is a fourteen-minute
-`wb worktree cleanup --all-merged` run that emitted 107,690 bytes, all of them
+`wb clean` run that emitted 107,690 bytes, all of them
 at the end, with zero bytes at the four-, eight-, nine- and ten-minute marks.
 
 Each event MUST name the candidate being inspected. Liveness alone does not
 satisfy this feature: an event stream that says only what is being scanned, and
-never what was found, is the `wb branch cleanup` behaviour measured above and
+never what was found, is the `wb clean` behaviour measured above and
 is addressed by `#req:incremental-findings`.
 
 #### REQ: progress-carries-a-denominator
@@ -849,7 +963,7 @@ Every command in this feature MUST use WB's documented codes from
 the command ran and reported findings or failures, `2` the invocation was
 rejected before work started.
 
-`wb cleanup` MUST exit `0` when the run completed and every selected unit
+`wb clean` MUST exit `0` when the run completed and every selected unit
 reached a terminal decision, including a plan in which everything was refused —
 a refusal is a correct answer, not a failure. `--fail-on refusals` MUST make
 any refusal exit `1`, so a merger lane can gate on it. A unit that failed to
@@ -881,7 +995,7 @@ text an agent reads before deciding whether to load the skill:
 ```yaml
 ---
 name: wb-cleanup
-description: Use WB to clean up after finished work in one repository or across the whole fleet — retiring worktrees, local branches and remote branches in one ordered pass (wb cleanup), auditing what is left (wb audit), finding work that exists only on this machine (wb unpushed), and investigating pull requests orphaned by a deleted base branch (wb recover). Use when asked to clean up, tidy up, retire finished work, find unpushed or at-risk work, or check what a disk failure would destroy. Never hand-roll a raw git sweep over branches and worktrees — it has no preservation, no audit trail, no stacked-pull-request retargeting, and cannot tell work that landed from work that landed and was then reverted.
+description: Use WB to clean up after finished work in one repository or across the whole fleet — retiring worktrees, local branches and remote branches in one ordered pass (wb clean), auditing what is left (wb audit), finding work that exists only on this machine (wb unpushed), and investigating pull requests orphaned by a deleted base branch (wb recover). Use when asked to clean up, tidy up, retire finished work, find unpushed or at-risk work, or check what a disk failure would destroy. Never hand-roll a raw git sweep over branches and worktrees — it has no preservation, no audit trail, no stacked-pull-request retargeting, and cannot tell work that landed from work that landed and was then reverted.
 ---
 ```
 
@@ -889,7 +1003,7 @@ description: Use WB to clean up after finished work in one repository or across 
 
 #### REQ: bounded-scope
 
-This feature MUST NOT change `wb worktree cleanup` or `wb branch cleanup`
+This feature MUST NOT change `wb worktree retire` or `wb clean`
 eligibility; MUST NOT create, rename, or restore branches; MUST NOT merge pull
 requests; MUST NOT delete a preservation artifact; MUST NOT introduce any flag
 that disables preservation or that makes `absorbed` deletable; and MUST NOT act
@@ -903,15 +1017,15 @@ at all without `--apply`.
 
 Given a fixture repository with a real bare remote holding `main`, a linked
 worktree on a branch whose head is an ancestor of `origin/main`, that branch's
-local ref, and its remote ref, when `wb cleanup` runs without `--apply`, then
+local ref, and its remote ref, when `wb clean` runs without `--apply`, then
 nothing is removed, no report or preservation directory is created, and the
 plan lists all three stages for that branch in the order worktree,
-local-branch, remote-branch. When `wb cleanup --apply` then runs against a
+local-branch, remote-branch. When `wb clean --apply` then runs against a
 recording Git wrapper, then the recorded operation order for that branch is
 worktree removal, then `git update-ref -d` against the exact planned SHA, then
 `git push --force-with-lease` against the observed remote SHA; the target SHA
 used for every decision equals the SHA fetched during that run and not a
-pre-seeded stale remote-tracking ref; and `wb cleanup --stages
+pre-seeded stale remote-tracking ref; and `wb clean --stages
 local-branch,remote-branch --apply` on the same fixture deletes nothing and
 reports the branch ineligible with a reason naming the excluded `worktree`
 stage.
@@ -922,7 +1036,7 @@ stage.
 
 Given a fixture fleet of eight canonical clones in which two clones are joined
 by one coordinated WB task and one of those clones additionally holds bare
-branches with no task, when `wb cleanup --parallel 4` runs, then the reported
+branches with no task, when `wb clean --parallel 4` runs, then the reported
 partition places both coordinated clones in one unit together with those bare
 branches; no two units name the same canonical clone; a probe recording the
 unit identity active against each clone shows at most one at any instant; at
@@ -937,12 +1051,12 @@ stdout despite differing completion order.
 
 Given a fixture fleet of twelve canonical clones, several of them backing more
 than one linked worktree, and a Git wrapper and hosted double that both record
-the clone and timestamp of every call, when `wb cleanup --parallel 4` and
+the clone and timestamp of every call, when `wb clean --parallel 4` and
 `wb worktree list --github` each run, then the recording shows fetches from
 distinct clones overlapping in time — proving inspection is parallel and that
 the parallelism is inherited from the shared layer rather than added in the
 command — while no two fetches into the same clone ever overlap. When
-`wb cleanup --apply` then runs, the recording shows every preservation write,
+`wb clean --apply` then runs, the recording shows every preservation write,
 Work Log archive write, worktree removal, and ref deletion strictly serialized,
 with each unit's Work Log archive write ordered before that unit's first
 deletion, and no two mutating operations overlapping anywhere in the run.
@@ -967,7 +1081,7 @@ having reported them all.
 **Requirements:** cleanup-orchestration#req:hosted-budget-preflight
 
 Given a hosted double reporting 3,973 remaining core requests with a reset 44
-minutes away, and a selection of 269 candidates, when `wb cleanup` runs with
+minutes away, and a selection of 269 candidates, when `wb clean` runs with
 the default `--api-reserve 1000`, then WB reads the rate limit before issuing
 any candidate query; with an estimate of at least two requests per candidate
 the run proceeds, because the projected remainder stays above the floor. When
@@ -985,10 +1099,10 @@ be asserted to happen before the first candidate query, not part way through.
 Given a fixture containing one branch of each disposition in the branch-hygiene
 taxonomy — `contained`, `absorbed`, `unique`, `protected`, `in-use`,
 `unreadable` — plus a worktree holding uncommitted changes and a remote branch
-that is the head of an open pull request, when `wb cleanup --apply` runs once
+that is the head of an open pull request, when `wb clean --apply` runs once
 for every combination of its flags, then the set of refs and worktrees deleted
-is identical in every combination to the set deleted by `wb worktree cleanup
---apply --remote` plus `wb branch cleanup --scope all --apply` over the same
+is identical in every combination to the set deleted by `wb worktree retire
+--apply --remote` plus `wb clean --scope all --apply` over the same
 fixture; the `absorbed` branch is never deleted in any combination; the dirty
 worktree is never removed; and the pull-request-backed remote branch is never
 deleted.
@@ -998,13 +1112,13 @@ deleted.
 **Requirements:** cleanup-orchestration#req:bounded-per-unit-time, cleanup-orchestration#req:reconcile-git-and-wb-worktree-views
 
 Given a fixture fleet containing a unit whose hosted evidence call never
-returns, when `wb cleanup --timeout 2s --apply` runs, then that unit is
+returns, when `wb clean --timeout 2s --apply` runs, then that unit is
 reported with the `timeout` outcome, no ref or worktree in it was deleted, no
 stage was left half-applied, every other unit still reached a terminal
 decision, and the process exited. Given a second fixture in which one canonical
 clone holds a Git worktree registration pointing at a directory outside the WB
 write home, one registration whose directory has been deleted, and one
-directory inside the WB write home with no Git registration, when `wb cleanup`
+directory inside the WB write home with no Git registration, when `wb clean`
 and `wb audit` run, then all three appear as rows with `known_by` values
 `git-only`, `git-only`, and `wb-only` respectively; the branch named by each
 `git-only` registration is reported `in-use` and is not deleted under `--apply`
@@ -1015,7 +1129,7 @@ in any flag combination; and each row carries a remedy command.
 **Requirements:** cleanup-orchestration#req:preconditions-gate-apply
 
 Given a unit holding a dirty worktree, an unpushed stash, and a branch that is
-the base of one open pull request, when `wb cleanup --apply` runs, then the
+the base of one open pull request, when `wb clean --apply` runs, then the
 preservation root is printed to stderr before any destructive operation; the
 unit's preservation artifacts exist and verify before its first destructive
 operation; the dependent pull request is retargeted, and the retarget re-read
@@ -1031,7 +1145,7 @@ exists that permits the run to proceed.
 Given a fixture fleet of twenty canonical clones of which three match
 `--filter`, and in which the non-matching clones hold WB-internal
 `.wb-retired-stage-*` artifacts and a worktree that fails identity validation,
-when `wb cleanup --filter <substring> --format json` runs with stdout and
+when `wb clean --filter <substring> --format json` runs with stdout and
 stderr captured separately, then stdout parses as one JSON document with no
 progress or warning text in it; a Git-subprocess probe shows no process started
 against any non-matching clone; stderr contains no line naming a non-matching
@@ -1052,7 +1166,7 @@ object per stdout line whose union carries the same fields as the envelope.
 **Requirements:** cleanup-orchestration#req:progress-liveness, cleanup-orchestration#req:progress-carries-a-denominator, cleanup-orchestration#req:progress-adapts-to-the-stream-not-the-content, cleanup-orchestration#req:progress-surfaces-throttling-and-slow-candidates, cleanup-orchestration#req:progress-is-presentation-only
 
 Given a fixture fleet of 60 candidates in which each candidate's inspection is
-made to take a measurable interval, when `wb cleanup --format json` runs with
+made to take a measurable interval, when `wb clean --format json` runs with
 stdout and stderr captured separately and timestamped, then the first stderr
 liveness event is observed before 10% of the run's wall clock has elapsed;
 events continue to arrive throughout rather than in one burst at the end; each
@@ -1085,7 +1199,7 @@ stdout, identical durable reports, and identical exit codes.
 
 Given a fixture fleet of 12 canonical clones in which each clone holds at least
 one eligible candidate and each clone's inspection is made to take a
-measurable, deliberately unequal interval, when `wb cleanup --format text` runs
+measurable, deliberately unequal interval, when `wb clean --format text` runs
 with stdout timestamped per line, then the first clone's findings appear on
 stdout at a timestamp at or before that clone's completion plus a small bound,
 and strictly before the slowest clone has completed; every clone's findings
@@ -1094,7 +1208,7 @@ findings are withheld until the run ends.
 
 This MUST be asserted as an explicit negative too: a test MUST fail the
 implementation that emits 12 clones' findings within one final burst, which is
-the measured `wb branch cleanup` behaviour of 172 scanning lines and zero
+the measured `wb clean` behaviour of 172 scanning lines and zero
 result lines at repository 170 of 394.
 
 Repeating with `--format ndjson` yields one flushed `decision` record per
@@ -1114,7 +1228,7 @@ differing completion order.
 
 **Requirements:** cleanup-orchestration#req:incremental-findings, cleanup-orchestration#req:progress-liveness
 
-Given the 12-clone fixture above, when `wb cleanup` is started and killed with
+Given the 12-clone fixture above, when `wb clean` is started and killed with
 `SIGINT` and again with `SIGKILL` at a point where exactly 5 clones have
 completed, then the captured stdout — for `--format text` and `--format
 ndjson`, and the captured stderr for `--format json` — already contains every
@@ -1145,9 +1259,65 @@ and `wb-branches` skills each contain a pointer to `wb-cleanup`. A test MUST
 assert that the skill files are absent while any of the four commands is
 absent.
 
+### AC: clean-filter-selects-one-owner-of-a-multi-org-fleet
+
+**Requirements:** cleanup-orchestration#req:filter-is-a-substring-or-a-glob, cleanup-orchestration#req:clean-selectors-narrow-plan-and-apply, cleanup-orchestration#req:unmatched-selection-is-a-finding
+
+Given a projects root with `acme/app` holding a landed task and `other/svc`,
+when `wb clean` runs with `--filter 'acme/*'`, `--filter ACME/`, `--org acme`,
+or `--repo acme/app`, then exactly `acme/app` is selected and its task is
+eligible; `--filter 'other/*'` selects `other/svc` and reports no `acme`
+checkout; and `--filter 'nomatch/*'` exits 1 with
+`0 repositories matched --filter nomatch/*`.
+
+### AC: clean-apply-retires-what-the-plan-selected
+
+**Requirements:** cleanup-orchestration#req:clean-is-the-one-fleet-verb, cleanup-orchestration#req:clean-selectors-narrow-plan-and-apply
+
+Given the same fleet, when `wb clean --org acme --only landed` runs as a plan
+and then with `--apply`, then the apply retires exactly the one checkout the
+plan marked eligible and the report rows match.
+
+### AC: exact-head-squash-landing-is-retired-and-a-revert-is-not
+
+**Requirements:** cleanup-orchestration#req:exact-head-squash-receipt
+
+Given a branch squash-merged from its exact tip after which `main` edited the
+same file, when `wb clean` runs, then the branch is `receipted`, eligible, and
+deleted under `--apply`; and when, between plan and apply, the landing is
+reverted (by Git's message or by restoring every landed path) or the branch
+gains a commit, then the apply refuses that branch and keeps it.
+
+### AC: retire-accepts-a-branch-name
+
+**Requirements:** cleanup-orchestration#req:retire-resolves-a-branch-name
+
+Given task `batch5-assembly` on branch `batch5`, when
+`wb worktree retire batch5` runs, then it retires task `batch5-assembly` and
+stderr names it; and a name that is neither a task nor any checkout's branch is
+retired as a bare branch, or refused with a message saying an origin-only
+branch needs `--remote`.
+
+### AC: apply-never-overlaps-one-clone-or-task
+
+**Requirements:** cleanup-orchestration#req:apply-is-parallel-per-repository-and-task
+
+Given eligible checkouts with two in one repository and one task spanning two
+repositories, when they are applied with `--parallel 4`, then every eligible
+checkout is retired once and no two retirements for one repository or one task
+overlap.
+
+### AC: one-classifier-for-every-managed-checkout
+
+**Requirements:** cleanup-orchestration#req:one-landing-classifier
+
+Given a checkout the inventory classified and a linked worktree outside WB's
+stores, when `wb clean` runs, then the managed checkout appears only as a
+classified worktree row and the foreign one only as an `unmanaged` row.
+
 ## Open Questions
 
-- Should `wb cleanup` gain a `--since <marker>` mode that limits the sweep to
+- Should `wb clean` gain a `--since <marker>` mode that limits the sweep to
   repositories whose canonical clone changed since the last run, so a daily
   sweep costs proportional to the day's work rather than to the fleet?
 - Should the connected-component unit partition be exposed as its own read-only

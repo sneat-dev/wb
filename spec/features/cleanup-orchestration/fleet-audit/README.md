@@ -54,7 +54,7 @@ records of what worktrees exist.
 ### A slow audit is an unrun audit
 
 The existing inventory path is not usable at fleet scale: a dry-run
-`wb worktree cleanup --all-merged` ran for over nine and a half minutes at
+`wb clean` ran for over nine and a half minutes at
 under 1% CPU without producing a byte or finishing, and
 `wb worktree list --filter chessraiders` produced 254 stderr lines for 58
 result rows, 200 of which named tasks in entirely unrelated repositories.
@@ -81,8 +81,8 @@ feature owns:
 semantics, exit codes, per-unit deadline, and the Git/WB worktree-record
 reconciliation that `wb audit` obeys.
 
-`wb audit` is the read-only twin of `wb cleanup`: for any fixture, every row
-`wb audit` marks retirable MUST be a row `wb cleanup` would act on, and the
+`wb audit` is the read-only twin of `wb clean`: for any fixture, every row
+`wb audit` marks retirable MUST be a row `wb clean` would act on, and the
 reverse. A divergence is a defect.
 
 ## Behavior
@@ -167,7 +167,7 @@ about it, reproduces the discoverability failure that made an agent write its
 own tool.
 
 For the `absorbed` class the remedy MUST be the receipt-based
-`wb worktree cleanup <task> --absorbed-by <pr-or-commit>` for a WB-owned
+`wb worktree retire <task> --absorbed-by <pr-or-commit>` for a WB-owned
 branch, or an explicit human decision otherwise, exactly as
 [branch-hygiene#req:absorbed-names-its-remedy](../../branch-hygiene/README.md)
 requires.
@@ -204,7 +204,7 @@ present its totals in the same order:
    `registration-missing`, `needs-github`. What WB cannot reason about and a
    human must resolve.
 3. **Retirable** — `contained`, plus worktrees eligible under Worktree
-   Lifecycle. What `wb cleanup --apply` would act on.
+   Lifecycle. What `wb clean --apply` would act on.
 4. **Report-only** — `absorbed`. Never actionable by any command.
 5. **Healthy** — `published`, `protected`, and everything with nothing to do.
 
@@ -215,7 +215,7 @@ cannot be recovered. A reader who stops after the third must not have seen
 #### REQ: audit-agrees-with-cleanup
 
 For any fixture, the set of rows `wb audit` places in the Retirable section
-MUST equal the set of items `wb cleanup --apply` would act on with the same
+MUST equal the set of items `wb clean --apply` would act on with the same
 `--base`, `--older-than`, and `--filter`. Both MUST call the same engines
 (`cleanup-orchestration#req:no-independent-eligibility`); the difference
 between the two commands MUST be that one acts and one does not, never what
@@ -283,7 +283,7 @@ value is the sum of two class counts.
 
 Given a fixture fleet exercising every disposition, when
 `wb audit --base main --filter <substring>` and
-`wb cleanup --base main --filter <substring>` both run without `--apply`, then
+`wb clean --base main --filter <substring>` both run without `--apply`, then
 the set of repository-and-identity pairs in the audit's Retirable section is
 exactly equal to the set the cleanup plan marks eligible, and each pair's
 stated reason is identical in both. Repeating with `--older-than 0` and with

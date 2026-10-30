@@ -2,9 +2,10 @@ package cmdworktree
 
 import (
 	"fmt"
-	"github.com/sneat-dev/wb/internal/testenv"
 	"os"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/testenv"
 )
 
 // Native tests inherit the isolated user, harness identity, process state and

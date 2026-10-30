@@ -28,10 +28,10 @@ func (service InventoryService) ClassifyBranch(ctx context.Context, repository R
 		entry.Task = task
 		if claimed {
 			entry.Evidence = fmt.Sprintf("checked out or claimed by WB task %s", task)
-			entry.Reason = fmt.Sprintf("owned by wb worktree task %s; use `wb worktree cleanup %s` or `wb worktree abort %s`, never wb branch cleanup", task, task, task)
+			entry.Reason = fmt.Sprintf("owned by wb worktree task %s; use `wb worktree retire %s` or `wb worktree abort %s`, never wb clean", task, task, task)
 		} else {
 			entry.Evidence = "checked out in a linked worktree"
-			entry.Reason = "checked out in a linked worktree; wb branch cleanup never touches a working tree"
+			entry.Reason = "checked out in a linked worktree; wb clean never touches a working tree"
 		}
 		return entry
 	}
@@ -87,7 +87,14 @@ func (service InventoryService) ClassifyBranch(ctx context.Context, repository R
 	if sweep.Receipts {
 		receipt, note := service.ClassifyLandingReceipt(ctx, repository, ref, sweep.Base, targetSHA, pullRequestCache)
 		if receipt != nil {
-			return ReceiptedBranch(entry, receipt.MergeSHA, receipt, "")
+			receipted := ReceiptedBranch(entry, receipt.MergeSHA, receipt, "")
+			if note == ExactHeadReceiptNote {
+				receipted.ExactHeadReceipt = true
+				receipted.Evidence = fmt.Sprintf(
+					"merged pull request #%d into %s was opened from this exact head %s and landed it in full at %s, which is in the fetched target; nothing was committed after",
+					receipt.Number, entry.Base, entry.ShortSHA, ShortSHA(receipt.MergeSHA))
+			}
+			return receipted
 		}
 		receiptNote = "; receipt: " + note
 	}
@@ -95,8 +102,8 @@ func (service InventoryService) ClassifyBranch(ctx context.Context, repository R
 		entry.Disposition = BranchAbsorbed
 		entry.Evidence = absorbedEvidence + receiptNote + absorbedByNote
 		entry.Reason = "absorbed by patch-id or tree equality only; never eligible for --apply. " +
-			"If this branch belongs to a WB task, run `wb worktree cleanup <task> --absorbed-by <pr-or-commit>`; " +
-			"if it has no worktree, run `wb branch cleanup --absorbed-by <pr-or-commit>`; " +
+			"If this branch belongs to a WB task, run `wb worktree retire <task> --absorbed-by <pr-or-commit>`; " +
+			"if it has no worktree, run `wb worktree retire <branch> --absorbed-by <pr-or-commit>`; " +
 			"otherwise this requires an explicit human decision"
 		entry.Reason += receiptNote + absorbedByNote
 		return entry
@@ -109,6 +116,11 @@ func (service InventoryService) ClassifyBranch(ctx context.Context, repository R
 func (service InventoryService) ClassifyAttestedReceipt(ctx context.Context, repository Repository, ref BranchRef, base, targetSHA, absorbedBy string) (*worktreelanding.VerifiedCandidate, string, error) {
 	return service.Ports.AttestedReceipt(ctx, repository, ref, base, targetSHA, absorbedBy)
 }
+
+// ExactHeadReceiptNote is the note ClassifyLandingReceipt returns beside a
+// receipt that holds only because the merged pull request's head is the
+// branch's exact tip.
+const ExactHeadReceiptNote = "exact-head"
 
 func (service InventoryService) ClassifyLandingReceipt(ctx context.Context, repository Repository, ref BranchRef, base, targetSHA string, cache map[string][]GitHubPullRequest) (*PullRequest, string) {
 	pullRequests, ok := cache[ref.SHA]
@@ -146,6 +158,20 @@ func (service InventoryService) ClassifyLandingReceipt(ctx context.Context, repo
 	inTarget, err := service.Ports.ContentContained(ctx, repository.Path, ref.SHA, targetSHA)
 	if err != nil {
 		return nil, fmt.Sprintf("three-way proof failed to run: %v", err)
+	}
+	if !inTarget && pullRequest.HeadSHA == ref.SHA {
+		// The branch tip IS the merged pull request's head: squash-merged with
+		// nothing after it. Its content lives in the landing commit, which the
+		// target contains, so later edits on the target are the target's own
+		// history, not work this branch alone still holds. A revert of the
+		// landing is the one exception, and it stays blocked.
+		reverted, err := service.Ports.LandingReverted(ctx, repository.Path, pullRequest.MergeSHA, targetSHA)
+		if err != nil {
+			return nil, fmt.Sprintf("revert check of landing commit %s failed: %v", ShortSHA(pullRequest.MergeSHA), err)
+		}
+		if !reverted {
+			return pullRequest, ExactHeadReceiptNote
+		}
 	}
 	if !inTarget {
 		return nil, fmt.Sprintf("landed in full via pull request #%d, but the target has since diverged from that work — later edits and a revert are indistinguishable here; the content remains recoverable at landing commit %s", pullRequest.Number, ShortSHA(pullRequest.MergeSHA))

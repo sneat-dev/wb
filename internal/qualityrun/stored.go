@@ -4,19 +4,21 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+
 	"github.com/sneat-dev/wb/hub"
 	"github.com/sneat-dev/wb/internal/gitops"
 	"github.com/sneat-dev/wb/internal/gitremote"
 	"github.com/sneat-dev/wb/internal/hubconfig"
 	"github.com/sneat-dev/wb/internal/hubstore"
 	"github.com/sneat-dev/wb/internal/quality"
+	"github.com/sneat-dev/wb/internal/repofilter"
 	"github.com/sneat-dev/wb/internal/reposelection"
 	"github.com/sneat-dev/wb/internal/wbconfig"
-	"io"
-	"os"
-	"path/filepath"
-	"regexp"
-	"strings"
 )
 
 func openDefaultCoverageStore(ctx context.Context) (hub.RepositoryCoverageStore, io.Closer, error) {
@@ -68,7 +70,7 @@ func coverageReportFromStored(stored []hub.StoredRepositoryCoverage, filter stri
 	repos := make([]quality.RepositoryCoverage, 0, len(stored))
 	for _, s := range stored {
 		repoName := strings.TrimPrefix(s.Repository, "github.com/")
-		if filter != "" && !strings.Contains(repoName, filter) {
+		if filter != "" && !repofilter.Match(filter, repoName) {
 			continue
 		}
 		status := s.Status

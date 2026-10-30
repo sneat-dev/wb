@@ -44,7 +44,7 @@ func TestOrphansReportsUnregisteredResidue(t *testing.T) {
 	if residue.CanonicalDir == "" || residue.Remedy == "" || len(residue.Evidence) == 0 {
 		t.Fatalf("residue carries no actionable explanation: %#v", residue)
 	}
-	if !strings.Contains(residue.Remedy, "wb worktree cleanup orphan-residue") {
+	if !strings.Contains(residue.Remedy, "wb worktree retire orphan-residue") {
 		t.Fatalf("remedy does not name the command that finishes it: %q", residue.Remedy)
 	}
 	// Read-only: the sweep explains, it never removes.

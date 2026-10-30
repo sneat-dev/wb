@@ -5,14 +5,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"testing"
+	"time"
+
 	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/worktreerun"
 	"github.com/sneat-dev/wb/internal/worktrees"
-	"strings"
-	"testing"
-	"time"
 )
 
 type activeCodeError struct {

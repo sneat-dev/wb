@@ -1,7 +1,7 @@
 ---
 name: wb-worktrees
 description: >-
-  Use WB for the full isolated-worktree lifecycle: create, guard, inspect, resume, mechanically merge/land one or many completed worktrees to a default or target branch, synchronize the canonical clone, revert a landed batch forward, and safely clean branches/worktrees. Use before editing or branching and whenever asked to merge, integrate, land, finish, deliver, push to main, create/merge a PR, drain completed agent branches, resume a merge, clean up, delete merged branches, remove stale worktrees, move/resume an agent session, or audit repository hygiene. A round that touches several repositories is ONE task, never one task per repository, and lands once per repository. Finish work with `wb worktree land` (its root alias is `wb land`), never `gh pr merge`. Prefer `wb worktree merge` for conflict-free AI-agent handoffs; never hand-roll Git worktree/branch cleanup or a repeated PR landing sequence.
+  Use WB for the full isolated-worktree lifecycle: create, guard, inspect, resume, mechanically merge/land one or many completed worktrees to a default or target branch, synchronize the canonical clone, revert a landed batch forward, and safely clean branches/worktrees with `wb clean` (the one fleet cleanup verb; `wb worktree retire <task|branch>` retires one item). Use before editing or branching and whenever asked to merge, integrate, land, finish, deliver, push to main, create/merge a PR, drain completed agent branches, resume a merge, clean up, delete merged branches, remove stale worktrees, ask what is safe to delete, move/resume an agent session, or audit repository hygiene. A round that touches several repositories is ONE task, never one task per repository, and lands once per repository. Finish work with `wb worktree land` (its root alias is `wb land`), never `gh pr merge`. Prefer `wb worktree merge` for conflict-free AI-agent handoffs; never hand-roll Git worktree or branch deletion, or a repeated PR landing sequence.
 ---
 
 # WB worktrees
@@ -36,7 +36,7 @@ wb worktree land <worktree(s) in repo2> --format json
 ```
 
 Never hand-roll the equivalent by hand — `gh pr merge` plus a manual ancestry
-check, `git push --delete`, and `wb worktree cleanup` is exactly the
+check, `git push --delete`, and `wb worktree retire` is exactly the
 reimplementation this verb exists to replace. If it refuses, read
 [merge.md](references/merge.md) and the `wb-merge` skill's Fast path for what
 to do next; report the exact refusal rather than working around it.
@@ -132,16 +132,14 @@ diagnose it; do not repeat the whole gate.
   resume after interruption, or revert after a landed failure. This is the
   normal repeated counterpart to creation, not an exceptional release tool.
 - Read [guard.md](references/guard.md) to validate or recover a checkout.
-- Read [gc.md](references/gc.md) when the request is "clean up worktrees", "the
-  disk is full", or "what is safe to delete?" and you do not already know the
-  one task to retire. `wb worktree gc` classifies every checkout by landing
-  evidence — a squash merge leaves no ancestry, so `git` calls every landed
-  branch unmerged — and retires the provably finished ones.
-- Read [cleanup.md](references/cleanup.md) for ANY hygiene request — deleting
-  merged branches, removing stale or leftover worktrees, or sweeping historic
-  leftovers across the whole fleet. Start there before touching raw Git. If
-  the branch in question has no worktree, it hands you to the `wb-branches`
-  skill (`wb branch list` / `wb branch cleanup`) instead.
+- Read [clean.md](references/clean.md) for ANY hygiene request: "clean up
+  worktrees", "delete merged branches", "what is safe to delete?", "the disk is
+  full", stale or leftover worktrees and branches, or a historic sweep over the
+  whole fleet. `wb clean` is the one verb: it classifies every checkout and
+  every branch without a checkout by landing evidence (a squash merge leaves no
+  ancestry, so `git` calls every landed branch unmerged) and retires the
+  provably finished ones under `--apply`. `wb worktree retire <task|branch>`
+  retires one item. Start there before touching raw Git.
 - Read [lifecycle.md](references/lifecycle.md) to inspect live tasks,
   finalize merged work, recycle caches safely, abort interrupted task claims,
   or release your idle landing lane with `wb lane release owner/repository --target main` after its command exits. This releases the lane without
@@ -160,12 +158,13 @@ diagnose it; do not repeat the whole gate.
 
 WB retires a worktree and its branch — local and remote — in one audited
 transaction, so branch hygiene is a WB command, never a raw-Git loop. These are
-the exact commands; [cleanup.md](references/cleanup.md) has the decision table,
+the exact commands; [clean.md](references/clean.md) has the decision table,
 the full flag surface, and how to read a skip reason.
 
 ```sh
-wb worktree orphans
-wb worktree orphans --only remove
+wb clean
+wb clean --filter 'owner/*' --only landed
+wb clean --scope all --apply
 wb worktree backfill
 wb worktree backfill --apply
 wb worktree adopt --all-external
@@ -173,43 +172,45 @@ wb worktree adopt --all-external --apply
 wb worktree list
 wb worktree list --only active
 wb worktree list --only orphaned
-wb worktree cleanup <task>
-wb worktree cleanup --all-merged
-wb worktree cleanup <task> --apply --remote --older-than 0
+wb worktree retire <task>
+wb worktree retire <task> --apply --remote --older-than 0
 wb worktree abort <task> --disposition discarded --apply --remote
 ```
 
-`wb worktree orphans` is the widest read-only triage WB has: every linked
-worktree reachable from the projects root, across all three layout
-generations, grouped by root effort with an explicit disposition and evidence.
-Start a historic sweep there, not with `wb worktree cleanup`.
+`wb clean` is the widest triage WB has, and a dry run until `--apply`: every
+WB checkout, every branch without a checkout, and every unmanaged linked
+worktree, each with a class and its evidence. Narrow it with `--filter`
+(substring or glob such as `'owner/*'`), `--org`, `--repo`, `--branch`,
+`--task`, `--scope local|remote|all` and `--only <class>|landed`; a selection
+matching nothing exits 1 with "0 repositories matched". Start a historic sweep
+there, not with `wb worktree retire`.
 
-Four traps decide whether a sweep finds anything at all:
+Four traps decide whether a sweep retires anything at all:
 
-1. **`cleanup` only considers WB-managed tasks.** A worktree created by
-   `git worktree add`, or one predating WB, is not skipped with a reason — it
-   is outside the sweep entirely. Run `wb worktree backfill` first so it has a
-   reconstructed manifest. A branch with no worktree at all is never in scope
-   here — use `wb branch list` / `wb branch cleanup` (the `wb-branches` skill)
-   instead.
+1. **Only WB-managed checkouts are retired.** A worktree created by
+   `git worktree add`, or one predating WB, is an `unmanaged` row and is never
+   removed. Run `wb worktree adopt` (after `wb worktree backfill`) to bring it
+   under the landing classifier.
 2. **Eligibility needs a merge receipt**, not merged-looking content: the head
    is an ancestor of the freshly fetched exact `origin/<base>`, or GitHub's
    commit-to-PR index names a merged PR whose landing WB then proves locally.
-   A squash-merged or cherry-picked branch whose patches are all upstream by
-   patch-id is **not** a candidate, and `git cherry` emptiness is not evidence
-   WB accepts — it cannot tell landed from landed-then-reverted.
-3. **The recorded base is the target.** Cleanup uses each worktree’s recorded
-   base. If that branch is gone, or has itself landed in the repository default,
-   cleanup falls back to the freshly fetched default branch. An explicit
-   `--base <branch>` selects exactly that origin branch; it does not fall back.
+   A branch squash-merged from its exact tip stays retirable after the target
+   moves on, unless the target reverted the landing. Patch-id equality alone
+   (`absorbed`) is never a receipt, and `git cherry` emptiness is not evidence
+   WB accepts: it cannot tell landed from landed-then-reverted.
+3. **The recorded base is the target.** Each worktree is judged against its
+   recorded base. If that branch is gone, or has itself landed in the
+   repository default, WB falls back to the freshly fetched default branch. An
+   explicit `--base <branch>` selects exactly that origin branch.
 4. **Dry run is the default.** `--apply` is required to act. For a named task,
-   `--apply` requires `--remote` only while its origin branch still exists; an
-   already deleted remote branch needs no further retirement.
+   `wb worktree retire --apply` requires `--remote` only while its origin
+   branch still exists; `wb clean --scope all` retires unchanged origin
+   branches with their checkouts.
 
-Cleanup flags: `--base`, `--all-merged`, `--apply`, `--remote`,
-`--older-than`, `--parallel`, `--report-dir`, `--absorbed-by`,
-`--superseded-by`, `--resume-interrupted`, `--recover-stages`,
-`--retire-shells`, `--format`, and `--verbose` (`-v`). Root flags also include
+`wb worktree retire` flags: `--base`, `--apply`, `--remote`, `--older-than`,
+`--parallel`, `--report-dir`, `--absorbed-by`, `--superseded-by`,
+`--allow-residue`, `--resume-interrupted`, `--recover-stages`, `--repo`,
+`--preserve`, `--format`, and `--verbose` (`-v`). Root flags also include
 `--filter`, `--projects-root`, `--quiet`, and `--non-interactive`. Apply writes
 durable audit evidence below `<projects-root>/.wb/reports/worktree-cleanup/`.
 
@@ -395,7 +396,7 @@ In order, and the order is the contract:
    the worktree was cut from, so it survives the removal, and the exact SHA is
    printed. Recover it with `git stash apply <sha>`.
 3. **seal** a closing note into the Work Log (`--note` supplies the text).
-4. **retire** each worktree through the existing `wb worktree cleanup`
+4. **retire** each worktree through the existing `wb worktree retire`
    transaction — so cleanup's own guards still apply. An unmerged branch is
    refused by cleanup with its reason, not deleted by some other route here.
 5. **release** the fleet-wide claim, but only once every worktree is gone. A

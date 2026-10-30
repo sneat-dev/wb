@@ -812,7 +812,7 @@ cannot be proved reachable refuses closed.`,
 			if !apply {
 				_, _ = fmt.Fprintln(command.OutOrStdout(), "dry-run only, pass --apply to write")
 			} else {
-				_, _ = fmt.Fprintf(command.OutOrStdout(), "next: wb worktree cleanup %s --apply --remote --older-than 0\n", ack.CandidateTask)
+				_, _ = fmt.Fprintf(command.OutOrStdout(), "next: wb worktree retire %s --apply --remote --older-than 0\n", ack.CandidateTask)
 			}
 			return err
 		},

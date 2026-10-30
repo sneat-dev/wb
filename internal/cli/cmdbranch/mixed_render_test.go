@@ -2,10 +2,11 @@ package cmdbranch
 
 import (
 	"bytes"
-	"github.com/sneat-dev/wb/internal/worktrees"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 func TestBranchListShowsSortedDispositionTotals(t *testing.T) {
@@ -55,44 +56,5 @@ func TestBranchListShowsSortedDispositionTotals(t *testing.T) {
 	}
 	if strings.Index(totals.String(), "alpha") > strings.Index(totals.String(), "zeta") {
 		t.Errorf("totals are not sorted:\n%s", totals.String())
-	}
-}
-
-func TestBranchCleanupShowsEveryOutcome(t *testing.T) {
-	t.Parallel()
-
-	var out bytes.Buffer
-	outcome := worktrees.BranchCleanupOutcome{
-		Base: "main", Scope: "all", Apply: true,
-		Results: []worktrees.BranchCleanupResult{
-			{BranchEntry: worktrees.BranchEntry{Repository: "acme/app", Scope: "local", Branch: "task/one", ShortSHA: "abc1234"}, Applied: true},
-			{BranchEntry: worktrees.BranchEntry{Repository: "acme/app", Scope: "remote", Branch: "origin/task/two", ShortSHA: "def5678"}, Eligible: true},
-			{BranchEntry: worktrees.BranchEntry{Repository: "acme/app", Scope: "local", Branch: "task/three", ShortSHA: "0123456"}, Error: "delete failed"},
-			{BranchEntry: worktrees.BranchEntry{Repository: "beta/tool", Disposition: "unreadable"}, SkipReason: "target could not be fetched"},
-		},
-		Totals: map[string]int{"deleted": 1, "planned": 1, "skipped": 1, "failed": 1},
-	}
-	if err := printBranchCleanup(&out, outcome); err != nil {
-		t.Fatal(err)
-	}
-	text := out.String()
-	for _, want := range []string{
-		"deleted      local task/one (abc1234)",
-		"would delete remote origin/task/two (def5678)",
-		"failed       local task/three: delete failed",
-		"skip         beta/tool   (unreadable): target could not be fetched",
-		"1 deleted",
-	} {
-		if !strings.Contains(text, want) {
-			t.Errorf("branch cleanup missing %q:\n%s", want, text)
-		}
-	}
-
-	out.Reset()
-	if err := printBranchCleanup(&out, worktrees.BranchCleanupOutcome{}); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out.String(), "no branches matched") {
-		t.Errorf("empty cleanup = %q", out.String())
 	}
 }

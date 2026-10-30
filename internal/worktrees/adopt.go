@@ -20,7 +20,7 @@ import (
 // applies to it exactly as it does to a worktree `wb worktree create` made
 // directly, without a second parallel removal path.
 //
-// `wb worktree orphans` already discovers and classifies these worktrees.
+// `wb clean` already discovers and classifies these worktrees.
 // `wb worktree backfill` already gives one a manifest, but the identity
 // half of adoption alone: no task directory or Work Log claim exists for
 // cleanup/abort's own preflight to resolve, so both refuse it with "task …

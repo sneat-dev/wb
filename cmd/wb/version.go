@@ -1,10 +1,11 @@
 package main
 
 import (
+	"io"
+
 	"github.com/sneat-dev/wb/internal/buildinfo"
 	"github.com/sneat-dev/wb/internal/cli/cmdversion"
 	"github.com/spf13/cobra"
-	"io"
 )
 
 type versionInfo = buildinfo.Report

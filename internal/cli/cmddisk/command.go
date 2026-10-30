@@ -57,7 +57,7 @@ pnpm hard-links every store entry into every consumer, so an apparent size
 promises a reclaim that deleting cannot deliver. Every category is measured in
 one accounting walk, so content linked into two of them is counted once.
 
-This command only reports. Retiring a worktree is wb worktree gc, which knows
+This command only reports. Retiring a worktree is wb clean, which knows
 what holds unlanded work; nothing here deletes anything.
 
 Exit codes: 0 nothing to flag, 1 findings, 2 usage.

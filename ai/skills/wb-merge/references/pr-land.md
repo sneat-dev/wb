@@ -71,7 +71,7 @@ Auto-merge is **not** armed when doing so would skip one of this verb's guards:
 with `--keep-commits` (WB merges a rebuilt branch), or on a target without a
 strict up-to-date policy unless `--allow-unfenced` is explicit. `--no-auto-merge`
 and `--no-update-branch` opt out. A pending result with auto-merge armed lands
-without WB; retire the worktree afterwards with `wb worktree cleanup <task> --apply`.
+without WB; retire the worktree afterwards with `wb worktree retire <task> --apply`.
 
 ## Merge-queue targets are enqueued, never merged
 
@@ -401,7 +401,7 @@ wb pr land <owner/repo>#<n> --approved-by <review-comment-url>
 | `review-head-malformed` | a `Reviewed-Head:` line is present but is not exactly 40 hex characters | fix the review artifact's `Reviewed-Head:` line, or omit it to land unbound |
 | `review-comment-cross-repo` | the `--approved-by` comment URL names a different repository or pull request than the one being landed | pass the comment URL for this repository/pull request |
 | `draft-pull-request` | landing a draft would bypass the review it is waiting for | `gh pr ready <n> --repo <repo>` |
-| `pull-request-not-open` | already merged, or closed | `wb worktree gc --apply` when it is merged; open it in the browser otherwise |
+| `pull-request-not-open` | already merged, or closed | `wb clean --apply` when it is merged; open it in the browser otherwise |
 | `not-mergeable` | GitHub reports a conflict | `wb worktree merge <task> --route auto` |
 | `head-moved` | the branch moved after its checks were observed | rerun `wb pr land …`; the head SHA is sent as a lease, so a race cannot land an unverified head |
 | `target-has-no-strict-fence` | the target branch has no server-enforced strict up-to-date policy, so green checks prove the head was green, not that it still is | `wb pr land … --allow-unfenced`, recorded on the receipt |

@@ -185,12 +185,12 @@ func TestWorktreeRescueFleetFindsAHostLevelClone(t *testing.T) {
 //
 //	$ wb worktree create <task> <owner>/<repo> --base main ...
 //	created ...: <projects-root>/.worktrees/<task>/github.com/<owner>/<repo>
-//	$ wb worktree cleanup <task> --apply
+//	$ wb worktree retire <task> --apply
 //	error: cleanup worktree ... has unsupported hierarchy
 //
 // `wb worktree create` writes the default central-store host-level layout
 // (no ~/.config/wb/worktrees.yaml present, exactly the report's own note),
-// and `wb worktree cleanup --apply` must retire that exact path once the
+// and `wb worktree retire --apply` must retire that exact path once the
 // branch has landed, rather than refusing it.
 func TestWorktreeCreateThenCleanupApplyRetiresHostLevelWorktree(t *testing.T) {
 	root := t.TempDir()
@@ -263,7 +263,7 @@ func TestWorktreeCreateThenCleanupApplyRetiresHostLevelWorktree(t *testing.T) {
 	ownerDir := filepath.Dir(worktree)
 	hostDir := filepath.Dir(ownerDir)
 
-	cleaned := runWB(t, "worktree", "cleanup", task, "--apply", "--remote", "--projects-root", projectsRoot, "--format", "json")
+	cleaned := runWB(t, "worktree", "retire", task, "--apply", "--remote", "--projects-root", projectsRoot, "--format", "json")
 	if cleaned.exitCode != exitOK {
 		t.Fatalf("cleanup exit = %d stderr=%s stdout=%s", cleaned.exitCode, cleaned.stderr, cleaned.stdout)
 	}

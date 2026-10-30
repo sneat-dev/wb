@@ -3,9 +3,10 @@ package cmdworktree
 import (
 	"bytes"
 	"errors"
-	"github.com/sneat-dev/wb/internal/worktreerun"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/worktreerun"
 )
 
 type activeLimitedWriter struct{ Allow, Writes int }

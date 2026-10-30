@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/diskusage"
@@ -97,6 +98,14 @@ type GCOptions struct {
 	DeleteRemote bool
 	// Progress is passed to the inventory walk.
 	Progress func(ListProgress)
+	// Select, when set, keeps only the inventoried checkouts it accepts. It is
+	// applied before classification, so a checkout outside the selection can
+	// neither appear in the report nor be retired: `wb clean` narrows the
+	// dry run and --apply through this one predicate (--org, --repo, --branch).
+	Select func(ListResult) bool
+	// Only, when set, keeps only entries whose class it names (see
+	// CleanClassSelected). Like Select it narrows the plan and the apply alike.
+	Only string
 }
 
 // GCEntry is one classified checkout with the evidence behind its class.
@@ -248,7 +257,13 @@ func gcObserved(ctx context.Context, options GCOptions, observe func(string)) (G
 		applySupersessionReceipt(ctx, options.SupersededBy, &listed.Results[index])
 	}
 	for _, result := range listed.Results {
+		if options.Select != nil && !options.Select(result) {
+			continue
+		}
 		entry := classifyForGC(result, options, now())
+		if !CleanClassSelected(options.Only, entry.Class) {
+			continue
+		}
 		if entry.Eligible {
 			if err := preflightWorkLogSealForCleanup(ctx, resolution.Write.Home, resolution.Root, result); err != nil {
 				entry.Eligible = false
@@ -367,7 +382,7 @@ func classifyForGC(result ListResult, options GCOptions, now time.Time) GCEntry 
 	case result.SupersessionRejection != "":
 		entry.Class = GCClassUnmerged
 		entry.Reason = "trusted supersession receipt refused: " + result.SupersessionRejection
-		entry.SanctionedCommand = "wb worktree gc " + result.Task + " --superseded-by <receipt.json>"
+		entry.SanctionedCommand = "wb clean --task " + result.Task + " --superseded-by <receipt.json>"
 	case result.SupersededAtOrigin:
 		entry.Class = GCClassLandedClean
 		entry.Eligible = true
@@ -402,13 +417,13 @@ func classifyForGC(result ListResult, options GCOptions, now time.Time) GCEntry 
 		entry.Class = GCClassUnmerged
 		entry.Reason = "the landing walk reached its --residue-depth bound without finding a landed ancestor, " +
 			"so this checkout is unclassified rather than proved unlanded"
-		entry.SanctionedCommand = "wb worktree gc " + result.Task + " --residue-depth " +
+		entry.SanctionedCommand = "wb clean --task " + result.Task + " --residue-depth " +
 			fmt.Sprint(2*residueDepthOrDefault(options.ResidueDepth))
 	case result.landedWithResidue():
 		entry.Class = GCClassLandedResidue
 		entry.Eligible = options.AllowResidue
 		entry.Reason = result.residueReason()
-		entry.SanctionedCommand = "wb worktree gc " + result.Task + " --allow-residue --apply"
+		entry.SanctionedCommand = "wb clean --task " + result.Task + " --allow-residue --apply"
 	case result.HeadUnknownToRemote:
 		entry.Class = GCClassUnpushed
 		entry.Reason = "head " + shortSHA(result.HeadSHA) + " was never pushed; removing this checkout would lose it"
@@ -427,7 +442,7 @@ func classifyForGC(result ListResult, options GCOptions, now time.Time) GCEntry 
 		result.MergedPullRequest.Merged.Add(options.OlderThan).After(now) {
 		entry.Eligible = false
 		entry.Reason = "merged pull request is newer than the safety window"
-		entry.SanctionedCommand = "wb worktree gc " + result.Task + " --older-than 0 --apply"
+		entry.SanctionedCommand = "wb clean --task " + result.Task + " --older-than 0 --apply"
 	}
 	if warning := staleOwnerWarning(result, options, now, entry.Class); warning != "" {
 		entry.Warnings = append(entry.Warnings, warning)
@@ -489,52 +504,13 @@ func applyGC(ctx context.Context, options GCOptions, outcome *GCOutcome) error {
 	if err != nil {
 		return err
 	}
+	retiredThisPass := make([]bool, len(outcome.Entries))
+	runGCApplyConcurrently(outcome.Entries, options.Workers, func(index int) {
+		retiredThisPass[index] = applyGCEntry(ctx, options, sweepRoot, &outcome.Entries[index])
+	})
 	for index := range outcome.Entries {
 		entry := &outcome.Entries[index]
-		retiredThisPass := entry.Eligible
-		if retiredThisPass {
-			cleanupOutcome, err := Cleanup(ctx, CleanupOptions{
-				ProjectsRoot:    options.ProjectsRoot,
-				Tasks:           []string{entry.Task},
-				ExactRepository: entry.Repository,
-				Base:            options.Base,
-				Apply:           true,
-				AllowResidue:    options.AllowResidue,
-				SupersededBy:    options.SupersededBy,
-				IncludeDetached: !options.SkipDetached,
-				Activity:        true,
-				OlderThan:       options.OlderThan,
-				TTL:             options.TTL,
-				ResidueDepth:    options.ResidueDepth,
-				// Retire an exact matching remote or a proved older ancestor of an
-				// already-landed local head. Cleanup leases the independently observed
-				// remote SHA, so ref drift still refuses before local removal.
-				DeleteRemote: options.DeleteRemote && entry.RemoteHeadSHA != "" &&
-					(entry.RemoteHeadSHA == entry.HeadSHA || entry.RemoteHeadAncestorOfHead),
-				Workers: 1,
-				Now:     options.Now,
-				// One sweep writes one receipt tree, with a directory per retired
-				// checkout. Letting each delegated cleanup pick its own timestamped
-				// default would make two repositories retired in the same instant
-				// overwrite each other's audit record.
-				ReportDir: filepath.Join(sweepRoot, entry.Task, strings.ReplaceAll(entry.Repository, "/", "-")),
-			})
-			if err != nil {
-				entry.Error = err.Error()
-				retiredThisPass = false
-			} else {
-				for _, result := range cleanupOutcome.Results {
-					if result.WorktreeDir == entry.WorktreeDir && result.Applied {
-						entry.Applied = true
-					}
-				}
-				if !entry.Applied {
-					entry.Error = "cleanup did not retire this checkout; rerun with --format json for its plan"
-					retiredThisPass = false
-				}
-			}
-		}
-		if retiredThisPass {
+		if retiredThisPass[index] {
 			retired[entry.Task] = append(retired[entry.Task], entry.Repository)
 		} else {
 			// Name every repository left behind, including a refused entry with
@@ -553,6 +529,115 @@ func applyGC(ctx context.Context, options GCOptions, outcome *GCOutcome) error {
 	}
 	sort.Slice(outcome.PartialTasks, func(i, j int) bool { return outcome.PartialTasks[i].Task < outcome.PartialTasks[j].Task })
 	return nil
+}
+
+// applyGCEntry retires one eligible checkout through the cleanup transaction
+// and reports whether it was retired in this pass.
+func applyGCEntry(ctx context.Context, options GCOptions, sweepRoot string, entry *GCEntry) bool {
+	if !entry.Eligible {
+		return false
+	}
+	cleanupOutcome, err := Cleanup(ctx, CleanupOptions{
+		ProjectsRoot:    options.ProjectsRoot,
+		Tasks:           []string{entry.Task},
+		ExactRepository: entry.Repository,
+		Base:            options.Base,
+		Apply:           true,
+		AllowResidue:    options.AllowResidue,
+		SupersededBy:    options.SupersededBy,
+		IncludeDetached: !options.SkipDetached,
+		Activity:        true,
+		OlderThan:       options.OlderThan,
+		TTL:             options.TTL,
+		ResidueDepth:    options.ResidueDepth,
+		// Retire an exact matching remote or a proved older ancestor of an
+		// already-landed local head. Cleanup leases the independently observed
+		// remote SHA, so ref drift still refuses before local removal.
+		DeleteRemote: options.DeleteRemote && entry.RemoteHeadSHA != "" &&
+			(entry.RemoteHeadSHA == entry.HeadSHA || entry.RemoteHeadAncestorOfHead),
+		Workers: 1,
+		Now:     options.Now,
+		// One sweep writes one receipt tree, with a directory per retired
+		// checkout. Letting each delegated cleanup pick its own timestamped
+		// default would make two repositories retired in the same instant
+		// overwrite each other's audit record.
+		ReportDir: filepath.Join(sweepRoot, entry.Task, strings.ReplaceAll(entry.Repository, "/", "-")),
+	})
+	if err != nil {
+		entry.Error = err.Error()
+		return false
+	}
+	for _, result := range cleanupOutcome.Results {
+		if result.WorktreeDir == entry.WorktreeDir && result.Applied {
+			entry.Applied = true
+		}
+	}
+	if !entry.Applied {
+		entry.Error = "cleanup did not retire this checkout; rerun with --format json for its plan"
+		return false
+	}
+	return true
+}
+
+// runGCApplyConcurrently runs apply for every entry on up to workers
+// goroutines, never two at once for the same repository (Git allows one writer
+// per clone) nor for the same task (one task's Work Log and operation lock are
+// shared by its repositories). The two keys are always taken in sorted order,
+// so two workers can never wait on each other. The 2026-10-29 datatug audit
+// retired 141 checkouts at about 25 s each, strictly one at a time.
+func runGCApplyConcurrently(entries []GCEntry, workers int, apply func(int)) {
+	if workers < 1 {
+		workers = 1
+	}
+	locks := keyedMutexes{locks: map[string]*sync.Mutex{}}
+	jobs := make(chan int)
+	var group sync.WaitGroup
+	for range min(workers, max(len(entries), 1)) {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			for index := range jobs {
+				release := locks.lock("repository\x00"+entries[index].Repository, "task\x00"+entries[index].Task)
+				apply(index)
+				release()
+			}
+		}()
+	}
+	for index := range entries {
+		if entries[index].Eligible {
+			jobs <- index
+		}
+	}
+	close(jobs)
+	group.Wait()
+}
+
+// keyedMutexes hands out one mutex per key.
+type keyedMutexes struct {
+	mu    sync.Mutex
+	locks map[string]*sync.Mutex
+}
+
+// lock acquires every key in sorted order and returns the release.
+func (keyed *keyedMutexes) lock(keys ...string) func() {
+	sort.Strings(keys)
+	held := make([]*sync.Mutex, 0, len(keys))
+	for _, key := range keys {
+		keyed.mu.Lock()
+		lock, ok := keyed.locks[key]
+		if !ok {
+			lock = &sync.Mutex{}
+			keyed.locks[key] = lock
+		}
+		keyed.mu.Unlock()
+		lock.Lock()
+		held = append(held, lock)
+	}
+	return func() {
+		for index := len(held) - 1; index >= 0; index-- {
+			held[index].Unlock()
+		}
+	}
 }
 
 // gcSweepReportDir is the one audit root for a whole sweep.
@@ -717,7 +802,7 @@ func dirtyResolution(result ListResult, management string, warnings []string) (r
 			"writes is their only copy; removing the checkout without it destroys them, and nothing in WB can bring "+
 			"them back. Rerun gc once the tree is clean and it will classify the checkout on its own evidence")
 	return "worktree has local changes and WB has no Work Log for it (" + management + "): capture them first",
-		"git -C " + result.WorktreeDir + " stash push --include-untracked -m " + strconv.Quote("wb gc "+result.Task),
+		"git -C " + result.WorktreeDir + " stash push --include-untracked -m " + strconv.Quote("wb clean "+result.Task),
 		warnings
 }
 

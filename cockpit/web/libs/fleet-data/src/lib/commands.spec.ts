@@ -98,7 +98,7 @@ for (const capability of manifest.capabilities) {
 const REQUIRED_FLAGS: Record<string, string[]> = {
   'wb worktree create': ['--model', '--original-prompt-file'],
   'wb pr create': ['--commit-all', '--message'],
-  'wb branch cleanup': ['--repo', '--branch'],
+  'wb clean': ['--repo', '--branch'],
   'wb agent dispatch': ['--repo', '--task', '--profile', '--new-worktree'],
   'wb remote enroll': ['--url', '--token-stdin'],
 }
@@ -204,9 +204,9 @@ describe('Copy command texts', () => {
     expect(text(worktreeList('fix-ci'))).toBe("wb worktree list 'fix-ci'")
     expect(text(pullRequestCreate('fix-ci', {}))).toBe("wb pr create 'fix-ci' --commit-all --message=<<<edit:message>>>")
     expect(text(pullRequestCreate('fix-ci', {}, 'ship it'))).toBe("wb pr create 'fix-ci' --commit-all --message='ship it'")
-    expect(text(worktreeCleanup('fix-ci'))).toBe("wb worktree cleanup 'fix-ci'")
-    expect(text(worktreeGc())).toBe('wb worktree gc')
-    expect(text(worktreeGc({ machine: 'vm' }))).toBe('wb worktree gc')
+    expect(text(worktreeCleanup('fix-ci'))).toBe("wb worktree retire 'fix-ci'")
+    expect(text(worktreeGc())).toBe('wb clean')
+    expect(text(worktreeGc({ machine: 'vm' }))).toBe('wb clean')
     expect(text(pullRequestLand('sneat-dev/wb', 12, {}))).toBe("wb pr land 'sneat-dev/wb#12'")
     expect(text(worktreeCreate(PLACEHOLDERS.task, ['<owner/repository>']))).toBe(
       "wb worktree create <<<edit:task>>> '<owner/repository>' --model=<<<edit:model>>> --original-prompt-file=<<<edit:file>>>",
@@ -214,7 +214,7 @@ describe('Copy command texts', () => {
     expect(text(branchList('sneat-dev/wb'))).toBe("wb branch list --repo='sneat-dev/wb'")
     expect(text(branchList('sneat-dev/wb', 'topic'))).toBe("wb branch list --repo='sneat-dev/wb' --branch='topic'")
     expect(text(fleetStatus('sneat-dev/wb'))).toBe("wb fleet status --filter='sneat-dev/wb'")
-    expect(text(branchCleanup('sneat-dev/wb', 'topic'))).toBe("wb branch cleanup --repo='sneat-dev/wb' --branch='topic'")
+    expect(text(branchCleanup('sneat-dev/wb', 'topic'))).toBe("wb clean --repo='sneat-dev/wb' --branch='topic'")
     expect(text(agentStatus('run-1'))).toBe("wb agent status 'run-1'")
     expect(text(agentLogs('run-1'))).toBe("wb agent logs 'run-1'")
     expect(text(agentStop('run-1', {}))).toBe("wb agent stop 'run-1'")

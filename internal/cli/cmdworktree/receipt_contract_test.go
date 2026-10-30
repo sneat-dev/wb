@@ -4,8 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"github.com/sneat-dev/wb/internal/graduation"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/graduation"
 )
 
 type receiptFailWriter struct{ err error }

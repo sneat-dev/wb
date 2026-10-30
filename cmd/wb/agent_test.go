@@ -2,15 +2,16 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
 	"github.com/sneat-dev/wb/internal/agentrun"
 	"github.com/sneat-dev/wb/internal/agents"
 	"github.com/sneat-dev/wb/internal/checkoutmarker"
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
-	"os"
-	"path/filepath"
-	"strings"
-	"testing"
 )
 
 func runAgentRootCLI(t *testing.T, args ...string) (int, string, string) {

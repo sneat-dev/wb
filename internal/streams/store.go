@@ -555,7 +555,7 @@ type StreamLink struct {
 // is the unpublished source a consumer elsewhere still resolves instead of a
 // published version.
 //
-// This is the state half of the guard that keeps `wb worktree cleanup` (and
+// This is the state half of the guard that keeps `wb worktree retire` (and
 // any verb that removes a managed worktree while landing, such as `wb pr
 // land` and `wb worktree merge`) from deleting a checkout another stream's
 // consumer still depends on. On 2026-09-07 exactly this happened: a provider

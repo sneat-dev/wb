@@ -4,11 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+
 	"github.com/sneat-dev/wb/internal/checkoutmarker"
 	"github.com/sneat-dev/wb/internal/checkoutsetup"
 	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/spf13/cobra"
-	"io"
 )
 
 type MarkerOperations struct {

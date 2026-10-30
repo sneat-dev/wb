@@ -5,12 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/sneat-dev/wb/internal/cockpitrun"
-	"github.com/sneat-dev/wb/internal/daemonruntime"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/cockpitrun"
+	"github.com/sneat-dev/wb/internal/daemonruntime"
 )
 
 func TestCockpitRootHostedConfigurationUsesRealValidation(t *testing.T) {

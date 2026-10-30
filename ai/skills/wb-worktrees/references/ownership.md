@@ -228,8 +228,8 @@ attempt. For a whole-session transfer that may be dirty, park then pickup.
 use.** The recorded owner is the session harness above the `wb` invocation, so
 a task a subagent created carries its coordinating session's process id and
 reads `active` for as long as that session lives, hours after the subagent
-finished. `wb worktree cleanup` never refuses on it: a clean, pushed head
-contained in its target is eligible whoever is still alive. `wb worktree gc`
+finished. `wb worktree retire` never refuses on it: a clean, pushed head
+contained in its target is eligible whoever is still alive. `wb clean`
 decides in-use from recent activity (heartbeat, edited file, Work Log event,
 commit) and reports a live process id with no activity as recycled. Only
 `wb worktree relocate` refuses an active owner.
@@ -426,12 +426,12 @@ wb worktree list --only orphaned
 A worktree nobody ever declared is `unknown`, and both filters exclude it: it
 needs review, not a verdict. Silence is not evidence of abandonment, and an
 entry WB wrote carrying only provenance is not a dead session. These are the
-same three states `wb worktree orphans` reports as live, gone, and unstated —
+same three states `wb clean` reports as live, gone, and unstated —
 the two commands answer one question and always agree.
 
 ## How triage uses owner state
 
-`wb worktree orphans` prefers a declared owner over the commit-age heuristic,
+`wb clean` prefers a declared owner over the commit-age heuristic,
 because one is proof and the other is a guess. Each row is marked
 `owner live`, `owner gone`, or `owner unstated`.
 

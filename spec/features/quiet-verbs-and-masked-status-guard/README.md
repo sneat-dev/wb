@@ -38,7 +38,7 @@ reason, and refuse the pattern.
 `--quiet` (or `WB_QUIET=1`) is a root flag that the lifecycle verbs consume:
 `create`, `worktree create`, `land`, `worktree land`, `worktree merge` (and its
 `prepare`, `land`, `resume` and `revert` leaves), `pr create`, `pr land`, and
-`worktree cleanup`. It follows the repository's persistent-flag contract: a verb
+`worktree retire`. It follows the repository's persistent-flag contract: a verb
 that does not consume it rejects the flag with a usage error instead of
 ignoring it, and the environment variable is ignored by verbs that do not
 consume it. `wb run --quiet` and `wb worktree guard --quiet` keep their own
@@ -135,7 +135,7 @@ follow-up step but they change nothing, so they stay maskable.
 
 `--quiet` MUST be a persistent root flag consumed by `create`, `worktree
 create`, `land`, `worktree land`, `worktree merge` and its `prepare`, `land`,
-`resume` and `revert` leaves, `pr create`, `pr land`, and `worktree cleanup`,
+`resume` and `revert` leaves, `pr create`, `pr land`, and `worktree retire`,
 and rejected with a usage error by every other command that does not define its
 own local `--quiet`. `WB_QUIET` MUST have the same effect as the flag on the
 consuming verbs and no effect elsewhere.
@@ -192,7 +192,7 @@ one trigger line that names the pipe hazard and the `--quiet` fix.
 #### REQ: cleanup-hint-names-an-existing-flag
 
 The `landed + residue` cleanup finding MUST name the verb that retires the
-checkout with the residue discarded, `wb worktree gc <task> --allow-residue
+checkout with the residue discarded, `wb clean --task <task> --allow-residue
 --apply`, and MUST NOT name a flag the verb it was printed by does not accept.
 
 ## Acceptance Criteria
@@ -243,9 +243,9 @@ stay inside their size budget. **Verifies:** the skills size and parity tests.
 
 **Requirements:** quiet-verbs-and-masked-status-guard#req:cleanup-hint-names-an-existing-flag
 
-The landed-with-residue finding names `wb worktree gc <task> --allow-residue
+The landed-with-residue finding names `wb clean --task <task> --allow-residue
 --apply`, a verb and flag that exist. **Verifies:** `internal/worktreelanding`
-and `wb worktree gc` tests.
+and `wb clean` tests.
 
 ## Open Questions
 

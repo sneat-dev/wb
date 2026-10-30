@@ -3,11 +3,12 @@ package main
 import (
 	"encoding/json"
 	"errors"
-	"github.com/sneat-dev/wb/internal/worktrees"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 func TestWorktreeInventoryRootBindingUsesActualNativeListService(t *testing.T) {

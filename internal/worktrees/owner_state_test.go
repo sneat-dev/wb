@@ -13,7 +13,7 @@ func viewFor(pid int) OwnerView {
 }
 
 // Silence is not evidence of abandonment. Reporting it as orphaned is what
-// made `wb worktree list` contradict `wb worktree orphans`.
+// made `wb worktree list` contradict `wb clean`.
 func TestWorktreeOwnerStateReportsSilenceAsUnknown(t *testing.T) {
 	t.Parallel()
 	if got := worktreeOwnerState(nil); got != "unknown" {

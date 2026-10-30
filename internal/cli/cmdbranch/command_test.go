@@ -5,13 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/sneat-dev/wb/internal/cli/shared"
-	"github.com/sneat-dev/wb/internal/worktrees"
-	"gopkg.in/yaml.v3"
 	"reflect"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/sneat-dev/wb/internal/cli/shared"
+	"github.com/sneat-dev/wb/internal/worktrees"
+	"gopkg.in/yaml.v3"
 )
 
 func runtimeForTest() shared.Runtime {
@@ -20,41 +20,12 @@ func runtimeForTest() shared.Runtime {
 func depsForTest() Dependencies {
 	return Dependencies{List: func(context.Context, worktrees.BranchListOptions) (worktrees.BranchListOutcome, error) {
 		return worktrees.BranchListOutcome{}, nil
-	}, Cleanup: func(context.Context, worktrees.BranchCleanupOptions) (worktrees.BranchCleanupOutcome, error) {
-		return worktrees.BranchCleanupOutcome{}, nil
 	}, Quarantine: func(context.Context, worktrees.BranchQuarantineOptions) (worktrees.BranchQuarantineOutcome, error) {
 		return worktrees.BranchQuarantineOutcome{}, nil
 	}, ArchiveTarget: func(context.Context, string) (worktrees.RetiredArchivePlan, error) {
 		return worktrees.RetiredArchivePlan{}, nil
 	}}
 }
-func TestBranchCleanupDefaultsToSafeDryRun(t *testing.T) {
-	t.Parallel()
-	command := newCleanup(runtimeForTest(), depsForTest())
-	apply := command.Flags().Lookup("apply")
-	if apply == nil || apply.DefValue != "false" {
-		t.Fatalf("--apply default = %#v, want false", apply)
-	}
-	scope := command.Flags().Lookup("scope")
-	if scope == nil || scope.DefValue != "local" {
-		t.Fatalf("--scope default = %#v, want local", scope)
-	}
-	olderThan := command.Flags().Lookup("older-than")
-	if olderThan == nil || olderThan.DefValue != (24*time.Hour).String() {
-		t.Fatalf("--older-than default = %#v, want %s", olderThan, 24*time.Hour)
-	}
-	if command.Flags().Lookup("report-dir") == nil {
-		t.Fatal("cleanup command has no --report-dir")
-	}
-	if command.Flags().Lookup("remote") != nil {
-		t.Fatal("wb branch cleanup must not define a --remote boolean; scope is selected only by --scope")
-	}
-	absorbedBy := command.Flags().Lookup("absorbed-by")
-	if absorbedBy == nil || absorbedBy.DefValue != "" {
-		t.Fatalf("--absorbed-by = %#v, want an empty-default string flag", absorbedBy)
-	}
-}
-
 func TestBranchListDefaultsShowEveryAgeAndDisposition(t *testing.T) {
 	t.Parallel()
 	command := newList(runtimeForTest(), depsForTest())
@@ -278,16 +249,6 @@ func TestBranchHelpExplainsEvidenceTaxonomyAndInvariants(t *testing.T) {
 	} {
 		if !strings.Contains(list.Long, wanted) {
 			t.Errorf("branch list help does not mention %q", wanted)
-		}
-	}
-	cleanup := newCleanup(runtimeForTest(), depsForTest())
-	for _, wanted := range []string{
-		"dry-run plan", "absorbed is never eligible", "compare-and-delete",
-		"force-with-lease", "pull-request evidence", "never removes, moves, or modifies any working tree",
-		"between plan and apply refuses only itself", "--absorbed-by",
-	} {
-		if !strings.Contains(cleanup.Long, wanted) {
-			t.Errorf("branch cleanup help does not mention %q", wanted)
 		}
 	}
 }

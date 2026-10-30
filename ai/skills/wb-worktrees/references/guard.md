@@ -1,8 +1,8 @@
 # Guard and recover a checkout
 
 For branch and worktree hygiene sweeps rather than one checkout's safety, read
-[cleanup.md](cleanup.md): it routes `wb worktree orphans`, `wb worktree backfill`,
-and `wb worktree cleanup` for historic leftovers across every repository.
+[clean.md](clean.md): it routes `wb clean`, `wb worktree backfill`,
+and `wb worktree retire` for historic leftovers across every repository.
 
 Run before editing, committing, or pushing:
 
@@ -52,7 +52,7 @@ WB rejects:
 - linked worktrees outside a resolver-recognized canonical
   `.worktrees/<task>` path or configured shared checkout root — **unless** the
   worktree carries an active Work Log claim from
-  `wb worktree adopt --apply` (see [cleanup.md](cleanup.md)). Adoption's whole
+  `wb worktree adopt --apply` (see [clean.md](clean.md)). Adoption's whole
   point is never relocating the checkout, so guard resolves that one exact
   case from the worktree's own claim instead of its path, then applies every
   other check — admission included — unchanged;
@@ -136,18 +136,21 @@ instruction once, and then it is on record.
 
 ## Triage abandoned worktrees
 
-`wb worktree orphans` explains every linked worktree reachable from the projects
-root and recommends what to do with each. It is read-only.
+`wb clean` explains every WB checkout and every linked worktree reachable from
+the projects root, with a class and its evidence for each. It is a dry run
+until `--apply`.
 
 ```sh
-wb worktree orphans                  # every family, with evidence
-wb worktree orphans --only remove    # families whose work has all landed
-wb worktree orphans --format json    # for scripting
+wb clean                       # every checkout and branch, with evidence
+wb clean --only landed         # only work that has provably landed
+wb clean --only unmanaged      # linked worktrees WB does not manage
+wb clean --format json         # for scripting
 ```
 
-Discovery goes through each canonical clone's own Git worktree registry, so it
-sees all three layout generations at once — WB's current home, the legacy
-`<projects-root>/.wb` hierarchy, and pre-WB checkouts living anywhere else.
+Unmanaged rows are discovered through each canonical clone's own Git worktree
+registry, so they cover every layout generation at once — WB's current home,
+the legacy `<projects-root>/.wb` hierarchy, and pre-WB checkouts living
+anywhere else. They are reported and never removed.
 
 Dispositions, always paired with their evidence:
 
@@ -159,7 +162,7 @@ Dispositions, always paired with their evidence:
 
 Rows group by root effort, so `feature` and `feature.task-one` are one subject.
 A family is recommended for removal only when every worktree in it has landed,
-and `wb worktree cleanup` refuses a parent effort while any sub-effort is live.
+and `wb worktree retire` refuses a parent effort while any sub-effort is live.
 
 To adopt existing worktrees into the journal:
 

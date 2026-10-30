@@ -1,9 +1,10 @@
 package main
 
 import (
+	"io"
+
 	cliprogress "github.com/sneat-dev/wb/internal/cli/progress"
 	"github.com/sneat-dev/wb/internal/progress"
-	"io"
 )
 
 // Temporary adapters serve the remaining dependency and worktree consumers.

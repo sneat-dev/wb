@@ -3,6 +3,7 @@ package cmdworktree
 import (
 	"encoding/json"
 	"fmt"
+
 	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"

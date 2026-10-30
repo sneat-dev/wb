@@ -4,13 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"github.com/sneat-dev/wb/internal/agents"
-	"github.com/sneat-dev/wb/internal/testenv"
-	"github.com/sneat-dev/wb/internal/wbconfig"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/agents"
+	"github.com/sneat-dev/wb/internal/testenv"
+	"github.com/sneat-dev/wb/internal/wbconfig"
 )
 
 func TestAgentRootAwaitAliasAndLazyLocalStoreBinding(t *testing.T) {

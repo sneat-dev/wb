@@ -34,7 +34,7 @@ sure we have a script or wb command to configure any machine."
 
 **Why `wb setup`, not `wb install`:** the Install Feature forbids adding
 behavior to the cli-helpers binding (install#req:library-provided-behavior).
-Setup composes commands, as [`wb cleanup`](../cleanup-orchestration/README.md)
+Setup composes commands, as [`wb clean`](../cleanup-orchestration/README.md)
 does; `wb doctor` reads as report-only.
 
 ## Behavior

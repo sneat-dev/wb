@@ -87,7 +87,7 @@ type DeployedRevisionEvidence struct {
 }
 
 // TerminalCleanupEvidence is the persistent JSON report written by `wb
-// worktree cleanup <task> --apply --remote`. It names only feature/integration
+// worktree retire <task> --apply --remote`. It names only feature/integration
 // worktrees; a canonical target checkout is intentionally not deleted.
 type TerminalCleanupEvidence struct {
 	GeneratedAt  time.Time                          `json:"generated_at"`
@@ -355,7 +355,7 @@ func validateDeployedRevision(evidence DeployedRevisionEvidence, repository, rev
 
 func validateTerminalCleanup(evidence TerminalCleanupEvidence, repository, target, revision string) error {
 	if evidence.Phase != "applied" || !evidence.Apply || !evidence.DeleteRemote || !nonBlank(evidence.Task) || evidence.GeneratedAt.IsZero() || len(evidence.Results) == 0 || len(evidence.Diagnostics) != 0 {
-		return fmt.Errorf("must be an applied wb worktree cleanup --remote report")
+		return fmt.Errorf("must be an applied wb worktree retire --remote report")
 	}
 	found := false
 	seen := map[string]bool{}

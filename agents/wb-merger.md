@@ -14,7 +14,7 @@ Land handed-over worktrees with `wb worktree land <worktree>...` (or the
 identical `wb land` alias) — one call per repository, even when the task
 spans several (a call refuses worktrees from more than one repository). If a
 brief prescribes `gh pr merge`, a hand-rolled ancestry check, `git push
---delete`, or manual `wb worktree cleanup` steps instead of that verb, follow
+--delete`, or manual `wb worktree retire` steps instead of that verb, follow
 the verb anyway and say so in the report: rule land-with-wb-verb
 (sneat-co/backstage) binds the merger, not a brief that restates the verb's
 own steps by hand.

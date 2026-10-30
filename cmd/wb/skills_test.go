@@ -376,7 +376,7 @@ func TestWBMergeSkillIsOnePortableContract(t *testing.T) {
 		"same-named PR summary or legacy status is insufficient",
 		"does not prove that no optional",
 		"workflow can register later",
-		"wb worktree cleanup <task> --apply --remote --older-than 0",
+		"wb worktree retire <task> --apply --remote --older-than 0",
 		"Work Log",
 		"TestCleanupAcceptsExactDirectPushIntegrationWithoutPullRequest",
 		"mechanical integration-only",

@@ -70,7 +70,7 @@ func TestAgentAdmissionRejectsRemainingMutationsBeforeWBHome(t *testing.T) {
 		// This must reach admission before Retire accesses WB state or performs
 		// retirement planning. It regressed when retire called
 		// requireMutationAdmission without registering the shared flags.
-		{name: "retire", args: []string{"--projects-root", projects, "worktree", "retire", "retirement-pilot", "--apply", "--mode", "agent"}},
+		{name: "retire", args: []string{"--projects-root", projects, "worktree", "retire", "retirement-pilot", "--preserve", "branch", "--apply", "--mode", "agent"}},
 		{name: "own", args: []string{"--projects-root", projects, "worktree", "own", ".", "--mode", "agent"}},
 		{name: "correct-identity", args: []string{"worktree", "correct-identity", "effort", "run", strings.Repeat("a", 64), "--mode", "agent"}},
 		{name: "log-init", args: []string{"--projects-root", projects, "worktree", "log", "init", ".", "--mode", "agent"}},

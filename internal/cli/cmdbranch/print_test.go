@@ -107,44 +107,6 @@ func TestPrintBranchListPropagatesWriteErrorsAtEveryStage(t *testing.T) {
 	})
 }
 
-func TestPrintBranchCleanupPropagatesWriteErrorsForEveryRowKind(t *testing.T) {
-	t.Parallel()
-	sentinel := errors.New("stdout is closed")
-	outcome := worktrees.BranchCleanupOutcome{
-		Apply: true,
-		Results: []worktrees.BranchCleanupResult{
-			{BranchEntry: worktrees.BranchEntry{Repository: "acme/app", Scope: "local", Branch: "task/one", ShortSHA: "abc1234"}, Applied: true},
-			{BranchEntry: worktrees.BranchEntry{Repository: "acme/app", Scope: "remote", Branch: "origin/task/two", ShortSHA: "def5678"}, Eligible: true},
-			{BranchEntry: worktrees.BranchEntry{Repository: "acme/app", Scope: "local", Branch: "task/three", ShortSHA: "0123456"}, Error: "delete failed"},
-			{BranchEntry: worktrees.BranchEntry{Repository: "beta/tool", Disposition: "unreadable"}, SkipReason: "target could not be fetched"},
-		},
-	}
-	// Write order: repo header(acme/app), deleted row, eligible row, failed
-	// row, repo header(beta/tool), skip row, trailing blank line, summary
-	// line = 8 writes. Failing at each position covers every branch of the
-	// per-row switch plus the trailing summary line.
-	for after := 0; after < 8; after++ {
-		after := after
-		t.Run(fmt.Sprintf("after-%d-writes", after), func(t *testing.T) {
-			t.Parallel()
-			command := &cobra.Command{}
-			command.SetOut(&failAfterWriter{remaining: after, err: sentinel})
-			if err := printBranchCleanup(command.OutOrStdout(), outcome); !errors.Is(err, sentinel) {
-				t.Fatalf("after=%d err=%v", after, err)
-			}
-		})
-	}
-
-	t.Run("no results first write failure", func(t *testing.T) {
-		t.Parallel()
-		command := &cobra.Command{}
-		command.SetOut(&failAfterWriter{remaining: 0, err: sentinel})
-		if err := printBranchCleanup(command.OutOrStdout(), worktrees.BranchCleanupOutcome{}); !errors.Is(err, sentinel) {
-			t.Fatalf("err=%v", err)
-		}
-	})
-}
-
 func TestBranchCountAcceptsSupportedFormatsAndRejectsUnknownFormat(t *testing.T) {
 	t.Parallel()
 	for _, format := range []string{"text", "json", "yaml", "bogus"} {
@@ -177,31 +139,6 @@ func TestBranchListAcceptsSupportedFormatsAndRejectsUnknownFormat(t *testing.T) 
 		t.Run(format, func(t *testing.T) {
 			t.Parallel()
 			command := newList(runtimeForTest(), depsForTest())
-			var out strings.Builder
-			command.SetOut(&out)
-			command.SetErr(&out)
-			command.SetArgs([]string{"--format", format})
-			err := command.Execute()
-			if format == "bogus" {
-				if err == nil || !strings.Contains(err.Error(), "unsupported format") {
-					t.Fatalf("format=%s err=%v", format, err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("format=%s err=%v out=%s", format, err, out.String())
-			}
-		})
-	}
-}
-
-func TestBranchCleanupAcceptsSupportedFormatsAndRejectsUnknownFormat(t *testing.T) {
-	t.Parallel()
-	for _, format := range []string{"text", "json", "bogus"} {
-		format := format
-		t.Run(format, func(t *testing.T) {
-			t.Parallel()
-			command := newCleanup(runtimeForTest(), depsForTest())
 			var out strings.Builder
 			command.SetOut(&out)
 			command.SetErr(&out)

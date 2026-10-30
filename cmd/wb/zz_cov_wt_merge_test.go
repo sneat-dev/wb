@@ -348,7 +348,7 @@ func TestCwWtMergeAcknowledgeAbsorbedConflictOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("acknowledge-absorbed-conflict --apply = %v, want nil", err)
 	}
-	if !strings.Contains(applied, "next: wb worktree cleanup ") {
+	if !strings.Contains(applied, "next: wb worktree retire ") {
 		t.Fatalf("apply stdout %q missing the cleanup hint", applied)
 	}
 	if !strings.Contains(applied, "status: ") {

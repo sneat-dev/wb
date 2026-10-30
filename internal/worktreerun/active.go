@@ -4,13 +4,15 @@ package worktreerun
 import (
 	"context"
 	"errors"
-	"github.com/sneat-dev/wb/internal/remotestate"
-	"github.com/sneat-dev/wb/internal/session"
-	"github.com/sneat-dev/wb/internal/wbhome"
-	"github.com/sneat-dev/wb/internal/worktrees"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/remotestate"
+	"github.com/sneat-dev/wb/internal/repofilter"
+	"github.com/sneat-dev/wb/internal/session"
+	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 // ActiveRow is deliberately smaller than ListResult and WorktreeState.
@@ -257,7 +259,7 @@ func normalizedLifecycle(value string) string {
 }
 
 func matchesWorktreeFilter(repository, filter string) bool {
-	return filter == "" || strings.Contains(strings.ToLower(repository), strings.ToLower(filter))
+	return filter == "" || repofilter.Match(filter, repository)
 }
 
 func sortActiveWorktrees(rows []ActiveRow) {

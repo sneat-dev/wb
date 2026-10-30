@@ -83,7 +83,7 @@ func readWorkLogCleanupRecordForTest(t *testing.T, home string, projection workL
 }
 
 // TestCleanupAcceptsRebasedTerminalAfterFinalizeByPatchID is S63's cleanup
-// reproduction: `wb worktree cleanup <task> --apply --remote` on a worktree
+// reproduction: `wb worktree retire <task> --apply --remote` on a worktree
 // finalized before a rebase used to refuse with "immutable terminal does not
 // authorize cleanup of the finalized claim" (S41/PR #467's
 // acceptAdvancedCleanupTerminal only proves plain Git descendance, which a

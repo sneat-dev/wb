@@ -3,11 +3,12 @@ package cmdworktree
 import (
 	"context"
 	"fmt"
+	"io"
+
 	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/sneat-dev/wb/internal/hooks"
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
-	"io"
 )
 
 // NewGuard constructs the checkout policy inspection command.

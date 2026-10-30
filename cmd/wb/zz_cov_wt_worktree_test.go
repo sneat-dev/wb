@@ -26,15 +26,14 @@ func TestCwWtWorktreeCmdsRejectBadFormatInProcess(t *testing.T) {
 		"log-refresh": func() *cobra.Command { return newWorktreeWorkLogCmd(&invocation{}) },
 		"backfill":    func() *cobra.Command { return newWorktreeBackfillCmd(&invocation{}) },
 		"adopt":       func() *cobra.Command { return newWorktreeAdoptCmd(&invocation{}) },
-		"orphans":     func() *cobra.Command { return newWorktreeOrphansCmd(&invocation{}) },
 		"list":        func() *cobra.Command { return newWorktreeListCmd(&invocation{}) },
 		"marker":      func() *cobra.Command { return newWorktreeMarkerCmd(&invocation{}) },
 		"relocate":    func() *cobra.Command { return newWorktreeRelocateCmd(&invocation{}) },
 		"checkpoint":  newWorktreeCheckpointFetchCmd,
 		"rescue":      func() *cobra.Command { return newWorktreeRescueCmd(&invocation{}) },
 		"end":         func() *cobra.Command { return newWorktreeEndCmd(&invocation{}) },
-		"gc":          func() *cobra.Command { return newWorktreeGCCmd(&invocation{}) },
-		"cleanup":     func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{}) },
+		"gc":          func() *cobra.Command { return newCleanCmd(&invocation{}) },
+		"cleanup":     func() *cobra.Command { return newWorktreeRetireCmd(&invocation{}) },
 	}
 	arguments := map[string][]string{
 		"checkpoint":  {"--task", "t"},
@@ -62,16 +61,15 @@ func TestCwWtWorktreeCleanupArgValidation(t *testing.T) {
 		args []string
 		want string
 	}{
-		{args: nil, want: "supply one or more tasks or use --all-merged"},
-		{args: []string{"--recover-stages"}, want: "--recover-stages requires one or more named tasks"},
-		{args: []string{"--recover-stages", "--retire-shells", "t"}, want: "--recover-stages cannot be combined"},
-		{args: []string{"--retire-shells", "t"}, want: "--retire-shells sweeps every task"},
-		{args: []string{"--retire-shells", "--all-merged"}, want: "--retire-shells and --all-merged cannot be combined"},
-		{args: []string{"t", "--all-merged"}, want: "tasks and --all-merged cannot be combined"},
+		{args: nil, want: "supply one or more tasks or branches"},
+		{args: []string{"--recover-stages"}, want: "supply one or more tasks or branches"},
+		{args: []string{"--recover-stages", "--preserve", "branch", "t"}, want: "--recover-stages and --preserve cannot be combined"},
+		{args: []string{"--preserve", "branch", "t", "u"}, want: "--preserve retires exactly one task"},
+		{args: []string{"t", "--all-merged"}, want: "unknown flag: --all-merged"},
 		{args: []string{"t", "--resume-interrupted", "--apply", "extra"}, want: "--resume-interrupted requires one explicit task"},
 	}
 	for _, test := range cases {
-		_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{}) }, test.args...)
+		_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeRetireCmd(&invocation{}) }, test.args...)
 		if err == nil || !strings.Contains(err.Error(), test.want) {
 			t.Errorf("cleanup %v error = %v, want %q", test.args, err, test.want)
 		}
@@ -211,19 +209,6 @@ func TestCwWtWorktreeBackfillAdoptOrphansInProcess(t *testing.T) {
 		t.Fatalf("adopt json: %v", err)
 	}
 
-	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeOrphansCmd(&invocation{projectsRoot: projects}) })
-	if err != nil {
-		t.Fatalf("orphans: %v", err)
-	}
-	if !strings.Contains(stdout, "worktrees in") {
-		t.Fatalf("orphans stdout = %q", stdout)
-	}
-	if _, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeOrphansCmd(&invocation{projectsRoot: projects}) }, "--format", "json"); err != nil {
-		t.Fatalf("orphans json: %v", err)
-	}
-	if _, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeOrphansCmd(&invocation{projectsRoot: projects}) }, "--only", "remove"); err != nil {
-		t.Fatalf("orphans --only: %v", err)
-	}
 }
 
 func TestCwWtWorktreeRenameInProcess(t *testing.T) {
@@ -404,9 +389,8 @@ func TestCwWtWorktreeErrorPropagationFromBackend(t *testing.T) {
 		{name: "list", build: func() *cobra.Command { return newWorktreeListCmd(&invocation{}) }},
 		{name: "summary", build: func() *cobra.Command { return newWorktreeSummaryCmd(&invocation{}) }, args: []string{"t"}},
 		{name: "backfill", build: func() *cobra.Command { return newWorktreeBackfillCmd(&invocation{}) }},
-		{name: "orphans", build: func() *cobra.Command { return newWorktreeOrphansCmd(&invocation{}) }},
-		{name: "gc", build: func() *cobra.Command { return newWorktreeGCCmd(&invocation{}) }},
-		{name: "cleanup", build: func() *cobra.Command { return newWorktreeCleanupCmd(&invocation{}) }, args: []string{"t"}},
+		{name: "gc", build: func() *cobra.Command { return newCleanCmd(&invocation{}) }},
+		{name: "cleanup", build: func() *cobra.Command { return newWorktreeRetireCmd(&invocation{}) }, args: []string{"t"}},
 		{name: "rename", build: func() *cobra.Command { return newWorktreeRenameCmd(&invocation{}) }, args: []string{"a", "b"}},
 		{name: "relocate", build: func() *cobra.Command { return newWorktreeRelocateCmd(&invocation{}) }, args: []string{"t"}},
 		{name: "adopt", build: func() *cobra.Command { return newWorktreeAdoptCmd(&invocation{}) }, args: []string{"--all-external"}},

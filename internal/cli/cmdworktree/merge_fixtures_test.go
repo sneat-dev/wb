@@ -4,6 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
+	"os"
+	"testing"
+
 	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/sneat-dev/wb/internal/hostload"
 	"github.com/sneat-dev/wb/internal/landingcontext"
@@ -11,9 +15,6 @@ import (
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
-	"io"
-	"os"
-	"testing"
 )
 
 func mergeTestInvocation(flags shared.Flags) *mergeInvocation {

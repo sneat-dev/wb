@@ -66,7 +66,7 @@ func TestDiagnoseTaskLockAbsentLock(t *testing.T) {
 func TestLockedReasonNamesTheRemedyOnlyWhenRecoverable(t *testing.T) {
 	t.Parallel()
 	cmd := resumeInterruptedCommand("my-task")
-	if cmd != "wb worktree cleanup my-task --resume-interrupted" {
+	if cmd != "wb worktree retire my-task --resume-interrupted" {
 		t.Fatalf("resumeInterruptedCommand = %q", cmd)
 	}
 

@@ -27,10 +27,10 @@ with no index tying it together:
 
 | Location | Measured | What it holds |
 |---|---|---|
-| `reports/worktree-cleanup/<UTC-timestamp>/cleanup.json` | **624 run directories** | Per-candidate decisions from `wb worktree cleanup` — task, repository, branch, `head_sha`, `remote_target_sha`, disposition, and whether it was applied. |
+| `reports/worktree-cleanup/<UTC-timestamp>/cleanup.json` | **624 run directories** | Per-candidate decisions from `wb worktree retire` — task, repository, branch, `head_sha`, `remote_target_sha`, disposition, and whether it was applied. |
 | `reports/worktree-cleanup/backlog/<64-hex>.json` | hundreds of files | Interrupted-operation resume records, named **only by a content hash** — nothing in the filename says repository, branch, or task. |
 | `reports/worktree-cleanup/stage-archive/<task>-<hash>/` | — | Internal staging artifacts from a resumed cleanup. |
-| `reports/branch-cleanup/<timestamp>/` | — | Written by `wb branch cleanup --apply` before its first destructive operation. |
+| `reports/branch-cleanup/<timestamp>/` | — | Written by `wb clean --apply` before its first destructive operation. |
 | `worklogs/<effort-id>/` | **509 entries** | Per-effort agent-session recovery journals (see [Work Log Recovery](../work-log/README.md)) — prompts, claims, provenance. Not about Git mutations across the fleet. |
 | `archive/` | **1 entry** | `superseded-patches`, created by hand tonight. |
 | `backups/` | **1 entry** | `competios-all-refs-2026-08-12.bundle`, created by hand during a previous scare. |
@@ -47,7 +47,7 @@ directories, is the measurement that the current discipline is manual — a
 human remembered to capture something twice — and manual discipline is not a
 log.
 
-Tonight's own run — `wb branch cleanup --scope all --apply` deleting **777
+Tonight's own run — `wb clean --scope all --apply` deleting **777
 branches** (416 local, 361 remote) — is itself evidence of the gap: it is
 traceable today only because its own report directory happens to still exist
 and because the operator was watching. Non-destructive operations — `wb
@@ -93,7 +93,7 @@ live branch.
 ### Why a sibling of Cleanup Orchestration, not a fifth child
 
 [Cleanup Orchestration](../cleanup-orchestration/README.md) is a parent of
-four children — `wb cleanup`, `wb unpushed`, `wb audit`, `wb recover` —
+four children — `wb clean`, `wb unpushed`, `wb audit`, `wb recover` —
 because those four share one output contract, one unit-partitioning rule, one
 concurrency model, and one preservation gate, and its own "why one parent"
 section is explicit that the thing which justifies the grouping is a **shared
@@ -171,7 +171,7 @@ name:
 | Lives | inside the worktree, then `<WB_HOME>/worklogs/<effort-id>/` | `<WB_HOME>/journal/`, never inside a worktree or a canonical clone |
 | Answers | "what directed this effort, and can a successor resume it?" | "what did WB do to this repository or branch, and can it be undone?" |
 
-A single operation MAY reference both: a `wb cleanup --apply` run performed
+A single operation MAY reference both: a `wb clean --apply` run performed
 under an active Work Log claim carries that claim's effort ID in its journal
 record (`#req:journal-record-fields`), so the two can be cross-referenced, but
 neither reads or writes the other's storage.
@@ -259,7 +259,7 @@ report already carries — no embedded diff, no per-file manifest entry, no
 list of every branch a multi-branch run touched inside one record. Each
 record describes exactly one operation on exactly one subject and points, via
 `evidence_path`, to the report or manifest that carries the rest. A
-multi-branch `wb cleanup --apply` run therefore produces one journal record
+multi-branch `wb clean --apply` run therefore produces one journal record
 per branch retired, each pointing at the same `cleanup.json`, not one record
 for the whole run.
 
@@ -635,9 +635,9 @@ exists.
 **Requirements:** operations-journal#req:journal-scope-is-operations-not-invocations, operations-journal#req:journal-record-fields, operations-journal#req:journal-is-an-index-not-a-replacement
 
 Given a fixture repository and worktree, when `wb worktree create`, `wb sync`,
-`wb cleanup --apply` retiring three branches in one unit, and `wb audit`
+`wb clean --apply` retiring three branches in one unit, and `wb audit`
 (read-only) each run, then `wb worktree create` and `wb sync` each produce
-exactly one journal record with `destructive: false`; the `wb cleanup --apply`
+exactly one journal record with `destructive: false`; the `wb clean --apply`
 run produces exactly three journal records, one per branch, each with
 `destructive: true`, its own `before_sha`/`after_sha`/`outcome`, and an
 `evidence_path` pointing at the one `cleanup.json` all three share, with no
@@ -664,7 +664,7 @@ either the record is absent or the trailing line is a torn fragment that a
 reader discards without failing the read of every prior line — and `wb
 journal reindex` (`#req:journal-backfill`) subsequently recovers that
 operation from its durable report. Given the journal directory made
-read-only so every append fails, when `wb cleanup --apply` runs against a
+read-only so every append fails, when `wb clean --apply` runs against a
 fixture with eligible branches, then every eligible branch is still retired
 exactly as it would be with a writable journal, one stderr warning per failed
 append names the operation it could not index, and the run's exit code and
@@ -727,7 +727,7 @@ file actually on disk byte for byte.
 **Requirements:** operations-journal#req:wb-restore, operations-journal#req:restore-dry-run-default, operations-journal#req:restore-verifies-before-promising, operations-journal#req:restore-refuses-to-clobber-a-diverged-branch, operations-journal#req:restore-local-and-remote-are-independent
 
 Given a repository from which branch `feature-x` was deleted locally and on
-`origin` by a `wb cleanup --apply` run that captured a verified bundle, when
+`origin` by a `wb clean --apply` run that captured a verified bundle, when
 `wb restore --repository <owner>/<repo> --branch feature-x --local --remote`
 runs without `--apply`, then the plan resolves the branch via its journal
 record without any other flag supplied, states it will recreate both refs at

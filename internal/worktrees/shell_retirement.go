@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/sneat-dev/wb/internal/repofilter"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -31,7 +32,7 @@ type RetireShellsOptions struct {
 	Filter       string
 	Apply        bool
 	// Tasks limits the sweep to these exact task names. Empty sweeps every
-	// task, which is what `wb worktree cleanup --retire-shells` wants; a caller
+	// task, which is what `wb clean` wants; a caller
 	// acting on one named task must not quietly retire shells across the fleet
 	// on its behalf.
 	Tasks []string
@@ -87,7 +88,7 @@ func retireResolvedTaskShells(ctx context.Context, options RetireShellsOptions, 
 		selected := taskSelectionSet(options.Tasks)
 		for _, entry := range entries {
 			task := entry.Name()
-			if options.Filter != "" && !strings.Contains(task, options.Filter) {
+			if options.Filter != "" && !repofilter.Match(options.Filter, task) {
 				continue
 			}
 			if !taskSelectionMatches(selected, task) {
@@ -195,7 +196,7 @@ func taskShellIsEmptyObserved(taskPath, task string, lockHeldByThisCall bool, ob
 			if lockHeldByThisCall {
 				continue // the lock this same transaction just reclaimed, not a live operation's.
 			}
-			return false, fmt.Sprintf("an active or interrupted operation lock is present; run `wb worktree cleanup %s --resume-interrupted` first", task)
+			return false, fmt.Sprintf("an active or interrupted operation lock is present; run `wb worktree retire %s --resume-interrupted` first", task)
 		case strings.HasPrefix(name, ".wb-retired-lock-"):
 			info, infoErr := entry.Info()
 			if infoErr != nil || !info.Mode().IsRegular() {
@@ -288,7 +289,7 @@ func ownerDirectoryIsProvablyEmptyObserved(ownerPath string, observe shellInspec
 }
 
 // applyTaskShellRetirement removes an already-eligible shell. It acquires the
-// exact same per-task operation lock a live `wb worktree cleanup` would, so a
+// exact same per-task operation lock a live `wb worktree retire` would, so a
 // task a concurrent WB operation is actively touching is refused rather than
 // raced: acquireCleanupTaskAt fails closed on any live or interrupted `.lock`
 // and only ever reclaims an inert `.wb-retired-lock-*`, which is proof by

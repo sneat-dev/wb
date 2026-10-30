@@ -994,7 +994,7 @@ func TestBranchCleanupRefusesMovedLocalBranchWithoutAbortingSweep(t *testing.T) 
 }
 
 // TestBranchCleanupUnreadableSkipRowNamesRepositoryAndUnderlyingReason is the
-// regression for the founder's `wb branch cleanup --scope all` report: a
+// regression for the founder's `wb clean --scope all` report: a
 // repository whose exact origin target cannot be fetched (for example no
 // refs/heads/<base> at all, as with a repository whose default branch is not
 // "main") yields a single whole-repository `unreadable` BranchCleanupResult

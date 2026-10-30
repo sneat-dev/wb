@@ -1,15 +1,16 @@
 ---
 name: wb-branches
-description: Use WB to inventory and safely delete Git branches across the fleet — merged branches, stale branches, leftover branches that have no worktree, and stale remote branches. Use when asked to clean up branches, delete merged branches, prune remote branches, tidy leftover or historic branches, or audit branch hygiene, in one repository or across every repository. Never hand-roll `git branch -d`, `git branch --merged`, `git branch -D`, or `git push --delete` sweeps — they have no audit trail, no lease protection, and cannot tell work that landed from work that landed and was then reverted.
+description: Use WB to inventory and safely delete Git branches across the fleet — merged branches, stale branches, leftover branches that have no worktree, and stale remote branches. Deletion goes through `wb clean` (the one fleet cleanup verb, dry run until --apply) or `wb worktree retire <branch>` for one branch; `wb branch list` is the read-only inventory. Use when asked to clean up branches, what is safe to delete, delete merged branches, prune remote branches, tidy leftover or historic branches, or audit branch hygiene, in one repository or across every repository. Never hand-roll `git branch -d`, `git branch --merged`, `git branch -D`, or `git push --delete` sweeps — they have no audit trail, no lease protection, and cannot tell work that landed from work that landed and was then reverted.
 ---
 
 # WB branches
 
-`wb branch` is the command family for a branch that has no linked worktree —
-the large majority on a real fleet. A worktree-scoped hygiene request still
-belongs to `$wb-worktrees` (`wb worktree cleanup`/`orphans`); reach for this
-skill whenever the branch in question either has no worktree at all, or you
-do not yet know whether it does.
+`wb branch list` inventories branches; `wb clean` retires the finished ones,
+together with finished worktrees, in one dry-run-by-default sweep; and
+`wb worktree retire <branch>` retires one branch. This skill covers the branch
+side: a branch that has no linked worktree is the large majority on a real
+fleet. A worktree-scoped request belongs to `$wb-worktrees`
+([clean.md](../wb-worktrees/references/clean.md)).
 
 ## Commands
 
@@ -19,15 +20,16 @@ wb branch list --scope remote
 wb branch list --scope all --only unique
 wb branch list --org sneat-co --name 'retired/*'
 wb branch count --org sneat-co --only retired --format yaml
-wb branch cleanup
-wb branch cleanup --scope remote --apply
-wb branch cleanup --scope all --apply --older-than 0
-wb branch cleanup --scope remote --absorbed-by 123
+wb clean
+wb clean --scope remote --apply
+wb clean --scope all --apply --older-than 0
+wb clean --filter 'owner/*' --only receipted
+wb worktree retire old/topic --repo owner/repository --remote --absorbed-by 123
 wb branch quarantine --repo owner/repository --branch old/topic --reason superseded-work
 ```
 
 `wb branch list` is read-only in every configuration; its only remote
-interaction is fetching. `wb branch cleanup` plans by default — `--apply` is
+interaction is fetching. `wb clean` plans by default — `--apply` is
 required for every deletion, in every scope.
 
 `wb branch list` and `wb branch count` default to local refs from locally
@@ -87,17 +89,19 @@ read-only and accepts `--format text|json|yaml`.
 `--repo`, exact-owner `--org`, `--name` glob, `--only <disposition>`, and
 `--older-than` (default `0`, shows every age). List also accepts exact
 `--branch` and `--include-retired`; count reports retired refs separately.
-`wb branch cleanup` accepts its established `text` or `json` format and adds
+`wb clean` always proves landings with receipts and accepts `text` or `json`,
 `--apply`, `--older-than` (default `24h`, `0` disables the grace window),
-`--report-dir`, `--receipts`, `--absorbed-by <pr-or-commit>`, and the reviewed
-retirement inputs `--superseded-by <receipt.json>`, exact `--repo` and
-`--branch`, `--peer-evidence`, and `--require-host`. Reviewed retirement in
-any scope that includes remote deletion requires peer evidence from every
-named host, rechecks it immediately before the leased push, refuses fork
-origins, and stores a SHA-bound restored recovery bundle outside every source
-clone and linked worktree. Scope is
-selected only by `--scope` — there is no `--remote` boolean here, unlike
-`wb worktree cleanup --remote`.
+`--scope`, `--only`, exact `--repo` and `--branch`, root `--filter` (substring
+or glob) and repeatable `--org`, and `--superseded-by <receipt.json>` for one
+exact `--repo`/`--branch`. One bare branch is retired with
+`wb worktree retire <branch>`, which adds `--repo`, `--remote` (origin as
+well as local), `--report-dir`, `--absorbed-by <pr-or-commit>`, and the
+reviewed retirement inputs `--superseded-by`, `--peer-evidence`, and
+`--require-host`. Reviewed retirement in any scope that includes remote
+deletion requires peer evidence from every named host, rechecks it
+immediately before the leased push, refuses fork origins, and stores a
+SHA-bound restored recovery bundle outside every source clone and linked
+worktree.
 
 ## The evidence taxonomy
 
@@ -108,7 +112,7 @@ branch or tracking ref:
 | Disposition | Meaning | Eligible for `--apply`? |
 | --- | --- | --- |
 | `contained` | ancestor of the fetched exact target | **yes** |
-| `receipted` | a proved landing receipt — GitHub's own commit-to-pull-request index, or an operator-attested `--absorbed-by <pr-or-commit>` — shows the work is in the target | **yes, only under `--receipts` or `--absorbed-by`** |
+| `receipted` | a proved landing receipt — GitHub's own commit-to-pull-request index, or an operator-attested `--absorbed-by <pr-or-commit>` — shows the work is in the target; a branch squash-merged from its exact tip stays receipted after the target moves on, unless the target reverted the landing | **yes** (`wb clean` always proves receipts) |
 | `absorbed` | patch-id or tree equal to the target, but not an ancestor | **never** |
 | `unique` | `git cherry` proves it has content not upstream | no |
 | `protected` | is `--base`, the canonical clone's current HEAD, or a protected name | no |
@@ -119,7 +123,7 @@ branch or tracking ref:
 
 A branch that was squash-merged, rebase-merged, or cherry-picked so that all
 of its patches are already upstream by patch-id is `absorbed`, not
-`contained`, and `wb branch cleanup --apply` leaves it untouched under every
+`contained`, and `wb clean --apply` leaves it untouched under every
 flag combination that exists. This is deliberate, not an unimplemented case:
 patch-id equality proves identical content exists upstream, it does not prove
 this branch's work is still present in the target *now*. A branch that landed
@@ -131,12 +135,12 @@ the target no longer contains.
 Do not second-guess this with raw `git cherry` output and delete by hand. Each
 `absorbed` row names its own remedy:
 
-- A WB-owned branch (it has a task): `wb worktree cleanup <task> --absorbed-by <pr-or-commit>` —
+- A WB-owned branch (it has a task): `wb worktree retire <task> --absorbed-by <pr-or-commit>` —
   the receipt-based path that proves containment through a real GitHub
   landing receipt plus a local three-way merge, not through patch-id alone.
 - A branch with no worktree left — the common case, and the one that motivated
   this flag (a squash-landed branch whose worktree and local branch were
-  already cleaned up): `wb branch cleanup --absorbed-by <pr-or-commit>`. It
+  already cleaned up): `wb worktree retire <branch> --absorbed-by <pr-or-commit>`. It
   performs the exact same attested-absorption proof as the worktree-cleanup
   flag above — the named pull request or commit must contain the branch's
   content, the fetched target must still contain it, and the named commit
@@ -144,7 +148,7 @@ Do not second-guess this with raw `git cherry` output and delete by hand. Each
   downstream of it. A branch that passes is reclassified `receipted`, never
   `absorbed`; one that fails is reported with the failing check named and
   nothing is deleted.
-- Otherwise: re-run with `--receipts`. WB then asks GitHub's own
+- Otherwise: `wb clean` already proves receipts. WB asks GitHub's own
   commit-to-pull-request index for a merged pull request into the exact base,
   verifies its merge commit is contained in the fetched target, and proves
   locally — with a three-way merge that mutates nothing — that the branch adds
@@ -152,23 +156,26 @@ Do not second-guess this with raw `git cherry` output and delete by hand. Each
   check is reclassified `receipted` and becomes eligible; one that fails any
   check keeps its disposition with the failing check named in its evidence.
   The reverted-work case fails the proof by construction, because merging the
-  branch back would change the target's tree. This costs one GitHub query per
-  candidate, which is why it is opt-in.
+  branch back would change the target's tree. A branch whose tip is exactly
+  the merged pull request's head is receipted even when later edits changed
+  the target, because nothing was committed after the reviewed head and the
+  landing commit holds it in full; a revert of that landing (Git's revert
+  message, or every landed path restored) keeps it blocked.
 - A branch neither WB-owned nor receipt-provable stays where it is: an
   explicit human decision. No flag makes `absorbed` itself eligible.
 
-`--receipts` also rescues `unique`-classified squash landings: a multi-commit
+Receipts also rescue `unique`-classified squash landings: a multi-commit
 squash leaves no upstream twin for any individual patch-id, so a fully landed
 branch can report unique patches while every byte of it is in the target.
 
 ## A branch that has a worktree or a live claim: `in-use`
 
-`wb branch cleanup` never deletes a branch checked out in any linked
+`wb clean` never deletes a branch checked out in any linked
 worktree, or named by a live WB Work Log claim, even when its content is
-`contained` — deleting it there would race `wb worktree cleanup`/`abort` and
+`contained` — deleting it there would race `wb worktree retire`/`abort` and
 break the Work Log sealing contract. Its row names the correct command:
-`wb worktree cleanup <task>` or `wb worktree abort <task>`. See
-[`wb-worktrees`' cleanup reference](../wb-worktrees/references/cleanup.md) for
+`wb worktree retire <task>` or `wb worktree abort <task>`. See
+[`wb-worktrees`' cleanup reference](../wb-worktrees/references/clean.md) for
 that side of the split.
 
 ## Remote deletion fails closed

@@ -2,11 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
+	"testing"
+
 	"github.com/sneat-dev/wb/internal/quality"
 	"github.com/sneat-dev/wb/internal/qualityrun"
 	"github.com/spf13/cobra"
-	"strings"
-	"testing"
 )
 
 func TestCwCovQualityCommandsInProcess(t *testing.T) {

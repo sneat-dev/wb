@@ -5,18 +5,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/sneat-dev/wb/internal/hostload"
-	"github.com/sneat-dev/wb/internal/orchestrate"
-	"github.com/sneat-dev/wb/internal/runqueue"
-	"github.com/sneat-dev/wb/internal/testenv"
-	unix "github.com/sneat-dev/wb/internal/unixcompat"
-	"github.com/sneat-dev/wb/internal/wbhome"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/hostload"
+	"github.com/sneat-dev/wb/internal/orchestrate"
+	"github.com/sneat-dev/wb/internal/runqueue"
+	"github.com/sneat-dev/wb/internal/testenv"
+	unix "github.com/sneat-dev/wb/internal/unixcompat"
+	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
 // withHostLoad temporarily replaces hostload.System, the Reader every

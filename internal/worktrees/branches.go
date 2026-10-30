@@ -188,7 +188,7 @@ type branchSweepOptions struct {
 	Cleanup  bool
 	// AbsorbedBy is the optional operator-supplied landing pointer (a merged
 	// pull request number or an exact landing commit) that Branch Hygiene
-	// verifies with the same attested-absorption proof `wb worktree cleanup
+	// verifies with the same attested-absorption proof `wb worktree retire
 	// --absorbed-by` performs — see attestedAbsorbedReceipt. It selects which
 	// receipt to check and never substitutes for one: every candidate is
 	// still proved on evidence, so a wrong or dishonest pointer can only fail

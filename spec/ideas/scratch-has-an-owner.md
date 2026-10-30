@@ -101,7 +101,7 @@ location, so every tool invents its own under `/tmp` and nothing cleans up.
 
 ### The existing verb already knows, and declines
 
-`wb worktree gc --apply` on 2026-09-17 printed dozens of lines of this form:
+`wb clean --apply` on 2026-09-17 printed dozens of lines of this form:
 
 ```text
 artifact secure_worktree_stage /home/ai/projects/strongo/cli-helpers/
@@ -136,7 +136,7 @@ commands run inside a managed worktree.
 WB_SCRATCH=/tmp/wb/<task>/
 ```
 
-Ownership follows from recording it: `wb worktree gc` already retires the
+Ownership follows from recording it: `wb clean` already retires the
 worktree, and now retires the scratch path in the same operation, because the
 manifest says which one belongs to the task. Nothing needs to guess from
 timestamps, and a task that lives for a week keeps its scratch for a week.
@@ -236,7 +236,7 @@ task left no trace, and it is then reported rather than performed quietly.
   2026-09-17; it deletes by proxy rather than by ownership, and it is a second
   piece of unowned machine state added to fix unowned machine state. It survives
   only as part 4's last resort, inside the daemon that already has an owner.
-- **Leave it to `wb worktree gc`.** It already sees the orphans and is not
+- **Leave it to `wb clean`.** It already sees the orphans and is not
   authorised to remove them. Without an ownership record there is nothing to
   authorise it *with*, which is why part 1 comes first.
 - **Alert on disk usage only.** An alarm without an owner produces a human doing
@@ -246,7 +246,7 @@ task left no trace, and it is then reported rather than performed quietly.
 ## MVP Scope
 
 Parts 1 and 3: scratch allocation recorded in the manifest and retired by
-`wb worktree gc`, plus `wb disk` with machine-readable output. Together they
+`wb clean`, plus `wb disk` with machine-readable output. Together they
 remove the cause and make the remaining leak visible. Parts 2 and 4 follow once
 `wb disk` can show whether they are needed.
 
@@ -273,7 +273,7 @@ remove the cause and make the remaining leak visible. Parts 2 and 4 follow once
   and its machine-readable report, and the budget-triggered sweep operation.
 - **Existing Features affected:**
   [Worktree Lifecycle](../features/worktree-lifecycle/README.md) owns
-  `wb worktree create` and `wb worktree gc`, so it gains the scratch allocation,
+  `wb worktree create` and `wb clean`, so it gains the scratch allocation,
   its record in the manifest, and its retirement alongside the worktree — and is
   where the `.wb-retired-stage-*` residue that `gc` currently names but declines
   to purge belongs;
@@ -292,7 +292,7 @@ remove the cause and make the remaining leak visible. Parts 2 and 4 follow once
   space floor is a machine-level setting or a repository-level one.
 - **Lessons this closes:** partially controls
   `a-successful-release-run-must-not-hide-a-noop-publication` for the
-  `wb worktree gc` case, where a detector reports `0 terminal artefacts purged`
+  `wb clean` case, where a detector reports `0 terminal artefacts purged`
   while naming the artefacts it declined to purge.
 
 ## Open Questions

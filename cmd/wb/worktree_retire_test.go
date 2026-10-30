@@ -40,7 +40,7 @@ func (provider *retireStatusProvider) Status(context.Context) (remotestate.Statu
 func TestWorktreeRetireDryRunOnEmptyProjectsRootReportsNoMatch(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
-	args := []string{"worktree", "retire", "no-such-task", "--projects-root", root}
+	args := []string{"worktree", "retire", "no-such-task", "--preserve", "branch", "--projects-root", root}
 	if code := run(args, &stdout, &stderr); code == 0 {
 		t.Fatalf("run(%q) exit = 0, want a failure for a task that has no worktree, stdout=%s", args, stdout.String())
 	}
@@ -86,7 +86,7 @@ func TestWorktreeRetireDryRunReachesTheRemoteOwnershipCheck(t *testing.T) {
 
 	stdout.Reset()
 	stderr.Reset()
-	retireArgs := []string{"--projects-root", projects, "worktree", "retire", "cli-retire-ownership"}
+	retireArgs := []string{"--projects-root", projects, "worktree", "retire", "cli-retire-ownership", "--preserve", "branch"}
 	code := run(retireArgs, &stdout, &stderr)
 	if code == exitOK {
 		t.Fatalf("retire without a configured remote task store must be refused; stdout=%s", stdout.String())
@@ -169,7 +169,7 @@ func TestWorktreeRetireApplyCompletesAndReleasesTheRemoteClaim(t *testing.T) {
 
 	stdout.Reset()
 	stderr.Reset()
-	retireArgs := []string{"--projects-root", projects, "worktree", "retire", "cli-retire-apply", "--apply", "--format", "json"}
+	retireArgs := []string{"--projects-root", projects, "worktree", "retire", "cli-retire-apply", "--preserve", "branch", "--apply", "--format", "json"}
 	code := run(retireArgs, &stdout, &stderr)
 	if code != exitOK {
 		t.Fatalf("retire --apply exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())

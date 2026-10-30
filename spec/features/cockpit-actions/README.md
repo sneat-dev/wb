@@ -498,7 +498,7 @@ Then the worktree was first under Work at Risk with `branch_never_pushed`, Disca
   copyable commands until they exist, and that this Feature is to specify
   (execution is not specified here): starting new work from the Cockpit (`wb
   create` and `wb agent dispatch`), Stop, Log and Reply on a run, and the cleanup
-  flow, whose preview is the `wb worktree gc` dry-run and whose run is
+  flow, whose preview is the `wb clean` dry-run and whose run is
   `--apply` as a daemon operation with progress. Stop and Log apply to dispatched
   runs only, and Reply to recorded successor sessions only.
 - Whether the lifecycle runner can already run the indexer on demand for one

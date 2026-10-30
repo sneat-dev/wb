@@ -197,7 +197,7 @@ func TestRetireTaskShellsNeverTouchesARealCheckout(t *testing.T) {
 // TestRetireTaskShellsRefusesALiveLock proves the sweep never removes a lock
 // belonging to a live (or merely interrupted, unresolved) operation: a
 // `.lock` entry — as opposed to an already-retired `.wb-retired-lock-*` —
-// must always be left for `wb worktree cleanup <task> --resume-interrupted`
+// must always be left for `wb worktree retire <task> --resume-interrupted`
 // or a live operation to resolve, never treated as sweepable residue.
 func TestRetireTaskShellsRefusesALiveLock(t *testing.T) {
 	projectsRoot, worktreesRoot := setUpShellRetirementFixture(t)

@@ -220,11 +220,11 @@ func TestRemoteQueriesAndTargetCache(t *testing.T) {
 
 // A finding that tells the operator what to run must name a verb that accepts
 // it (sneat-dev/wb#814: `wb worktree cleanup` printed "rerun with
-// --allow-residue", a flag only `wb worktree gc` has).
+// --allow-residue", a flag only `wb clean` has).
 func TestResidueReasonNamesTheVerbThatRetiresTheCheckoutWithItsResidue(t *testing.T) {
 	t.Parallel()
 	reason := ResidueReason(&LandingEvidence{LandedSHA: "a", LandingSHA: "b", Residue: []ResidualCommit{{SHA: "c", Subject: "s"}}}, "founder-rulings-1002b")
-	if !strings.Contains(reason, "wb worktree gc founder-rulings-1002b --allow-residue --apply") {
+	if !strings.Contains(reason, "wb clean --task founder-rulings-1002b --allow-residue --apply") {
 		t.Fatalf("reason does not name the retiring command:\n%s", reason)
 	}
 	if strings.Contains(reason, "rerun with") {

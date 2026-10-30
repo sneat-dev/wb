@@ -3,12 +3,13 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"github.com/sneat-dev/wb/internal/quality"
-	"github.com/sneat-dev/wb/internal/qualityrun"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/quality"
+	"github.com/sneat-dev/wb/internal/qualityrun"
 )
 
 // ratchetFixtureRepo builds a tiny real git repository containing a

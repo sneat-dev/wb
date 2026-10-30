@@ -3,8 +3,9 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"github.com/sneat-dev/wb/internal/archiveprune"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/archiveprune"
 )
 
 func TestArchiveWiringUsesParsedProjectsRoot(t *testing.T) {

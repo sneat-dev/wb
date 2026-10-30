@@ -4,16 +4,17 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	cliprogress "github.com/sneat-dev/wb/internal/cli/progress"
-	"github.com/sneat-dev/wb/internal/cli/shared"
-	"github.com/sneat-dev/wb/internal/orchestrate"
-	"github.com/sneat-dev/wb/internal/quality"
-	"github.com/spf13/cobra"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	cliprogress "github.com/sneat-dev/wb/internal/cli/progress"
+	"github.com/sneat-dev/wb/internal/cli/shared"
+	"github.com/sneat-dev/wb/internal/orchestrate"
+	"github.com/sneat-dev/wb/internal/quality"
+	"github.com/spf13/cobra"
 )
 
 func TestWorktreeMergeForcedProgressIsNewlineDelimited(t *testing.T) {

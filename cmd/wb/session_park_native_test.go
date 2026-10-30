@@ -4,13 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"github.com/sneat-dev/wb/internal/cli/cmdsession"
-	"github.com/sneat-dev/wb/internal/session"
-	"github.com/sneat-dev/wb/internal/sessionlaunch"
-	"github.com/sneat-dev/wb/internal/sessionmove"
-	"github.com/sneat-dev/wb/internal/sessionpark"
-	"github.com/sneat-dev/wb/internal/sessionrun"
-	"github.com/sneat-dev/wb/internal/worktrees"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +11,14 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/cli/cmdsession"
+	"github.com/sneat-dev/wb/internal/session"
+	"github.com/sneat-dev/wb/internal/sessionlaunch"
+	"github.com/sneat-dev/wb/internal/sessionmove"
+	"github.com/sneat-dev/wb/internal/sessionpark"
+	"github.com/sneat-dev/wb/internal/sessionrun"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 func TestSessionResumeLocalActualCustodyRefusalDoesNotClaimRoute(t *testing.T) {

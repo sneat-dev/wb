@@ -3,9 +3,10 @@ package cmdworktree
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
+
 	"github.com/sneat-dev/wb/internal/worktreeend"
 	"github.com/spf13/cobra"
-	"strings"
 )
 
 func printWorktreeEnd(command *cobra.Command, format string, result worktreeend.Result) error {

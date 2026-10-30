@@ -15,8 +15,8 @@ status: Implementing
 `wb branch` is a top-level command family that inventories and safely retires
 local and remote Git branches across the fleet — including the large majority
 that have no linked worktree and no WB Work Log claim, and are therefore
-invisible to `wb worktree cleanup` today. `wb branch list` explains every
-branch and the exact evidence behind its disposition. `wb branch cleanup` plans
+invisible to `wb worktree retire` today. `wb branch list` explains every
+branch and the exact evidence behind its disposition. `wb clean` plans
 by default and, only under an explicit `--apply`, deletes exactly those
 branches whose content is provably contained in the freshly fetched origin
 target. A dedicated `--scope remote` mode sweeps stale remote branches on their
@@ -26,7 +26,7 @@ own.
 
 ### Cleanup is correct but far too narrow
 
-A `wb worktree cleanup --all-merged` dry run was executed against the whole
+A `wb clean` dry run was executed against the whole
 fleet. It exited 0 and reported **39 eligible tasks**. The same fleet holds:
 
 - **1,081 local branches.** 465 are merged ancestors of `origin/main`; 280 more
@@ -47,7 +47,7 @@ WB can retire 39 of them. Every skip in that run was WB being *correct*:
 - `coordinated task blocked by <repository>` — multi-repository task semantics
   holding a task together.
 
-The gap is **scope, not judgement**. `wb worktree cleanup` enumerates
+The gap is **scope, not judgement**. `wb worktree retire` enumerates
 `<wb-home>/worktrees/<task>/...`, so a merged local branch with no worktree and
 no Work Log claim is not a skipped candidate — it is not a candidate at all.
 That describes the large majority of those 750 branches.
@@ -78,7 +78,7 @@ a WB task.
 Branch Hygiene is a **sibling feature, not an extension of that one**, because:
 
 1. Its subject has no worktree. Expressing "delete a branch that has no
-   worktree" as a mode of `wb worktree cleanup` is the same category error that
+   worktree" as a mode of `wb worktree retire` is the same category error that
    made the capability undiscoverable in the first place.
 2. Its evidence model is different. Worktree cleanup is anchored on WB tasks,
    Work Log claims, task locks and coordinated siblings. A bare branch has none
@@ -86,7 +86,7 @@ Branch Hygiene is a **sibling feature, not an extension of that one**, because:
    different eligibility engines with a flag on one safety-critical command is
    where safety bugs hide.
 3. A remote-branches-only mode has no worktree meaning at all.
-4. `wb worktree cleanup` already carries nine flags and three interlocking
+4. `wb worktree retire` already carries nine flags and three interlocking
    conditional rules. Adding scope selection and a new evidence class to it
    makes it unreviewable.
 5. WB already separates command families by subject: `wb worktree`, `wb deps`,
@@ -98,14 +98,29 @@ retirement, and the same durable audit-report discipline.
 
 ## Behavior
 
+### 2026-10-29: deletion moved into `wb clean` and `wb worktree retire`
+
+The founder's naming decision (see
+[cleanup-orchestration](../cleanup-orchestration/README.md)) removed the
+`wb branch cleanup` verb. `wb branch list`, `count`, `quarantine` and
+`archive-target` keep this feature's surface. Fleet deletion of branches with no
+worktree is the branch section of `wb clean`, which always proves landing
+receipts, so `--receipts` is no longer a flag. One branch is retired with
+`wb worktree retire <branch>`, which carries `--repo`, `--remote`,
+`--report-dir`, `--absorbed-by`, `--superseded-by`, `--peer-evidence` and
+`--require-host`. Every evidence rule below is unchanged, and requirements that
+name the old verb or flag apply to those two verbs. A branch squash-merged from
+its exact tip is `receipted` after the target moves on unless the target
+reverted the landing (`cleanup-orchestration#req:exact-head-squash-receipt`).
+
 ### Command surface
 
 #### REQ: top-level-branch-family
 
 WB MUST expose a top-level `wb branch` command family with `wb branch list`,
-`wb branch count`, `wb branch cleanup`, `wb branch quarantine`, and the
+`wb branch count`, `wb clean`, `wb branch quarantine`, and the
 read-only `wb branch archive-target`. The family
-MUST NOT be nested under `wb worktree`, and `wb worktree cleanup` MUST NOT gain
+MUST NOT be nested under `wb worktree`, and `wb worktree retire` MUST NOT gain
 a branch-scope or remote-only flag.
 
 `wb branch list` flags: `--base` (string, default `main`), `--scope` (string,
@@ -160,7 +175,7 @@ Remote quarantine is refused until equivalent remote peer proof and leased
 mutation exist.
 
 This local-only command does not retire worktrees, Work Logs, or remote refs.
-`wb worktree retire <task> --apply` persists original path/ref/SHA and WB
+`wb worktree retire <task> --preserve branch --apply` persists original path/ref/SHA and WB
 receipts in a recovery manifest. Its archive target is a user-only WB
 configuration in `~/.config/wb/worktrees.yaml` (or
 `$XDG_CONFIG_HOME/wb/worktrees.yaml`): `retirement.archive_repository` selects
@@ -197,7 +212,7 @@ local-only.
 
 #### REQ: guarded-worktree-retirement
 
-`wb worktree retire <task>` MUST plan without mutation by default. Apply MUST
+`wb worktree retire <task> --preserve branch` MUST plan without mutation by default. Apply MUST
 hold the task lock and refuse a competing live claim, an open pull request,
 a changed source or remote ref, a secret-looking source commit path, or a
 missing, public, mismatched, or unavailable private archive target. It MUST
@@ -220,7 +235,7 @@ apply MUST resume from its durable receipt and recheck remote identities.
 After the last repository is removed, WB MUST release its remote task claim;
 a failed release MUST be reported as a partial completion.
 
-`wb branch cleanup` flags: `--base` (string, default `main`), `--scope`
+`wb clean` flags: `--base` (string, default `main`), `--scope`
 (string, one of `local`, `remote`, `all`; default `local`), `--apply` (bool,
 default false), `--older-than` (duration, default `24h`; `0` disables),
 `--report-dir` (string, default `<wb-home>/reports/branch-cleanup/<timestamp>`),
@@ -231,9 +246,9 @@ scope includes remote deletion MUST provide evidence from every required host;
 `--scope all` does not bypass this requirement. It MUST accept the root
 `--filter` and `--projects-root` flags.
 
-`wb branch cleanup` MUST NOT define a `--remote` boolean. Remote action is
+`wb clean` MUST NOT define a `--remote` boolean. Remote action is
 selected only by `--scope`, so `--scope remote` is unambiguous where
-`wb worktree cleanup --remote` — an additional action taken during `--apply` —
+`wb worktree retire --remote` — an additional action taken during `--apply` —
 is not. Both leaves MUST be added to `persistentFlagSupport` for
 `projects-root` and `filter` in `cmd/wb/main.go`.
 
@@ -288,7 +303,7 @@ so a protected or claimed branch is never reported as deletable.
 
 The `absorbed` class MUST NEVER be eligible for `--apply`, in any scope, under
 any flag, in any configuration. No flag that makes it eligible may be added.
-`wb branch cleanup --apply` MUST leave every `absorbed` branch untouched and
+`wb clean --apply` MUST leave every `absorbed` branch untouched and
 MUST report it with its evidence and the reason it was not deleted.
 
 This is a deliberate design decision, not an unimplemented case. Patch-id
@@ -372,7 +387,7 @@ and apply therefore refuses its own deletion, exactly as a moved branch does.
 
 #### REQ: attested-absorption-requires-exact-entry-point
 
-`wb branch cleanup --absorbed-by <pr-or-commit>` gives a branch with no
+`wb worktree retire <branch> --absorbed-by <pr-or-commit>` gives a branch with no
 worktree the same audited path
 [worktree-lifecycle#req:absorbed-integration-containment-evidence][absorbed]
 already gives a WB-owned one, for exactly the case that path cannot reach: the
@@ -382,7 +397,7 @@ associate with it — a manual squash or cherry-pick landing, not a GitHub
 merge.
 
 The flag MUST be verified with the identical proof machinery
-`wb worktree cleanup --absorbed-by` uses, not a second implementation of it: a
+`wb worktree retire --absorbed-by` uses, not a second implementation of it: a
 pull-request number MUST resolve to a merged pull request into the exact base
 whose merge commit is a real commit; any other pointer MUST resolve to an
 exact commit already present in the freshly fetched canonical repository. The
@@ -402,7 +417,7 @@ place. A branch that fails any check keeps whatever disposition its patch
 evidence (and, when requested, `--receipts`) produces, with the failing
 `--absorbed-by` check named alongside it; a failing pointer MUST refuse only
 that candidate and MUST NOT abort a fleet-wide sweep, exactly as an
-unresolvable `--absorbed-by` pointer never aborts `wb worktree cleanup`.
+unresolvable `--absorbed-by` pointer never aborts `wb worktree retire`.
 `--absorbed-by` is independent of `--receipts`: it costs a GitHub query only
 when it names a pull request number, and it runs whenever it is passed,
 regardless of whether `--receipts` is also set.
@@ -410,8 +425,8 @@ regardless of whether `--receipts` is also set.
 #### REQ: absorbed-names-its-remedy
 
 Every `absorbed` row MUST name the concrete next step in its reason text: for a
-branch that belongs to a WB task, `wb worktree cleanup <task> --absorbed-by
-<pr-or-commit>`; for one with no worktree left, `wb branch cleanup
+branch that belongs to a WB task, `wb worktree retire <task> --absorbed-by
+<pr-or-commit>`; for one with no worktree left, `wb clean
 --absorbed-by <pr-or-commit>`; otherwise an explicit human decision. A row
 that merely says "not eligible" is insufficient, because it reproduces the
 discoverability failure this feature exists to remove.
@@ -420,8 +435,8 @@ discoverability failure this feature exists to remove.
 
 A branch that is checked out in any linked worktree, or that is named by a WB
 Work Log claim, MUST be reported as `in-use` and MUST NEVER be deleted by
-`wb branch cleanup`, even when its content is `contained`. Its reason MUST name
-`wb worktree cleanup <task>` or `wb worktree abort <task>` as the correct
+`wb clean`, even when its content is `contained`. Its reason MUST name
+`wb worktree retire <task>` or `wb worktree abort <task>` as the correct
 command. This preserves the Work Log sealing contract and prevents two commands
 from racing on the same ref.
 
@@ -429,7 +444,7 @@ from racing on the same ref.
 
 #### REQ: dry-run-default
 
-`wb branch cleanup` MUST be a dry-run plan unless `--apply` is explicit. A dry
+`wb clean` MUST be a dry-run plan unless `--apply` is explicit. A dry
 run MUST NOT create a report directory, delete a ref, or make any other
 mutation. `--apply` MUST be required for every deletion in every scope.
 
@@ -452,7 +467,7 @@ state. Evidence gathered at plan time MUST NOT be reused as authorization.
 
 #### REQ: never-touch-a-working-tree
 
-`wb branch cleanup` MUST NOT remove, move, modify, or clean any working tree,
+`wb clean` MUST NOT remove, move, modify, or clean any working tree,
 worktree registration, index, or stash, in any configuration. A branch checked
 out anywhere is `in-use` and is therefore never a deletion candidate, so no
 worktree — and in particular no worktree holding uncommitted changes — can be
@@ -526,7 +541,7 @@ agent reads stderr and needs it to distinguish work from a hang.
 
 #### REQ: text-output-is-decision-shaped
 
-`wb branch list` and a `wb branch cleanup` dry run MUST group rows by
+`wb branch list` and a `wb clean` dry run MUST group rows by
 repository, and each row MUST carry branch, short SHA, disposition, age, and
 evidence. The text summary MUST report the count per disposition, so
 "how many are safe to delete" is answerable without reading every row.
@@ -563,11 +578,11 @@ description: Use WB to inventory and safely delete Git branches across the fleet
 ---
 ```
 
-The body MUST name `wb branch list` and `wb branch cleanup` with their full flag
+The body MUST name `wb branch list` and `wb clean` with their full flag
 surface, MUST state that dry run is the default and `--apply` is required, MUST
 state that `absorbed` is never deleted and why, MUST state that a branch owned
-by a WB task is handed to `wb worktree cleanup`, and MUST cross-link
-`ai/skills/wb-worktrees/references/cleanup.md`. The `wb-worktrees` skill MUST
+by a WB task is handed to `wb worktree retire`, and MUST cross-link
+`ai/skills/wb-worktrees/references/clean.md`. The `wb-worktrees` skill MUST
 gain a reciprocal pointer to `wb-branches` for branches with no worktree.
 
 ### Non-goals
@@ -576,7 +591,7 @@ gain a reciprocal pointer to `wb-branches` for branches with no worktree.
 
 This feature MUST NOT add branch creation, renaming, or restoration; MUST NOT
 mutate pull requests or any other GitHub state; MUST NOT change
-`wb worktree cleanup` eligibility; and MUST NOT delete anything without
+`wb worktree retire` eligibility; and MUST NOT delete anything without
 `--apply`.
 
 ## Acceptance Criteria
@@ -599,9 +614,9 @@ the run shows no change.
 
 **Requirements:** branch-hygiene#req:dry-run-default, branch-hygiene#req:compare-and-delete, branch-hygiene#req:recheck-before-mutation, branch-hygiene#req:never-touch-a-working-tree, branch-hygiene#req:durable-audit, branch-hygiene#req:delegate-wb-owned-branches
 
-Given that same fixture, when `wb branch cleanup` runs without `--apply`, then
+Given that same fixture, when `wb clean` runs without `--apply`, then
 no ref is deleted and no report directory is created. When
-`wb branch cleanup --apply` then runs, then exactly the `contained` branch is
+`wb clean --apply` then runs, then exactly the `contained` branch is
 deleted; the `absorbed`, `unique`, `in-use`, and `protected` branches survive;
 no worktree is removed or modified and a worktree holding uncommitted changes
 is untouched; and the audit report records repository, branch, branch SHA,
@@ -615,12 +630,12 @@ refused with its moved SHA reported and the remaining deletions still succeed.
 
 Given a branch whose commits were cherry-picked into `main` and then reverted
 in `main`, so that `git cherry` reports zero `+` lines while the target no
-longer contains the work, when `wb branch cleanup --apply` runs with every
+longer contains the work, when `wb clean --apply` runs with every
 flag combination the command accepts — including an `--absorbed-by` pointer
 naming a real but unrelated commit elsewhere in the same history — then the
 branch is classified `absorbed`, is never deleted, and its reason names the
-receipt-based `wb worktree cleanup --absorbed-by` remedy, the
-`wb branch cleanup --absorbed-by` remedy, or an explicit human decision. A
+receipt-based `wb worktree retire --absorbed-by` remedy, the
+`wb worktree retire <branch> --absorbed-by` remedy, or an explicit human decision. A
 test MUST assert that no flag combination, including an unrelated
 `--absorbed-by` pointer, deletes an `absorbed` branch.
 
@@ -630,7 +645,7 @@ test MUST assert that no flag combination, including an unrelated
 
 Given a remote branch whose commits were squash-landed onto `main` as one
 commit that GitHub associates with no pull request, and whose worktree and
-local branch are already gone, when `wb branch cleanup --scope remote
+local branch are already gone, when `wb clean --scope remote
 --absorbed-by <landing-commit>` runs without `--apply`, then the branch is
 classified `receipted`, carries the resolved landing commit, and is reported
 eligible; dry run and apply MUST evaluate the same evidence. When `--apply`
@@ -654,7 +669,7 @@ and nothing is deleted.
 
 Given a bare remote holding a branch contained in `main`, a branch contained in
 `main` that is the head of an open pull request, and a branch with unique
-commits, when `wb branch cleanup --scope remote` runs, then no local branch
+commits, when `wb clean --scope remote` runs, then no local branch
 appears in the report. When `--apply` is added with pull-request evidence
 available, then only the contained branch without an open pull request is
 deleted, using force-with-lease against its observed SHA. When pull-request

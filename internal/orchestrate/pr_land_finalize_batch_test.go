@@ -128,7 +128,7 @@ func TestFinalizeLandedPullRequestReportsIncompleteWorktreeRetirement(t *testing
 	if err != nil {
 		t.Fatalf("finalize: %v; receipt = %+v", err, got)
 	}
-	if got.Outcome != LandLandedIncomplete || got.RefusalCode != "cleanup-incomplete" || got.SanctionedCommand != "wb worktree gc --apply" {
+	if got.Outcome != LandLandedIncomplete || got.RefusalCode != "cleanup-incomplete" || got.SanctionedCommand != "wb clean --apply" {
 		t.Fatalf("cleanup finding = %+v", got)
 	}
 	if got.ExitCode() != ExitLandedIncomplete || got.ResumeCommand != "wb pr land acme/app#7" {

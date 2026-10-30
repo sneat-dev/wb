@@ -4,17 +4,19 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"github.com/sneat-dev/wb/internal/checkoutmarker"
-	"github.com/sneat-dev/wb/internal/console"
-	"github.com/sneat-dev/wb/internal/discover"
-	"github.com/sneat-dev/wb/internal/fleetsync"
-	"github.com/sneat-dev/wb/internal/worktrees"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/sneat-dev/wb/internal/checkoutmarker"
+	"github.com/sneat-dev/wb/internal/console"
+	"github.com/sneat-dev/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/fleetsync"
+	"github.com/sneat-dev/wb/internal/repofilter"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 type MarkerOutcome struct {
@@ -115,7 +117,7 @@ func (s *Markers) checkouts(ctx context.Context, req MarkerRequest) ([]string, e
 	seen := map[string]bool{}
 	var checkouts []string
 	for _, repository := range repositories {
-		if req.Filter != "" && !strings.Contains(repository.Slug(), req.Filter) {
+		if req.Filter != "" && !repofilter.Match(req.Filter, repository.Slug()) {
 			continue
 		}
 		// Use the path discovery actually found. A canonical clone may live at

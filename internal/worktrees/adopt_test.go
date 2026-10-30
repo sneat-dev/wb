@@ -192,7 +192,7 @@ func adoptAndCommit(t *testing.T, fixture *gitFixture, branch, file string) (tas
 }
 
 // TestAdoptedWorktreeCleanupAppliesExistingSafetyChecks is the proof
-// requirement from the brief: after adoption, wb worktree cleanup applies
+// requirement from the brief: after adoption, wb worktree retire applies
 // its full existing safety machinery to an external worktree exactly as it
 // does to one wb worktree create made directly — not a second, separate
 // removal path. It proves dirty refusal, lock refusal, and a genuine

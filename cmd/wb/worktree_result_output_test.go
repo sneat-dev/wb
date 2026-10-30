@@ -32,7 +32,7 @@ func TestWorktreeRecoverStagesReportsPlansAndArchives(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tasks = nil
-			command := newWorktreeCleanupCmd(&invocation{projectsRoot: t.TempDir()})
+			command := newWorktreeRetireCmd(&invocation{projectsRoot: t.TempDir()})
 			var stdout bytes.Buffer
 			command.SetOut(&stdout)
 			args := []string{"--recover-stages", "first", "second"}

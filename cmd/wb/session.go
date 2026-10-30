@@ -2,12 +2,13 @@ package main
 
 import (
 	"context"
+	"os"
+
 	"github.com/sneat-dev/wb/internal/cli/cmdsession"
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessionrun"
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
-	"os"
 )
 
 func newSessionDependencies(inv *invocation) cmdsession.Dependencies {

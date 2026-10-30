@@ -606,7 +606,7 @@ func TestGCDirtySanctionedCommandWorksOnADirtyDetachedCheckout(t *testing.T) {
 		t.Fatalf("the command a refusal names must work on the shape it names it for: %v", err)
 	}
 	stashed := runGitTestOutput(t, worktree, "stash", "list")
-	if !strings.Contains(stashed, "wb gc "+task) {
+	if !strings.Contains(stashed, "wb clean "+task) {
 		t.Fatalf("the capture left no stash entry: %q", stashed)
 	}
 	if content := runGitTestOutput(t, worktree, "show", "stash@{0}^3:wip.txt"); !strings.Contains(content, "in progress") {

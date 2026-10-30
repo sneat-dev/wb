@@ -34,7 +34,7 @@ export class CleanupSection {
     valueLabel: 'Worktrees',
     bars: this.cleanup().bars.map((bar) => ({ label: bar.label, value: bar.count, link: bar.link })),
   }))
-  /** `wb worktree gc`: the dry-run plan of the whole fleet's cleanup (it retires nothing without `--apply`, which no template holds). */
+  /** `wb clean`: the dry-run plan of the whole fleet's cleanup (it retires nothing without `--apply`, which no template holds). */
   protected readonly dryRun = async () => worktreeGc()
 
   protected toggle(): void {

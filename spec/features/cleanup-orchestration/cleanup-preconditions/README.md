@@ -66,8 +66,8 @@ contract used to report them.
 
 These gates are **shared primitives, not orchestrator-private steps**. Every WB
 surface that deletes a ref, removes a worktree, or merges a pull request MUST
-invoke them: `wb worktree cleanup --apply`, `wb worktree abort --disposition
-discarded --apply`, `wb worktree rename --apply`, `wb branch cleanup --apply`,
+invoke them: `wb worktree retire --apply`, `wb worktree abort --disposition
+discarded --apply`, `wb worktree rename --apply`, `wb clean --apply`,
 and any future merge verb. Adding a new destructive surface without these gates
 is a defect in that surface.
 
@@ -134,8 +134,8 @@ as `<run-id>/<owner>/<repository>/`. `--preserve-dir` overrides the root.
 They MUST NOT be written inside any repository, worktree, or directory the run
 may delete. A capture stored inside the thing being deleted is not a capture.
 
-No WB command MUST ever delete a preservation artifact — not `wb cleanup`, not
-`wb worktree cleanup`, not `wb layout clean`, not a future retention verb
+No WB command MUST ever delete a preservation artifact — not `wb clean`, not
+`wb worktree retire`, not `wb layout clean`, not a future retention verb
 enabled by default. Removal is a human action. WB MUST warn on stderr when the
 preservation root exceeds a configurable size (default 5 GiB), naming the root
 and the manual removal command, and MUST NOT act on that warning itself.
@@ -174,7 +174,7 @@ directory a year later and has never read this specification.
 
 #### REQ: preservation-reports-its-location-first
 
-`wb cleanup --apply` and every other destructive surface MUST print the
+`wb clean --apply` and every other destructive surface MUST print the
 preservation root to stderr **before** performing anything destructive
 anywhere, and MUST include it in the `--format json` envelope and in the
 durable audit report. An interrupted run must still have told its operator
@@ -249,7 +249,7 @@ stage before the remote stage.
 Given a cleanup unit holding a working tree with staged changes, unstaged
 changes, an untracked non-ignored file and an ignored build artifact, two stash
 entries, and a branch whose commits are reachable from no remote ref and whose
-local ref this run will delete, when `wb cleanup --apply` runs against a
+local ref this run will delete, when `wb clean --apply` runs against a
 recording filesystem and Git wrapper, then the preservation root is printed to
 stderr before the first destructive operation; under that root exist the
 `HEAD` patch, the cached patch, an archive containing the untracked file and
@@ -266,7 +266,7 @@ nothing at risk still produces a verified manifest.
 
 **Requirements:** cleanup-preconditions#req:preservation-content, cleanup-preconditions#req:manifest-carries-its-own-restore
 
-Given the fixture above, when `wb cleanup --apply` completes and the branch,
+Given the fixture above, when `wb clean --apply` completes and the branch,
 its worktree, and its stash entries are gone, then executing only the command
 sequences recorded in the manifest, in a clean clone, restores the branch tip
 at the identical SHA with identical trees for every commit, restores the staged
@@ -280,8 +280,8 @@ the recovery procedure and not a description of one.
 **Requirements:** cleanup-preconditions#req:preservation-location-and-retention
 
 Given a preservation root containing artifacts from three earlier runs, one of
-them older than any retention period WB knows about, when `wb cleanup --apply`,
-`wb worktree cleanup --apply --remote`, `wb branch cleanup --scope all
+them older than any retention period WB knows about, when `wb clean --apply`,
+`wb worktree retire --apply --remote`, `wb clean --scope all
 --apply`, and `wb layout clean` each run to completion, then every artifact
 still exists byte-for-byte. When the root exceeds the configured size
 threshold, then a stderr warning names the root, its size, and a manual removal
@@ -294,9 +294,9 @@ run's root, age, artifact count, and total size.
 
 Given a repository whose branch `feature-a` has a merged pull request into
 `main`, and two open pull requests `#2` and `#3` based on `feature-a`, modelled
-by a deterministic host double that records every call, when `wb cleanup` runs
+by a deterministic host double that records every call, when `wb clean` runs
 without `--apply`, then the plan names `#2` and `#3` and the base `main` they
-would be retargeted to, and the double records no mutation. When `wb cleanup
+would be retargeted to, and the double records no mutation. When `wb clean
 --apply` runs, then the recorded call order is: enumerate, retarget `#2`,
 re-read `#2`, retarget `#3`, re-read `#3`, then delete the remote ref — and the
 deletion never precedes a verification. When the double reports the retarget of

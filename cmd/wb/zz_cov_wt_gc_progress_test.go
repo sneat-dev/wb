@@ -78,7 +78,7 @@ func TestCwWtInventoryProgressZeroCountWritesNothing(t *testing.T) {
 
 func TestCwWtWorktreeGCCmdUsageAndInProcess(t *testing.T) {
 	projects := t.TempDir()
-	_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeGCCmd(&invocation{projectsRoot: projects}) }, "--session-freshness", "-1s")
+	_, _, err := cwCovExec(t, projects, func() *cobra.Command { return newCleanCmd(&invocation{projectsRoot: projects}) }, "--session-freshness", "-1s")
 	if code := exitCodeOf(t, err); code != exitUsage {
 		t.Fatalf("negative session freshness exit = %d (%v)", code, err)
 	}
@@ -86,12 +86,12 @@ func TestCwWtWorktreeGCCmdUsageAndInProcess(t *testing.T) {
 		t.Fatalf("negative session freshness error = %v", err)
 	}
 
-	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeGCCmd(&invocation{projectsRoot: projects}) }, "--format", "bogus")
+	_, _, err = cwCovExec(t, projects, func() *cobra.Command { return newCleanCmd(&invocation{projectsRoot: projects}) }, "--format", "bogus")
 	if err == nil || !strings.Contains(err.Error(), "format") {
 		t.Fatalf("bogus format error = %v", err)
 	}
 
-	stdout, stderr, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeGCCmd(&invocation{projectsRoot: projects}) })
+	stdout, stderr, err := cwCovExec(t, projects, func() *cobra.Command { return newCleanCmd(&invocation{projectsRoot: projects}) })
 	if err != nil {
 		t.Fatalf("gc on an empty root: %v (stderr=%s)", err, stderr)
 	}
@@ -99,7 +99,7 @@ func TestCwWtWorktreeGCCmdUsageAndInProcess(t *testing.T) {
 		t.Fatalf("gc on empty root stdout = %q", stdout)
 	}
 
-	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newWorktreeGCCmd(&invocation{projectsRoot: projects}) }, "--format", "json")
+	stdout, _, err = cwCovExec(t, projects, func() *cobra.Command { return newCleanCmd(&invocation{projectsRoot: projects}) }, "--format", "json")
 	if err != nil {
 		t.Fatalf("gc json on an empty root: %v", err)
 	}
@@ -110,14 +110,14 @@ func TestCwWtWorktreeGCCmdUsageAndInProcess(t *testing.T) {
 
 func TestCwWtWorktreeGCCmdRefusesDirtyCheckoutInProcess(t *testing.T) {
 	projects, _, _ := initGCFixture(t)
-	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newWorktreeGCCmd(&invocation{projectsRoot: projects}) })
+	stdout, _, err := cwCovExec(t, projects, func() *cobra.Command { return newCleanCmd(&invocation{projectsRoot: projects}) })
 	if code := exitCodeOf(t, err); code != exitFindings {
 		t.Fatalf("gc exit = %d (%v)\n%s", code, err, stdout)
 	}
 	if !strings.Contains(stdout, "kept") {
 		t.Fatalf("gc text output = %q", stdout)
 	}
-	if err != nil && !strings.Contains(err.Error(), "checkout(s) were kept") {
+	if err != nil && !strings.Contains(err.Error(), "item(s) were kept") {
 		t.Fatalf("gc findings error = %v", err)
 	}
 }

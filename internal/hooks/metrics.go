@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/filewrite"
+	"github.com/sneat-dev/wb/internal/repofilter"
 )
 
 const EventSchemaVersion = 1
@@ -235,7 +236,7 @@ func Summarize(events []Event, days int, repositoryFilter string, now time.Time)
 		summary.Days = append(summary.Days, *daily)
 	}
 	for _, event := range events {
-		if repositoryFilter != "" && !strings.Contains(strings.ToLower(event.Repository), strings.ToLower(repositoryFilter)) {
+		if repositoryFilter != "" && !repofilter.Match(repositoryFilter, event.Repository) {
 			continue
 		}
 		date := event.Timestamp.In(location).Format("2006-01-02")

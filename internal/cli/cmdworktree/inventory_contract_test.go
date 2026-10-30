@@ -5,14 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/sneat-dev/wb/internal/cli/shared"
-	"github.com/sneat-dev/wb/internal/worktrees"
-	"github.com/spf13/cobra"
 	"io"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/cli/shared"
+	"github.com/sneat-dev/wb/internal/worktrees"
+	"github.com/spf13/cobra"
 )
 
 type inventoryContextKey struct{}

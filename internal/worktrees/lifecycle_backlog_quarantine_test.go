@@ -12,10 +12,10 @@ import (
 // A durable cleanup record belonging to somebody else must never be able to
 // refuse this task's cleanup.
 //
-// This is the record that actually did it: written by `wb worktree gc --apply`
+// This is the record that actually did it: written by `wb clean --apply`
 // for a detached review checkout, already complete and owing nothing, and
 // invalid to any WB whose validator predates the detached field. One file in a
-// shared directory of 292 made `wb worktree cleanup --apply` refuse every
+// shared directory of 292 made `wb worktree retire --apply` refuse every
 // worktree on the machine, for every lane.
 func TestCleanupSurvivesAnInvalidBacklogRecordBelongingToAnotherTask(t *testing.T) {
 	fixture, result, head, mergedAt := prepareMergedTask(t, "cleanup-past-invalid-backlog")

@@ -3,9 +3,10 @@ package cmdworktree
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+
 	"github.com/sneat-dev/wb/internal/worktreerun"
 	"github.com/sneat-dev/wb/internal/worktrees"
-	"io"
 )
 
 func renderCreated(out io.Writer, format string, claim worktreerun.RemoteClaimOutcome, results []worktrees.CreateResult) error {

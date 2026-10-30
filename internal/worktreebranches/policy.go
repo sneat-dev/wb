@@ -57,6 +57,13 @@ type BranchEntry struct {
 	// target. See #req:receipted-requires-a-proved-landing.
 	LandingSHA         string       `json:"landing_sha,omitempty"`
 	ReceiptPullRequest *PullRequest `json:"receipt_pull_request,omitempty"`
+	// ExactHeadReceipt marks a receipt whose merged pull request's head is
+	// this branch's exact tip: the branch is precisely what was reviewed and
+	// squash-merged, nothing was committed after, and the landing commit that
+	// carries it in full is in the target's history. Later edits to the target
+	// cannot make deleting such a branch lose anything, so it does not need the
+	// target-still-carries-the-content proof that a bare receipt does.
+	ExactHeadReceipt bool `json:"exact_head_receipt,omitempty"`
 	// PullRequestQueryFailed distinguishes "no matching pull request" from
 	// "WB could not ask GitHub." Cleanup's remote apply fails the whole scope
 	// closed on the latter; list surfaces the specific error.
@@ -64,7 +71,7 @@ type BranchEntry struct {
 	// AbsorbedByRejection explains why an operator-supplied --absorbed-by
 	// pointer did not verify for this branch. It is set only when
 	// --absorbed-by was passed and its attested-absorption proof (see
-	// attestedAbsorbedReceipt, shared with `wb worktree cleanup
+	// attestedAbsorbedReceipt, shared with `wb worktree retire
 	// --absorbed-by`) failed for this candidate specifically; the branch keeps
 	// whatever disposition its patch evidence (or --receipts) produces. A
 	// wrong or dishonest pointer can therefore only fail closed, never widen

@@ -3,8 +3,9 @@ package cmdworktree
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/sneat-dev/wb/internal/worktrees"
 	"io"
+
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 func writeJournalResult(out io.Writer, format string, result worktrees.LogVerbResult) error {

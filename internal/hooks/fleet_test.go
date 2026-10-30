@@ -21,7 +21,7 @@ func TestLocalReposFiltersAndSortsWithoutMutatingSharedSource(t *testing.T) {
 	for _, tc := range []struct {
 		filter string
 		want   []string
-	}{{"a-org/", []string{"a-org/alpha"}}, {"", []string{"a-org/alpha", "z-org/beta"}}, {"A-ORG", nil}} {
+	}{{"a-org/", []string{"a-org/alpha"}}, {"", []string{"a-org/alpha", "z-org/beta"}}, {"A-ORG", []string{"a-org/alpha"}}} {
 		t.Run(tc.filter, func(t *testing.T) {
 			t.Parallel()
 			repos, err := LocalRepos(root, tc.filter)

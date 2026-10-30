@@ -1,10 +1,11 @@
 package ciaudit
 
 import (
-	"github.com/sneat-dev/wb/internal/discover"
 	"path/filepath"
 	"sort"
-	"strings"
+
+	"github.com/sneat-dev/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/repofilter"
 )
 
 // BatchOptions selects repositories; command output and exit policy stay above this service.
@@ -34,7 +35,7 @@ func auditBatchWithDeps(options BatchOptions, deps batchDependencies) ([]Report,
 		}
 		paths = paths[:0]
 		for _, repo := range repos {
-			if options.Filter != "" && !strings.Contains(repo.Slug(), options.Filter) {
+			if options.Filter != "" && !repofilter.Match(options.Filter, repo.Slug()) {
 				continue
 			}
 			paths = append(paths, repo.Path)

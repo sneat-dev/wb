@@ -23,7 +23,7 @@ begins. The store already reserved `claims/<task>.yaml` for exactly this.
   existing snapshot heartbeat — the effective heartbeat: the later of the
   machine's publish and its claim activity (`last_seen_at`).
 - Make the common case automatic: `wb worktree create` claims best-effort,
-  `wb worktree cleanup`/`abort` release best-effort — without ever making a
+  `wb worktree retire`/`abort` release best-effort — without ever making a
   local command fail because the network did.
 - Keep the provider seam: claims must be implementable by a future hub
   provider as conditional writes, without touching commands.
@@ -154,7 +154,7 @@ When a `remote:` store is configured:
   a prompt journal and is not written).
   `--no-claim` skips the attempt (scratch/experimental worktrees).
   When no `remote:` store is configured, nothing changes at all.
-- **`wb worktree cleanup <task> --apply`** and **`wb worktree abort <task>`**
+- **`wb worktree retire <task> --apply`** and **`wb worktree abort <task>`**
   (discard or handoff outcomes) release the claim best-effort — only if it
   is held by this exact `login/machine`; failures print a
   `release skipped: …` line and never change the command's exit code.

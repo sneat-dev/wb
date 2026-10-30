@@ -17,7 +17,7 @@ wb lane release <owner/repository>       # release your idle landing claim; --ta
 ```
 
 Never hand-roll `gh pr create`, `gh pr merge`, a manual ancestry check,
-`git push --delete`, or manual `wb worktree cleanup` — see rule `land-with-wb-verb`
+`git push --delete`, or manual `wb worktree retire` — see rule `land-with-wb-verb`
 (`sneat-co/backstage`). A task spanning several repositories is still ONE task
 (`wb worktree create <task> owner/repo1 owner/repo2 ...`), never one
 separately-named task per repository — but it lands with one
@@ -38,9 +38,13 @@ record the confirmation. Never challenge the same instruction twice.
 
 ## Route by situation
 
-- Creating, resuming, listing, renaming, or cleaning up isolated worktrees, or
+- Creating, resuming, listing, or renaming isolated worktrees, or
   landing/merging/reverting a batch of compatible work → `wb-worktrees` and
   `wb-merge`
+- Cleaning up: "clean up worktrees", "delete merged branches", "what is safe
+  to delete?" → `wb clean` (dry run; `--apply` retires), `wb worktree retire
+  <task|branch>` for one item; read `wb-worktrees`
+  [clean.md](../wb-worktrees/references/clean.md)
 - Releasing your own idle landing claim after an interrupted command →
   `wb lane release owner/repository --target main`; read `wb-worktrees`
   [lifecycle](../wb-worktrees/references/lifecycle.md#release-an-idle-landing-lane)
@@ -51,7 +55,8 @@ record the confirmation. Never challenge the same instruction twice.
   `wb-deps` / `wb-dependency-campaign`
 - CI policy audits (coverage gates, path-selective jobs, artifact promotion)
   → `wb-ci`
-- Branch hygiene: merged, stale, or leftover branches → `wb-branches`
+- Branch hygiene: merged, stale, or leftover branches → `wb clean`, with
+  `wb-branches` for the branch evidence
 - A library and the consumers that must change with it → `wb-streams`
 - The local operations API/Cockpit → `wb-daemon`
 - Installing or updating the `wb` binary itself → `wb-install`

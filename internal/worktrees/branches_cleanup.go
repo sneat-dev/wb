@@ -38,7 +38,7 @@ type BranchCleanupOptions struct {
 	Receipts bool
 	// AbsorbedBy is the optional operator-supplied landing pointer (a merged
 	// pull request number or an exact landing commit) verified with the same
-	// attested-absorption proof `wb worktree cleanup --absorbed-by` performs.
+	// attested-absorption proof `wb worktree retire --absorbed-by` performs.
 	// A branch that proves out is recorded as receipted, with the landing
 	// commit carried in the plan exactly like a discovered receipt, so a
 	// content-proven squash-absorbed branch whose worktree is already gone
@@ -52,6 +52,9 @@ type BranchCleanupOptions struct {
 	SupersededBy string
 	PeerEvidence []string
 	RequireHosts []string
+	// Only, when set, keeps only candidates whose disposition it names (see
+	// CleanClassSelected), in the plan and the apply alike.
+	Only string
 	// Now is injectable so age eligibility is deterministic under test.
 	Now func() time.Time
 }
@@ -161,6 +164,15 @@ func branchCleanupWithPorts(ctx context.Context, options BranchCleanupOptions, p
 		return BranchCleanupOutcome{}, err
 	}
 	sortBranchEntries(entries)
+	if normalized.Only != "" {
+		selected := entries[:0]
+		for _, entry := range entries {
+			if CleanClassSelected(normalized.Only, entry.Disposition) {
+				selected = append(selected, entry)
+			}
+		}
+		entries = selected
+	}
 
 	results := worktreebranches.PlanBranchCleanup(entries, sweep.branchPolicyOptions())
 
@@ -454,6 +466,9 @@ func recheckDeletionEvidence(ctx context.Context, repositoryPath, currentSHA, fr
 			}
 			return false
 		}
+		if result.ExactHeadReceipt {
+			return recheckExactHeadReceipt(ctx, repositoryPath, currentSHA, freshTarget, result)
+		}
 		proved, err := contentAbsorbed(ctx, repositoryPath, currentSHA, result.LandingSHA, freshTarget)
 		if err != nil || !proved {
 			result.Outcome = "failed"
@@ -477,6 +492,68 @@ func recheckDeletionEvidence(ctx context.Context, repositoryPath, currentSHA, fr
 		return false
 	}
 	return true
+}
+
+// recheckExactHeadReceipt re-proves an exact-head receipt against the current
+// ref: it must still be the pull request's exact head, and the landing commit
+// (already re-proved contained in the fresh target) must still carry it in full.
+func recheckExactHeadReceipt(ctx context.Context, repositoryPath, currentSHA, freshTarget string, result *BranchCleanupResult) bool {
+	if result.ReceiptPullRequest == nil || result.ReceiptPullRequest.HeadSHA != currentSHA {
+		result.Outcome, result.Error = "failed", "branch is no longer the exact head of the merged pull request it was planned against; refusing"
+		return false
+	}
+	carried, err := contentContained(ctx, repositoryPath, currentSHA, result.LandingSHA)
+	if err != nil || !carried {
+		result.Outcome = "failed"
+		result.Error = withCause(fmt.Sprintf("landing commit %s no longer carries this branch's work in full", shortSHA(result.LandingSHA)), err)
+		return false
+	}
+	reverted, err := landingReverted(ctx, repositoryPath, result.LandingSHA, freshTarget)
+	if err != nil || reverted {
+		result.Outcome = "failed"
+		result.Error = withCause(fmt.Sprintf("landing commit %s was reverted on the freshly fetched target, or the revert check could not run; refusing", shortSHA(result.LandingSHA)), err)
+		return false
+	}
+	return true
+}
+
+// withCause appends the error that stopped a proof, when there was one.
+func withCause(message string, err error) string {
+	if err == nil {
+		return message
+	}
+	return message + ": " + err.Error()
+}
+
+// landingReverted reports whether target reverted landing: a later commit
+// names it in Git's own revert message, or every path landing changed is back
+// to its pre-landing content. A partial revert is indistinguishable from a
+// later edit and is not called a revert; the landing commit, which target
+// contains, still holds that content.
+func landingReverted(ctx context.Context, repositoryPath, landing, target string) (bool, error) {
+	changed, err := git(ctx, repositoryPath, "diff", "--no-renames", "--name-only", "-z", landing+"^", landing)
+	if err != nil {
+		return false, err
+	}
+	trimmed := strings.Trim(changed, "\x00\n")
+	if trimmed == "" {
+		return false, nil
+	}
+	paths := strings.Split(trimmed, "\x00")
+	queries := [][]string{
+		{"log", "--format=%H", "--fixed-strings", "--grep=This reverts commit " + landing, landing + ".." + target},
+		append([]string{"diff", "--no-renames", "--name-only", landing + "^", target, "--"}, paths...),
+	}
+	answers := make([]string, 0, len(queries))
+	for _, query := range queries {
+		answer, err := git(ctx, repositoryPath, query...)
+		if err != nil {
+			return false, err
+		}
+		answers = append(answers, strings.TrimSpace(answer))
+	}
+	named, remaining := answers[0], answers[1]
+	return named != "" || remaining == "", nil
 }
 
 func applyRemoteBranchDeletion(ctx context.Context, repositoryPath string, result *BranchCleanupResult, options BranchCleanupOptions) {
