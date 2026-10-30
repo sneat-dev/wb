@@ -25,7 +25,7 @@ import (
 )
 
 const (
-	cacheSchemaVersion   = 1
+	cacheSchemaVersion   = 2
 	defaultMaxAttempts   = 4
 	defaultBaseBackoff   = 250 * time.Millisecond
 	defaultMaxBackoff    = 5 * time.Second
@@ -157,6 +157,7 @@ type cacheEntry struct {
 	Body          []byte    `json:"body"`
 	BodySHA256    string    `json:"body_sha256"`
 	ETag          string    `json:"etag,omitempty"`
+	Link          string    `json:"link,omitempty"`
 	LastModified  string    `json:"last_modified,omitempty"`
 	ObservedAt    time.Time `json:"observed_at"`
 }
@@ -306,6 +307,7 @@ func (o *Observer) getWithLock(ctx context.Context, request GetRequest, lock fun
 				Headers: map[string]string{
 					"etag":          entry.ETag,
 					"last-modified": entry.LastModified,
+					"link":          entry.Link,
 				},
 				Cached:      true,
 				ObservedAt:  entry.ObservedAt,
@@ -334,6 +336,7 @@ func (o *Observer) getWithLock(ctx context.Context, request GetRequest, lock fun
 		if entry == nil || len(entry.Body) == 0 {
 			return Response{}, fmt.Errorf("GitHub returned 304 for %s without a cached body", request.Endpoint)
 		}
+		entry.Link = normalizeHeaders(httpResult.Headers, entry)["link"]
 		entry.ObservedAt = observedAt
 		if writeErr := writeCacheEntry(cachePath, entry); writeErr != nil {
 			return Response{}, writeErr
@@ -359,6 +362,7 @@ func (o *Observer) getWithLock(ctx context.Context, request GetRequest, lock fun
 			Body:          append([]byte(nil), httpResult.Body...),
 			BodySHA256:    digest(httpResult.Body),
 			ETag:          strings.TrimSpace(httpResult.Headers["etag"]),
+			Link:          strings.TrimSpace(httpResult.Headers["link"]),
 			LastModified:  strings.TrimSpace(httpResult.Headers["last-modified"]),
 			ObservedAt:    observedAt,
 		}
@@ -1031,6 +1035,9 @@ func normalizeHeaders(headers map[string]string, entry *cacheEntry) map[string]s
 	if entry != nil {
 		if entry.ETag != "" && normalized["etag"] == "" {
 			normalized["etag"] = entry.ETag
+		}
+		if normalized["link"] == "" {
+			normalized["link"] = entry.Link
 		}
 		if entry.LastModified != "" && normalized["last-modified"] == "" {
 			normalized["last-modified"] = entry.LastModified
