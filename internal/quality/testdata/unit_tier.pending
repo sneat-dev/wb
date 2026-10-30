@@ -48,8 +48,8 @@ cmd/wb/self_hosted_bench_e2e_test.go	22	task-23
 cmd/wb/session_park_journey_test.go	16	task-23
 cmd/wb/session_park_native_test.go	2	task-24
 cmd/wb/status_test.go	3	task-22
-cmd/wb/clean_test.go	10	task-22
-cmd/wb/worktree_host_level_test.go	23	task-22
+cmd/wb/clean_test.go	8	task-22
+cmd/wb/worktree_host_level_test.go	21	task-22
 cmd/wb/worktree_marker_test.go	11	task-22
 cmd/wb/worktree_merge_test.go	48	task-22
 cmd/wb/worktree_publication_test.go	12	task-22

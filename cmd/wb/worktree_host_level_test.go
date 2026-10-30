@@ -201,9 +201,9 @@ func TestWorktreeCreateThenCleanupApplyRetiresHostLevelWorktree(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	gcGit(t, root, "clone", remote, canonical)
-	gcGit(t, canonical, "config", "user.email", "wb-test@example.com")
-	gcGit(t, canonical, "config", "user.name", "wb-test")
+	// One clone writes the identity into the new repository's config, so later
+	// commits made inside its worktrees need no further git config processes.
+	gcGit(t, root, "clone", "--config", "user.email=wb-test@example.com", "--config", "user.name=wb-test", remote, canonical)
 	if err := os.WriteFile(filepath.Join(canonical, "README.md"), []byte("# app\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
