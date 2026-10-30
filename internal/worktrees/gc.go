@@ -537,11 +537,9 @@ func applyGC(ctx context.Context, options GCOptions, outcome *GCOutcome) error {
 }
 
 // applyGCEntry retires one eligible checkout through the cleanup transaction
-// and reports whether it was retired in this pass.
+// and reports whether it was retired in this pass. runGCApplyConcurrently only
+// hands it eligible entries.
 func applyGCEntry(ctx context.Context, options GCOptions, sweepRoot string, entry *GCEntry) bool {
-	if !entry.Eligible {
-		return false
-	}
 	cleanupOutcome, err := Cleanup(ctx, CleanupOptions{
 		ProjectsRoot:    options.ProjectsRoot,
 		Tasks:           []string{entry.Task},

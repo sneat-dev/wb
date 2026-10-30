@@ -239,6 +239,9 @@ func wtLifeCovDispatchSecureHelperFault(helper string, args []string) int {
 	case "fault-stage-canonical-cwd":
 		ops.getwd = func() (string, error) { return "", errors.New("injected held cwd failure") }
 		return runSecureStageCanonicalGitHelperWithOps(args, ops)
+	case "fault-stage-canonical-stage-chdir":
+		ops.chdir = failNthSecureHelperChdir(ops.chdir, 1)
+		return runSecureStageCanonicalGitHelperWithOps(args, ops)
 	case "fault-stage-canonical-common-chdir":
 		ops.chdir = failNthSecureHelperChdir(ops.chdir, 3)
 		return runSecureStageCanonicalGitHelperWithOps(args, ops)

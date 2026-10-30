@@ -22,6 +22,7 @@ func TestE2ESecureHelperPhaseFailuresPreserveAuthority(t *testing.T) {
 	}{
 		{"stage cwd", "fault-stage-cwd", "determine held directory: injected held cwd failure", []*os.File{stageDescriptor}, []string{secureStagePathArgument}},
 		{"stage canonical cwd", "fault-stage-canonical-cwd", "derive held stage path: injected held cwd failure", []*os.File{stageDescriptor, repo.root, repo.common}, []string{operationRoot, repo.path, git, "phase-fault", repo.head, "0"}},
+		{"stage canonical stage chdir", "fault-stage-canonical-stage-chdir", "enter inherited stage: injected held chdir failure", []*os.File{stageDescriptor, repo.root, repo.common}, []string{operationRoot, repo.path, git, "phase-fault", repo.head, "0"}},
 		{"stage canonical Git chdir", "fault-stage-canonical-common-chdir", "enter inherited Git directory: injected held chdir failure", []*os.File{stageDescriptor, repo.root, repo.common}, []string{operationRoot, repo.path, git, "phase-fault", repo.head, "0"}},
 		{"canonical Git chdir", "fault-canonical-common-chdir", "enter inherited Git directory: injected held chdir failure", []*os.File{repo.root, repo.common}, []string{repo.path, git, "rev-parse", "HEAD"}},
 		{"cleanup Git chdir", "fault-cleanup-common-chdir", "enter inherited canonical Git directory: injected held chdir failure", []*os.File{repo.root, repo.common}, wtLifeCovCleanupArgs(repo, git, "", "", "", "-1", "rev-parse", "HEAD")},
