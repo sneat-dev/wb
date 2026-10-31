@@ -43,7 +43,18 @@ To build from source with Go instead:
 go install github.com/sneat-dev/wb/cmd/wb@latest
 ```
 
-On Windows, install [WSL](https://learn.microsoft.com/windows/wsl/install) from
+On Windows, download the `wb_<version>_windows_amd64.zip` or
+`wb_<version>_windows_arm64.zip` archive for your architecture from
+[GitHub Releases](https://github.com/sneat-dev/wb/releases). Verify the ZIP's
+SHA-256 with PowerShell's `Get-FileHash` against the matching entry in
+`wb_<version>_checksums.txt` before extracting it, then add the directory
+containing `wb.exe` to your `PATH`. These native binaries require no Go.
+
+For CI on Linux, macOS, or Windows, use
+[setup-wb](https://github.com/sneat-dev/setup-wb) with an exact release tag;
+it verifies the release checksum and adds WB to `PATH`.
+
+Alternatively, install [WSL](https://learn.microsoft.com/windows/wsl/install) from
 an administrator PowerShell session and complete its one-time setup after any
 prompted restart. Then install the supported Linux release through WSL:
 
@@ -52,8 +63,7 @@ wsl --install
 wsl sh -lc 'curl -fsSL https://sneat.work/bench/install/get-cli | sh'
 ```
 
-Native Windows releases are not currently published; the supported Windows
-path is WB running in WSL.
+This alternative runs the Linux binary, with WB running in WSL.
 
 ## Agent skills
 

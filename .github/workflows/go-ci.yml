@@ -90,6 +90,7 @@ jobs:
               - 'internal/orchestrate/pr_update*_test.go'
               - 'go.mod'
               - 'go.sum'
+              - '.goreleaser.yml'
               - '.github/workflows/go-ci.yml'
 
   validation-reuse:
