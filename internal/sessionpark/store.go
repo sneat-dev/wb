@@ -260,6 +260,11 @@ func (s Store) Load(id string) (State, error) {
 }
 
 func validateBundle(bundle Bundle) error {
+	if bundle.Source.Scope != "" {
+		if err := bundle.Source.ValidateScope(); err != nil {
+			return err
+		}
+	}
 	if bundle.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("parked session schema_version %d unsupported; want %d", bundle.SchemaVersion, SchemaVersion)
 	}
@@ -664,6 +669,11 @@ func (s Store) localLaunchRootUnderLock(lock *SourceLock, inj *filewrite.Injecto
 // PrepareLocalUnderLock durably selects the only permitted resume route before
 // any local context, launch plan, or successor process can be created.
 func (s Store) PrepareLocalUnderLock(lock *SourceLock, now time.Time) (ResumeRoute, bool, error) {
+	if _, found, err := s.CurrentPreparationUnderLock(lock); err != nil {
+		return ResumeRoute{}, false, err
+	} else if found {
+		return ResumeRoute{}, false, fmt.Errorf("parked session is claimed by current-chat pickup; continue its acknowledged current route")
+	}
 	return s.claimResumeRouteUnderLock(lock, ResumeRouteLocal, "", "", sessionmove.SSHConfig{}, now)
 }
 

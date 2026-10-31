@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/sessionauthority"
 	"github.com/sneat-dev/wb/internal/sessionlaunch"
 	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/sessionreceive"
@@ -446,10 +447,7 @@ func validCourierResult(request sessionmove.Request, raw []byte) sessionreceive.
 	if runtime == "" {
 		runtime = request.SourceRuntime
 	}
-	model := ""
-	if runtime == request.SourceRuntime {
-		model = request.SourceModel
-	}
+	model := sessionauthority.SelectedModel(request.SourceRuntime, request.SourceModel, runtime, request.RequestedModel)
 	digest := sessionmove.DigestBytes(raw)
 	targetReference, err := sessionmove.ExpectedTargetWorkLogReference(request, digest)
 	if err != nil {

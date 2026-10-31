@@ -455,40 +455,24 @@ func EnsureWorkLogClaim(home, task string, result CreateResult, options WorkLogO
 var findHarnessAncestorForClaim = session.FindHarnessAncestor
 
 type sessionRegistrationPorts struct {
-	pid          func() int
-	findAncestor func(int) (int, string)
-	lookup       func(string, int) (session.Record, bool)
-	register     func(string, session.Record) (session.Record, error)
+	pid           func() int
+	findAncestor  func(int) (int, string)
+	lookup        func(string, int) (session.Record, bool)
+	register      func(string, session.Record) (session.Record, error)
+	resolveNative func(string, int, string, string) (session.Record, bool, error)
+	nativeID      func(string) (string, error)
 }
 
 func autoRegisterSessionFromEnv(home string, fields wbprovenance.Fields) (session.Record, bool) {
 	return autoRegisterSessionFromEnvWithPorts(home, fields, sessionRegistrationPorts{
-		pid: os.Getpid, findAncestor: findHarnessAncestorForClaim, lookup: session.Lookup, register: session.Register,
+		pid: os.Getpid, findAncestor: findHarnessAncestorForClaim, lookup: session.Lookup, register: session.RegisterCaller,
+		resolveNative: session.LookupCallerIdentity, nativeID: func(runtime string) (string, error) { return session.CallerNativeID(runtime, os.LookupEnv) },
 	})
 }
 
 func autoRegisterSessionFromEnvWithPorts(home string, fields wbprovenance.Fields, ports sessionRegistrationPorts) (session.Record, bool) {
-	if fields.HarnessSessionID == "" && fields.Harness == "" {
-		return session.Record{}, false
-	}
 	ancestorPID, ancestorRuntime := ports.findAncestor(ports.pid())
 	if ancestorPID <= 0 {
-		return session.Record{}, false
-	}
-	dir := filepath.Join(home, session.DirName)
-	// session.Lookup (not ResolveForProcess, which would keep walking up the
-	// process tree past ancestorPID) reports the exact record at this PID,
-	// if any, and whether it currently qualifies as a live, non-parked,
-	// non-resumed session. A record whose own Lifecycle is "parked" or
-	// "resumed" is never merged into: wb#645's review (r2, NM2) found the
-	// earlier version called session.Register directly, which merges into
-	// whatever record already sits at ancestorPID regardless of lifecycle —
-	// so a claim created while that PID's session was parked silently took
-	// over the parked row's WBSessionID and overwrote its Runtime/Model with
-	// the new claim's, corrupting a session someone will resume later.
-	if existing, live := ports.lookup(dir, ancestorPID); live {
-		return existing, true
-	} else if existing.Lifecycle == "parked" || existing.Lifecycle == "resumed" {
 		return session.Record{}, false
 	}
 	runtime := normalizeHarnessRuntime(fields.Harness)
@@ -498,7 +482,36 @@ func autoRegisterSessionFromEnvWithPorts(home string, fields wbprovenance.Fields
 	if runtime == "" {
 		runtime = session.Unknown
 	}
-	registered, err := ports.register(dir, session.Record{PID: ancestorPID, Runtime: runtime, Model: session.Unknown})
+	native := ""
+	if ports.nativeID != nil {
+		var err error
+		native, err = ports.nativeID(runtime)
+		if err != nil {
+			return session.Record{}, false
+		}
+	}
+	if fields.HarnessSessionID == "" && fields.Harness == "" && native == "" {
+		return session.Record{}, false
+	}
+	dir := filepath.Join(home, session.DirName)
+	var existing session.Record
+	var live bool
+	if ports.resolveNative != nil && runtime == "codex" {
+		var err error
+		existing, live, err = ports.resolveNative(dir, ancestorPID, runtime, native)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return session.Record{}, false
+		}
+	} else {
+		existing, live = ports.lookup(dir, ancestorPID)
+	}
+	if live && existing.Lifecycle == "" {
+		return existing, true
+	}
+	if existing.Lifecycle == "parked" || existing.Lifecycle == "resumed" {
+		return session.Record{}, false
+	}
+	registered, err := ports.register(dir, session.Record{PID: ancestorPID, Runtime: runtime, Model: session.Unknown, NativeHarnessID: native})
 	if err != nil {
 		return session.Record{}, false
 	}

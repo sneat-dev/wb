@@ -15,11 +15,11 @@ func TestLoadOverridePreservesStrictDecodingAcrossParsedNodeShapes(t *testing.T)
 		found       bool
 		errContains string
 	}{
-		{name: "flow mapping", body: "session: {transport: tmux}\n", want: KindTmux, found: true},
-		{name: "tagged mapping", body: "session: !!map {transport: tmux}\n", want: KindTmux, found: true},
-		{name: "anchored mapping", body: "session: &override {transport: tmux}\n", want: KindTmux, found: true},
+		{name: "flow mapping", body: "session: {transport: tmux}\n", want: Kind("tmux"), found: true},
+		{name: "tagged mapping", body: "session: !!map {transport: tmux}\n", want: Kind("tmux"), found: true},
+		{name: "anchored mapping", body: "session: &override {transport: tmux}\n", want: Kind("tmux"), found: true},
 		{name: "external alias", body: "defaults: &override {transport: tmux}\nsession: *override\n", errContains: "unknown anchor"},
-		{name: "custom tag", body: "session: !override {transport: tmux}\n", want: KindTmux, found: true},
+		{name: "custom tag", body: "session: !override {transport: tmux}\n", want: Kind("tmux"), found: true},
 		{name: "escaped scalar", body: "session: {transport: \"tmux\\t\"}\n", want: Kind("tmux\t"), found: true},
 		{name: "empty mapping", body: "session: {}\n"},
 		{name: "sequence", body: "session: [tmux]\n", errContains: "session section"},

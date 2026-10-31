@@ -313,10 +313,10 @@ func TestTailCovReceiveFallsBackToRealSuccessorLaunchers(t *testing.T) {
 	options.InspectSuccessor = nil
 	options.StartSuccessor = nil
 	// An empty PATH proves the receiver reached the real launcher: it must
-	// report the fixed tmux dependency as unavailable rather than pretend a
+	// report the fixed Herdr dependency as unavailable rather than pretend a
 	// successor started.
 	t.Setenv("PATH", t.TempDir())
-	if _, err := Receive(context.Background(), options); err == nil || !strings.Contains(err.Error(), "tmux executable is unavailable") {
+	if _, err := Receive(context.Background(), options); err == nil || !strings.Contains(err.Error(), "fixed Herdr TUI executable is unavailable") {
 		t.Fatalf("error = %v, want the real launcher dependency failure", err)
 	}
 }

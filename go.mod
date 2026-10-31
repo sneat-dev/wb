@@ -9,6 +9,7 @@ require (
 	charm.land/lipgloss/v2 v2.0.5
 	connectrpc.com/connect v1.20.0
 	github.com/BurntSushi/toml v1.6.0
+	github.com/Microsoft/go-winio v0.6.4
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/dal-go/dalgo v0.95.2
 	github.com/dal-go/dalgo2openvaultdb v0.3.1
@@ -23,8 +24,8 @@ require (
 	github.com/spf13/pflag v1.0.9
 	github.com/strongo/buildinfo v0.3.0
 	github.com/strongo/cli-helpers v0.21.0
-	golang.org/x/mod v0.38.0
-	golang.org/x/sys v0.48.0
+	golang.org/x/mod v0.41.0
+	golang.org/x/sys v0.49.0
 	golang.org/x/term v0.45.0
 	google.golang.org/protobuf v1.36.11
 	gopkg.in/yaml.v3 v3.0.1
@@ -69,7 +70,7 @@ require (
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	github.com/zclconf/go-cty v1.16.3 // indirect
 	go.starlark.net v0.0.0-20260708150628-5395d018f003 // indirect
-	golang.org/x/sync v0.21.0 // indirect
+	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/text v0.39.0 // indirect
-	golang.org/x/tools v0.47.0 // indirect
+	golang.org/x/tools v0.50.0 // indirect
 )

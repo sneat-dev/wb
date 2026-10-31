@@ -353,7 +353,7 @@ func slCovNewAuthorityFixture(t *testing.T) *slCovAuthorityFixture {
 	tmux := &slCovFlexTmux{}
 	sessions := filepath.Join(t.TempDir(), "sessions")
 	deps := dependencies{
-		tmux:         tmux,
+		terminal:     tmux,
 		lookPath:     func(name string) (string, error) { return filepath.Join(binDir, name), nil },
 		wbExecutable: func() (string, error) { return plan.WBExecutable, nil },
 		sessionDir:   func(string) (string, error) { return sessions, nil },
@@ -577,13 +577,13 @@ func TestSlCovStartWithAuthorityRejectsEveryGate(t *testing.T) {
 			t.Fatal("start accepted a corrupt abandonment artifact")
 		}
 	})
-	t.Run("abandonment conflicts with live tmux", func(t *testing.T) {
+	t.Run("abandonment conflicts with live Herdr pane", func(t *testing.T) {
 		t.Parallel()
 		fixture := slCovNewAuthorityFixture(t)
 		slCovSealAbandonment(t, fixture, 6301)
 		fixture.tmux.pid, fixture.tmux.exists = 6301, true
-		if _, err := startWithDependencies(ctx, fixture.options(), fixture.deps); err == nil || !strings.Contains(err.Error(), "conflicts with live tmux session") {
-			t.Fatalf("live tmux abandonment = %v", err)
+		if _, err := startWithDependencies(ctx, fixture.options(), fixture.deps); err == nil || !strings.Contains(err.Error(), "conflicts with live Herdr pane") {
+			t.Fatalf("live Herdr abandonment = %v", err)
 		}
 	})
 	t.Run("unbound abandonment", func(t *testing.T) {

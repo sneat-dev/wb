@@ -525,12 +525,15 @@ func defaultOwnerLive(sessionDir string, owner Owner) bool {
 	if sessionDir == "" || owner.PID <= 0 {
 		return false
 	}
-	record, ok := session.Lookup(sessionDir, owner.PID)
-	if !ok {
-		return false
+	if owner.WBSessionID != "" {
+		record, ok := session.LookupByWBSessionID(sessionDir, owner.WBSessionID)
+		return ok && record.PID == owner.PID
 	}
-	if owner.WBSessionID == "" {
-		return true
+	// A legacy PID-only lane cannot distinguish chats in one live app-server;
+	// keep the lane protected rather than assigning it to an arbitrary peer.
+	if session.IsRuntimeProcess(owner.PID, "codex") {
+		return session.ProcessAlive(owner.PID)
 	}
-	return record.WBSessionID == owner.WBSessionID
+	_, ok := session.Lookup(sessionDir, owner.PID)
+	return ok
 }

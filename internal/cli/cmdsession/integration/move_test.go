@@ -6,18 +6,21 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/secretscan"
 	"github.com/sneat-dev/wb/internal/session"
+	"github.com/sneat-dev/wb/internal/sessionauthority"
 	"github.com/sneat-dev/wb/internal/sessioncourier"
 	"github.com/sneat-dev/wb/internal/sessioncustody"
 	"github.com/sneat-dev/wb/internal/sessionlaunch"
 	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/sessionreceive"
 	"github.com/sneat-dev/wb/internal/sessionrun"
+	"github.com/sneat-dev/wb/internal/sessionterminal"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -862,10 +865,7 @@ func completedMoveTestDelivery(t *testing.T, request sessionmove.Request, raw []
 	if runtime == "" {
 		runtime = request.SourceRuntime
 	}
-	model := ""
-	if runtime == request.SourceRuntime {
-		model = request.SourceModel
-	}
+	model := sessionauthority.SelectedModel(request.SourceRuntime, request.SourceModel, runtime, request.RequestedModel)
 	startedAt := request.CreatedAt.Add(time.Second).UTC()
 	receipt := sessionmove.Receipt{
 		SchemaVersion: sessionmove.ReceiptSchemaVersion, HandoffID: request.HandoffID, RequestDigest: digest,
@@ -875,13 +875,17 @@ func completedMoveTestDelivery(t *testing.T, request sessionmove.Request, raw []
 		AttemptID: "000001-" + strings.Repeat("a", 32), AttemptIndex: 1, PID: 123,
 		PinnedCommit: request.BundleCommit, StartedAt: startedAt,
 	}
+	if request.Transport == "herdr" {
+		receipt.TmuxName = ""
+		receipt.Terminal = sessionterminal.Identity{Kind: "herdr", Socket: filepath.Join(os.TempDir(), "wb-owned-herdr-fixture.sock"), WorkspaceID: "workspace-owned", PaneID: "pane-owned"}
+	}
 	result := sessionreceive.Result{Request: request, Digest: digest, Phase: sessionmove.PhaseCompleted, Receipt: &receipt}
 	if includeSuccessor {
 		result.Successor = &sessionlaunch.Result{
 			HandoffID: request.HandoffID, WBSessionID: request.SuccessorWBSessionID,
 			PredecessorWBSessionID: request.PredecessorWBSessionID, TargetMachine: request.TargetMachine,
 			PID: receipt.PID, AttemptID: receipt.AttemptID, AttemptIndex: receipt.AttemptIndex,
-			TmuxName: receipt.TmuxName, Runtime: receipt.Runtime, Model: receipt.Model,
+			TmuxName: receipt.TmuxName, Terminal: receipt.Terminal, Runtime: receipt.Runtime, Model: receipt.Model,
 			TargetWorkLogRef: receipt.TargetWorkLogReference, WorktreeDir: "/target/worktree",
 			PinnedCommit: request.BundleCommit, StartedAt: startedAt,
 		}
@@ -902,7 +906,7 @@ func completedMoveTestAcknowledgement(t *testing.T, options sessioncustody.Optio
 		HandoffID: receipt.HandoffID, RequestDigest: receipt.RequestDigest,
 		SourceMachine: options.Request.SourceMachine, TargetMachine: receipt.TargetMachine,
 		SourceWorkLogReference: options.Request.WorkLogReference, TargetWorkLogReference: receipt.TargetWorkLogReference,
-		TmuxName: receipt.TmuxName, Runtime: receipt.Runtime, Model: receipt.Model, NativeHarnessID: receipt.NativeHarnessID,
+		TmuxName: receipt.TmuxName, Terminal: receipt.Terminal, Runtime: receipt.Runtime, Model: receipt.Model, NativeHarnessID: receipt.NativeHarnessID,
 		AttemptID: receipt.AttemptID, AttemptIndex: receipt.AttemptIndex, PID: receipt.PID,
 		PinnedCommit: receipt.PinnedCommit, StartedAt: receipt.StartedAt, Route: route,
 	}

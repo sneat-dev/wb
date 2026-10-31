@@ -80,7 +80,7 @@ func TestSlCovRunPrivateLauncherRejectsInvalidInvocation(t *testing.T) {
 	}
 	wrongDigest := append([]string(nil), args...)
 	wrongDigest[3] = string(slCovDigest("other"))
-	if err := runPrivateLauncher(wrongDigest, deps); err == nil || !strings.Contains(err.Error(), "does not match fixed tmux argv") {
+	if err := runPrivateLauncher(wrongDigest, deps); err == nil || !strings.Contains(err.Error(), "does not match fixed Herdr bootstrap argv") {
 		t.Fatalf("digest mismatch = %v", err)
 	}
 }

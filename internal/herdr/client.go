@@ -23,6 +23,7 @@ type Client struct {
 	timeout     time.Duration
 	socketPath  string
 	sessionName string
+	socketDial  socketDialer
 }
 
 // ClientOption configures a [Client] constructed by [NewClient].
@@ -174,6 +175,9 @@ func (c *Client) call(ctx context.Context, args ...string) (json.RawMessage, err
 	}
 	var envelope herdrEnvelope
 	if unmarshalErr := json.Unmarshal(stdout, &envelope); unmarshalErr != nil {
+		if privateCommand(args) {
+			return nil, fmt.Errorf("%w: herdr %s returned an invalid envelope", ErrUnparseableOutput, commandName(args))
+		}
 		return nil, fmt.Errorf("%w: herdr %s did not return its JSON envelope: %w (output: %s)",
 			ErrUnparseableOutput, strings.Join(args, " "), unmarshalErr, truncate(string(stdout), 256))
 	}
@@ -181,6 +185,23 @@ func (c *Client) call(ctx context.Context, args ...string) (json.RawMessage, err
 		return nil, c.mapHerdrError(args, *envelope.Error)
 	}
 	return envelope.Result, nil
+}
+
+// pane run/send-text use v0.9.1 cli.rs send_ok_request: success is exit0
+// with zero stdout bytes; structured errors are stderr+exit1. This is a
+// distinct strict contract, never a relaxation of JSON-bearing query replies.
+func (c *Client) callEmptyAck(ctx context.Context, args ...string) error {
+	if len(args) < 2 || args[0] != "pane" || args[1] != "run" && args[1] != "send-text" && args[1] != "send-keys" {
+		return fmt.Errorf("%w: command has no empty acknowledgment contract", ErrCommandFailed)
+	}
+	stdout, err := c.rawCall(ctx, args...)
+	if err != nil {
+		return err
+	}
+	if len(stdout) != 0 {
+		return fmt.Errorf("%w: herdr %s returned unexpected mutation acknowledgment", ErrUnparseableOutput, commandName(args))
+	}
+	return nil
 }
 
 // rawCall runs a herdr subcommand and returns its raw stdout, mapping a
@@ -207,7 +228,7 @@ func (c *Client) rawCall(ctx context.Context, args ...string) ([]byte, error) {
 		return nil, fmt.Errorf("%w: %w", ErrBinaryNotFound, runErr)
 	}
 	if callCtx.Err() != nil {
-		return nil, fmt.Errorf("herdr %s: %w", strings.Join(args, " "), callCtx.Err())
+		return nil, fmt.Errorf("herdr %s: %w", commandName(args), callCtx.Err())
 	}
 	// A nonzero exit that is not a context failure: herdr documents this as
 	// either a structured JSON error on stderr (exit 1) or a plain usage
@@ -216,12 +237,22 @@ func (c *Client) rawCall(ctx context.Context, args ...string) ([]byte, error) {
 	if unmarshalErr := json.Unmarshal(stderr, &envelope); unmarshalErr == nil && envelope.Error != nil {
 		return nil, c.mapHerdrError(args, *envelope.Error)
 	}
+	if privateCommand(args) {
+		return nil, fmt.Errorf("%w: herdr %s failed", ErrCommandFailed, commandName(args))
+	}
 	return nil, fmt.Errorf("%w: herdr %s: %s: %w",
 		ErrCommandFailed, strings.Join(args, " "), truncate(strings.TrimSpace(string(stderr)), 512), runErr)
 }
 
 func (c *Client) mapHerdrError(args []string, body herdrErrorBody) error {
 	command := strings.Join(args, " ")
+	if privateCommand(args) {
+		command = commandName(args)
+		body.Message = "private command refused"
+		if !knownTargetErrorCodes[body.Code] && !knownUnreachableErrorCodes[body.Code] {
+			body.Code = "private_command_refused"
+		}
+	}
 	switch {
 	case knownTargetErrorCodes[body.Code]:
 		return fmt.Errorf("%w: herdr %s: %s (%s)", ErrUnknownTarget, command, body.Message, body.Code)
@@ -230,6 +261,15 @@ func (c *Client) mapHerdrError(args []string, body herdrErrorBody) error {
 	default:
 		return fmt.Errorf("%w: herdr %s: %s (%s)", ErrCommandFailed, command, body.Message, body.Code)
 	}
+}
+
+// Command text and message bodies must never appear in diagnostic strings.
+func privateCommand(args []string) bool {
+	return len(args) >= 2 && ((args[0] == "pane" && (args[1] == "run" || args[1] == "send-text")) || (args[0] == "agent" && args[1] == "prompt"))
+}
+
+func commandName(args []string) string {
+	return strings.Join(args[:min(2, len(args))], " ")
 }
 
 func (c *Client) effectiveTimeout() time.Duration {
@@ -263,6 +303,19 @@ func (c *Client) EnsureMinimumVersion(ctx context.Context) error {
 	}
 	if current.Less(minimumVersion) {
 		return fmt.Errorf("%w: herdr %s is older than the minimum supported %s", ErrUnsupportedVersion, current, minimumVersion)
+	}
+	return nil
+}
+
+// EnsureTUIProtocol pins the original Herdr TUI contract this lifecycle was
+// exercised against. The separate hc/herdr-core CLI is not a compatible route.
+func (c *Client) EnsureTUIProtocol(ctx context.Context) error {
+	current, err := c.Version(ctx)
+	if err != nil {
+		return err
+	}
+	if current.Major != 0 || current.Minor != 9 || current.Patch != 1 {
+		return fmt.Errorf("%w: lifecycle requires original Herdr TUI 0.9.1", ErrUnsupportedVersion)
 	}
 	return nil
 }

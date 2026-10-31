@@ -2,7 +2,7 @@ package sessiontransport
 
 import "testing"
 
-// TestResolveDeliveryModeTmuxNeverDeliversUnguarded proves
+// TestRestrictedHerdrCapabilitiesNeverSubmitDaemonEvents proves
 // AC:tmux-never-delivers-unguarded directly against the capability matrix
 // tmux declares by default: no live status and no empty-input evidence, so
 // the daemon never performs a submitted delivery — and, per
@@ -10,11 +10,11 @@ import "testing"
 // Every daemon-originated event, including the own-PR-outcome class, must
 // resolve record-only, even though tmux declares LineageSubmit true for its
 // unrelated, pre-existing successor-messaging path.
-func TestResolveDeliveryModeTmuxNeverDeliversUnguarded(t *testing.T) {
+func TestRestrictedHerdrCapabilitiesNeverSubmitDaemonEvents(t *testing.T) {
 	t.Parallel()
 	for _, class := range []EventClass{EventOwnPROutcome, EventAdvisory} {
-		if got := ResolveDeliveryMode(TmuxCapabilities(), OperationWake, class); got != ModeRecordOnly {
-			t.Errorf("ResolveDeliveryMode(TmuxCapabilities(), wake, %q) = %q, want %q (tmux must never deliver unguarded)",
+		if got := ResolveDeliveryMode(restrictedHerdrCapabilities(), OperationWake, class); got != ModeRecordOnly {
+			t.Errorf("ResolveDeliveryMode(restrictedHerdrCapabilities(), wake, %q) = %q, want %q (tmux must never deliver unguarded)",
 				class, got, ModeRecordOnly)
 		}
 	}
@@ -66,23 +66,20 @@ func TestResolveDeliveryModeHerdrAdvisoryForEverythingElse(t *testing.T) {
 // EventSuccessorMessage: only LineageSubmit governs that class, and herdr
 // does not declare it (Deferred: "Successor messaging's herdr submit
 // path").
-func TestResolveDeliveryModeHerdrNeverSubmitsSuccessorMessageEither(t *testing.T) {
+func TestHerdrLineageSubmissionDoesNotUpgradeDaemonWake(t *testing.T) {
 	t.Parallel()
-	if got := ResolveDeliveryMode(HerdrCapabilities(), OperationMessage, EventSuccessorMessage); got != ModeRecordOnly {
-		t.Errorf("ResolveDeliveryMode(HerdrCapabilities(), message, EventSuccessorMessage) = %q, want %q", got, ModeRecordOnly)
+	if got := ResolveDeliveryMode(HerdrCapabilities(), OperationMessage, EventSuccessorMessage); got != ModeSubmit {
+		t.Fatalf("authorized successor message mode=%s", got)
+	}
+	if got := ResolveDeliveryMode(HerdrCapabilities(), OperationWake, EventSuccessorMessage); got != ModeRecordOnly {
+		t.Fatalf("daemon wake inherited message authority: %s", got)
 	}
 }
 
-// TestResolveDeliveryModeTmuxSubmitsSuccessorMessageOnly proves B1's fix:
-// tmux's LineageSubmit grounds ModeSubmit for EventSuccessorMessage — its
-// pre-existing, unaffected paste-with-newline path — and only that class;
-// TestResolveDeliveryModeTmuxNeverDeliversUnguarded above already proves the
-// daemon-originated classes stay record-only on the identical Capabilities
-// value.
-func TestResolveDeliveryModeTmuxSubmitsSuccessorMessageOnly(t *testing.T) {
+func TestRestrictedHerdrCapabilitiesSubmitOnlyExplicitSuccessorMessages(t *testing.T) {
 	t.Parallel()
-	if got := ResolveDeliveryMode(TmuxCapabilities(), OperationMessage, EventSuccessorMessage); got != ModeSubmit {
-		t.Errorf("ResolveDeliveryMode(TmuxCapabilities(), message, EventSuccessorMessage) = %q, want %q", got, ModeSubmit)
+	if got := ResolveDeliveryMode(restrictedHerdrCapabilities(), OperationMessage, EventSuccessorMessage); got != ModeSubmit {
+		t.Errorf("ResolveDeliveryMode(restrictedHerdrCapabilities(), message, EventSuccessorMessage) = %q, want %q", got, ModeSubmit)
 	}
 }
 
@@ -218,7 +215,7 @@ func TestDeclaredCapabilitiesMatrixShape(t *testing.T) {
 		caps Capabilities
 	}{
 		{"herdr", HerdrCapabilities()},
-		{"tmux", TmuxCapabilities()},
+
 		{"none", NoneCapabilities()},
 	}
 	for _, tc := range cases {
@@ -229,17 +226,17 @@ func TestDeclaredCapabilitiesMatrixShape(t *testing.T) {
 	if !HerdrCapabilities().LiveStatus {
 		t.Error("herdr capabilities must declare LiveStatus: herdr's agent list/get supply it")
 	}
-	if TmuxCapabilities().LiveStatus {
+	if restrictedHerdrCapabilities().LiveStatus {
 		t.Error("tmux capabilities must not declare LiveStatus: tmux structurally cannot report it")
 	}
-	if TmuxCapabilities().AdvisoryDelivery {
+	if restrictedHerdrCapabilities().AdvisoryDelivery {
 		t.Error("tmux capabilities must not declare AdvisoryDelivery by default (REQ:tmux-record-only-for-daemon-events)")
 	}
-	if !TmuxCapabilities().LineageSubmit {
+	if !restrictedHerdrCapabilities().LineageSubmit {
 		t.Error("tmux capabilities must declare LineageSubmit: its successor-messaging paste already submits today")
 	}
-	if HerdrCapabilities().LineageSubmit {
-		t.Error("herdr capabilities must not declare LineageSubmit: no herdr submit path is built in this iteration")
+	if !HerdrCapabilities().LineageSubmit {
+		t.Error("Herdr must declare the explicit receipt-bound successor-message submission path")
 	}
 	if NoneCapabilities() != (Capabilities{Kind: KindNone}) {
 		t.Errorf("NoneCapabilities() = %#v, want every capability field false", NoneCapabilities())
@@ -255,4 +252,10 @@ func TestCapabilitiesFunctionsReturnIndependentValues(t *testing.T) {
 	if second := HerdrCapabilities(); !second.LiveStatus {
 		t.Fatal("mutating one HerdrCapabilities() result affected a later call; want independent values")
 	}
+}
+
+// A deliberately restricted Herdr fixture independently exercises capability
+// guards without retaining a shipped legacy terminal implementation.
+func restrictedHerdrCapabilities() Capabilities {
+	return Capabilities{Kind: KindHerdr, LineageSubmit: true}
 }

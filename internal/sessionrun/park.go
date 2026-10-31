@@ -43,21 +43,22 @@ type ParkResult struct {
 	Registration ParkRegistration
 }
 type ParkDependencies struct {
-	Directory     func(string) (string, error)
-	Home          func(string) (string, error)
-	PID           func() int
-	ResolveSource func(string, int, session.AutoRegisterHints) (session.Record, bool, error)
-	List          func(context.Context, worktrees.ListOptions) ([]worktrees.ListResult, error)
-	Store         func(string) sessionpark.Store
-	Capture       func(context.Context, string, []worktrees.ListResult, session.Record, func([]sessionpark.Worktree) error) error
-	NewID         func() (string, error)
-	Now           func() time.Time
-	MarkParked    func(string, int, string) (session.Record, error)
-	LoadScanner   func() (*secretscan.Scanner, []string, error)
+	Directory        func(string) (string, error)
+	Home             func(string) (string, error)
+	PID              func() int
+	ResolveSource    func(string, int, session.AutoRegisterHints) (session.Record, bool, error)
+	List             func(context.Context, worktrees.ListOptions) ([]worktrees.ListResult, error)
+	Store            func(string) sessionpark.Store
+	Capture          func(context.Context, string, []worktrees.ListResult, session.Record, func([]sessionpark.Worktree) error) error
+	NewID            func() (string, error)
+	Now              func() time.Time
+	MarkParked       func(string, int, string) (session.Record, error)
+	MarkRecordParked func(string, session.Record, string) (session.Record, error)
+	LoadScanner      func() (*secretscan.Scanner, []string, error)
 }
 
 func DefaultParkDependencies() ParkDependencies {
-	return ParkDependencies{Directory: DirForWrite, Home: wbhome.Root, PID: os.Getpid, ResolveSource: session.ResolveOrRegisterForProcess, List: worktrees.List, Store: sessionpark.NewStore, Capture: worktrees.CaptureParkedSessionAggregate, NewID: sessionpark.NewID, Now: func() time.Time { return time.Now().UTC() }, MarkParked: session.MarkParked, LoadScanner: DefaultScanner}
+	return ParkDependencies{Directory: DirForWrite, Home: wbhome.Root, PID: os.Getpid, ResolveSource: session.ResolveOrRegisterForProcess, List: worktrees.List, Store: sessionpark.NewStore, Capture: worktrees.CaptureParkedSessionAggregate, NewID: sessionpark.NewID, Now: func() time.Time { return time.Now().UTC() }, MarkParked: session.MarkParked, MarkRecordParked: session.MarkRecordParked, LoadScanner: DefaultScanner}
 }
 
 type ParkService struct{ deps ParkDependencies }
@@ -99,13 +100,20 @@ func (s *ParkService) Park(ctx context.Context, request ParkRequest) (ParkResult
 	if err != nil {
 		return ParkResult{}, err
 	}
+	if source.Scope != "" && deps.MarkRecordParked == nil {
+		return ParkResult{}, fmt.Errorf("scoped parking requires record-qualified lifecycle marking")
+	}
 	results, err := deps.List(ctx, worktrees.ListOptions{ProjectsRoot: projectsRoot, Workers: 1})
 	if err != nil {
 		return ParkResult{}, err
 	}
 	ownedResults := make([]worktrees.ListResult, 0, len(results))
 	for _, result := range results {
-		if ownedBySession(result, source) {
+		owned, err := ownedBySessionEvidence(result, source)
+		if err != nil {
+			return ParkResult{}, err
+		}
+		if owned {
 			ownedResults = append(ownedResults, result)
 		}
 	}
@@ -142,7 +150,12 @@ func (s *ParkService) Park(ctx context.Context, request ParkRequest) (ParkResult
 			}
 			owned = captured
 		}
-		_, markErr := deps.MarkParked(dir, source.PID, id)
+		var markErr error
+		if deps.MarkRecordParked != nil {
+			_, markErr = deps.MarkRecordParked(dir, source, id)
+		} else {
+			_, markErr = deps.MarkParked(dir, source.PID, id)
+		}
 		return markErr
 	})
 	if err != nil {
@@ -153,13 +166,26 @@ func (s *ParkService) Park(ctx context.Context, request ParkRequest) (ParkResult
 	return ParkResult{Output: out, Warnings: secretWarnings, Registration: ParkRegistration{PID: source.PID, Runtime: source.Runtime, Model: source.Model}}, nil
 }
 func ownedBySession(result worktrees.ListResult, source session.Record) bool {
-	if result.WorkLogSessionID != "" && result.WorkLogSessionID == source.WBSessionID {
-		return true
+	owned, _ := ownedBySessionEvidence(result, source)
+	return owned
+}
+
+func ownedBySessionEvidence(result worktrees.ListResult, source session.Record) (bool, error) {
+	if !result.CurrentOwner.IsZero() {
+		return result.CurrentOwner.MatchesSource(source)
+	}
+	if result.WorkLogSessionID != "" {
+		return result.WorkLogSessionID == source.WBSessionID, nil
 	}
 	for _, owner := range result.Owners {
-		if owner.PID == source.PID && !owner.At.Before(source.StartedAt) {
-			return true
+		evidence := worktrees.ParkOwnerEvidence{Binding: "original", Owner: owner.OwnerRegistration, HasOwner: true}
+		owned, err := evidence.MatchesSource(source)
+		if err != nil {
+			return false, err
+		}
+		if owned {
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }

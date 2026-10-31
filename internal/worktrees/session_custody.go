@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/sneat-dev/wb/internal/sessionterminal"
 	"io"
 	"os"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"github.com/sneat-dev/wb/internal/buildinfo"
 	"github.com/sneat-dev/wb/internal/gitremote"
 	"github.com/sneat-dev/wb/internal/session"
+	"github.com/sneat-dev/wb/internal/sessionauthority"
 	"github.com/sneat-dev/wb/internal/sessionlaunch"
 	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/unixcompat"
@@ -149,7 +151,9 @@ func (p externalTargetPublicationPorts) prepare(ctx context.Context, options Ext
 	if err := ensureExternalManifest(prepared.worktree, prepared.manifest); err != nil {
 		return result, err
 	}
-	if err := ensureExternalHandoverPrompt(prepared.worktree, claim.RecordedAt, options.Session, options.Request.HandoverDigest, prepared.handover); err != nil {
+	promptSession := options.Session
+	promptSession.Model = prepared.manifest.Model
+	if err := ensureExternalHandoverPrompt(prepared.worktree, claim.RecordedAt, promptSession, options.Request.HandoverDigest, prepared.handover); err != nil {
 		return result, err
 	}
 	prepared.receivedEvent, _, err = p.appendEvent(prepared.worktree, prepared.receivedEvent)
@@ -253,7 +257,8 @@ func prepareExternalTarget(ctx context.Context, options ExternalSessionWorkLogPr
 		receivedAt = request.CreatedAt.UTC()
 	}
 	evidence := externalHandoffEvidence(request, options.RequestDigest, targetReference.String())
-	model := strings.TrimSpace(options.Session.Model)
+	runtime, selectedModel := externalTargetRuntimeModel(request)
+	model := selectedModel
 	modelProvenance := modelProvenanceCallerDeclared
 	if model == "" {
 		model = "unknown"
@@ -264,11 +269,11 @@ func prepareExternalTarget(ctx context.Context, options ExternalSessionWorkLogPr
 		Task: "external session handoff " + request.HandoffID, Repository: remote.Identity.Repository,
 		Worktree: worktree, Branch: branch, Base: request.Branch, BaseSHA: request.SourceWorkCommit,
 		Lifecycle: "active", RecordedAt: receivedAt, Initiator: request.PredecessorWBSessionID,
-		AgentID: request.SuccessorWBSessionID, AgentRuntime: options.Session.Runtime, Model: model,
+		AgentID: request.SuccessorWBSessionID, AgentRuntime: runtime, Model: model,
 		ModelProvenance: modelProvenance, ModelDeclaredBy: request.PredecessorWBSessionID,
 		ParentClaimID: sourceReference.ClaimID, AcquiredVia: "external_handoff", ExternalHandoff: evidence,
 	}
-	manifest := preparedTargetManifest(claim, receivedAt, options.Session.Model)
+	manifest := preparedTargetManifest(claim, receivedAt, selectedModel)
 	receivedEvent := externalTargetReceivedEvent(request, options.RequestDigest, targetReference.String(), receivedAt)
 	ownerEvent := externalTargetOwnerEvent(request, options.RequestDigest, claim, targetReference.String(),
 		options.AttemptID, options.AttemptIndex, options.Session.PID, options.Session.StartedAt, buildinfo.Version())
@@ -927,8 +932,12 @@ func findExternalSourceOffer(events []LocalWorkLogEvent, request sessionmove.Req
 }
 
 func externalSourceOwnerExtra(request sessionmove.Request, digest sessionmove.Digest) map[string]any {
-	return map[string]any{"handoff_id": request.HandoffID, "request_digest": string(digest),
-		"source_work_log_reference": request.WorkLogReference}
+	extra := externalSourceOwnerLegacyExtra(request, digest)
+	extra["owner_wb_session_id"] = request.PredecessorWBSessionID
+	return extra
+}
+func externalSourceOwnerLegacyExtra(request sessionmove.Request, digest sessionmove.Digest) map[string]any {
+	return map[string]any{"handoff_id": request.HandoffID, "request_digest": string(digest), "source_work_log_reference": request.WorkLogReference}
 }
 
 func findExternalSourceOwner(events []LocalWorkLogEvent, request sessionmove.Request, digest sessionmove.Digest,
@@ -956,7 +965,7 @@ func findExternalSourceOwner(events []LocalWorkLogEvent, request sessionmove.Req
 	}
 	owner := found.Owner
 	if found.Type != LocalEventOwner || owner == nil || found.Message != "predecessor session owns offered external handoff" ||
-		!found.At.Equal(request.CreatedAt.UTC()) || !reflect.DeepEqual(found.Extra, externalSourceOwnerExtra(request, digest)) ||
+		!found.At.Equal(request.CreatedAt.UTC()) || (!reflect.DeepEqual(found.Extra, externalSourceOwnerExtra(request, digest)) && !reflect.DeepEqual(found.Extra, externalSourceOwnerLegacyExtra(request, digest))) ||
 		owner.Agent != source.Runtime+"/"+source.WBSessionID || owner.Model != source.Model || owner.Effort != claim.EffortID ||
 		owner.PID != source.PID || strings.TrimSpace(owner.WBVersion) == "" || owner.Command != "session move offer" ||
 		!owner.At.Equal(request.CreatedAt.UTC()) || owner.At.Before(source.StartedAt.UTC()) {
@@ -990,7 +999,7 @@ func externalHandoffEvidence(request sessionmove.Request, digest sessionmove.Dig
 		PredecessorWBSessionID: request.PredecessorWBSessionID, SuccessorWBSessionID: request.SuccessorWBSessionID,
 		SourceMachine: request.SourceMachine, TargetMachine: request.TargetMachine,
 		SourceWorkLogReference: request.WorkLogReference, TargetWorkLogReference: targetReference,
-		SuccessorTmuxName: "wb-session-" + request.SuccessorWBSessionID,
+		SuccessorTmuxName: legacySuccessorName(request.Transport, request.SuccessorWBSessionID), SuccessorTransport: request.Transport,
 	}
 }
 
@@ -1019,8 +1028,8 @@ func validateExternalTargetSession(request sessionmove.Request, record session.R
 	runtime, model := externalTargetRuntimeModel(request)
 	if record.PID <= 0 || record.StartedAt.IsZero() || record.WBSessionID != request.SuccessorWBSessionID ||
 		record.PredecessorWBSessionID != request.PredecessorWBSessionID || record.HandoffID != request.HandoffID ||
-		record.Machine != request.TargetMachine || record.TmuxName != "wb-session-"+request.SuccessorWBSessionID ||
-		record.Runtime != runtime || strings.TrimSpace(record.Model) != model {
+		record.Machine != request.TargetMachine || sessionterminal.ValidateBoundReceipt(request.SuccessorWBSessionID, record.TmuxName, record.Terminal) != nil ||
+		record.Runtime != runtime || !record.Terminal.MatchesModel(model, strings.TrimSpace(record.Model)) {
 		return fmt.Errorf("prepared successor session does not match deterministic admitted target identity")
 	}
 	return nil
@@ -1037,8 +1046,8 @@ func validateExternalReceipt(request sessionmove.Request, digest sessionmove.Dig
 	runtime, model := externalTargetRuntimeModel(request)
 	if receipt.HandoffID != request.HandoffID || receipt.RequestDigest != digest ||
 		receipt.SuccessorWBSessionID != request.SuccessorWBSessionID || receipt.PredecessorWBSessionID != request.PredecessorWBSessionID ||
-		receipt.TargetMachine != request.TargetMachine || receipt.TmuxName != "wb-session-"+request.SuccessorWBSessionID ||
-		receipt.Runtime != runtime || strings.TrimSpace(receipt.Model) != model || receipt.PinnedCommit != request.BundleCommit ||
+		receipt.TargetMachine != request.TargetMachine || sessionterminal.ValidateBoundReceipt(request.SuccessorWBSessionID, receipt.TmuxName, receipt.Terminal) != nil ||
+		receipt.Runtime != runtime || !receipt.Terminal.MatchesModel(model, strings.TrimSpace(receipt.Model)) || receipt.PinnedCommit != request.BundleCommit ||
 		receipt.TargetWorkLogReference != target.String() {
 		return fmt.Errorf("successor receipt conflicts with deterministic external custody lineage")
 	}
@@ -1050,11 +1059,7 @@ func externalTargetRuntimeModel(request sessionmove.Request) (string, string) {
 	if runtime == "" {
 		runtime = strings.TrimSpace(request.SourceRuntime)
 	}
-	model := ""
-	if runtime == strings.TrimSpace(request.SourceRuntime) {
-		model = strings.TrimSpace(request.SourceModel)
-	}
-	return runtime, model
+	return runtime, sessionauthority.SelectedModel(request.SourceRuntime, request.SourceModel, runtime, request.RequestedModel)
 }
 
 func sessionNativeHarnessID(record session.Record) string {
@@ -1404,7 +1409,7 @@ func validateExternalSuccessorClaimLineage(claim workLogClaim, policy externalSu
 	if evidence == nil || evidence.Version != externalHandoffEvidenceVersion || evidence.HandoffID == "" ||
 		evidence.PredecessorWBSessionID == "" || evidence.SuccessorWBSessionID != claim.AgentID ||
 		evidence.SourceWorkLogReference == "" || evidence.TargetWorkLogReference == "" ||
-		evidence.SuccessorTmuxName != "wb-session-"+claim.AgentID ||
+		!validSuccessorProtocol(evidence.SuccessorTransport, evidence.SuccessorTmuxName, claim.AgentID) ||
 		(policy.protocol != "" && evidence.Protocol != policy.protocol) || (policy.requireMember && evidence.MemberID == "") {
 		return nil, fmt.Errorf("private %s successor claim metadata is invalid", policy.label)
 	}
@@ -1479,4 +1484,15 @@ func readBoundedRelativeRegular(rootPath, relative string, limit int64) ([]byte,
 		return nil, fmt.Errorf("relative handover changed while being read")
 	}
 	return bytes.Clone(raw), nil
+}
+
+// Empty transport is retained solely for immutable pre-Herdr claim replay.
+func legacySuccessorName(transport, id string) string {
+	if transport == "" {
+		return "wb-session-" + id
+	}
+	return ""
+}
+func validSuccessorProtocol(transport, name, id string) bool {
+	return transport == "herdr" && name == "" || transport == "" && name == "wb-session-"+id
 }

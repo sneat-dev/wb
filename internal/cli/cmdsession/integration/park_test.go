@@ -22,6 +22,7 @@ import (
 	"github.com/sneat-dev/wb/internal/sessionpark"
 	"github.com/sneat-dev/wb/internal/sessionparkcourier"
 	"github.com/sneat-dev/wb/internal/sessionrun"
+	"github.com/sneat-dev/wb/internal/sessionterminal"
 	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -269,17 +270,17 @@ func TestSessionResumeLocalZeroMemberLaunchesOnceAndReplays(t *testing.T) {
 		return sessionlaunch.Result{HandoffID: parkedID, WBSessionID: record.WBSessionID, PredecessorWBSessionID: record.PredecessorWBSessionID,
 			TargetMachine: record.Machine, PID: record.PID, AttemptID: "000001-test", AttemptIndex: 1, Runtime: record.Runtime, StartedAt: record.StartedAt}, nil
 	}
-	deps.MarkResumed = func(_ string, pid int, parkID, successorID string) (session.Record, error) {
+	deps.MarkSourceResumed = func(_ string, original session.Record, parkID, successorID string) (session.Record, error) {
 		projections++
-		if pid != source.PID || parkID != parkedID || successorID == "" {
-			t.Fatalf("resumed projection pid=%d park=%q successor=%q", pid, parkID, successorID)
+		if !reflect.DeepEqual(original, source) || parkID != parkedID || successorID == "" {
+			t.Fatalf("resumed projection source=%#v park=%q successor=%q", original, parkID, successorID)
 		}
 		return source, nil
 	}
 	run := func() sessionrun.ResumeResult {
 		stdout := new(bytes.Buffer)
 		command := resumeCommand(projectsRoot, deps)
-		command.SetArgs([]string{parkedID, "--format", "json"})
+		command.SetArgs([]string{parkedID, "--launch", "--format", "json"})
 		command.SetOut(stdout)
 		if err := command.Execute(); err != nil {
 			t.Fatal(err)
@@ -372,13 +373,16 @@ func TestSessionResumeLocalInterruptionReusesAuthenticatedAttempt(t *testing.T) 
 				}
 				return nil
 			}
-			deps.MarkResumed = func(string, int, string, string) (session.Record, error) {
+			deps.MarkSourceResumed = func(_ string, original session.Record, parkID, successorID string) (session.Record, error) {
 				projections++
+				if !reflect.DeepEqual(original, source) || parkID != parkedID || successorID != stable.WBSessionID {
+					t.Fatalf("interrupted resume finalized a different immutable source: %#v park=%q successor=%q", original, parkID, successorID)
+				}
 				return source, nil
 			}
 			run := func() error {
 				command := resumeCommand(projectsRoot, deps)
-				command.SetArgs([]string{parkedID, "--format", "json"})
+				command.SetArgs([]string{parkedID, "--launch", "--format", "json"})
 				command.SetOut(new(bytes.Buffer))
 				return command.Execute()
 			}
@@ -427,7 +431,7 @@ func TestSessionResumeLocalPreflightsBeforeClaimingRouteOrCustody(t *testing.T) 
 		return nil
 	}
 	command := resumeCommand(projectsRoot, deps)
-	command.SetArgs([]string{parkedID})
+	command.SetArgs([]string{parkedID, "--launch"})
 	command.SetOut(new(bytes.Buffer))
 	if err := command.Execute(); !errors.Is(err, want) {
 		t.Fatalf("resume error = %v, want %v", err, want)
@@ -551,6 +555,11 @@ func TestSessionResumeRemoteReceiptRetryRepairsRegistryWithoutRedelivery(t *test
 		cleanParkedWorktree("/tmp/one", "feature/one"),
 		cleanParkedWorktree("/tmp/two", "feature/two"),
 	})
+	store := sessionpark.NewStore(filepath.Join(fixture.home, sessionpark.SourceDirName))
+	parked, err := store.Load(fixture.parkedID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	deliveries, projections := 0, 0
 	projectionCrash := errors.New("crash after source finalization before registry projection")
 	deps := sessionrun.DefaultResumeDependencies()
@@ -559,12 +568,15 @@ func TestSessionResumeRemoteReceiptRetryRepairsRegistryWithoutRedelivery(t *test
 		deliveries++
 		return validRemoteCourierResult(t, raw), nil
 	}
-	deps.MarkResumed = func(string, int, string, string) (session.Record, error) {
+	deps.MarkSourceResumed = func(_ string, original session.Record, parkID, successorID string) (session.Record, error) {
 		projections++
+		if !reflect.DeepEqual(original, parked.Bundle.Source) || parkID != fixture.parkedID || successorID == "" {
+			t.Fatalf("remote receipt finalized a different immutable source: %#v park=%q successor=%q", original, parkID, successorID)
+		}
 		if projections == 1 {
 			return session.Record{}, projectionCrash
 		}
-		return session.Record{}, nil
+		return original, nil
 	}
 	first := resumeCommand(fixture.projectsRoot, deps)
 	first.SetArgs([]string{fixture.parkedID, "--to", "target", "--via", "ssh", "--config", fixture.config, "--format", "json"})
@@ -572,7 +584,6 @@ func TestSessionResumeRemoteReceiptRetryRepairsRegistryWithoutRedelivery(t *test
 	if err := first.Execute(); !errors.Is(err, projectionCrash) {
 		t.Fatalf("first resume error = %v", err)
 	}
-	store := sessionpark.NewStore(filepath.Join(fixture.home, sessionpark.SourceDirName))
 	interrupted, err := store.Load(fixture.parkedID)
 	if err != nil || interrupted.Status != sessionpark.StatusResumed || interrupted.RemoteReceipt == nil {
 		t.Fatalf("interrupted state=%#v err=%v", interrupted, err)
@@ -614,6 +625,10 @@ func validRemoteCourierResult(t *testing.T, raw []byte) sessionparkcourier.Resul
 		TmuxName: "wb-session-" + request.SuccessorWBSessionID, Runtime: runtime, Model: model,
 		AttemptID: "000001-" + strings.Repeat("d", 32), AttemptIndex: 1, PID: 8181, StartedAt: time.Unix(50, 0).UTC(),
 		Members: make([]sessionpark.ReceiptMember, len(request.Members))}
+	if request.Transport == "herdr" {
+		receipt.TmuxName = ""
+		receipt.Terminal = sessionterminal.Identity{Kind: "herdr", Socket: filepath.Join(os.TempDir(), "wb-owned-herdr-fixture.sock"), WorkspaceID: "workspace-owned", PaneID: "pane-owned"}
+	}
 	for index, member := range request.Members {
 		reference, err := sessionpark.TargetWorkLogReference(request, digest, member)
 		if err != nil {

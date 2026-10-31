@@ -39,6 +39,7 @@ type launchPlan struct {
 	PredecessorWBSessionID string             `json:"predecessor_wb_session_id"`
 	Machine                string             `json:"machine"`
 	TmuxName               string             `json:"tmux_name"`
+	Transport              string             `json:"transport,omitempty"`
 	Runtime                string             `json:"runtime"`
 	Model                  string             `json:"model,omitempty"`
 	StoreRoot              string             `json:"store_root"`
@@ -97,7 +98,7 @@ type launcherFailure struct {
 // pre-release crash case where a wrapper left exact process artifacts but
 // cannot publish its own failure. It is valid only after the receiver, while
 // holding the handoff execution lock, proves the fence released, PID ESRCH,
-// exact tmux absent, and no release/started marker.
+// exact owned Herdr pane absent, and no release/started marker.
 type launcherAbandonment struct {
 	SchemaVersion int                `json:"schema_version"`
 	HandoffID     string             `json:"handoff_id"`

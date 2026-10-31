@@ -70,8 +70,8 @@ func TestLoadOverrideReadsConfiguredTransport(t *testing.T) {
 	if !ok {
 		t.Fatalf("LoadOverride ok = false, want true")
 	}
-	if kind != KindTmux {
-		t.Fatalf("LoadOverride kind = %q, want %q", kind, KindTmux)
+	if kind != Kind("tmux") {
+		t.Fatalf("LoadOverride kind = %q, want %q", kind, Kind("tmux"))
 	}
 }
 
@@ -164,51 +164,17 @@ func TestLoadOverrideExplicitNullSessionIsNotAnError(t *testing.T) {
 	}
 }
 
-// TestResolveOverrideExplicitTmuxOverrideFailsClosedWithNoTmuxBinary proves
-// AC:explicit-override-fails-closed directly: `wb.yaml` names
-// session.transport: tmux, no tmux binary is on PATH, and resolving the
-// transport refuses rather than silently falling back to herdr or none.
-func TestResolveOverrideExplicitTmuxOverrideFailsClosedWithNoTmuxBinary(t *testing.T) {
+func TestRemovedTmuxOverrideRefusesBeforeAnyPrerequisiteOrFallback(t *testing.T) {
 	t.Parallel()
 	path := writeConfig(t, "session:\n  transport: tmux\n")
-	requested, ok, err := LoadOverride(path)
-	if err != nil || !ok {
-		t.Fatalf("LoadOverride = (%q, %v, %v), want (tmux, true, nil)", requested, ok, err)
+	requested, found, err := LoadOverride(path)
+	if err != nil || !found {
+		t.Fatalf("legacy config reader: %v", err)
 	}
-
-	noTmuxOnPath := func(string) (string, error) {
-		return "", errors.New("exec: \"tmux\": executable file not found in $PATH")
-	}
-
-	resolved, err := ResolveOverride(requested, CheckTmuxBinary(noTmuxOnPath))
-	if err == nil {
-		t.Fatalf("ResolveOverride succeeded with resolved = %q, want a fail-closed error", resolved)
-	}
-	if !errors.Is(err, ErrOverridePrerequisiteUnavailable) {
-		t.Fatalf("ResolveOverride error = %v, want ErrOverridePrerequisiteUnavailable", err)
-	}
-	if resolved == KindHerdr || resolved == KindNone {
-		t.Fatalf("ResolveOverride silently fell back to %q instead of refusing", resolved)
-	}
-	if resolved != "" {
-		t.Fatalf("ResolveOverride returned non-empty Kind %q alongside an error", resolved)
-	}
-}
-
-func TestResolveOverrideExplicitTmuxOverrideSucceedsWhenTmuxIsAvailable(t *testing.T) {
-	t.Parallel()
-	tmuxOnPath := func(file string) (string, error) {
-		if file != "tmux" {
-			t.Fatalf("CheckTmuxBinary looked up %q, want \"tmux\"", file)
-		}
-		return "/usr/local/bin/tmux", nil
-	}
-	resolved, err := ResolveOverride(KindTmux, CheckTmuxBinary(tmuxOnPath))
-	if err != nil {
-		t.Fatalf("ResolveOverride error = %v, want nil", err)
-	}
-	if resolved != KindTmux {
-		t.Fatalf("ResolveOverride = %q, want %q", resolved, KindTmux)
+	called := false
+	kind, err := ResolveOverride(requested, func(Kind) error { called = true; return nil })
+	if !errors.Is(err, ErrOverrideInvalid) || kind != "" || called {
+		t.Fatalf("removed terminal admitted/fell back: %q %v prerequisite=%v", kind, err, called)
 	}
 }
 
@@ -267,35 +233,14 @@ func TestResolveOverrideNilCheckAppliesDefaultRatherThanSkipping(t *testing.T) {
 	}
 }
 
-func TestCheckTmuxBinaryIgnoresOtherKinds(t *testing.T) {
-	t.Parallel()
-	neverCalled := func(string) (string, error) {
-		t.Fatal("CheckTmuxBinary's lookPath must not be called for a non-tmux Kind")
-		return "", nil
-	}
-	if err := CheckTmuxBinary(neverCalled)(KindHerdr); err != nil {
-		t.Fatalf("CheckTmuxBinary(...)(KindHerdr) = %v, want nil", err)
-	}
-	if err := CheckTmuxBinary(neverCalled)(KindNone); err != nil {
-		t.Fatalf("CheckTmuxBinary(...)(KindNone) = %v, want nil", err)
-	}
-}
-
-func TestCheckTmuxBinaryDefaultsToExecLookPath(t *testing.T) {
-	t.Parallel()
-	// A nil lookPath must not panic; it falls back to exec.LookPath, whose
-	// outcome depends on the host and is not asserted here.
-	_ = CheckTmuxBinary(nil)(KindTmux)
-}
-
 func TestCheckHerdrBinaryIgnoresOtherKinds(t *testing.T) {
 	t.Parallel()
 	neverCalled := func(string) (string, bool) {
 		t.Fatal("CheckHerdrBinary's lookup must not be called for a non-herdr Kind")
 		return "", false
 	}
-	if err := CheckHerdrBinary(neverCalled)(KindTmux); err != nil {
-		t.Fatalf("CheckHerdrBinary(...)(KindTmux) = %v, want nil", err)
+	if err := CheckHerdrBinary(neverCalled)(Kind("tmux")); err != nil {
+		t.Fatalf("CheckHerdrBinary(removed tmux) = %v, want nil", err)
 	}
 	if err := CheckHerdrBinary(neverCalled)(KindNone); err != nil {
 		t.Fatalf("CheckHerdrBinary(...)(KindNone) = %v, want nil", err)
@@ -377,7 +322,7 @@ func TestComposeChecksAllPass(t *testing.T) {
 	t.Parallel()
 	calls := 0
 	pass := func(Kind) error { calls++; return nil }
-	if err := ComposeChecks(pass, pass)(KindTmux); err != nil {
+	if err := ComposeChecks(pass, pass)(Kind("tmux")); err != nil {
 		t.Fatalf("ComposeChecks(pass, pass) = %v, want nil", err)
 	}
 	if calls != 2 {

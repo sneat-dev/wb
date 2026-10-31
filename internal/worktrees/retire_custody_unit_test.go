@@ -3,6 +3,8 @@ package worktrees
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -180,5 +182,34 @@ func TestCorroborateRetireCustodySessionRefusesUnavailableSessions(t *testing.T)
 				t.Fatalf("session error = %v, want containing %q", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestRetireCustodyRefusesStillRunningScopedParkedOrResumedOwner(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	directory := filepath.Join(home, session.DirName)
+	scope, err := session.NativeScope("codex", "native-retire")
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := session.Register(directory, session.Record{PID: os.Getpid(), Runtime: "codex", NativeHarnessID: "native-retire", Scope: scope, Model: session.Unknown})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := corroborateRetireCustodySession(home, record.WBSessionID); err != nil {
+		t.Fatalf("live scoped owner refused: %v", err)
+	}
+	if _, err := session.MarkRecordParked(directory, record, "park-retire"); err != nil {
+		t.Fatal(err)
+	}
+	if err := corroborateRetireCustodySession(home, record.WBSessionID); err == nil {
+		t.Fatal("physically live parked scope accepted as active custody")
+	}
+	if _, err := session.MarkSourceResumed(directory, record, "park-retire", "wbs-retire-successor"); err != nil {
+		t.Fatal(err)
+	}
+	if err := corroborateRetireCustodySession(home, record.WBSessionID); err == nil {
+		t.Fatal("physically live resumed scope accepted as active custody")
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -21,6 +22,10 @@ import (
 type ResumeRequest struct {
 	ProjectsRoot, ParkedSessionID, Target, Via, ConfigPath string
 	Stderr                                                 io.Writer
+	Current, Launch                                        bool
+	RecoverCurrent                                         bool
+	Acknowledge                                            sessionmove.Digest
+	UnstartedLaunchAcknowledgment                          sessionmove.Digest
 }
 type ResumeResult struct {
 	ParkedSessionID      string             `json:"parked_session_id"`
@@ -30,22 +35,29 @@ type ResumeResult struct {
 	MemberCount          int                `json:"member_count"`
 	ReceiptDigest        sessionmove.Digest `json:"receipt_digest,omitempty"`
 	Replay               bool               `json:"replay"`
+	ContinuationPath     string             `json:"continuation_path,omitempty"`
+	ContinuationDigest   sessionmove.Digest `json:"continuation_digest,omitempty"`
 }
 
 type ResumeDependencies struct {
 	Home func(string) (string, error)
 
-	Now               func() time.Time
-	DeliverSSH        func(context.Context, sessionmove.SSHConfig, []byte, sessionparkcourier.Options) (sessionparkcourier.Result, error)
-	WithRemoteCustody func(context.Context, string, sessionpark.Bundle, func() error) error
-	WithLocalCustody  func(context.Context, string, sessionpark.Bundle, string, func(*worktrees.ParkedLocalCustody) error) error
-	AttachLocal       func(context.Context, *worktrees.ParkedLocalCustody, session.Record, string, uint64) error
-	StartLocal        func(context.Context, sessionlaunch.Options) (sessionlaunch.Result, error)
-	InspectLocal      func(context.Context, sessionlaunch.Options) (sessionlaunch.Result, error)
-	InspectPrepared   func(context.Context, sessionlaunch.Options) (string, error)
-	AfterLocalLaunch  func(sessionlaunch.Result) error
-	MarkResumed       func(string, int, string, string) (session.Record, error)
-	PreflightLocal    func(session.Record) error
+	Now                   func() time.Time
+	DeliverSSH            func(context.Context, sessionmove.SSHConfig, []byte, sessionparkcourier.Options) (sessionparkcourier.Result, error)
+	WithRemoteCustody     func(context.Context, string, sessionpark.Bundle, func() error) error
+	WithLocalCustody      func(context.Context, string, sessionpark.Bundle, string, func(*worktrees.ParkedLocalCustody) error) error
+	AttachLocal           func(context.Context, *worktrees.ParkedLocalCustody, session.Record, string, uint64) error
+	StartLocal            func(context.Context, sessionlaunch.Options) (sessionlaunch.Result, error)
+	InspectLocal          func(context.Context, sessionlaunch.Options) (sessionlaunch.Result, error)
+	InspectPrepared       func(context.Context, sessionlaunch.Options) (string, error)
+	AfterLocalLaunch      func(sessionlaunch.Result) error
+	MarkResumed           func(string, int, string, string) (session.Record, error)
+	PreflightLocal        func(session.Record) error
+	ResolveCurrent        func(string) (session.Record, bool, error)
+	WithCurrentTransition func(string, session.Record, session.Record, func(func() error) error) error
+	WithCurrentCustody    func(context.Context, string, sessionpark.Bundle, []string, func(*worktrees.ParkedLocalCustody) error) error
+	ProveGenerationGone   func(session.Record) error
+	MarkSourceResumed     func(string, session.Record, string, string) (session.Record, error)
 }
 
 func DefaultResumeDependencies() ResumeDependencies {
@@ -67,6 +79,13 @@ func DefaultResumeDependencies() ResumeDependencies {
 		InspectLocal:    sessionlaunch.Inspect,
 		InspectPrepared: sessionlaunch.InspectPreparedParkAttempt,
 		MarkResumed:     session.MarkResumed,
+		ResolveCurrent: func(dir string) (session.Record, bool, error) {
+			return session.ResolveCurrentForProcess(dir, os.Getpid())
+		},
+		WithCurrentTransition: session.WithCurrentTransition,
+		WithCurrentCustody:    worktrees.WithParkedCurrentResumeCustody,
+		ProveGenerationGone:   session.ProveGenerationGone,
+		MarkSourceResumed:     session.MarkSourceResumed,
 	}
 }
 
@@ -75,6 +94,12 @@ type ResumeService struct{ deps ResumeDependencies }
 func NewResume(deps ResumeDependencies) *ResumeService { return &ResumeService{deps: deps} }
 func (s *ResumeService) Resume(ctx context.Context, request ResumeRequest) (ResumeResult, error) {
 	deps := s.deps
+	if request.UnstartedLaunchAcknowledgment != "" && (request.Launch || request.Target != "" || request.RecoverCurrent) {
+		return ResumeResult{}, fmt.Errorf("--ack-unstarted-launch applies only to current-chat pickup, not --launch, --to or --recover-current")
+	}
+	if (request.Current || request.RecoverCurrent) && request.Launch || request.Target != "" && (request.Current || request.RecoverCurrent || request.Launch || request.Acknowledge != "") || request.Launch && request.Acknowledge != "" {
+		return ResumeResult{}, fmt.Errorf("choose current-chat pickup, --launch, or --to; --ack-context applies only to current-chat pickup")
+	}
 	projectsRoot, target, via, configPath := request.ProjectsRoot, request.Target, request.Via, request.ConfigPath
 	home, err := deps.Home(projectsRoot)
 	if err != nil {
@@ -90,6 +115,12 @@ func (s *ResumeService) Resume(ctx context.Context, request ResumeRequest) (Resu
 	if err != nil {
 		return ResumeResult{}, err
 	}
+	if err := state.Bundle.Source.ValidateScope(); err != nil {
+		return ResumeResult{}, err
+	}
+	if state.Bundle.Source.Scope != "" && deps.MarkSourceResumed == nil {
+		return ResumeResult{}, fmt.Errorf("scoped resume requires source-record lifecycle finalization")
+	}
 	Now := time.Now().UTC()
 	if deps.Now != nil {
 		Now = deps.Now()
@@ -99,10 +130,7 @@ func (s *ResumeService) Resume(ctx context.Context, request ResumeRequest) (Resu
 		if err != nil {
 			return ResumeResult{}, err
 		}
-		if deps.MarkResumed == nil {
-			return ResumeResult{}, fmt.Errorf("session resumed lifecycle projection dependency is unavailable")
-		}
-		if _, err := deps.MarkResumed(filepath.Join(home, session.DirName), state.Bundle.Source.PID, state.Bundle.ParkedSessionID, output.SuccessorWBSessionID); err != nil {
+		if err := finalizeResumedSource(deps, filepath.Join(home, session.DirName), state.Bundle.Source, state.Bundle.ParkedSessionID, output.SuccessorWBSessionID); err != nil {
 			return ResumeResult{}, err
 		}
 		return output, nil
@@ -110,17 +138,29 @@ func (s *ResumeService) Resume(ctx context.Context, request ResumeRequest) (Resu
 	if via != "" || configPath != "" {
 		return ResumeResult{}, fmt.Errorf("--via and --config require --to for remote resume")
 	}
+	if !request.Launch {
+		return resumeParkedCurrent(ctx, deps, request, home, store, lock, state, Now)
+	}
 	output, err := resumeParkedLocal(projectsRoot, ctx, deps, store, lock, state, Now)
 	if err != nil {
 		return ResumeResult{}, err
 	}
-	if deps.MarkResumed == nil {
-		return ResumeResult{}, fmt.Errorf("session resumed lifecycle projection dependency is unavailable")
-	}
-	if _, err := deps.MarkResumed(filepath.Join(home, session.DirName), state.Bundle.Source.PID, state.Bundle.ParkedSessionID, output.SuccessorWBSessionID); err != nil {
+	if err := finalizeResumedSource(deps, filepath.Join(home, session.DirName), state.Bundle.Source, state.Bundle.ParkedSessionID, output.SuccessorWBSessionID); err != nil {
 		return ResumeResult{}, err
 	}
 	return output, nil
+}
+
+func finalizeResumedSource(deps ResumeDependencies, dir string, source session.Record, parkID, successorID string) error {
+	if deps.MarkSourceResumed != nil {
+		_, err := deps.MarkSourceResumed(dir, source, parkID, successorID)
+		return err
+	}
+	if source.Scope != "" || deps.MarkResumed == nil {
+		return fmt.Errorf("session resumed lifecycle projection dependency is unavailable")
+	}
+	_, err := deps.MarkResumed(dir, source.PID, parkID, successorID)
+	return err
 }
 func resumeParkedRemote(projectsRoot string, ctx context.Context, deps ResumeDependencies, store sessionpark.Store, lock *sessionpark.SourceLock, state sessionpark.State, target, via, configPath string, Now time.Time, warn io.Writer, home string) (ResumeResult, error) {
 	if via != "" && via != string(sessionmove.CourierSSH) {
@@ -338,7 +378,7 @@ func resumeParkedLocal(projectsRoot string, ctx context.Context, deps ResumeDepe
 			launch = *inspected
 			record := session.Record{PID: launch.PID, WBSessionID: launch.WBSessionID, PredecessorWBSessionID: launch.PredecessorWBSessionID,
 				Machine: launch.TargetMachine, Runtime: launch.Runtime, Model: launch.Model, NativeHarnessID: launch.NativeHarnessID,
-				TmuxName: launch.TmuxName, HandoffID: launch.HandoffID, StartedAt: launch.StartedAt}
+				TmuxName: launch.TmuxName, Terminal: launch.Terminal, HandoffID: launch.HandoffID, StartedAt: launch.StartedAt}
 			if err := deps.AttachLocal(ctx, custody, record, launch.AttemptID, launch.AttemptIndex); err != nil {
 				return err
 			}
@@ -355,7 +395,7 @@ func resumeParkedLocal(projectsRoot string, ctx context.Context, deps ResumeDepe
 		}
 		successor := session.Record{PID: launch.PID, WBSessionID: launch.WBSessionID, PredecessorWBSessionID: launch.PredecessorWBSessionID,
 			Machine: launch.TargetMachine, Runtime: launch.Runtime, Model: launch.Model, NativeHarnessID: launch.NativeHarnessID,
-			TmuxName: launch.TmuxName, HandoffID: launch.HandoffID, StartedAt: launch.StartedAt}
+			TmuxName: launch.TmuxName, Terminal: launch.Terminal, HandoffID: launch.HandoffID, StartedAt: launch.StartedAt}
 		final, err = store.ResumeUnderLock(lock, successor, Now)
 		replay = launch.Reused
 		return err

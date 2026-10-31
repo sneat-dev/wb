@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"github.com/sneat-dev/wb/internal/sessionterminal"
 	"os"
 	"strings"
 	"time"
@@ -36,25 +37,26 @@ type Route struct {
 // successor. It is keyed by stable WB session ID so later messaging and a
 // handoff-back request do not depend on a harness-native session identifier.
 type SuccessorAddress struct {
-	SchemaVersion          int       `json:"schema_version"`
-	SuccessorWBSessionID   string    `json:"successor_wb_session_id"`
-	PredecessorWBSessionID string    `json:"predecessor_wb_session_id"`
-	HandoffID              string    `json:"handoff_id"`
-	RequestDigest          Digest    `json:"request_digest"`
-	SourceMachine          string    `json:"source_machine"`
-	TargetMachine          string    `json:"target_machine"`
-	SourceWorkLogReference string    `json:"source_work_log_reference"`
-	TargetWorkLogReference string    `json:"target_work_log_reference"`
-	TmuxName               string    `json:"tmux_name"`
-	Runtime                string    `json:"runtime"`
-	Model                  string    `json:"model,omitempty"`
-	NativeHarnessID        string    `json:"native_harness_id,omitempty"`
-	AttemptID              string    `json:"attempt_id"`
-	AttemptIndex           uint64    `json:"attempt_index"`
-	PID                    int       `json:"pid"`
-	PinnedCommit           string    `json:"pinned_commit"`
-	StartedAt              time.Time `json:"started_at"`
-	Route                  Route     `json:"route"`
+	SchemaVersion          int                      `json:"schema_version"`
+	SuccessorWBSessionID   string                   `json:"successor_wb_session_id"`
+	PredecessorWBSessionID string                   `json:"predecessor_wb_session_id"`
+	HandoffID              string                   `json:"handoff_id"`
+	RequestDigest          Digest                   `json:"request_digest"`
+	SourceMachine          string                   `json:"source_machine"`
+	TargetMachine          string                   `json:"target_machine"`
+	SourceWorkLogReference string                   `json:"source_work_log_reference"`
+	TargetWorkLogReference string                   `json:"target_work_log_reference"`
+	TmuxName               string                   `json:"tmux_name"`
+	Terminal               sessionterminal.Identity `json:"terminal,omitzero"`
+	Runtime                string                   `json:"runtime"`
+	Model                  string                   `json:"model,omitempty"`
+	NativeHarnessID        string                   `json:"native_harness_id,omitempty"`
+	AttemptID              string                   `json:"attempt_id"`
+	AttemptIndex           uint64                   `json:"attempt_index"`
+	PID                    int                      `json:"pid"`
+	PinnedCommit           string                   `json:"pinned_commit"`
+	StartedAt              time.Time                `json:"started_at"`
+	Route                  Route                    `json:"route"`
 }
 
 func (s Store) RequestBytes(handoffID string) (Request, Digest, []byte, error) {
@@ -300,7 +302,7 @@ func successorAddressFor(request Request, digest Digest, receipt Receipt, route 
 		SuccessorWBSessionID: receipt.SuccessorWBSessionID, PredecessorWBSessionID: receipt.PredecessorWBSessionID,
 		HandoffID: request.HandoffID, RequestDigest: digest, SourceMachine: request.SourceMachine, TargetMachine: receipt.TargetMachine,
 		SourceWorkLogReference: request.WorkLogReference, TargetWorkLogReference: receipt.TargetWorkLogReference,
-		TmuxName: receipt.TmuxName, Runtime: receipt.Runtime, Model: receipt.Model, NativeHarnessID: receipt.NativeHarnessID,
+		TmuxName: receipt.TmuxName, Terminal: receipt.Terminal, Runtime: receipt.Runtime, Model: receipt.Model, NativeHarnessID: receipt.NativeHarnessID,
 		AttemptID: receipt.AttemptID, AttemptIndex: receipt.AttemptIndex, PID: receipt.PID,
 		PinnedCommit: receipt.PinnedCommit, StartedAt: receipt.StartedAt, Route: route,
 	}
@@ -402,7 +404,6 @@ func validateSuccessorAddress(address SuccessorAddress, successorWBSessionID str
 		"successor_wb_session_id":   address.SuccessorWBSessionID,
 		"predecessor_wb_session_id": address.PredecessorWBSessionID,
 		"handoff_id":                address.HandoffID, "source_machine": address.SourceMachine, "target_machine": address.TargetMachine,
-		"tmux_name": address.TmuxName,
 	} {
 		if err := validateID(field, value); err != nil {
 			return err
@@ -427,8 +428,8 @@ func validateSuccessorAddress(address SuccessorAddress, successorWBSessionID str
 	if reference.EffortID != sourceReference.EffortID || reference.RunID != sourceReference.RunID || reference.ClaimID != claimID {
 		return fmt.Errorf("%w: successor address target Work Log claim is not deterministic", ErrHandoffConflict)
 	}
-	if address.TmuxName != "wb-session-"+address.SuccessorWBSessionID {
-		return fmt.Errorf("%w: successor address tmux name is not deterministic", ErrHandoffConflict)
+	if err := sessionterminal.ValidateBoundReceipt(address.SuccessorWBSessionID, address.TmuxName, address.Terminal); err != nil {
+		return fmt.Errorf("%w: %v", ErrHandoffConflict, err)
 	}
 	if strings.TrimSpace(address.Runtime) == "" || strings.ContainsAny(address.Runtime, "\r\n") {
 		return fmt.Errorf("successor address runtime must be non-empty and single-line")

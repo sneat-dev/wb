@@ -41,12 +41,14 @@ type parkedLocalMember struct {
 }
 
 type ParkedLocalCustody struct {
-	projectsRoot       string
-	bundle             sessionpark.Bundle
-	members            []parkedLocalMember
-	replayAttemptID    string
-	beforeWorktreeOpen func(string)
-	beforeAttachAppend func(*os.File)
+	projectsRoot            string
+	bundle                  sessionpark.Bundle
+	members                 []parkedLocalMember
+	replayAttemptID         string
+	currentRecoveryAttempts []string
+	beforeWorktreeOpen      func(string)
+	beforeAttachAppend      func(*os.File)
+	beforeAttachMember      func(int) error
 }
 
 // WithParkedLocalResumeCustody holds every exact worktree descriptor and
@@ -62,6 +64,26 @@ func WithParkedLocalResumeCustodyForAttempt(ctx context.Context, projectsRoot st
 }
 
 func withParkedLocalResumeCustody(ctx context.Context, projectsRoot string, bundle sessionpark.Bundle, replayAttemptID string, proceed func(*ParkedLocalCustody) error) error {
+	return withParkedLocalCustodyAttempts(ctx, projectsRoot, bundle, replayAttemptID, nil, proceed)
+}
+
+// WithParkedCurrentResumeCustody admits only the bounded immutable actor chain
+// authenticated by current-chat pickup. Ordinary launch recovery stays unchanged.
+func WithParkedCurrentResumeCustody(ctx context.Context, projectsRoot string, bundle sessionpark.Bundle, attempts []string, proceed func(*ParkedLocalCustody) error) error {
+	if len(attempts) > 17 {
+		return fmt.Errorf("current recovery attempt chain exceeds bound")
+	}
+	seen := map[string]bool{}
+	for _, id := range attempts {
+		if id == "" || seen[id] {
+			return fmt.Errorf("current recovery attempt chain is empty or duplicated")
+		}
+		seen[id] = true
+	}
+	return withParkedLocalCustodyAttempts(ctx, projectsRoot, bundle, "", append([]string(nil), attempts...), proceed)
+}
+
+func withParkedLocalCustodyAttempts(ctx context.Context, projectsRoot string, bundle sessionpark.Bundle, replayAttemptID string, recovery []string, proceed func(*ParkedLocalCustody) error) error {
 	if proceed == nil {
 		return fmt.Errorf("local parked-session resume requires a launch callback")
 	}
@@ -70,7 +92,7 @@ func withParkedLocalResumeCustody(ctx context.Context, projectsRoot string, bund
 		members[index].member = member
 	}
 	sort.Slice(members, func(i, j int) bool { return members[i].member.WorktreeDir < members[j].member.WorktreeDir })
-	custody := &ParkedLocalCustody{projectsRoot: projectsRoot, bundle: bundle, members: members, replayAttemptID: replayAttemptID}
+	custody := &ParkedLocalCustody{projectsRoot: projectsRoot, bundle: bundle, members: members, replayAttemptID: replayAttemptID, currentRecoveryAttempts: recovery}
 	defer custody.close()
 	for index := 1; index < len(custody.members); index++ {
 		if custody.members[index-1].member.WorktreeDir == custody.members[index].member.WorktreeDir {
@@ -82,7 +104,7 @@ func withParkedLocalResumeCustody(ctx context.Context, projectsRoot string, bund
 			return fmt.Errorf("retain parked local member %s: %w", custody.members[index].member.WorktreeDir, err)
 		}
 	}
-	if err := custody.validate(ctx, replayAttemptID); err != nil {
+	if err := custody.validate(ctx, append([]string{replayAttemptID}, recovery...)...); err != nil {
 		return err
 	}
 	return proceed(custody)
@@ -347,7 +369,7 @@ func (custody *ParkedLocalCustody) Attach(ctx context.Context, successor session
 	if options.AttemptID == "" || options.AttemptIndex == 0 {
 		return fmt.Errorf("local parked successor requires one stable launcher attempt")
 	}
-	if err := custody.validate(ctx, custody.replayAttemptID, options.AttemptID); err != nil {
+	if err := custody.validate(ctx, append([]string{custody.replayAttemptID, options.AttemptID}, custody.currentRecoveryAttempts...)...); err != nil {
 		return err
 	}
 	bundleRaw, err := sessionpark.EncodeBundle(options.Bundle)
@@ -356,6 +378,11 @@ func (custody *ParkedLocalCustody) Attach(ctx context.Context, successor session
 	}
 	digest := sessionmove.DigestBytes(bundleRaw)
 	for index := range custody.members {
+		if custody.beforeAttachMember != nil {
+			if err := custody.beforeAttachMember(index); err != nil {
+				return err
+			}
+		}
 		member := custody.members[index].member
 		resolvedWorktreeDir := custody.members[index].resolvedWorktreeDir
 		reference, _ := sessionmove.ParseWorkLogReference(member.WorkLogReference)

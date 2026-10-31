@@ -103,8 +103,9 @@ wb remote publish|status|machines # share fleet state across machines via a git 
 wb remote claim|release|claims <task> # reserve, give up, or list fleet-wide task claims
 wb session register|list|prune # register and inspect stable local agent-session identities
 wb session park --context-file <file> # suspend a session and checkpoint every owned worktree
-wb session resume <parked-session-id> # resume a parked bundle as one fresh successor
-wb session move --to <machine> --handover-file <file> # checkpoint, SSH-deliver, and start a tmux successor
+wb session resume <parked-session-id> # continue the bundle in the current registered chat
+wb session resume <parked-session-id> --launch # explicitly start a new Herdr successor
+wb session move --to <machine> --handover-file <file> # checkpoint, SSH-deliver, and start a Herdr successor
 wb session move --resume <handoff-id> # retry the exact request and immutable courier route
 wb session receive [--format json] # receive exact stdin bytes and start the pinned successor
 wb hooks  <command> [flags]  # install, validate, run, and measure user-owned Git hooks
@@ -734,7 +735,9 @@ session_move:
 ```
 
 On the target, the validated `remote.machine` must be `hetzner-vm1`, and
-`tmux` plus the selected harness must be available on the remote `PATH`.
+original Herdr TUI 0.9.1 plus the selected harness must be available on the remote
+`PATH`. The receiver needs a running Herdr server selected by its explicit
+`HERDR_SOCKET_PATH`; WB does not start a server or fall back to tmux.
 
 A target may also carry an optional `http` section, which is not a courier:
 it is where this machine's daemon reads that machine's Cockpit export in the
@@ -774,8 +777,9 @@ Work Log on a clean named branch. WB creates and pushes one exact tracked
 handover checkpoint, persists the selected SSH address as an immutable route,
 sends the canonical request bytes only on SSH stdin, and verifies the target
 response. The target pins the exact commit, registers the preallocated WB
-successor identity, and starts it in detached tmux as
-`wb-session-<successor-wb-session-id>`. Same-harness moves retain the source
+successor identity, and starts it in a fresh owned Herdr workspace and pane.
+WB retains the socket/workspace/pane, exact process generation and native
+harness identity in the receipt. Same-harness moves retain the source
 model; a cross-harness move starts with the target harness's default model.
 
 An SSH error can be ambiguous because the target may already have started.
@@ -791,18 +795,58 @@ courier after an SSH failure. A successful move reports `successor_started`;
 the predecessor remains active until a later receipt completes custody
 transfer.
 
-### herdr — a second session transport, not yet wired to any caller
+### Continue parked work in this chat
 
-`wb session move`'s successor above runs in detached tmux. `internal/herdr`
-is a bounded adapter over a different transport: [herdr](https://herdr.dev),
-a terminal workspace manager for AI coding agents. It resolves the herdr
-binary, shells out to it as argv (never through a shell), and types its
-pane, agent and screen-text JSON responses — nothing more. No caller in this
-repository uses it yet, and it carries no delivery policy of its own (no
-rule about who may be woken or what a message may say): see
-`spec/ideas/daemon-as-coordinator.md` for the design questions a later task
-still has to answer before anything calls
-`Client.AgentPrompt`/`Client.PaneSendText`.
+`wb session pickup` and `wb session resume` are aliases. With a live registered
+caller, local pickup uses the current chat; it needs no terminal or new agent:
+
+```sh
+wb session resume <parked-session-id> --current --format json
+```
+
+WB returns `awaiting_context_ack`, a private `continuation_path`, and its
+`continuation_digest`. The agent reads that file itself, then completes pickup:
+
+```sh
+wb session resume <parked-session-id> --current --ack-context <continuation-digest>
+```
+
+The agent handles both tool calls; the user does not copy context or digests.
+A legacy launcher with one empty setup attempt is refused by default. Only a
+registered operator who has verified a saved positive failure before wrapper
+startup may use the reported `--ack-unstarted-launch <exact-state-digest>`.
+This records that historical assertion; empty directories alone never prove
+process absence. WB preserves the old plan, route, attempt and logical winner.
+Current-chat pickup is supported on macOS and Linux. Windows current-chat pickup
+is unavailable. Explicit launch and remote routes run their own platform preflights.
+WB validates every parked worktree before preparation and retains every member's
+custody through attachment. Dirty work and HEADs stay intact. An unidentified
+caller refuses with registration guidance; it never silently launches an agent.
+Use `--launch` to explicitly start a new Herdr agent, or `--to <machine>` for a
+remote successor. `--recover-current` appends a new actor only after proving the
+previous process generation gone; a shared still-running app-server cannot prove
+an individual chat has died. Recovery retains the same logical successor and
+immutable history, with at most 16 recovery links. Replaying an older checkpoint
+after its successor parks again refuses and points to the newer checkpoint.
+
+### Herdr terminal support
+
+Active terminal lifecycle uses the original [Herdr TUI](https://herdr.dev)
+0.9.1 and protocol 22. Different versions fail closed. WB creates an owned
+workspace/pane, submits only a fixed gated bootstrap, and checks exact process
+and native-session identity plus active-agent readiness before reporting success.
+Existing tmux receipts and canonical bytes remain readable historical evidence;
+WB no longer launches or delivers through tmux.
+
+Receipt-bound `wb session send` and `recall` deliver schema-2 canonical typed JSON
+through one authorized Herdr prompt. Its ASCII-escaped single-line encoding
+preserves Unicode and body newlines without physical newline bytes. Durable
+intent precedes submission; a missing acknowledgment is ambiguous and never
+causes automatic resubmission. Legacy schema-1 messages remain readable but an
+undelivered legacy message requires a new ID under the current schema. A receipt
+proves recording and submission, not that the agent processed the message.
+Daemon notifications retain their separate record/advisory guards; this lifecycle
+cutover does not implement the deferred watcher or empty-input detection.
 
 ### `wb remote` — fleet state across machines
 

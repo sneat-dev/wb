@@ -11163,7 +11163,7 @@
                 "Scans --summary, --validation, --remaining, and the handover body against gitleaks-derived named secret patterns before any mutation; a match refuses fail-closed with the rule ID, location, and a redacted fingerprint, never the matched value, unless acknowledged one finding at a time via --override-secret.",
                 "Generates and commits only .wb/handoffs/<id>.md, pushes and verifies the exact remote tip, records an offer, and persists the selected SSH host and remote WB path as an immutable courier route.",
                 "Omitting --to, or targeting this machine's validated remote.machine, delivers in-process through the loopback courier and does not consult SSH session_move targets.",
-                "Delivers the canonical request bytes through configured SSH stdin and accepts success only after the target reports the preallocated successor live in deterministic detached tmux at the exact pinned commit; omitting --harness keeps codex or claude-code, while an explicit supported value performs a cross-harness move.",
+                "Delivers the canonical request bytes through configured SSH stdin and accepts success only after the target reports the preallocated successor live in an exact owned Herdr workspace at the exact pinned commit; omitting --harness keeps codex or claude-code, while an explicit supported value performs a cross-harness move.",
                 "--resume <handoff-id> sends the byte-identical admitted request through its persisted route without creating another checkpoint or following later config/default changes; an SSH failure never falls back to another courier."
               ]
             }
@@ -11183,7 +11183,7 @@
                 "--model",
                 "--resume",
                 "--override-secret",
-                "named tmux session"
+                "named Herdr workspace"
               ]
             }
           ],
@@ -11587,7 +11587,7 @@
               "modes": [
                 "Reads one bounded request from byte-exact stdin, computes and admits its digest idempotently, and authenticates the declared target against local remote.machine configuration.",
                 "Fetches the declared branch ref live, refuses a moved tip before successor creation, securely clones a missing canonical repository, and creates or verifies one clean target worktree pinned to the exact bundle commit.",
-                "Selects one fixed codex or claude-code argv, registers the preallocated WB identity against the exact pane PID, and releases it into deterministic detached tmux only after durable ready-state validation.",
+                "Selects one fixed codex or claude-code argv, registers the preallocated WB identity against the exact pane PID, and releases it into an exact owned Herdr workspace only after durable ready-state validation.",
                 "Identical retries reuse verified worktree and launch state; successor_started replay bypasses Git entirely, while conflicting or dead post-release identity fails rather than manufacturing another successor."
               ]
             }
@@ -11602,7 +11602,7 @@
               "contains": [
                 "exact stdin bytes",
                 "validated remote.machine",
-                "detached tmux",
+                "Herdr workspace",
                 "--format"
               ]
             }
@@ -11673,7 +11673,7 @@
               ],
               "modes": [
                 "Consumes one bounded canonical typed message from exact stdin and authenticates its recipient and original handoff lineage against the completed local successor.",
-                "Records the inbox and one paste intent before using direct tmux list-panes, load-buffer, save-buffer, paste-buffer, and delete-buffer argv; message bytes occur only on load-buffer stdin.",
+                "Records exact schema-2 canonical ASCII bytes and one durable submission intent before validating the recorded Herdr socket, workspace, pane, native session and foreground process generation, then making one bounded original-protocol AgentPrompt socket request. Legacy schema-1 messages remain readable and are never rewritten or automatically resent.",
                 "Returns a canonical JSON receipt only after durable recording and paste to the exact live pane; this does not assert agent processing, and a receiptless paste intent disables automatic repaste."
               ]
             }
@@ -11720,8 +11720,8 @@
               "kind": "integration"
             },
             {
-              "path": "internal/sessionmessage/tmux_test.go",
-              "name": "TestOSTmuxUsesOnlyFixedArgvAndExactStdinBufferBytes",
+              "path": "internal/sessionmessage/receive_test.go",
+              "name": "TestReceiveDurablyRecordsVerifiesAndPastesExactMessageOnce",
               "kind": "unit"
             }
           ],
@@ -11828,11 +11828,10 @@
                 "--pid",
                 "--predecessor-wb-session-id",
                 "--runtime",
-                "--tmux-name",
                 "--wb-session-id"
               ],
               "modes": [
-                "Announces an agent session so later WB writes are attributed to it without per-command declaration; --join then joins an already owned linked worktree and reports registration separately if joining fails."
+                "Announces an agent session so later WB writes are attributed to it without per-command declaration; --join then joins an already owned linked worktree and reports registration separately if joining fails. Codex chats sharing a kernel PID use independent namespaces keyed by CODEX_THREAD_ID; CODEX_SESSION_ID is separate root context. Stored native-harness-id and agent-id aliases must agree; same-chat legacy rows retain their original WB identity."
               ]
             }
           ],
@@ -11851,7 +11850,6 @@
                 "--wb-session-id",
                 "--machine",
                 "--native-harness-id",
-                "--tmux-name",
                 "--predecessor-wb-session-id",
                 "--handoff-id"
               ]
@@ -11919,17 +11917,25 @@
             {
               "path": "wb session resume",
               "flags": [
+                "--ack-context",
+                "--ack-unstarted-launch",
                 "--config",
+                "--current",
                 "--format",
+                "--launch",
+                "--recover-current",
                 "--to",
                 "--via"
               ],
               "modes": [
                 "Loads and validates one parked checkpoint without exposing private continuation.",
-                "Launches exactly one local successor, attaches it to every member, and preserves dirty or unpushed member bytes without Git mutation.",
+                "Continues in the authenticated current chat by default, returning private continuation path/digest for agent acknowledgment before adopting every member.",
+                "Explicit --launch starts exactly one Herdr successor; no unidentified current caller silently launches an agent.",
+                "Explicit --ack-unstarted-launch records a registered operator assertion of saved positive pre-start failure evidence for an exact legacy empty attempt; filesystem emptiness alone never proves process absence, and launch/remote/dead-actor recovery cannot use this flag.",
+                "Explicit --recover-current appends an acknowledged new actor after proving the previous native process generation gone, repairing partial all-member attachment without rewriting historical receipts.",
                 "Claims a durable single-winner resume route so local and remote resume cannot both proceed, and retries converge on the same successor.",
                 "Delivers remote resume over a fixed-argv SSH courier to wb session receive-park and finalizes the source only after validating the exact target receipt.",
-                "Preflights fixed local executables before route or custody mutation and retains an immediate harness exit status plus bounded terminal diagnostic against the immutable retryable attempt."
+                "Explicit --launch preflights fixed local executables before route or custody mutation and retains an immediate harness exit status plus bounded terminal diagnostic against the immutable retryable attempt."
               ]
             }
           ],

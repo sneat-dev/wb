@@ -15,6 +15,7 @@ import (
 	"github.com/sneat-dev/wb/internal/sessionlaunch"
 	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/sessionpark"
+	"github.com/sneat-dev/wb/internal/sessionterminal"
 	"github.com/sneat-dev/wb/internal/testenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -73,7 +74,7 @@ func TestReceiveTwoMemberBundleUsesRealGitAndWorkLogBarrier(t *testing.T) {
 		StartSuccessor: func(ctx context.Context, options sessionlaunch.Options) (sessionlaunch.Result, error) {
 			record := session.Record{PID: os.Getpid(), WBSessionID: request.SuccessorWBSessionID,
 				PredecessorWBSessionID: request.PredecessorWBSessionID, Machine: request.TargetMachine,
-				Runtime: request.SourceRuntime, Model: request.SourceModel, TmuxName: "wb-session-" + request.SuccessorWBSessionID,
+				Runtime: request.SourceRuntime, Model: request.SourceModel, Terminal: sessionterminal.Identity{Kind: "herdr", Socket: filepath.Join(home, "herdr.sock"), WorkspaceID: "workspace-owned", PaneID: "pane-owned"},
 				HandoffID: request.ResumeID, StartedAt: time.Unix(200, 0).UTC()}
 			reference, err := options.BeforeRelease(ctx, sessionlaunch.Prepared{Authority: *options.Authority,
 				RequestDigest: sessionmove.Digest(options.Authority.AggregateDigest), Session: record,
@@ -89,7 +90,7 @@ func TestReceiveTwoMemberBundleUsesRealGitAndWorkLogBarrier(t *testing.T) {
 			barrierChecked = true
 			return sessionlaunch.Result{HandoffID: request.ResumeID, WBSessionID: record.WBSessionID,
 				PredecessorWBSessionID: record.PredecessorWBSessionID, TargetMachine: record.Machine, PID: record.PID,
-				AttemptID: "000001-11111111111111111111111111111111", AttemptIndex: 1, TmuxName: record.TmuxName,
+				AttemptID: "000001-11111111111111111111111111111111", AttemptIndex: 1, TmuxName: record.TmuxName, Terminal: record.Terminal,
 				Runtime: record.Runtime, Model: record.Model, TargetWorkLogRef: reference, WorktreeDir: options.WorktreeDir,
 				PinnedCommit: options.PinnedCommit, StartedAt: record.StartedAt}, nil
 		},

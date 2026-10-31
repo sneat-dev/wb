@@ -5,10 +5,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/sneat-dev/wb/internal/sessionterminal"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"sync"
 	"syscall"
 	"time"
 
@@ -27,7 +29,7 @@ const PrivateLauncherArgument = "--wb-internal-session-launch"
 var ErrNotReleased = errors.New("successor launcher is not released")
 
 // ErrRetryableLaunch means Inspect proved that the latest released attempt has
-// exact terminal failure evidence, a dead PID, and no tmux session. Receive may
+// exact terminal failure evidence, a dead PID, and no live Herdr pane. Receive may
 // route this one outcome to Start without touching Git; Start rechecks all gates.
 var ErrRetryableLaunch = errors.New("successor launcher has an exactly retryable terminal attempt")
 
@@ -195,26 +197,27 @@ func resolveAuthority(options Options) (resolvedAuthority, error) {
 }
 
 type Result struct {
-	HandoffID              string    `json:"handoff_id"`
-	WBSessionID            string    `json:"wb_session_id"`
-	PredecessorWBSessionID string    `json:"predecessor_wb_session_id"`
-	TargetMachine          string    `json:"target_machine"`
-	PID                    int       `json:"pid"`
-	AttemptID              string    `json:"attempt_id"`
-	AttemptIndex           uint64    `json:"attempt_index"`
-	TmuxName               string    `json:"tmux_name"`
-	Runtime                string    `json:"runtime"`
-	Model                  string    `json:"model,omitempty"`
-	NativeHarnessID        string    `json:"native_harness_id,omitempty"`
-	TargetWorkLogRef       string    `json:"target_work_log_ref,omitempty"`
-	WorktreeDir            string    `json:"worktree_dir"`
-	PinnedCommit           string    `json:"pinned_commit"`
-	StartedAt              time.Time `json:"started_at"`
-	Reused                 bool      `json:"reused"`
+	HandoffID              string                   `json:"handoff_id"`
+	WBSessionID            string                   `json:"wb_session_id"`
+	PredecessorWBSessionID string                   `json:"predecessor_wb_session_id"`
+	TargetMachine          string                   `json:"target_machine"`
+	PID                    int                      `json:"pid"`
+	AttemptID              string                   `json:"attempt_id"`
+	AttemptIndex           uint64                   `json:"attempt_index"`
+	TmuxName               string                   `json:"tmux_name"`
+	Terminal               sessionterminal.Identity `json:"terminal,omitzero"`
+	Runtime                string                   `json:"runtime"`
+	Model                  string                   `json:"model,omitempty"`
+	NativeHarnessID        string                   `json:"native_harness_id,omitempty"`
+	TargetWorkLogRef       string                   `json:"target_work_log_ref,omitempty"`
+	WorktreeDir            string                   `json:"worktree_dir"`
+	PinnedCommit           string                   `json:"pinned_commit"`
+	StartedAt              time.Time                `json:"started_at"`
+	Reused                 bool                     `json:"reused"`
 }
 
 type dependencies struct {
-	tmux          tmux
+	terminal      terminal
 	lookPath      func(string) (string, error)
 	wbExecutable  func() (string, error)
 	sessionDir    func(string) (string, error)
@@ -230,16 +233,16 @@ func defaultDependencies(projectsRoot string) (dependencies, error) {
 }
 
 func defaultDependenciesWithLookPath(projectsRoot string, lookPath func(string) (string, error)) (dependencies, error) {
-	tmuxPath, err := lookPath("tmux")
+	herdrPath, err := lookPath("herdr")
 	if err != nil {
-		return dependencies{}, fmt.Errorf("fixed tmux executable is unavailable: %w", err)
+		return dependencies{}, fmt.Errorf("fixed Herdr TUI executable is unavailable: %w", err)
 	}
-	tmuxPath, err = cleanAbsoluteExecutable(tmuxPath)
+	herdrPath, err = cleanAbsoluteExecutable(herdrPath)
 	if err != nil {
 		return dependencies{}, err
 	}
 	return dependencies{
-		tmux: osTmux{executable: tmuxPath}, lookPath: exec.LookPath, wbExecutable: os.Executable,
+		terminal: osHerdr{executable: herdrPath, clients: &sync.Map{}}, lookPath: exec.LookPath, wbExecutable: os.Executable,
 		sessionDir: func(root string) (string, error) {
 			home, err := wbhome.EnsureRoot(root)
 			if err != nil {
@@ -254,6 +257,9 @@ func defaultDependenciesWithLookPath(projectsRoot string, lookPath func(string) 
 }
 
 func Start(ctx context.Context, options Options) (Result, error) {
+	if options.Authority == nil && options.Request.Transport != "herdr" {
+		return Result{}, fmt.Errorf("legacy handoff requests are read-only; create a Herdr handoff")
+	}
 	deps, err := defaultDependencies(options.ProjectsRoot)
 	if err != nil {
 		return Result{}, err
@@ -288,8 +294,13 @@ func preflightLocalWithDependencies(sourceRuntime string, deps dependencies) err
 	if err != nil {
 		return fmt.Errorf("locate private WB launcher: %w", err)
 	}
-	_, err = cleanAbsoluteExecutable(path)
-	return err
+	if _, err = cleanAbsoluteExecutable(path); err != nil {
+		return err
+	}
+	if terminal, ok := deps.terminal.(interface{ Preflight(context.Context) error }); ok {
+		return terminal.Preflight(context.Background())
+	}
+	return nil
 }
 
 func Inspect(ctx context.Context, options Options) (Result, error) {
@@ -495,7 +506,7 @@ func startWithAbsolutePath(ctx context.Context, options Options, deps dependenci
 		plan = launchPlan{
 			SchemaVersion: launchSchemaVersion, HandoffID: authority.AggregateID, RequestDigest: digest,
 			SuccessorWBSessionID: authority.SuccessorWBSessionID, PredecessorWBSessionID: authority.PredecessorWBSessionID,
-			Machine: authority.TargetMachine, TmuxName: "wb-session-" + authority.SuccessorWBSessionID,
+			Machine: authority.TargetMachine, Transport: "herdr",
 			Runtime: spec.Runtime, Model: spec.Model, StoreRoot: storeRoot, WorktreeDir: worktree,
 			PinnedCommit: options.PinnedCommit, PinnedBranch: authority.PinnedBranch,
 			RootMode:     string(authority.RootMode),
@@ -522,14 +533,14 @@ func startWithAbsolutePath(ctx context.Context, options Options, deps dependenci
 		return Result{}, err
 	}
 
-	pid, exists, err := deps.tmux.PanePID(ctx, plan.TmuxName)
+	pid, exists, err := deps.terminal.PanePID(ctx, terminalAddress(plan))
 	if err != nil {
 		return Result{}, err
 	}
 	abandonment, abandonmentErr := attempt.loadAbandonment()
 	if abandonmentErr == nil {
 		if exists {
-			return Result{}, fmt.Errorf("abandoned launcher attempt %s conflicts with live tmux session %s", attempt.id, plan.TmuxName)
+			return Result{}, fmt.Errorf("abandoned launcher attempt %s conflicts with live Herdr pane %s", attempt.id, terminalAddress(plan))
 		}
 		if err := validateAbandonment(ctx, deps, state, attempt, plan, planDigest, abandonment); err != nil {
 			return Result{}, err
@@ -582,9 +593,9 @@ func startWithAbsolutePath(ctx context.Context, options Options, deps dependenci
 			}
 			attemptReused = true
 		}
-		if err := deps.tmux.StartDetached(ctx, plan.TmuxName, plan.WorktreeDir, plan.WBExecutable,
+		if err := deps.terminal.StartDetached(ctx, terminalAddress(plan), plan.WorktreeDir, plan.WBExecutable,
 			[]string{PrivateLauncherArgument, plan.StoreRoot, plan.HandoffID, attempt.id, string(planDigest)}); err != nil {
-			if adoptedPID, adopted, inspectErr := deps.tmux.PanePID(ctx, plan.TmuxName); inspectErr != nil {
+			if adoptedPID, adopted, inspectErr := deps.terminal.PanePID(ctx, terminalAddress(plan)); inspectErr != nil {
 				return Result{}, errors.Join(err, inspectErr)
 			} else if !adopted {
 				return Result{}, err
@@ -598,7 +609,7 @@ func startWithAbsolutePath(ctx context.Context, options Options, deps dependenci
 		return Result{}, err
 	}
 	if exists && ready.PID != pid {
-		return Result{}, fmt.Errorf("tmux successor PID changed while authorizing existing launch")
+		return Result{}, fmt.Errorf("Herdr successor PID changed while authorizing existing launch")
 	}
 	if err := deps.verifyPinned(ctx, plan); err != nil {
 		return Result{}, err
@@ -732,10 +743,10 @@ func failedAttemptRetryable(
 		failure.ReadyDigest != readyDigest || failure.ReleaseDigest != releaseDigest || failure.PID != release.PID {
 		return fmt.Errorf("prior launcher has no exact immutable terminal failure evidence")
 	}
-	if _, exists, err := deps.tmux.PanePID(ctx, plan.TmuxName); err != nil {
+	if _, exists, err := deps.terminal.PanePID(ctx, terminalAddress(plan)); err != nil {
 		return err
 	} else if exists {
-		return fmt.Errorf("exact tmux session %s still exists", plan.TmuxName)
+		return fmt.Errorf("exact Herdr pane %s still exists", terminalAddress(plan))
 	}
 	if err := proveProcessDead(deps, release.PID); err != nil {
 		return fmt.Errorf("prior launcher PID %d is still live or ambiguous: %w", release.PID, err)
@@ -797,10 +808,10 @@ func validateAbandonment(
 	if held {
 		return fmt.Errorf("abandoned launcher attempt still holds its exec fence")
 	}
-	if _, exists, err := deps.tmux.PanePID(ctx, plan.TmuxName); err != nil {
+	if _, exists, err := deps.terminal.PanePID(ctx, terminalAddress(plan)); err != nil {
 		return err
 	} else if exists {
-		return fmt.Errorf("abandoned launcher attempt conflicts with exact tmux session %s", plan.TmuxName)
+		return fmt.Errorf("abandoned launcher attempt conflicts with exact Herdr pane %s", terminalAddress(plan))
 	}
 	if err := proveProcessDead(deps, abandonment.PID); err != nil {
 		return fmt.Errorf("abandoned launcher PID %d is live or ambiguous: %w", abandonment.PID, err)
@@ -989,12 +1000,12 @@ func inspectReleased(ctx context.Context, options Options, deps dependencies, at
 	if err := waitExecSuccess(ctx, deps, attempt, plan, planDigest, ready, release); err != nil {
 		return Result{}, err
 	}
-	pid, exists, err := deps.tmux.PanePID(ctx, plan.TmuxName)
+	pid, exists, err := deps.terminal.PanePID(ctx, terminalAddress(plan))
 	if err != nil {
 		return Result{}, err
 	}
 	if !exists || pid != release.PID {
-		return Result{}, fmt.Errorf("released tmux successor %s is not live at PID %d", plan.TmuxName, release.PID)
+		return Result{}, fmt.Errorf("released Herdr successor %s is not live at PID %d", terminalAddress(plan), release.PID)
 	}
 	directory, err := deps.sessionDir(options.ProjectsRoot)
 	if err != nil {
@@ -1003,6 +1014,17 @@ func inspectReleased(ctx context.Context, options Options, deps dependencies, at
 	record, live := session.Lookup(directory, pid)
 	if !live || !sameReadySession(plan, ready, record) {
 		return Result{}, fmt.Errorf("released successor PID %d has no matching live WB session registration", pid)
+	}
+	if binder, ok := deps.terminal.(interface {
+		BindSession(context.Context, string, string, session.Record) (session.Record, error)
+	}); ok {
+		record, err = binder.BindSession(ctx, terminalAddress(plan), directory, record)
+		if err != nil {
+			return Result{}, err
+		}
+		if !sameReadySession(plan, ready, record) {
+			return Result{}, fmt.Errorf("Herdr native binding changed prepared session identity")
+		}
 	}
 	return resultFrom(attempt, plan, release, record), nil
 }
@@ -1013,7 +1035,7 @@ func waitReady(ctx context.Context, options Options, deps dependencies, attempt 
 	ticker := time.NewTicker(deps.pollInterval)
 	defer ticker.Stop()
 	for {
-		pid, exists, err := deps.tmux.PanePID(startCtx, plan.TmuxName)
+		pid, exists, err := deps.terminal.PanePID(startCtx, terminalAddress(plan))
 		if err != nil {
 			return launcherReady{}, err
 		}
@@ -1045,7 +1067,7 @@ func waitReady(ctx context.Context, options Options, deps dependencies, attempt 
 		}
 		select {
 		case <-startCtx.Done():
-			return launcherReady{}, fmt.Errorf("wait for registered tmux successor: %w", startCtx.Err())
+			return launcherReady{}, fmt.Errorf("wait for registered Herdr successor: %w", startCtx.Err())
 		case <-ticker.C:
 		}
 	}
@@ -1089,7 +1111,7 @@ func waitExecSuccess(ctx context.Context, deps dependencies, attempt *launchAtte
 				}
 				return &AttemptFailureError{Evidence: evidence}
 			}
-			terminal, terminalFound, terminalErr := deps.tmux.PaneFailure(waitCtx, plan.TmuxName)
+			terminal, terminalFound, terminalErr := deps.terminal.PaneFailure(waitCtx, terminalAddress(plan))
 			if terminalErr != nil {
 				return terminalErr
 			}
@@ -1108,7 +1130,7 @@ func waitExecSuccess(ctx context.Context, deps dependencies, attempt *launchAtte
 				}
 				continue
 			}
-			pid, exists, paneErr := deps.tmux.PanePID(waitCtx, plan.TmuxName)
+			pid, exists, paneErr := deps.terminal.PanePID(waitCtx, terminalAddress(plan))
 			if paneErr != nil {
 				return paneErr
 			}
@@ -1129,13 +1151,19 @@ func sameReadySession(plan launchPlan, ready launcherReady, record session.Recor
 	readyRecord := ready.Session
 	nativeCompatible := readyRecord.NativeHarnessID == record.NativeHarnessID || readyRecord.NativeHarnessID == "" && record.NativeHarnessID != ""
 	legacyCompatible := readyRecord.AgentID == record.AgentID || readyRecord.AgentID == "" && record.AgentID != ""
+	modelCompatible := session.ModelEnrichmentCompatible(readyRecord.Model, record.Model) && session.ModelEnrichmentCompatible(plan.Model, record.Model)
+	nativeGenerationCompatible := true
+	if plan.Transport == "herdr" {
+		nativeGenerationCompatible = !readyRecord.ProcessStartedAt.IsZero() && readyRecord.ProcessStartedAt.Equal(record.ProcessStartedAt) && readyRecord.Scope == record.Scope && session.ExecutableIdentityMatches(readyRecord.WBPath, record.WBPath)
+	}
+
 	return ready.HandoffID == plan.HandoffID && ready.RequestDigest == plan.RequestDigest && ready.PID == record.PID &&
 		readyRecord.PID == record.PID && readyRecord.WBSessionID == record.WBSessionID && readyRecord.Machine == record.Machine &&
-		readyRecord.Runtime == record.Runtime && readyRecord.Model == record.Model && readyRecord.TmuxName == record.TmuxName &&
+		readyRecord.Runtime == record.Runtime && modelCompatible && nativeGenerationCompatible && readyRecord.TmuxName == record.TmuxName && readyRecord.Terminal == record.Terminal &&
 		readyRecord.PredecessorWBSessionID == record.PredecessorWBSessionID && readyRecord.HandoffID == record.HandoffID &&
 		readyRecord.StartedAt.Equal(record.StartedAt) && nativeCompatible && legacyCompatible &&
 		record.WBSessionID == plan.SuccessorWBSessionID && record.Machine == plan.Machine &&
-		record.Runtime == plan.Runtime && record.Model == plan.Model && record.TmuxName == plan.TmuxName &&
+		record.Runtime == plan.Runtime && modelCompatible && record.TmuxName == plan.TmuxName &&
 		record.PredecessorWBSessionID == plan.PredecessorWBSessionID && record.HandoffID == plan.HandoffID
 }
 
@@ -1143,7 +1171,7 @@ func resultFrom(attempt *launchAttempt, plan launchPlan, release launcherRelease
 	return Result{HandoffID: plan.HandoffID, WBSessionID: record.WBSessionID,
 		PredecessorWBSessionID: record.PredecessorWBSessionID, TargetMachine: record.Machine, PID: record.PID,
 		AttemptID: attempt.id, AttemptIndex: attempt.index,
-		TmuxName: record.TmuxName, Runtime: record.Runtime, Model: record.Model, NativeHarnessID: record.NativeHarnessID,
+		TmuxName: record.TmuxName, Terminal: record.Terminal, Runtime: record.Runtime, Model: record.Model, NativeHarnessID: record.NativeHarnessID,
 		TargetWorkLogRef: release.TargetWorkLogRef, WorktreeDir: plan.WorktreeDir,
 		PinnedCommit: plan.PinnedCommit, StartedAt: record.StartedAt}
 }
@@ -1166,7 +1194,7 @@ func validatePlanForOptions(plan launchPlan, options Options, resolved resolvedA
 	authority := resolved.launch
 	if plan.SchemaVersion != launchSchemaVersion || plan.HandoffID != authority.AggregateID || plan.RequestDigest != sessionmove.Digest(authority.AggregateDigest) ||
 		plan.SuccessorWBSessionID != authority.SuccessorWBSessionID || plan.PredecessorWBSessionID != authority.PredecessorWBSessionID ||
-		plan.Machine != authority.TargetMachine || plan.TmuxName != "wb-session-"+authority.SuccessorWBSessionID ||
+		plan.Machine != authority.TargetMachine || !validPlanTerminal(plan, authority.SuccessorWBSessionID) ||
 		plan.StoreRoot != resolved.storeRoot || plan.WorktreeDir != worktree ||
 		plan.PinnedCommit != options.PinnedCommit || plan.PinnedCommit != authority.PinnedCommit || plan.RootMode != string(authority.RootMode) ||
 		plan.HandoverPath != authority.ContinuationPath {

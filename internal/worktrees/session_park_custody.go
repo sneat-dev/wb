@@ -3,6 +3,7 @@ package worktrees
 import (
 	"context"
 	"fmt"
+	"github.com/sneat-dev/wb/internal/sessionterminal"
 	"path/filepath"
 	"strings"
 	"time"
@@ -164,7 +165,7 @@ func prepareParkedTarget(ctx context.Context, options ParkedSessionWorkLogPrepar
 		PredecessorWBSessionID: request.PredecessorWBSessionID, SuccessorWBSessionID: request.SuccessorWBSessionID,
 		SourceMachine: request.SourceMachine, TargetMachine: request.TargetMachine,
 		SourceWorkLogReference: member.SourceWorkLogReference, TargetWorkLogReference: targetValue,
-		SuccessorTmuxName: "wb-session-" + request.SuccessorWBSessionID,
+		SuccessorTmuxName: legacySuccessorName(request.Transport, request.SuccessorWBSessionID), SuccessorTransport: request.Transport,
 	}
 	claim := workLogClaim{
 		Version: 2, EffortID: sourceReference.EffortID, RunID: sourceReference.RunID, ClaimID: targetReference.ClaimID,
@@ -338,8 +339,8 @@ func validateParkedTargetSession(request sessionpark.RemoteRequest, record sessi
 	runtime, model := sessionpark.RequestedRuntimeModel(request)
 	if record.PID <= 0 || record.StartedAt.IsZero() || record.WBSessionID != request.SuccessorWBSessionID ||
 		record.PredecessorWBSessionID != request.PredecessorWBSessionID || record.HandoffID != request.ResumeID ||
-		record.Machine != request.TargetMachine || record.TmuxName != "wb-session-"+request.SuccessorWBSessionID ||
-		record.Runtime != runtime || strings.TrimSpace(record.Model) != model {
+		record.Machine != request.TargetMachine || sessionterminal.ValidateBoundReceipt(request.SuccessorWBSessionID, record.TmuxName, record.Terminal) != nil ||
+		record.Runtime != runtime || !record.Terminal.MatchesModel(model, strings.TrimSpace(record.Model)) {
 		return fmt.Errorf("prepared successor session does not match admitted parked target identity")
 	}
 	return nil

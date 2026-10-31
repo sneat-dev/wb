@@ -96,3 +96,27 @@ func TestCallerSessionLeavesCodexWithoutNativeIDUnattributed(t *testing.T) {
 		t.Fatalf("shared Codex app-server PID attributed without a native ID: %+v", caller)
 	}
 }
+
+//nolint:paralleltest // Harness environment determines dispatch attribution.
+func TestCallerSessionTreatsCodexRootContextAsDistinctFromNativeChat(t *testing.T) {
+	for _, test := range []struct {
+		thread, root string
+		want         string
+	}{
+		{"native-child", "shared-root", "native-child"}, {"native-root", "native-root", "native-root"},
+		{"", "shared-root", ""}, {"bad\nthread", "shared-root", ""}, {"native-child", "bad\nroot", ""},
+	} {
+		t.Run(test.thread+"-"+test.root, func(t *testing.T) {
+			t.Setenv("CODEX_THREAD_ID", test.thread)
+			t.Setenv("CODEX_SESSION_ID", test.root)
+			t.Setenv("CLAUDE_CODE_SESSION_ID", "")
+			caller := CurrentCaller(t.TempDir())
+			if caller.NativeHarnessID != test.want || caller.ID != test.want || caller.WBSessionID != "" {
+				t.Fatalf("shared root/invalid thread was attributed: %#v", caller)
+			}
+			if test.want != "" && caller.Source != "CODEX_THREAD_ID" {
+				t.Fatal("native source mislabeled")
+			}
+		})
+	}
+}

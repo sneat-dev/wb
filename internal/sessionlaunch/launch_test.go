@@ -26,12 +26,12 @@ type fakeTmux struct {
 	startErr error
 	onStart  func()
 	onPane   func()
-	failure  *tmuxFailure
+	failure  *terminalFailure
 }
 
-func (f *fakeTmux) PaneFailure(context.Context, string) (tmuxFailure, bool, error) {
+func (f *fakeTmux) PaneFailure(context.Context, string) (terminalFailure, bool, error) {
 	if f.failure == nil {
-		return tmuxFailure{}, false, nil
+		return terminalFailure{}, false, nil
 	}
 	return *f.failure, true, nil
 }
@@ -94,7 +94,7 @@ func TestStartRegistersReadyBeforeReleaseAndReplaysWithoutRelaunch(t *testing.T)
 	launcherPID := os.Getpid()
 	now := time.Date(2026, time.August, 25, 15, 0, 0, 0, time.UTC)
 	deps := dependencies{
-		tmux:         tmux,
+		terminal:     tmux,
 		lookPath:     func(name string) (string, error) { return filepath.Join(bin, name), nil },
 		wbExecutable: func() (string, error) { return filepath.Join(bin, "wb"), nil },
 		sessionDir:   func(string) (string, error) { return sessions, nil },
@@ -168,7 +168,7 @@ func TestStartRegistersReadyBeforeReleaseAndReplaysWithoutRelaunch(t *testing.T)
 	if err := <-execReleased; err != nil {
 		t.Fatal(err)
 	}
-	if first.PID != launcherPID || first.TmuxName != "wb-session-"+request.SuccessorWBSessionID || first.Reused ||
+	if first.PID != launcherPID || first.TmuxName != "" || first.Reused ||
 		first.TargetWorkLogRef != "worklog-target" || beforeCalls != 1 {
 		t.Fatalf("first = %#v, before=%d", first, beforeCalls)
 	}
@@ -199,7 +199,7 @@ func TestStartRetainsImmediateHarnessExitStatusAndDiagnostic(t *testing.T) {
 	fixture := newLauncherRetryFixture(t)
 	fence, _ := fixture.createReleasedAttempt(t, false, true)
 	fixture.tmux.pid = 919191
-	fixture.tmux.failure = &tmuxFailure{ExitStatus: 17, Diagnostic: "fatal startup configuration"}
+	fixture.tmux.failure = &terminalFailure{ExitStatus: 17, Diagnostic: "fatal startup configuration"}
 	if err := fence.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -219,13 +219,13 @@ func TestPreflightLocalDistinguishesMissingTmuxAndHarness(t *testing.T) {
 	t.Run("missing tmux", func(t *testing.T) {
 		t.Setenv("PATH", t.TempDir())
 		err := PreflightLocal(RuntimeCodex)
-		if err == nil || !strings.Contains(err.Error(), "fixed tmux executable is unavailable") {
+		if err == nil || !strings.Contains(err.Error(), "fixed Herdr TUI executable is unavailable") {
 			t.Fatalf("preflight error = %v", err)
 		}
 	})
 	t.Run("missing harness", func(t *testing.T) {
 		bin := t.TempDir()
-		if err := testenv.WriteExecutableFile(filepath.Join(bin, "tmux"), []byte("fixture"), 0o755); err != nil {
+		if err := testenv.WriteExecutableFile(filepath.Join(bin, "herdr"), []byte("fixture"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		t.Setenv("PATH", bin)

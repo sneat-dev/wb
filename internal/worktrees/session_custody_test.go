@@ -187,7 +187,7 @@ func (fixture *externalTargetFixture) receipt(t *testing.T, prepared ExternalSes
 		SchemaVersion: sessionmove.ReceiptSchemaVersion, HandoffID: fixture.base.request.HandoffID,
 		RequestDigest: fixture.digest, SuccessorWBSessionID: fixture.base.request.SuccessorWBSessionID,
 		PredecessorWBSessionID: fixture.base.request.PredecessorWBSessionID, TargetMachine: fixture.base.request.TargetMachine,
-		TmuxName: fixture.session.TmuxName, Runtime: fixture.session.Runtime, Model: fixture.session.Model,
+		TmuxName: fixture.session.TmuxName, Terminal: fixture.session.Terminal, Runtime: fixture.session.Runtime, Model: fixture.session.Model,
 		NativeHarnessID: fixture.session.NativeHarnessID,
 		AttemptID:       fixture.options.AttemptID, AttemptIndex: fixture.options.AttemptIndex, PID: fixture.session.PID,
 		TargetWorkLogReference: prepared.WorkLogReference, PinnedCommit: fixture.base.request.BundleCommit,

@@ -14,24 +14,6 @@ import (
 	"github.com/sneat-dev/wb/internal/sessionmove"
 )
 
-func TestSlCovTmuxFailureNoServerAndMultiPane(t *testing.T) {
-	t.Parallel()
-	t.Run("no server", func(t *testing.T) {
-		t.Parallel()
-		path := slCovScript(t, `printf 'no server running on /private/tmp/tmux-501/default\n'; exit 1`)
-		failure, found, err := (osTmux{executable: path}).PaneFailure(context.Background(), "wb-session-x")
-		if err != nil || found || failure != (tmuxFailure{}) {
-			t.Fatalf("no server = %#v found %t err %v", failure, found, err)
-		}
-	})
-	t.Run("multiple panes", func(t *testing.T) {
-		t.Parallel()
-		if _, _, err := parseTmuxPaneFailureOutput([]byte("0\t\n0\t\n")); err == nil || !strings.Contains(err.Error(), "want one pane") {
-			t.Fatalf("multi-pane output = %v", err)
-		}
-	})
-}
-
 func TestSlCovDecodeLaunchJSONSurfacesTrailingGarbage(t *testing.T) {
 	t.Parallel()
 	var plan launchPlan
@@ -113,7 +95,7 @@ func TestSlCovOpenPrivateDirectoryAtSurfacesCreationFailure(t *testing.T) {
 
 func TestSlCovDefaultDependenciesClosuresAreWired(t *testing.T) {
 	bin := t.TempDir()
-	slCovExecutable(t, bin, "tmux")
+	slCovExecutable(t, bin, "herdr")
 	t.Setenv("PATH", bin)
 	deps, err := defaultDependencies(t.TempDir())
 	if err != nil {
@@ -133,10 +115,10 @@ func TestSlCovDefaultDependenciesClosuresAreWired(t *testing.T) {
 
 func TestSlCovStartAndInspectSurfaceMissingTmux(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
-	if _, err := Start(context.Background(), Options{}); err == nil || !strings.Contains(err.Error(), "fixed tmux executable is unavailable") {
+	if _, err := Start(context.Background(), Options{Request: sessionmove.Request{Transport: "herdr"}}); err == nil || !strings.Contains(err.Error(), "fixed Herdr TUI executable is unavailable") {
 		t.Fatalf("Start without tmux = %v", err)
 	}
-	if _, err := Inspect(context.Background(), Options{}); err == nil || !strings.Contains(err.Error(), "fixed tmux executable is unavailable") {
+	if _, err := Inspect(context.Background(), Options{}); err == nil || !strings.Contains(err.Error(), "fixed Herdr TUI executable is unavailable") {
 		t.Fatalf("Inspect without tmux = %v", err)
 	}
 }
@@ -346,7 +328,7 @@ func TestSlCovSelectAttemptForStartVerifyPinnedRetryFailure(t *testing.T) {
 	if err := attempt.saveExecFailure(fx.plan, fx.planDigest, release.ReadyDigest, releaseDigest, 919191, errors.New("boom"), fx.deps.now()); err != nil {
 		t.Fatal(err)
 	}
-	fx.deps.tmux = &slCovFlexTmux{}
+	fx.deps.terminal = &slCovFlexTmux{}
 	fx.deps.verifyPinned = func(context.Context, launchPlan) error { return errors.New("pinned changed") }
 	state, err := openLaunchState(fx.store.Root, fx.request.HandoffID, false)
 	if err != nil {
@@ -417,7 +399,7 @@ func TestSlCovFailedAttemptRetryableRemainingGates(t *testing.T) {
 	t.Run("tmux probe error", func(t *testing.T) {
 		t.Parallel()
 		fx, attempt, release, releaseDigest := base(t)
-		fx.deps.tmux = &slCovFlexTmux{panePIDErr: errors.New("probe failed")}
+		fx.deps.terminal = &slCovFlexTmux{panePIDErr: errors.New("probe failed")}
 		if err := call(t, fx, attempt, release, releaseDigest); err == nil {
 			t.Fatal("accepted a tmux probe error")
 		}

@@ -22,7 +22,7 @@ type slCovFlexTmux struct {
 	exists         bool
 	panePIDErr     error
 	paneFailureErr error
-	failure        tmuxFailure
+	failure        terminalFailure
 	failureFound   bool
 	startErr       error
 	starts         int
@@ -48,7 +48,7 @@ func (tmux *slCovFlexTmux) PanePID(context.Context, string) (int, bool, error) {
 	return tmux.pid, tmux.exists, nil
 }
 
-func (tmux *slCovFlexTmux) PaneFailure(context.Context, string) (tmuxFailure, bool, error) {
+func (tmux *slCovFlexTmux) PaneFailure(context.Context, string) (terminalFailure, bool, error) {
 	return tmux.failure, tmux.failureFound, tmux.paneFailureErr
 }
 
@@ -96,7 +96,7 @@ func TestSlCovWaitReadySurfacesEveryGateFailure(t *testing.T) {
 		fx := newLauncherRetryFixture(t)
 		fx.deps.startTimeout = 30 * time.Millisecond
 		tmux := &slCovFlexTmux{pid: pid, exists: true}
-		fx.deps.tmux = tmux
+		fx.deps.terminal = tmux
 		state, err := openLaunchState(fx.store.Root, fx.request.HandoffID, false)
 		if err != nil {
 			t.Fatal(err)
@@ -237,7 +237,7 @@ func TestSlCovWaitExecSuccessSurfacesEvidenceFailures(t *testing.T) {
 		fx.deps.startTimeout = 30 * time.Millisecond
 		attempt, release, releaseDigest, ready := slCovReleasedAttempt(t, fx, pid)
 		tmux := &slCovFlexTmux{pid: pid, exists: true}
-		fx.deps.tmux = tmux
+		fx.deps.terminal = tmux
 		return fx, attempt, release, releaseDigest, ready, tmux
 	}
 	t.Run("fence probe error", func(t *testing.T) {
@@ -273,7 +273,7 @@ func TestSlCovWaitExecSuccessSurfacesEvidenceFailures(t *testing.T) {
 	t.Run("terminal pane failure recorded", func(t *testing.T) {
 		t.Parallel()
 		fx, attempt, release, _, ready, tmux := setup(t)
-		tmux.failure = tmuxFailure{ExitStatus: 17, Diagnostic: "fatal"}
+		tmux.failure = terminalFailure{ExitStatus: 17, Diagnostic: "fatal"}
 		tmux.failureFound = true
 		err := waitExecSuccess(context.Background(), fx.deps, attempt, fx.plan, fx.planDigest, ready, release)
 		var failure *AttemptFailureError
@@ -284,7 +284,7 @@ func TestSlCovWaitExecSuccessSurfacesEvidenceFailures(t *testing.T) {
 	t.Run("terminal failure cannot be recorded", func(t *testing.T) {
 		t.Parallel()
 		fx, attempt, release, _, ready, tmux := setup(t)
-		tmux.failure = tmuxFailure{ExitStatus: 3}
+		tmux.failure = terminalFailure{ExitStatus: 3}
 		tmux.failureFound = true
 		slCovReadOnly(t, filepath.Join(slCovAttemptDir(fx.store.Root, attempt.id), execDirectoryName))
 		if err := waitExecSuccess(context.Background(), fx.deps, attempt, fx.plan, fx.planDigest, ready, release); err == nil {
@@ -353,7 +353,7 @@ func TestSlCovInspectReleasedSurfacesStateFailures(t *testing.T) {
 		t.Parallel()
 		fx := newLauncherRetryFixture(t)
 		attempt, release, _, _ := slCovReleasedAttempt(t, fx, pid)
-		fx.deps.tmux = &slCovFlexTmux{panePIDErr: errors.New("probe failed")}
+		fx.deps.terminal = &slCovFlexTmux{panePIDErr: errors.New("probe failed")}
 		if _, err := inspectReleased(context.Background(), fx.options(nil), fx.deps, attempt, fx.plan, fx.planDigest, release); err == nil {
 			t.Fatal("inspectReleased accepted a probe failure")
 		}
@@ -363,7 +363,7 @@ func TestSlCovInspectReleasedSurfacesStateFailures(t *testing.T) {
 		fx := newLauncherRetryFixture(t)
 		attempt, release, _, _ := slCovReleasedAttempt(t, fx, pid)
 		calls := 0
-		fx.deps.tmux = &slCovFlexTmux{panePIDFn: func() (int, bool, error) {
+		fx.deps.terminal = &slCovFlexTmux{panePIDFn: func() (int, bool, error) {
 			calls++
 			if calls == 1 {
 				return pid, true, nil
@@ -378,7 +378,7 @@ func TestSlCovInspectReleasedSurfacesStateFailures(t *testing.T) {
 		t.Parallel()
 		fx := newLauncherRetryFixture(t)
 		attempt, release, _, _ := slCovReleasedAttempt(t, fx, pid)
-		fx.deps.tmux = &slCovFlexTmux{pid: pid, exists: true}
+		fx.deps.terminal = &slCovFlexTmux{pid: pid, exists: true}
 		fx.deps.sessionDir = func(string) (string, error) { return "", errors.New("no sessions") }
 		if _, err := inspectReleased(context.Background(), fx.options(nil), fx.deps, attempt, fx.plan, fx.planDigest, release); err == nil {
 			t.Fatal("inspectReleased accepted a session directory error")
@@ -388,7 +388,7 @@ func TestSlCovInspectReleasedSurfacesStateFailures(t *testing.T) {
 		t.Parallel()
 		fx := newLauncherRetryFixture(t)
 		attempt, release, _, _ := slCovReleasedAttempt(t, fx, pid)
-		fx.deps.tmux = &slCovFlexTmux{pid: pid, exists: true}
+		fx.deps.terminal = &slCovFlexTmux{pid: pid, exists: true}
 		if _, err := inspectReleased(context.Background(), fx.options(nil), fx.deps, attempt, fx.plan, fx.planDigest, release); err == nil || !strings.Contains(err.Error(), "no matching live WB session registration") {
 			t.Fatalf("missing registration = %v", err)
 		}
@@ -484,20 +484,20 @@ func TestSlCovResolveAuthorityRejectsInvalidAuthority(t *testing.T) {
 func TestSlCovDefaultDependenciesEntryPointsAndPreflight(t *testing.T) {
 	t.Run("tmux unavailable", func(t *testing.T) {
 		t.Setenv("PATH", t.TempDir())
-		if _, err := defaultDependencies(""); err == nil || !strings.Contains(err.Error(), "fixed tmux executable is unavailable") {
+		if _, err := defaultDependencies(""); err == nil || !strings.Contains(err.Error(), "fixed Herdr TUI executable is unavailable") {
 			t.Fatalf("missing tmux = %v", err)
 		}
-		if err := PreflightLocal(RuntimeCodex); err == nil || !strings.Contains(err.Error(), "fixed tmux executable is unavailable") {
+		if err := PreflightLocal(RuntimeCodex); err == nil || !strings.Contains(err.Error(), "fixed Herdr TUI executable is unavailable") {
 			t.Fatalf("preflight without tmux = %v", err)
 		}
 	})
 	t.Run("tmux available", func(t *testing.T) {
 		bin := t.TempDir()
-		slCovExecutable(t, bin, "tmux")
+		writePreflightHerdr(t, bin)
 		slCovExecutable(t, bin, "codex")
 		t.Setenv("PATH", bin)
 		deps, err := defaultDependencies("")
-		if err != nil || deps.tmux == nil || deps.pollInterval == 0 || deps.startTimeout == 0 {
+		if err != nil || deps.terminal == nil || deps.pollInterval == 0 || deps.startTimeout == 0 {
 			t.Fatalf("defaultDependencies = %#v %v", deps, err)
 		}
 		if _, err := Start(context.Background(), Options{ProjectsRoot: t.TempDir()}); err == nil {
@@ -644,7 +644,7 @@ func TestSlCovFailedAttemptRetryableRejectsEveryAmbiguity(t *testing.T) {
 	t.Run("live tmux session", func(t *testing.T) {
 		t.Parallel()
 		fx, attempt, release, releaseDigest := base(t)
-		fx.deps.tmux = &slCovFlexTmux{pid: pid, exists: true}
+		fx.deps.terminal = &slCovFlexTmux{pid: pid, exists: true}
 		if err := call(t, fx, attempt, release, releaseDigest); err == nil || !strings.Contains(err.Error(), "still exists") {
 			t.Fatalf("live tmux = %v", err)
 		}
@@ -792,7 +792,7 @@ func TestSlCovValidateAbandonmentRejectsEveryAmbiguity(t *testing.T) {
 	t.Run("tmux still live", func(t *testing.T) {
 		t.Parallel()
 		fx, attempt, abandonment := base(t)
-		fx.deps.tmux = &slCovFlexTmux{pid: pid, exists: true}
+		fx.deps.terminal = &slCovFlexTmux{pid: pid, exists: true}
 		if err := call(t, fx, attempt, abandonment); err == nil {
 			t.Fatal("accepted a live tmux session")
 		}
@@ -800,7 +800,7 @@ func TestSlCovValidateAbandonmentRejectsEveryAmbiguity(t *testing.T) {
 	t.Run("tmux probe error", func(t *testing.T) {
 		t.Parallel()
 		fx, attempt, abandonment := base(t)
-		fx.deps.tmux = &slCovFlexTmux{panePIDErr: errors.New("probe failed")}
+		fx.deps.terminal = &slCovFlexTmux{panePIDErr: errors.New("probe failed")}
 		if err := call(t, fx, attempt, abandonment); err == nil {
 			t.Fatal("accepted a tmux probe error")
 		}

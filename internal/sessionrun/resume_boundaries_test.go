@@ -8,6 +8,7 @@ import (
 	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/sessionpark"
 	"github.com/sneat-dev/wb/internal/sessionparkcourier"
+	"github.com/sneat-dev/wb/internal/sessionterminal"
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"io"
 	"os"
@@ -256,7 +257,7 @@ func TestResumeRepairsLifecycleOnlyAfterExactLocalWinner(t *testing.T) {
 			if stage == "failure" {
 				deps.MarkResumed = func(string, int, string, string) (session.Record, error) { return session.Record{}, want }
 			}
-			_, err := NewResume(deps).Resume(context.Background(), ResumeRequest{ParkedSessionID: f.state.Bundle.ParkedSessionID, Stderr: io.Discard})
+			_, err := NewResume(deps).Resume(context.Background(), ResumeRequest{ParkedSessionID: f.state.Bundle.ParkedSessionID, Stderr: io.Discard, Launch: true})
 			if err == nil {
 				t.Fatal("failed lifecycle accepted")
 			}
@@ -326,6 +327,10 @@ func TestRemoteLifecycleAndReceiptPersistenceFailuresRemainAfterDelivery(t *test
 				digest := sessionmove.DigestBytes(raw)
 				runtime, model := sessionpark.RequestedRuntimeModel(request)
 				receipt := sessionpark.Receipt{SchemaVersion: sessionpark.ReceiptSchemaVersion, ResumeID: request.ResumeID, RequestDigest: digest, ParkedSessionID: request.ParkedSessionID, SuccessorWBSessionID: request.SuccessorWBSessionID, PredecessorWBSessionID: request.PredecessorWBSessionID, TargetMachine: request.TargetMachine, TmuxName: "wb-session-" + request.SuccessorWBSessionID, Runtime: runtime, Model: model, AttemptID: "000001-" + strings.Repeat("d", 32), AttemptIndex: 1, PID: 8181, StartedAt: time.Unix(50, 0).UTC(), Members: make([]sessionpark.ReceiptMember, len(request.Members))}
+				if request.Transport == "herdr" {
+					receipt.TmuxName = ""
+					receipt.Terminal = sessionterminal.Identity{Kind: "herdr", Socket: filepath.Join(os.TempDir(), "wb-owned-herdr-fixture.sock"), WorkspaceID: "workspace-owned", PaneID: "pane-owned"}
+				}
 				for i, member := range request.Members {
 					ref, err := sessionpark.TargetWorkLogReference(request, digest, member)
 					if err != nil {

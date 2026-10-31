@@ -18,6 +18,7 @@ type ExternalHandoffEvidence struct {
 	SourceWorkLogReference string `json:"source_work_log_reference"`
 	TargetWorkLogReference string `json:"target_work_log_reference"`
 	SuccessorTmuxName      string `json:"successor_tmux_name"`
+	SuccessorTransport     string `json:"successor_transport,omitempty"`
 }
 
 // Projection is an untrusted pointer. It contains no path, prompt,

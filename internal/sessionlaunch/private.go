@@ -14,14 +14,17 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/console"
+	"github.com/sneat-dev/wb/internal/herdr"
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessionauthority"
 	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/sessionpark"
+	"github.com/sneat-dev/wb/internal/sessionterminal"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 )
 
 type privateLauncherDependencies struct {
+	requireHerdr bool
 	readReady    func(*launchAttempt, int) (launcherReady, sessionmove.Digest, error)
 	readRelease  func(*launchAttempt) (launcherRelease, sessionmove.Digest, error)
 	pid          func() int
@@ -34,16 +37,23 @@ type privateLauncherDependencies struct {
 }
 
 func defaultPrivateLauncherDependencies() privateLauncherDependencies {
-	return privateLauncherDependencies{pid: os.Getpid, register: session.Register, sleep: time.Sleep,
+	return privateLauncherDependencies{requireHerdr: true, pid: os.Getpid, register: session.Register, sleep: time.Sleep,
 		exec: syscall.Exec, verifyPinned: verifyPinnedWorktree, now: func() time.Time { return time.Now().UTC() },
 		wbExecutable: os.Executable}
 }
 
 // RunPrivateLauncher is the early-dispatch child started only through the
-// receiver's fixed tmux argv. It registers the preallocated WB identity on its
+// receiver's fixed Herdr bootstrap argv. It registers the preallocated WB identity on its
 // own PID, publishes readiness, waits for the receiver's immutable release,
 // and then replaces itself with the fixed harness executable.
 func RunPrivateLauncher(args []string) int {
+	if len(args) > 0 && args[0] == "--supervise" {
+		status, err := runHerdrSupervisor(args[1:], defaultSupervisorDependencies())
+		if err != nil {
+			return launcherError(err)
+		}
+		return status
+	}
 	// Native Exec replaces this process on success; every returning path is an error.
 	return launcherError(runPrivateLauncher(args, defaultPrivateLauncherDependencies()))
 }
@@ -77,8 +87,11 @@ func runPrivateLauncherWithDirectory(args []string, deps privateLauncherDependen
 	if err != nil {
 		return err
 	}
+	if deps.requireHerdr && plan.Transport != "herdr" {
+		return fmt.Errorf("legacy launch plans are read-only; prepare a Herdr successor")
+	}
 	if planDigest != expectedPlanDigest {
-		return fmt.Errorf("private launcher plan digest %s does not match fixed tmux argv %s", planDigest, expectedPlanDigest)
+		return fmt.Errorf("private launcher plan digest %s does not match fixed Herdr bootstrap argv %s", planDigest, expectedPlanDigest)
 	}
 	privateContinuation := ""
 	if storeKind == sessionmove.DirName {
@@ -153,16 +166,30 @@ func runPrivateLauncherWithDirectory(args []string, deps privateLauncherDependen
 		return err
 	}
 	defer func() { _ = execFence.Close() }()
+	var terminalIdentity sessionterminal.Identity
+	if plan.Transport == "herdr" {
+		target, found, targetErr := attempt.loadHerdrTarget(planDigest)
+		if targetErr != nil {
+			return targetErr
+		}
+		if !found {
+			return fmt.Errorf("private Herdr wrapper has no owned target receipt")
+		}
+		if err := matchHerdrEnvironment(target.Terminal, herdr.ReadIdentity(os.LookupEnv)); err != nil {
+			return err
+		}
+		terminalIdentity = target.Terminal
+	}
 	record, err := deps.register(sessionDirectory, session.Record{
 		PID: launcherPID, WBSessionID: plan.SuccessorWBSessionID, Machine: plan.Machine,
-		Runtime: plan.Runtime, Model: plan.Model, TmuxName: plan.TmuxName,
+		Runtime: plan.Runtime, Model: plan.Model, TmuxName: plan.TmuxName, Terminal: terminalIdentity,
 		PredecessorWBSessionID: plan.PredecessorWBSessionID, HandoffID: plan.HandoffID,
 	})
 	if err != nil {
 		return err
 	}
 	loaded, live := session.Lookup(sessionDirectory, record.PID)
-	if !live || loaded.WBSessionID != plan.SuccessorWBSessionID || loaded.HandoffID != plan.HandoffID || loaded.TmuxName != plan.TmuxName {
+	if !live || loaded.WBSessionID != plan.SuccessorWBSessionID || loaded.HandoffID != plan.HandoffID || loaded.TmuxName != plan.TmuxName || loaded.Terminal != terminalIdentity {
 		return fmt.Errorf("preallocated successor registration was not durably readable")
 	}
 	ready, err := attempt.saveReady(plan, planDigest, record)
@@ -238,7 +265,7 @@ func validatePrivatePlan(state sessionmove.State, plan launchPlan) error {
 	}
 	if plan.SchemaVersion != launchSchemaVersion || plan.HandoffID != request.HandoffID || plan.RequestDigest != state.Digest ||
 		plan.SuccessorWBSessionID != request.SuccessorWBSessionID || plan.PredecessorWBSessionID != request.PredecessorWBSessionID ||
-		plan.Machine != request.TargetMachine || plan.TmuxName != "wb-session-"+request.SuccessorWBSessionID ||
+		plan.Machine != request.TargetMachine || !validPlanTerminal(plan, request.SuccessorWBSessionID) ||
 		plan.PinnedCommit != request.BundleCommit || plan.HandoverPath != expectedHandoverPath ||
 		plan.StoreRoot == "" {
 		return fmt.Errorf("immutable launch plan does not match admitted handoff")
@@ -373,7 +400,7 @@ func validatePrivateParkPlanWithDirectory(state *launchState, plan launchPlan, g
 	}
 	if plan.SchemaVersion != launchSchemaVersion || plan.HandoffID != authority.AggregateID ||
 		plan.SuccessorWBSessionID != authority.SuccessorWBSessionID || plan.PredecessorWBSessionID != authority.PredecessorWBSessionID ||
-		plan.Machine != authority.TargetMachine || plan.TmuxName != "wb-session-"+authority.SuccessorWBSessionID ||
+		plan.Machine != authority.TargetMachine || !validPlanTerminal(plan, authority.SuccessorWBSessionID) ||
 		plan.PinnedCommit != authority.PinnedCommit || plan.PinnedBranch != authority.PinnedBranch ||
 		plan.RootMode != string(authority.RootMode) ||
 		plan.HandoverPath != authority.ContinuationPath || plan.ContinuationDigest != sessionmove.Digest(authority.ContinuationDigest) ||

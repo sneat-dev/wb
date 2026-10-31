@@ -25,7 +25,7 @@ func TestReceiveFailsClosedWhenIntentAppearsAfterRecipientVerification(t *testin
 			instant := time.Date(2026, 8, 25, 12, 0, 1, 0, time.UTC)
 			fixture.options.Now = func() time.Time { return instant }
 			fixture.options.RecordReceived = func(record WorkLogRecord) error {
-				intent := sessionmove.MessagePasteIntent{SchemaVersion: sessionmove.MessagePasteIntentSchemaVersion, MessageID: fixture.message.MessageID, MessageDigest: sessionmove.DigestBytes(fixture.raw), HandoffID: fixture.request.HandoffID, RecipientWBSessionID: fixture.message.RecipientWBSessionID, TmuxName: fixture.receipt.TmuxName, PaneID: fixture.tmux.pane.ID, PID: fixture.receipt.PID, IntendedAt: instant}
+				intent := sessionmove.MessagePasteIntent{SchemaVersion: sessionmove.MessagePasteIntentSchemaVersion, MessageID: fixture.message.MessageID, MessageDigest: sessionmove.DigestBytes(fixture.raw), HandoffID: fixture.request.HandoffID, RecipientWBSessionID: fixture.message.RecipientWBSessionID, Terminal: fixture.receipt.Terminal, PaneID: fixture.terminal.pane.ID, PID: fixture.receipt.PID, IntendedAt: instant}
 				raw, err := json.MarshalIndent(intent, "", "  ")
 				if err != nil {
 					return err
@@ -43,30 +43,10 @@ func TestReceiveFailsClosedWhenIntentAppearsAfterRecipientVerification(t *testin
 			if !corrupt && !errors.Is(err, ErrMessagePasteAmbiguous) {
 				t.Fatalf("replay error=%v", err)
 			}
-			if got := countCallPrefix(fixture.tmux.calls, "paste:"); got != 0 {
+			if got := countCallPrefix(fixture.terminal.calls, "submit:"); got != 0 {
 				t.Fatalf("pasted %d times", got)
 			}
 		})
-	}
-}
-
-func TestNewOSTmuxReportsExecutableDisappearingAfterResolution(t *testing.T) {
-	t.Parallel()
-	path := filepath.Join(t.TempDir(), "tmux")
-	missing := &os.PathError{Op: "stat", Path: path, Err: os.ErrNotExist}
-	client, err := newOSTmuxWithResolver(func(name string) (string, error) {
-		if name != "tmux" {
-			t.Fatalf("resolver name=%q", name)
-		}
-		return path, nil
-	}, func(got string) (os.FileInfo, error) {
-		if got != path {
-			t.Fatalf("resolved path=%q", got)
-		}
-		return nil, missing
-	})
-	if client != nil || !errors.Is(err, os.ErrNotExist) || !strings.Contains(err.Error(), "inspect fixed tmux executable") {
-		t.Fatalf("client=%+v,error=%v", client, err)
 	}
 }
 
@@ -81,8 +61,8 @@ func TestReceiveRejectsDecodedTimestampThatCannotBeCanonicallyEncoded(t *testing
 	if err == nil || !strings.Contains(err.Error(), "timezone hour outside of range") {
 		t.Fatalf("canonical encoding failure=%v", err)
 	}
-	if len(fixture.tmux.calls) != 0 {
-		t.Fatalf("encoding failure called tmux: %v", fixture.tmux.calls)
+	if len(fixture.terminal.calls) != 0 {
+		t.Fatalf("encoding failure called tmux: %v", fixture.terminal.calls)
 	}
 }
 
@@ -102,7 +82,7 @@ func TestReceiveRejectsDurableReceiptOutsideRequestLineage(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "target_machine") {
 		t.Fatalf("receipt lineage error=%v", err)
 	}
-	if len(fixture.tmux.calls) != 0 {
-		t.Fatalf("invalid receipt called tmux: %v", fixture.tmux.calls)
+	if len(fixture.terminal.calls) != 0 {
+		t.Fatalf("invalid receipt called tmux: %v", fixture.terminal.calls)
 	}
 }

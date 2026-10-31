@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/sneat-dev/wb/internal/sessionterminal"
 	"os"
 	"path/filepath"
 	"sort"
@@ -31,15 +32,17 @@ const DirName = "sessions"
 
 // Record is one agent session's self-declaration.
 type Record struct {
-	PID                    int    `json:"pid"`
-	WBSessionID            string `json:"wb_session_id,omitempty"`
-	Machine                string `json:"machine,omitempty"`
-	Runtime                string `json:"runtime,omitempty"`
-	Model                  string `json:"model,omitempty"`
-	NativeHarnessID        string `json:"native_harness_id,omitempty"`
-	TmuxName               string `json:"tmux_name,omitempty"`
-	PredecessorWBSessionID string `json:"predecessor_wb_session_id,omitempty"`
-	HandoffID              string `json:"handoff_id,omitempty"`
+	Scope                  string                   `json:"scope,omitempty"`
+	PID                    int                      `json:"pid"`
+	WBSessionID            string                   `json:"wb_session_id,omitempty"`
+	Machine                string                   `json:"machine,omitempty"`
+	Runtime                string                   `json:"runtime,omitempty"`
+	Model                  string                   `json:"model,omitempty"`
+	NativeHarnessID        string                   `json:"native_harness_id,omitempty"`
+	TmuxName               string                   `json:"tmux_name,omitempty"`
+	Terminal               sessionterminal.Identity `json:"terminal,omitzero"`
+	PredecessorWBSessionID string                   `json:"predecessor_wb_session_id,omitempty"`
+	HandoffID              string                   `json:"handoff_id,omitempty"`
 
 	// AgentID is the legacy spelling for a harness-native session ID. It stays
 	// readable and writable so existing hooks and PID records continue to
@@ -87,6 +90,7 @@ const (
 )
 
 type parkedLifecycleMarker struct {
+	Scope           string    `json:"scope,omitempty"`
 	SchemaVersion   int       `json:"schema_version"`
 	WBSessionID     string    `json:"wb_session_id"`
 	ParkedSessionID string    `json:"parked_session_id"`
@@ -94,6 +98,7 @@ type parkedLifecycleMarker struct {
 }
 
 type resumedLifecycleMarker struct {
+	Scope                string    `json:"scope,omitempty"`
 	SchemaVersion        int       `json:"schema_version"`
 	WBSessionID          string    `json:"wb_session_id"`
 	ParkedSessionID      string    `json:"parked_session_id"`
@@ -124,7 +129,12 @@ func ProcessAlive(pid int) bool { return processAlive(pid) }
 // Re-registering is deliberately allowed: a session that restarts its harness
 // or corrects its model should not have to find and delete the old file.
 func Register(dir string, record Record) (Record, error) {
-	return registerWithMachineAndMode(dir, record, os.Hostname, os.Chmod)
+	unlock, err := lockPID(dir, record.PID)
+	if err != nil {
+		return Record{}, err
+	}
+	defer unlock()
+	return registerRecordUnderPIDLock(dir, record)
 }
 
 func registerWithMachineAndMode(dir string, record Record, hostnameForMachine func() (string, error), chmod func(string, os.FileMode) error) (Record, error) {
@@ -132,6 +142,10 @@ func registerWithMachineAndMode(dir string, record Record, hostnameForMachine fu
 }
 
 func registerWithProcessObservation(dir string, record Record, hostnameForMachine func() (string, error), chmod func(string, os.FileMode) error, alive func(int) bool, start func(int) (time.Time, bool)) (Record, error) {
+	return registerWithProcessObservationAt(dir, record, hostnameForMachine, chmod, alive, start, nil)
+}
+
+func registerWithProcessObservationAt(dir string, record Record, hostnameForMachine func() (string, error), chmod func(string, os.FileMode) error, alive func(int) bool, start func(int) (time.Time, bool), directory *os.File) (Record, error) {
 	if record.PID <= 0 {
 		return Record{}, fmt.Errorf("a session must declare a positive PID")
 	}
@@ -157,7 +171,17 @@ func registerWithProcessObservation(dir string, record Record, hostnameForMachin
 	// process generation is corroborated. A shared PID or semantic StartedAt
 	// cannot associate a new declaration with an unknown prior session. Explicit
 	// preallocated/handoff fields remain the caller's supplied declaration.
-	previous, exists := readRecord(recordPath(dir, record.PID))
+	var previous Record
+	exists := false
+	if directory != nil {
+		var err error
+		previous, exists, err = readScopeRecord(directory, record.PID, record.Scope)
+		if err != nil {
+			return Record{}, err
+		}
+	} else {
+		previous, exists = readRecord(recordPath(dir, record.PID))
+	}
 	previousLive := exists && recordProcessState(previous, alive, start) == StateLive
 	// Bind inherited metadata to the very observation that will be persisted.
 	// The PID may recycle or become unreadable after the first corroboration.
@@ -184,8 +208,11 @@ func registerWithProcessObservation(dir string, record Record, hostnameForMachin
 			if record.NativeHarnessID == "" {
 				record.NativeHarnessID = previous.NativeHarnessID
 			}
-			if record.TmuxName == "" {
+			if record.TmuxName == "" && record.Terminal.IsZero() {
 				record.TmuxName = previous.TmuxName
+			}
+			if record.Terminal.IsZero() {
+				record.Terminal = previous.Terminal
 			}
 			if record.PredecessorWBSessionID == "" {
 				record.PredecessorWBSessionID = previous.PredecessorWBSessionID
@@ -233,6 +260,12 @@ func registerWithProcessObservation(dir string, record Record, hostnameForMachin
 	if err != nil {
 		return Record{}, err
 	}
+	if directory != nil {
+		if err := filewrite.WriteBytesAtomicAtExactMode(directory, strconv.Itoa(record.PID)+".json", append(encoded, '\n'), 0o644); err != nil {
+			return Record{}, fmt.Errorf("write scoped session record: %w", err)
+		}
+		return record, nil
+	}
 	path := recordPath(dir, record.PID)
 	if err := os.WriteFile(path, append(encoded, '\n'), 0o644); err != nil {
 		return Record{}, fmt.Errorf("write session record: %w", err)
@@ -248,6 +281,11 @@ func registerWithProcessObservation(dir string, record Record, hostnameForMachin
 // lifecycle marker changes the live projection while keeping the source
 // auditable and ensuring session resolution cannot treat a parked owner as active.
 func MarkParked(dir string, pid int, parkedID string) (Record, error) {
+	unlock, err := lockPID(dir, pid)
+	if err != nil {
+		return Record{}, err
+	}
+	defer unlock()
 	return markParkedInjected(dir, pid, parkedID, nil)
 }
 
@@ -267,6 +305,14 @@ func markParkedAt(dir string, pid int, parkedID string, inj *filewrite.Injector,
 	if !ok {
 		return Record{}, fmt.Errorf("session with pid %d is not registered", pid)
 	}
+	return markParkedRecordAt(dir, record, parkedID, inj, now)
+}
+
+func markParkedRecordAt(dir string, record Record, parkedID string, inj *filewrite.Injector, now func() time.Time) (Record, error) {
+	if record.Scope != "" {
+		return markScopedParked(dir, record, parkedID, inj, now)
+	}
+	pid := record.PID
 	if record.Lifecycle == "parked" {
 		if record.ParkedSessionID == parkedID {
 			return record, nil
@@ -325,6 +371,11 @@ func markParkedAt(dir string, pid int, parkedID string, inj *filewrite.Injector,
 // rewriting either the immutable PID registration or the parked history.
 // An identical retry repairs a crash after the parked-session store finalized.
 func MarkResumed(dir string, pid int, parkedID, successorWBSessionID string) (Record, error) {
+	unlock, err := lockPID(dir, pid)
+	if err != nil {
+		return Record{}, err
+	}
+	defer unlock()
 	return markResumedInjected(dir, pid, parkedID, successorWBSessionID, nil)
 }
 
@@ -349,6 +400,29 @@ func markResumedWithIO(dir string, pid int, parkedID, successorWBSessionID strin
 	if !ok {
 		return Record{}, fmt.Errorf("session with pid %d is not registered", pid)
 	}
+	return markResumedRecordWithIO(dir, record, parkedID, successorWBSessionID, inj, now, syncDir, mkdirAll)
+}
+
+// MarkSourceResumed appends source lifecycle by its immutable identity. Current
+// chat pickup may have registered its successor in the same PID slot already;
+// loading that slot would select the successor instead of the parked source.
+// The caller must hold the parked aggregate custody barrier and authenticate
+// source against its immutable bundle. This never rewrites a PID registration.
+func MarkSourceResumed(dir string, source Record, parkedID, successorWBSessionID string) (Record, error) {
+	if err := validateRecordScope(source); err != nil {
+		return Record{}, err
+	}
+	if source.PID <= 0 || source.WBSessionID == "" || source.WBSessionID == "." || filepath.Base(source.WBSessionID) != source.WBSessionID || source.StartedAt.IsZero() {
+		return Record{}, fmt.Errorf("source lifecycle requires an exact immutable session identity")
+	}
+	return markResumedRecordWithIO(dir, source, parkedID, successorWBSessionID, nil, time.Now, syncDirectory, os.MkdirAll)
+}
+
+func markResumedRecordWithIO(dir string, record Record, parkedID, successorWBSessionID string, inj *filewrite.Injector, now func() time.Time, syncDir func(*os.File) error, mkdirAll func(string, os.FileMode) error) (Record, error) {
+	if record.Scope != "" {
+		return markScopedResumed(dir, record, parkedID, successorWBSessionID, inj, now)
+	}
+	pid := record.PID
 	parkedMarker, parked := readParkedMarker(dir, record.WBSessionID)
 	if !parked || parkedMarker.ParkedSessionID != parkedID {
 		return Record{}, fmt.Errorf("session with pid %d is not parked as %s", pid, parkedID)
@@ -484,30 +558,35 @@ func List(dir string) ([]View, error) {
 	if err != nil {
 		return nil, err
 	}
+	directory, err := openRecordDirectory(dir, "", false)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = directory.Close() }()
 	views := make([]View, 0, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
-		// A malformed record is skipped rather than failing the listing: one
-		// bad file must not hide every other session.
-		record, ok := readRecord(filepath.Join(dir, entry.Name()))
-		if !ok {
+		// Malformed legacy rows cannot hide the remaining valid records.
+		pid, parseErr := strconv.Atoi(strings.TrimSuffix(entry.Name(), ".json"))
+		if parseErr != nil || pid <= 0 || entry.Name() != scopeRecordName(pid) {
 			continue
 		}
-		viewState := state(record)
-		if marker, ok := readResumedMarker(dir, record.WBSessionID); ok {
-			record.Lifecycle, record.ParkedSessionID = "resumed", marker.ParkedSessionID
-			viewState = StateResumed
-		} else if marker, ok := readParkedMarker(dir, record.WBSessionID); record.Lifecycle == "parked" || ok {
-			record.Lifecycle = "parked"
-			if ok {
-				record.ParkedSessionID = marker.ParkedSessionID
-			}
-			viewState = StateParked
+		record, found, readErr := readScopeRecord(directory, pid, "")
+		if readErr != nil || !found {
+			continue
 		}
-		views = append(views, View{Record: record, State: viewState})
+		views = append(views, sessionView(dir, record))
 	}
+	scoped, err := listScopedRecords(dir)
+	if err != nil {
+		return nil, err
+	}
+	for _, record := range scoped {
+		views = append(views, sessionView(dir, record))
+	}
+
 	sort.SliceStable(views, func(i, j int) bool {
 		return views[i].StartedAt.After(views[j].StartedAt)
 	})
@@ -525,9 +604,14 @@ func Prune(dir string) (int, error) {
 		if view.State != StateGone {
 			continue
 		}
-		if err := os.Remove(recordPath(dir, view.PID)); err == nil {
+		unlock, lockErr := lockPID(dir, view.PID)
+		if lockErr != nil {
+			return removed, lockErr
+		}
+		if pruneRecordUnderPIDLock(dir, view.Record) {
 			removed++
 		}
+		unlock()
 	}
 	return removed, nil
 }
@@ -537,11 +621,11 @@ func Lookup(dir string, pid int) (Record, bool) {
 	if pid <= 0 {
 		return Record{}, false
 	}
-	record, ok := readRecord(recordPath(dir, pid))
-	if !ok {
+	record, live, err := LookupRecordExact(dir, Record{PID: pid})
+	if err != nil || !live || sessionView(dir, record).State != StateLive {
 		return Record{}, false
 	}
-	return record, record.Lifecycle != "parked" && record.Lifecycle != "resumed" && !resumed(dir, record.WBSessionID) && !parked(dir, record.WBSessionID) && state(record) == StateLive
+	return record, true
 }
 
 // ResolveForProcess finds the registered session that owns a process, by
@@ -554,13 +638,28 @@ func Lookup(dir string, pid int) (Record, bool) {
 // treated as an owner. Depth is bounded because a corrupted /proc chain must
 // not spin.
 func ResolveForProcess(dir string, startPID int) (Record, bool) {
+	return resolveForProcess(dir, startPID, parentPID, IsRuntimeProcess, os.LookupEnv)
+}
+
+func resolveForProcess(dir string, startPID int, readParent func(int) (int, bool), shared func(int, string) bool, lookup func(string) (string, bool)) (Record, bool) {
 	const maxDepth = 12
 	pid := startPID
 	for depth := 0; depth < maxDepth && pid > 1; depth++ {
+		if shared(pid, "codex") {
+			native, err := CallerNativeID("codex", lookup)
+			if err != nil || native == "" {
+				return Record{}, false
+			}
+			record, live, err := lookupCallerNative(dir, pid, "codex", native)
+			if err == nil && live && sessionView(dir, record).State == StateLive {
+				return record, true
+			}
+			return Record{}, false
+		}
 		if record, ok := Lookup(dir, pid); ok {
 			return record, true
 		}
-		parent, ok := parentPID(pid)
+		parent, ok := readParent(pid)
 		if !ok {
 			return Record{}, false
 		}

@@ -273,3 +273,36 @@ pull-request candidate as well as a direct target, so a repository with no CI at
 all lands instead of polling until the slice deadline; both phases still require
 stable exact-head check observations whenever checks exist. Prepare does not
 accept the flag because it performs no remote landing or CI-fence decision.
+
+`session resume` / `session pickup` defaults to the authenticated current chat.
+`--current` makes that choice explicit. The first call returns a private
+continuation path and digest; after reading it, the agent repeats with
+`--ack-context <digest>`. `--launch` explicitly starts a Herdr successor and
+conflicts with `--current`, `--recover-current`, and `--ack-context`. Remote
+`--to <machine>` conflicts with all current/launch flags; `--via` and `--config`
+require `--to`. `--recover-current` appends a new actor after a conclusively dead
+previous process generation; it never treats a matching native ID alone as
+death evidence. Recovery is bounded to16 immutable links and refuses overflow
+before custody mutation. An unidentified caller never silently starts an agent.
+
+`--ack-unstarted-launch <exact-state-digest>` is an explicit registered operator
+assertion available only for current/default pickup. WB first refuses a legacy
+sole empty setup attempt and reports a digest binding its plan, route, bundle,
+private directory identities and original actor. The operator must verify saved
+positive evidence that the invocation failed before starting a wrapper; empty
+directories alone cannot establish absence. Exact acknowledgment is recorded
+atomically in the initial preparation. The original assertion survives normal
+successor retry and authenticated dead-actor recovery without a new assertion.
+This flag conflicts with `--launch`, `--to` and `--recover-current`; it never
+ignores execution, unknown or changed state or rewrites legacy artifacts.
+
+
+Codex chats sharing one observed harness PID use independent record-derived
+namespaces keyed by `CODEX_THREAD_ID`. `CODEX_SESSION_ID` is separate root context;
+stored native-harness-id and agent-id aliases must agree. Public registration
+requires the chat's native thread ID for that shared harness. The same chat retains its WBID on
+metadata updates, including its own pre-existing legacy row. Recipient and source
+lookups use immutable recorded identity, never the invoking chat's environment.
+Current pickup refuses replay after any prepared actor has parked or handed off
+again, and identifies the newer checkpoint. Recovery cannot prove a departed
+individual chat dead while its shared physical process generation remains live.

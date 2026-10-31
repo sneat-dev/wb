@@ -13,7 +13,7 @@ status: Executing
 ## Summary
 
 Implement the complete delayed whole-session journey: private local parking,
-coordinator-launched local resume, and receipt-gated multi-worktree remote
+current-chat local resume with explicit Herdr launch opt-in, and receipt-gated multi-worktree remote
 resume through the existing configured SSH route. Keep the legacy
 single-worktree session-move protocol and command wire compatible.
 
@@ -28,9 +28,11 @@ pins, establishes every Work Log claim and owner behind one launcher barrier,
 then publishes one all-member receipt. The source changes from parked to
 resumed only after validating and storing that receipt.
 
-Local resume uses the same launcher/private-continuation contract and performs
-an all-member no-steal preflight before any owner append. Dirty and unpushed
-members remain locally valid. Zero-member local resume uses a deterministic
+Local resume authenticates the registered current caller, validates every member
+and returns private continuation for the agent to read/acknowledge before any
+owner append. All member journals and the PID transition barrier protect atomic
+logical adoption. Explicit `--launch` uses the gated Herdr launcher instead. Dirty and unpushed
+members remain locally valid. Zero-member explicit launch uses a deterministic
 private neutral directory; remote zero-member resume refuses before courier.
 
 The plan remains non-terminal until independent Sol/Terra review and a live
@@ -60,10 +62,11 @@ session-move test vectors and tracked handover policy.
 **Depends-On:** 1
 **Status:** planning
 
-Wire `wb session park`, coordinator-launched local `wb session resume`, the
+Wire `wb session park`, default current-chat `wb session resume` plus explicit
+`--launch` for a new Herdr agent, the
 fixed `wb session receive-park` target command, and a separate fixed-argv SSH
 courier. Prove one- and two-member success, zero-delivery refusal, zero-member
-local launch, dirty local preservation, exact continuation non-disclosure,
+explicit local launch, current continuation acknowledgment, dirty local preservation, exact continuation non-disclosure,
 public resume-ID discovery, zero-mutation executable preflight, retained early
 harness-exit diagnostics, per-stage interruption repair, concurrent winner behavior, and source
 parked-to-resumed finalization. Then obtain independent Sol/Terra review and run

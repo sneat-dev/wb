@@ -5,12 +5,10 @@ package sessiontransport
 // the value [ResolveOverride] validates an explicit override against.
 type Kind string
 
-// The transports WB ships. REQ:two-transport-implementations fixes the set
-// at exactly herdr and tmux; [KindNone] is the first-class fallback
-// REQ:none-transport-is-first-class requires when neither is observable.
+// Herdr is the sole active terminal transport; none retains record-only
+// operation without a terminal. Legacy tmux receipts remain immutable data.
 const (
 	KindHerdr Kind = "herdr"
-	KindTmux  Kind = "tmux"
 	KindNone  Kind = "none"
 )
 
@@ -21,7 +19,7 @@ const (
 // exported slice var, so no caller can corrupt the shipped set for the rest
 // of the process by mutating what it got back.
 func Kinds() []Kind {
-	return []Kind{KindHerdr, KindTmux, KindNone}
+	return []Kind{KindHerdr, KindNone}
 }
 
 // Valid reports whether k names a transport WB actually ships. An override
@@ -29,7 +27,7 @@ func Kinds() []Kind {
 // transport (REQ:explicit-transport-override).
 func (k Kind) Valid() bool {
 	switch k {
-	case KindHerdr, KindTmux, KindNone:
+	case KindHerdr, KindNone:
 		return true
 	default:
 		return false

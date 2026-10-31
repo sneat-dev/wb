@@ -1,7 +1,6 @@
 // Package transporttest is the shared contract test suite
-// REQ:two-transport-implementations requires: Task 3's tmux transport and
-// Task 4's herdr transport must both pass it, and neither needs a distinct
-// suite of its own to prove it satisfies sessiontransport.Transport
+// generic capability-policy contracts require. NoneTransport and injected
+// contract fixtures exercise it independently of production typed Herdr clients
 // (AC:two-implementations-satisfy-the-same-interface).
 //
 // It lives in its own package, sibling to internal/sessiontransport, so
@@ -66,7 +65,7 @@ var Checks = []checkEntry{
 // Check so a stateful implementation is never accidentally shared across
 // checks that assume independence.
 //
-// Suite never reaches a real herdr socket or tmux server; callers supply
+// Suite never reaches a real Herdr socket; callers supply
 // factory backed by fakes, following this same convention: no test call
 // reaches a live transport.
 func Suite(t *testing.T, factory func() sessiontransport.Transport) {

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -61,17 +62,35 @@ func ResolveOrRegisterForProcess(dir string, startPID int, hints AutoRegisterHin
 	if record, ok := ResolveForProcess(dir, startPID); ok {
 		return record, false, nil
 	}
-	record, _ := InferRecordForProcess(startPID, hints)
+	record, inferErr := InferRecordForProcess(startPID, hints)
+	if inferErr != nil {
+		return Record{}, false, inferErr
+	}
 	// A finished session's record must not be overwritten by a new one at the
 	// same PID: its parked aggregate is still resumable, and the registry row
 	// is how a coordinator finds it. This refuses a lifecycle collision, never
 	// a missing-metadata one.
-	if previous, ok := readRecord(recordPath(dir, record.PID)); ok {
+	var previous Record
+	var hasPrevious bool
+	if record.Runtime == "codex" && record.NativeHarnessID != "" && IsRuntimeProcess(record.PID, "codex") {
+		var lookupErr error
+		previous, hasPrevious, lookupErr = lookupCallerNative(dir, record.PID, record.Runtime, record.NativeHarnessID)
+		if lookupErr != nil && !errors.Is(lookupErr, os.ErrNotExist) {
+			return Record{}, false, lookupErr
+		}
+	} else {
+		previous, hasPrevious = readRecord(recordPath(dir, record.PID))
+	}
+	if hasPrevious {
 		lifecycle := ""
+		projection := sessionView(dir, previous)
+		if projection.State == StateUnknown {
+			return Record{}, false, fmt.Errorf("registered caller lifecycle is uncertain")
+		}
 		switch {
-		case previous.Lifecycle == "resumed" || resumed(dir, previous.WBSessionID):
+		case projection.State == StateResumed:
 			lifecycle = "resumed"
-		case previous.Lifecycle == "parked" || parked(dir, previous.WBSessionID):
+		case projection.State == StateParked:
 			lifecycle = "parked"
 		}
 		if lifecycle != "" {
@@ -80,7 +99,7 @@ func ResolveOrRegisterForProcess(dir string, startPID int, hints AutoRegisterHin
 				record.PID, previous.WBSessionID, lifecycle, previous.ParkedSessionID)
 		}
 	}
-	written, err := Register(dir, record)
+	written, err := RegisterCaller(dir, record)
 	if err != nil {
 		return Record{}, false, err
 	}
@@ -130,6 +149,20 @@ func InferRecordForProcess(startPID int, hints AutoRegisterHints) (Record, error
 	if record.NativeHarnessID == "" {
 		record.NativeHarnessID = strings.TrimSpace(os.Getenv(envAgentID))
 	}
+	if record.Runtime == "codex" && record.PID == ancestorPID && ancestorRuntime == "codex" {
+		native, err := CallerNativeID(record.Runtime, os.LookupEnv)
+		if err != nil {
+			return Record{}, err
+		}
+		if hints.NativeHarnessID != "" && native != "" && hints.NativeHarnessID != native {
+			return Record{}, fmt.Errorf("declared native chat contradicts observed caller")
+		}
+		if native != "" {
+			record.NativeHarnessID = native
+		} else if IsRuntimeProcess(record.PID, "codex") && hints.NativeHarnessID == "" {
+			record.NativeHarnessID = ""
+		}
+	}
 	id, _ := NewID()
 	// Always a fresh identity, never the one a stale record at this PID
 	// carries: a recycled PID must not inherit a finished session's lifecycle.
@@ -150,15 +183,22 @@ func LookupByWBSessionID(dir, wbSessionID string) (Record, bool) {
 	if err != nil {
 		return Record{}, false
 	}
+	var match Record
+	found := false
 	for _, view := range views {
-		if view.WBSessionID != wbSessionID {
+		if view.WBSessionID != wbSessionID || view.State != StateLive {
 			continue
 		}
-		if record, ok := Lookup(dir, view.PID); ok {
-			return record, true
+		record, live, err := LookupActiveRecordExact(dir, view.Record)
+		if err != nil || !live {
+			continue
 		}
+		if found {
+			return Record{}, false
+		}
+		match, found = record, true
 	}
-	return Record{}, false
+	return match, found
 }
 
 // harnessAncestor is indirected so tests can observe both branches without
@@ -236,9 +276,6 @@ func runtimeForProcessName(name string) (string, bool) {
 func runtimeForProcessEvidence(evidence ProcessEvidence) (string, bool) {
 	runtime, ok := runtimeForProcessName(filepath.Base(filepath.Clean(evidence.Executable)))
 	if !ok {
-		return "", false
-	}
-	if runtime == "codex" && !processEvidenceMatchesRuntime(evidence, runtime) {
 		return "", false
 	}
 	return runtime, true

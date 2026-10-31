@@ -108,14 +108,16 @@ func retireLegacyCustody(entry ListResult) (retireCustodyFence, error) {
 // lifecycle transition.
 func corroborateRetireCustodySession(home, sessionID string) error {
 	return corroborateRetireCustodySessionWith(home, sessionID, retireCustodySessionPorts{
-		list:        session.List,
-		lookupExact: session.LookupExact,
+		list:         session.List,
+		lookupExact:  session.LookupExact,
+		lookupRecord: session.LookupActiveRecordExact,
 	})
 }
 
 type retireCustodySessionPorts struct {
-	list        func(string) ([]session.View, error)
-	lookupExact func(string, int) (session.Record, bool, error)
+	list         func(string) ([]session.View, error)
+	lookupExact  func(string, int) (session.Record, bool, error)
+	lookupRecord func(string, session.Record) (session.Record, bool, error)
 }
 
 func corroborateRetireCustodySessionWith(home, sessionID string, ports retireCustodySessionPorts) error {
@@ -125,18 +127,26 @@ func corroborateRetireCustodySessionWith(home, sessionID string, ports retireCus
 		return err
 	}
 	matches := 0
-	pid := 0
+	var candidate session.Record
 	for _, view := range views {
-		if view.WBSessionID != sessionID {
+		if view.WBSessionID != sessionID || (view.State != session.StateLive && view.State != "") {
 			continue
 		}
 		matches++
-		pid = view.PID
+		candidate = view.Record
 	}
-	if matches != 1 || pid <= 0 {
+	if matches != 1 || candidate.PID <= 0 {
 		return fmt.Errorf("coordination owner session is ambiguous or unavailable")
 	}
-	exact, live, err := ports.lookupExact(directory, pid)
+	var exact session.Record
+	var live bool
+	if ports.lookupRecord != nil {
+		exact, live, err = ports.lookupRecord(directory, candidate)
+	} else if candidate.Scope == "" {
+		exact, live, err = ports.lookupExact(directory, candidate.PID)
+	} else {
+		return fmt.Errorf("scoped retirement lookup is unavailable")
+	}
 	if err != nil {
 		return err
 	}

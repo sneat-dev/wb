@@ -35,8 +35,7 @@ func RecordExternalSourceMessageSent(options ExternalSourceMessageOptions) (Loca
 	if err != nil {
 		return LocalWorkLogEvent{}, err
 	}
-	if err := sessionmove.ValidateMessageReceipt(options.MessageReceipt, options.Message, messageDigest,
-		options.Receipt.TmuxName, options.Receipt.PID); err != nil {
+	if err := sessionmove.ValidateMessageReceiptForHandoff(options.MessageReceipt, options.Message, messageDigest, options.Receipt); err != nil {
 		return LocalWorkLogEvent{}, err
 	}
 

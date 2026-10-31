@@ -11,48 +11,26 @@ status: Draft
 
 ## Summary
 
-WB's session layer moves from a tmux-only terminal surface to a pluggable
-transport, with **herdr as the default and tmux kept as an alternative** —
-confirmed by the founder, 2026-09-19 ("yes", asked directly). One transport
-interface carries session identity capture, session messaging, move/park/resume,
-successor launch, and the daemon's own-PR event delivery. Herdr supplies what
-tmux never could — live agent status (idle / working / blocked / done) via
-`agent list`/`agent get` — but **not** an empty-input signal: neither JSON
-call exposes one, and the founder ruled its detection mechanism out of scope
-for now (2026-09-19: "Out of scope for performance work we focus now on"; see
-Deferred). **Consequence for this iteration: no daemon-originated event is
-submitted into any pane.** The MVP wake flow (`daemon-as-coordinator`,
-founder-agreed 2026-09-18) ships as record-only: register a task's PR at
-`wb pr create`, resolve session and pane at delivery, and record the outcome
-— visible in `wb session list` and `wb wait list` — when its own pull request
-settles. Submitting it into the pane is specified as future work behind the
-deferred guard, not built now. The single exception is pre-existing and
-unrelated to the daemon: `wb session send`'s tmux successor-messaging path
-already submits today (its payload has always ended in a newline) and keeps
-doing so unchanged; its herdr counterpart is deferred alongside the same
-empty-input evidence gap.
+Issues #956/#957 replace active tmux lifecycle with original Herdr TUI 0.9.1
+(protocol 22) and make local parked-session pickup continue in the current
+registered chat by default. Explicit `--launch` starts one new Herdr agent;
+`--to <machine>` retains the remote courier journey. Legacy tmux JSON and
+canonical digests remain readable historical evidence, never an executable fallback.
+
+Receipt-bound successor messages use canonical message schema 2 and one authorized
+Herdr prompt. They are distinct from daemon notifications. The daemon watcher,
+read-inbox verb, hook notifications, recorded-only message receipts, empty-input
+detection and general agent-directing proposals below remain deferred. This
+cutover does not declare those proposals implemented or expand daemon submission.
 
 ## Problem
 
-"We switched from tmux to herdr," and WB's session layer did not switch with
-it. Every production session code path — registration, `wb session message`,
-`wb session move`/`receive`, `wb session park`/`resume`, successor launch, and
-the courier boundary — is written directly against tmux (`internal/session*`,
-`internal/sessionlaunch/tmux.go`, `internal/sessionmessage/tmux.go`,
-`cmd/wb/session_*.go`, `internal/worktrees/session_*.go`; roughly 26
-production files). None of it can see a herdr pane, so none of it can carry
-the one capability herdr adds that tmux structurally cannot: knowing whether a
-session is idle, working, blocked, or done. Without that, the wake flow the
-founder already agreed to — "We already have idea to use herdr to send
-messages to agents to wake them up and to direct" — has no safe way to check
-its own delivery guards, on any transport.
-
-The founder has not asked to drop tmux: "We should decide if we keep tmux as
-an alternative or migrate to herdr," and then, weighing it, "For me I don’t
-need tmux but we build open product and some people can be attached to it."
-So the fix is not a rewrite onto herdr; it is a transport boundary that lets
-herdr be the default while tmux keeps working, unregressed, for whoever still
-runs it.
+A local pickup should not require a terminal or spawn another agent when the
+caller already has a live chat. New terminal successors must use the user's
+Herdr deployment rather than require tmux. A physical app-server can host several
+native chats, so PID alone cannot identify the current caller or custody owner.
+The implementation must preserve one winner, every parked member, immutable
+continuation history, and at-most-once message delivery through retries and crashes.
 
 ## Behavior
 
@@ -60,40 +38,39 @@ runs it.
 
 #### REQ: automatic-transport-identity-capture
 
-`wb session register`, the session record it writes, and Work Log claims made
-by that session MUST capture terminal transport identity automatically from
-the process environment, with no flag required for the common case: the herdr
-pane ID (`HERDR_PANE_ID`), the herdr workspace ID (`HERDR_WORKSPACE_ID`), the
-herdr socket path (`HERDR_SOCKET_PATH`), the pane's terminal ID (resolved
-via `herdr pane current`/`agent list` for that pane at registration — no
-environment variable exposes it directly), and the harness's own session ID
-(`CLAUDE_CODE_SESSION_ID` for Claude Code; the Codex equivalent, when the
-running Codex build exposes one) MUST be captured together as one identity,
-not as independently optional fields captured on different paths. The socket
-path and terminal ID exist to make delivery-time pane resolution exact rather
-than assumed — see REQ:pane-resolved-by-session-identity-match.
+Registration MUST capture a complete valid Herdr socket/workspace/pane identity
+from `HERDR_SOCKET_PATH`, `HERDR_WORKSPACE_ID`, and `HERDR_PANE_ID`, together
+with the independently validated native harness ID and native process generation.
+Partial terminal environment MUST NOT create a partially addressable endpoint.
+Codex `CODEX_THREAD_ID` MUST identify each chat. `CODEX_SESSION_ID` is shared
+root context and MUST NOT be used as the child chat's identity. Distinct values
+are legitimate. Session-only context cannot authenticate a chat; explicit stored
+NativeHarnessID/AgentID aliases must remain consistent with the thread.
+The physical process, native chat, logical WB session and terminal coordinates
+are separate identities; none substitutes for another.
 
 #### REQ: identity-capture-outside-herdr
 
-When `HERDR_PANE_ID` is absent, registration MUST fall back to today's tmux
-identity (`TMUX` env var, or an explicit `--tmux-name`) and record transport
-`tmux`. When neither herdr nor tmux identity is observable — a plain terminal,
-a CI runner, a detached background process — registration MUST still succeed,
-record transport `none`, and record only the harness session ID and machine.
-Missing terminal identity MUST NOT refuse registration; it only narrows what
-later delivery can address.
+Without complete valid Herdr coordinates, registration MUST remain available
+with no terminal. `TMUX` and legacy names MUST NOT select an active fallback;
+`--tmux-name` is not a public registration flag. Current-chat pickup MUST work
+without a terminal. Legacy optional fields remain readable without rewriting
+previously sealed JSON or digests.
 
 #### REQ: subagent-shares-parent-owner
 
-Identity capture MUST treat an in-process subagent as sharing its parent's
-identity, never as a second owner. Verified 2026-09-19 against a live Claude
-Code subagent: its environment carried the identical `CLAUDE_PID`,
-`CLAUDE_CODE_SESSION_ID`, and `HERDR_PANE_ID` as its parent process. WB MUST
-NOT create a second session record, a second claim owner, or a second wake
-target for a subagent; every claim-ownership check and every wake delivery
-MUST resolve to the parent session.
+Identity capture MUST treat an in-process subagent carrying the same native
+chat identity as sharing its parent's owner. Verified 2026-09-19 against a live
+Claude Code subagent: its environment carried the identical `CLAUDE_PID`,
+`CLAUDE_CODE_SESSION_ID`, and `HERDR_PANE_ID` as its parent process. WB MUST NOT
+create a second session record, claim owner, or wake target for that same-native
+case. Codex subagents with a distinct `CODEX_THREAD_ID` MUST retain independent
+native-chat records and custody, even when their PID and root
+`CODEX_SESSION_ID` are shared.
 
 #### REQ: reregister-on-session-start-hook
+
+**Deferred extension; not implemented by issues #956/#957.**
 
 A `/clear` inside the same pane and PID gets a new `CLAUDE_CODE_SESSION_ID`
 without a new process, which would otherwise leave the recorded harness
@@ -132,6 +109,8 @@ message with a non-standard id; run `wb session messages`)".
 
 #### REQ: successor-message-read-verb
 
+**Deferred extension; not implemented by issues #956/#957.**
+
 WB MUST add a read verb, owned by Task 5: `wb session messages` lists this
 session's unread messages (ID, sender WB session ID, recorded time, kind) —
 no body text — and `wb session messages read <id>` prints one message's full
@@ -145,86 +124,57 @@ may accept a successor message, read this way or any other, as
 
 ### Pluggable terminal transport
 
-The founder's words: "We should decide if we keep tmux as an alternative or
-migrate to herdr," and then, "For me I don’t need tmux but we build open
-product and some people can be attached to it." Asked directly whether herdr
-is the default with tmux kept as an alternative, the founder confirmed,
-2026-09-19: "yes".
+The explicit issues #956/#957 cutover supersedes the earlier dual-transport
+proposal. Herdr is the sole active terminal lifecycle; none and current-chat
+continuation require no terminal. Historical requirement anchors remain stable.
 
 #### REQ: single-transport-interface
 
-Every session code path that addresses a terminal — session messaging
-(`wb session message`, `wb session send`), move and park/resume delivery,
-successor launch, the courier delivery boundary, and the daemon wake's
-paste-or-submit-into-pane path — MUST go through one Go transport interface.
-No call site may branch on herdr-vs-tmux directly; that choice belongs to
-transport selection (REQ:automatic-transport-selection,
-REQ:explicit-transport-override), not to each call site.
+Production launcher and message paths MUST use bounded typed Herdr client
+interfaces, with no active tmux command path or fallback. The generic
+`sessiontransport.Transport` remains the capability/policy contract surface;
+this feature MUST NOT claim that all lifecycle adapters implement that generic
+interface. Record/advisory/submit modes retain distinct authority guards.
 
 #### REQ: two-transport-implementations
 
-WB MUST ship exactly two implementations of that interface at this Feature's
-completion: a **herdr** transport built on the `internal/herdr` adapter
-(Plan Task 1, in progress in a separate lane), and a **tmux** transport that is
-today's `internal/sessionlaunch`, `internal/sessionmessage`, and related tmux
-code moved behind the interface with no behavior change.
+The active kind set MUST contain `herdr` and `none`. Historical tmux receipt
+readers are compatibility code, not a shipped active transport. The existing
+anchor is retained for links from the earlier dual-transport design.
 
 #### REQ: automatic-transport-selection
 
-Transport selection MUST be automatic by default: herdr when `HERDR_PANE_ID`
-is set in the process environment; otherwise tmux when `TMUX` is set or the
-session record carries a recorded tmux name; otherwise `none`.
+Complete Herdr coordinates select a recorded terminal identity; otherwise the
+registration has no terminal. Local parked pickup defaults to its identifiable
+registered current chat and MUST NOT silently start an agent. New terminal
+launch is explicit `--launch`; remote continuation uses the selected courier.
 
 #### REQ: explicit-transport-override
 
-A `wb.yaml` `session.transport` setting, or an equivalent command flag, MUST
-override automatic detection when present. An override MUST be validated
-against the transports WB actually ships and MUST fail closed — refuse, not
-silently fall back to automatic selection — when the named transport's
-prerequisite (herdr socket, tmux binary) is not reachable.
+Overrides MUST accept only active `herdr` or `none` kinds and refuse invalid
+or unavailable selections. An explicit `tmux` configuration MUST fail closed,
+without probing a tmux executable or falling back to another terminal.
 
 #### REQ: selected-transport-recorded
 
-The transport resolved for a session (herdr, tmux, or none) MUST be recorded
-on that session's record alongside the identity fields from
-REQ:automatic-transport-identity-capture, so later commands and
-`wb session list` read it rather than re-detecting it.
+New records and receipts MUST retain the exact Herdr terminal value where one
+exists. Zero terminal values MUST remain absent from legacy canonical JSON.
+Recipient/source lookup MUST derive its namespace from the immutable record,
+never the receiving process's ambient native-chat environment.
 
 #### REQ: transport-capability-matrix
 
-WB MUST document, and its delivery logic MUST enforce, a capability matrix
-naming what each transport supports: live agent status (idle / working /
-blocked / done), evidence of an empty input box, submit-vs-advisory delivery
-(prompt-equivalent vs. send-keys-equivalent), and pane/workspace enumeration.
-herdr's `agent list`/`agent get` JSON supplies live agent status; it does
-**not** supply an empty-input-box field — only `agent read`/`pane read` show
-pane content, from which emptiness would have to be inferred, and the exact
-inference mechanism is unsettled (see REQ:delivery-guards-enforced-and-rechecked
-and Deferred). tmux supplies neither live status nor any empty-input
-signal at all, and MUST NOT deliver daemon-originated messages by submission,
-by default (REQ:tmux-record-only-for-daemon-events). Wherever a capability
-the wake flow's guards depend on (idle/done state, positive evidence of an
-empty input box) is unavailable on the resolved transport, WB MUST NOT
-perform a submitted (binding) delivery on that transport — absence of
-evidence is itself a guard failure, never grounds to proceed. WB MUST degrade
-to that transport's documented fallback (record-only, or herdr's own
-advisory path per REQ:advisory-mechanism-and-newline-boundary) and MUST NEVER
-submit a daemon-originated message it cannot guard. This restriction governs
-daemon-originated delivery; it does not change the pre-existing, differently
-guarded successor-messaging binding path (REQ:existing-successor-messaging-binding-path).
+Herdr exposes status and pane enumeration but no trustworthy empty-input
+signal. `HerdrCapabilities.LineageSubmit` applies only to explicit
+receipt-bound successor messages. It MUST NOT authorize daemon-originated
+submission. `none` remains record-only; missing evidence is never permission
+to submit. The separate future daemon guards below remain unchanged.
 
 #### REQ: tmux-record-only-for-daemon-events
 
-By default, tmux MUST NOT receive an advisory paste for any daemon-originated
-event — every daemon-originated event, including the own-PR-outcome class, is
-record-only on a tmux-transport session. This is the lead's default, adopted
-because tmux exposes no live status and no empty-input evidence at all, so
-there is nothing to guard even an advisory paste against a mid-typing human;
-it is not a fixed founder decision (see Open Questions) and MAY be overridden
-if the founder wants tmux to receive advisory pastes regardless. This default
-does not apply to the pre-existing successor-messaging path
-(REQ:existing-successor-messaging-binding-path), which is unaffected and
-keeps submitting on tmux exactly as it does today.
+No active tmux delivery is supported. Historical tmux identities MUST NOT
+trigger pane probing, advisory text or submitted prompts. The existing anchor
+is retained for compatibility with earlier design links.
 
 #### REQ: advisory-mechanism-and-newline-boundary
 
@@ -238,112 +188,51 @@ authority boundary" analysis.
 
 #### REQ: existing-successor-messaging-binding-path
 
-`wb session send` (agent-session-move#req:successor-messaging) is a second,
-pre-existing submitted (binding) delivery path, distinct from the daemon
-wake: it delivers a predecessor session's message to its receipt-recorded
-successor, guarded by that receipt's lineage rather than by
-REQ:prompt-restricted-to-own-pr-outcome's own-PR-outcome restriction.
-`wb session recall` (alias `wb session request-handoff`) sends its own typed
-message through the identical send and `wb session receive-message` path, so
-everything below applies to it equally.
+`wb session send` and `recall` MUST durably admit the exact typed canonical
+message before courier use. New message schema 2 MUST be compact ASCII-escaped
+JSON with no physical newline or trailing newline. Unicode, emoji and body
+newlines MUST round-trip exactly; malformed UTF-8 MUST refuse admission.
+The semantic body remains bounded at 64 KiB. The original protocol-22 socket
+request avoids per-argument limits while remaining within Herdr's 1 MiB frame.
 
-**On tmux, behavior is unchanged by this Feature.** Both commands already
-submit today because their `paste-buffer` payload ends in a newline
-(`sessionmessage`'s `marshalJSON` terminates the message with `'\n'`), and
-REQ:tmux-parity-preserved keeps that behavior exactly as it is.
+The receiver MUST bind the admitted request/receipt, registered logical WB ID,
+native ID, process generation and socket/workspace/pane. It MUST publish the
+received event and durable intent before entering the cancellable PID registry
+barrier; while holding that barrier it MUST revalidate the complete recipient
+snapshot, inspect the exact terminal, then submit once. No journal or receipt
+write may occur within that barrier. A changed logical recipient MUST receive
+zero input. Cancellation or an ambiguous send after intent MUST retain intent
+and MUST NOT automatically retry. A completed receipt proves recording and
+submission, never agent processing.
 
-**On herdr, no submit is built in this iteration**, for the same reason the
-daemon wake isn't: it would need the same deferred empty-input evidence
-(Deferred). The target-side receiver — the real command is
-`wb session receive-message` (`cmd/wb/session_message.go`), not
-`wb session receive` (`cmd/wb/session_receive.go`, which bootstraps a brand
-new successor from a full portable handoff bundle; a different flow) — MUST
-still durably record the message on herdr exactly as it does on tmux, and
-MUST NOT attempt `PaneSendText` or `AgentPrompt` to deliver it, per
-REQ:recorded-only-receipt-state. The recorded, unread message is a
-**notification only**, surfaced by count, ID, and sender through the
-`SessionStart` hook REQ:reregister-on-session-start-hook extends — never a
-body pushed live into a running pane — and read on the agent's own explicit
-request through REQ:successor-message-read-verb. The herdr submit path
-(`agent prompt`, gated the same way as the daemon wake) is specified under
-Deferred, not built now.
+Schema-1 canonical bytes/digests and delivered receipts MUST remain readable.
+Undelivered schema-1 messages MUST refuse with guidance to create a new message
+ID; WB MUST NOT silently rewrite or resend historical payloads.
 
 #### REQ: recorded-only-receipt-state
 
-Today's `MessageReceipt` schema cannot represent a recorded-only outcome: its
-validation requires a non-zero `PastedAt` and the canonical tmux identity
-fields (`TmuxName`, `PaneID`, `PID`) unconditionally
-(`internal/sessionmove/message.go:116` and the receipt-matching checks around
-lines 424 and 503), and both sender and receiver command output
-unconditionally print "durably recorded and pasted to tmux". This is a schema
-change, owned by Task 4:
-
-- `MessageReceipt` MUST carry an explicit `delivery` field with exactly two
-  values, named `MessageDeliveryPasted = ""` and `MessageDeliveryRecorded =
-  "recorded"`. The empty string is deliberately the "pasted" value, not a
-  third, absent state: a Go zero-value `MessageReceipt` — and every receipt
-  that exists before this Feature, and every receipt from an unpatched peer —
-  therefore reads as `pasted` by construction, not by a special-cased default
-  written into the validator.
-- When `delivery` is `pasted` (present as the empty string, or absent
-  entirely — see decode/encode rules below), today's fields and validation
-  apply unchanged — `TmuxName`, `PaneID`, `PID`, and a non-zero `PastedAt`
-  remain required, and the existing receipt-matching checks are unchanged.
-- When `delivery: recorded`, `TmuxName`, `PaneID`, `PID`, and `PastedAt` MUST
-  NOT be required, and the receipt-matching logic MUST NOT compare them —
-  only `RecordedAt` and the message digest are authoritative. `recorded` is
-  not herdr-specific: any transport a patched receiver resolves to that
-  cannot paste — herdr today, or a resolved-to-`none` receiver — produces it.
-- Sender and receiver output MUST be honest per state: `pasted` keeps
-  "durably recorded and pasted to tmux"; `recorded` MUST say something
-  distinct, e.g. "durably recorded; not delivered — read with `wb session
-  messages read <id>`".
-- **No schema-version bump.** `MessageReceiptSchemaVersion` stays `1`, and
-  `validateSchema` still requires an exact match, so an unpatched peer's
-  `validate()` call is untouched by this change. The wire risk is
-  `decodeJSON`'s `json.Decoder.DisallowUnknownFields()`
-  (`internal/sessionmove/types.go`): a peer decoding a receipt that carries
-  an unrecognized `delivery` key rejects the whole receipt outright, whatever
-  the key's value. `delivery` MUST therefore be declared `omitempty` on
-  encode, and a literal `"delivery":"pasted"` MUST still be **accepted** on
-  decode (it is not wrong, merely never emitted) — only `recorded` is ever
-  actually written to the wire.
-- **Receipt direction and the risky case.** The receiver writes the receipt
-  (`wb session receive-message`, i.e. `sessionmessage.Receive`); the sender
-  only decodes what the receiver returns (`runSessionMessage`,
-  `cmd/wb/session_message.go`, verified against origin/main). The risk is
-  therefore a **patched receiver answering an unpatched sender**: if the
-  receiver resolves `delivery: recorded` (herdr, or its own `none`
-  transport) and returns that receipt, an unpatched sender's decoder rejects
-  the unrecognized `delivery` key outright and fails closed with a decode
-  error — it does not silently accept a malformed or misread result. The
-  message itself stays durably recorded on the receiver regardless, since
-  that write already happened before the receipt was returned. The sender's
-  `--resume <message-id>` retry replays the identical exchange and therefore
-  cannot succeed no matter how many times it is retried, because the
-  receiver will keep returning the same `recorded` receipt — the remedy is
-  to upgrade the sender, not to retry harder.
-- The incoming-direction "requires a durable paste intent" check
-  (`internal/sessionmove/message.go:421`) applies only when `delivery:
-  pasted`. A `recorded` receipt has no paste intent to require.
+**Deferred proposal, not part of issues #956/#957.** A future recorded-only
+message receipt must explicitly distinguish durable recording from delivery,
+never claim a paste or processing, and fail closed with older peers that cannot
+interpret it. This cutover does not add a `delivery` field or implement the
+proposed read-inbox/hook path. Current completed successor-message receipts
+still require evidence of the exact single submission.
 
 #### REQ: none-transport-is-first-class
 
-When the resolved transport is `none`, every session and wake code path MUST
-treat that as a supported, expected outcome rather than an error: it records
-the intended message or event and reports plainly that no live delivery
-occurred, instead of failing the calling command.
+A terminal-free registration and current-chat pickup are supported. Capability
+policy on `none` remains record-only. This MUST NOT make a receipt-bound
+`send` falsely report delivery when its recorded successor lacks an active
+Herdr endpoint; that command refuses rather than producing a success receipt.
 
 #### REQ: tmux-parity-preserved
 
-Moving the tmux code behind the transport interface MUST NOT change any
-existing tmux-transport behavior relied on by `agent-session-move` and
-`park-and-resume-agent-sessions`. Every existing tmux test MUST continue to
-pass with only wiring changed, not behavior, and the Plan MUST add
-characterization tests ahead of the move wherever coverage is currently thin,
-so parity is proven rather than assumed.
+Preserve legacy decoders, canonical bytes, digests and immutable completed
+receipts. Historical anchor retained: the later explicit cutover request
+supersedes active tmux parity. New launches and submissions MUST require no tmux
+binary and MUST NOT execute tmux, including recovery paths.
 
-### The MVP wake flow
+### The MVP wake flow (deferred daemon extension)
 
 Exactly the flow `daemon-as-coordinator` records as founder-agreed
 (2026-09-18): "MVP (founder-agreed 2026-09-18): one flow, 'your PR has an
@@ -466,8 +355,7 @@ specifies the future submit path but does not exercise it.
 Every event class other than the session's own-PR-outcome MUST be delivered
 advisory-only on herdr (per REQ:advisory-mechanism-and-newline-boundary,
 which does not depend on the deferred empty-input evidence — it never
-submits), or record-only — on tmux, by default
-(REQ:tmux-record-only-for-daemon-events), or wherever the resolved transport
+submits), or record-only wherever the resolved transport
 cannot address the session live. WB MUST NOT submit any daemon-originated
 event outside REQ:prompt-restricted-to-own-pr-outcome, and per that REQ
 nothing is submitted there either in this iteration.
@@ -518,88 +406,76 @@ fixtures, with the real session IDs in the sampled output replaced by fakes.
 
 #### REQ: herdr-version-detected-and-bounded
 
-WB MUST detect the installed herdr version before relying on any herdr
-transport call, and MUST record the version it detected. WB targets the
-socket-API command surface read from herdr 0.9.1's own help output (`agent
-list/get/prompt/send-keys/wait`, `pane current/list/get/send-text`). An older herdr
-missing a command WB depends on, or a newer herdr whose JSON schema no longer
-matches (an added, renamed, or retyped field WB's decoder rejects), MUST
-produce an explicit, distinguishable failure — never a silent misparse that
-returns wrong or empty data as if it were valid.
+WB MUST pin the original Herdr TUI 0.9.1 CLI and protocol 22 socket surface.
+Other versions/protocols MUST refuse explicitly. CLI mutations whose documented
+success is empty stdout MUST use a narrow empty-ack decoder; JSON queries retain
+strict envelopes. Actionable `agent_prompt` uses framed JSON with exact request
+and reply IDs, bounded cancellable reads/writes and private redacted diagnostics.
+Windows MUST preserve the original namespaced pipe mapping and native deadlines.
 
 #### REQ: explicit-transport-failure-modes
 
-Every herdr failure mode MUST surface a distinct, actionable message: herdr
-binary not found on `PATH`; herdr socket unreachable (server not running,
-stale socket path at `$HERDR_SOCKET_PATH`); herdr reachable but the target
-pane or agent no longer exists (closed, moved, herdr restarted); and version
-drift per REQ:herdr-version-detected-and-bounded.
-
-Fallback to a different transport applies **only at registration**, when
-automatic selection is choosing a transport for the first time: if herdr is
-unavailable then, selection falls through to tmux (if applicable) or `none`,
-per REQ:automatic-transport-selection. Once a session's transport is recorded
-as herdr, a herdr failure discovered **at delivery** MUST resolve to
-record-only — WB MUST NOT re-route a herdr-registered session to tmux at
-delivery time, since nothing established that session ever had a tmux pane
-to paste into. An explicit override naming herdr
-(REQ:explicit-transport-override) refuses outright at registration, per that
-REQ, rather than falling back at all.
+Unavailable binary/server, unknown pane/agent, contradictory native identity,
+changed process generation and unsupported version MUST fail explicitly.
+Session metadata alone is insufficient: new launch readiness MUST wait boundedly
+for active `AgentGet` classification matching the pane/workspace/native runtime
+and ID, then corroborate the exact owned foreground argv and native PID generation.
+No failure may cause terminal fallback, identity guessing or a second launch.
+Ambiguous message intents remain non-replayable; future daemon record-only
+fallback remains a separate policy, never a message-delivery acknowledgment.
 
 ## Architecture
 
 ```mermaid
 sequenceDiagram
-    participant PR as wb pr create
-    participant Claim as Work Log claim
-    participant Daemon as wb daemon (watcher)
-    participant T as Transport interface
-    participant Herdr as herdr transport
-    participant Tmux as tmux transport
-    participant Pane as Owning session's pane
-
-    PR->>Claim: register task -> PR binding (watcher reads this)
-    Note over Daemon: PR checks settle (existing check-verdict logic)
-    Daemon->>Claim: resolve task -> current claim -> session
-    Daemon->>T: resolve session's registered transport
-    Note over T: empty-input evidence mechanism is Deferred (2026-09-19)<br/>own-PR-outcome is always record-only this iteration
-    alt transport = herdr
-        T->>Herdr: agent list on recorded socket, match agent_session
-        Herdr-->>T: unique pane, status (no input-box field)
-        T->>Daemon: record-only (own-PR-outcome); visible in listings
-        Note over T,Herdr: advisory (non-own-PR) events still use<br/>pane send-text on a unique pane match
-    else transport = tmux
-        T->>Tmux: capability matrix: no status, no input evidence
-        T->>Daemon: record-only by default (all daemon-originated events)
-    else transport = none
-        T->>Daemon: record-only, no live pane
-    end
+    participant Chat as Current registered chat
+    participant WB as WB resume coordinator
+    participant Bundle as Immutable parked bundle
+    participant Members as All member journals
+    participant Registry as Native-scoped PID registry
+    Chat->>WB: resume --current
+    WB->>Bundle: authenticate winner and continuation
+    WB->>Members: validate every member under custody
+    WB-->>Chat: private continuation path and digest
+    Chat->>Chat: read private continuation
+    Chat->>WB: resume --current --ack-context digest
+    WB->>Members: retain all member locks
+    WB->>Registry: retain PID transition barrier
+    WB->>Members: append exact successor ownership
+    WB->>Registry: publish logical successor atomically
+    WB->>Bundle: append completion and source projection
+    WB-->>Chat: resumed; no terminal or new agent
 ```
 
+Explicit `--launch` and remote receive use a fixed gated bootstrap in a fresh
+owned Herdr pane. A supervisor owns bounded child-tree cleanup and exact exit
+evidence. Future daemon delivery retains the generic capability-policy boundary.
+
 ## Acceptance Criteria
+
+Daemon watcher, hook/read-inbox and recorded-only-receipt scenarios below are
+future acceptance criteria, not claims of current implementation. Lifecycle,
+identity, compatibility and explicit successor-message criteria apply now.
 
 ### AC: identity-captured-automatically-in-herdr
 
 **Requirements:** herdr-session-transport#req:automatic-transport-identity-capture
 
-Scenario: Register inside a herdr pane
-Given `HERDR_PANE_ID`, `HERDR_WORKSPACE_ID`, `HERDR_SOCKET_PATH`, and
-`CLAUDE_CODE_SESSION_ID` are set in the process environment, and a fake
-`herdr pane current` resolves a terminal ID for that pane
-When `wb session register` runs with no transport flags
-Then the session record carries the pane ID, workspace ID, socket path,
-resolved terminal ID, and harness session ID together, and the resolved
-transport is herdr
+Scenario: Register inside a Herdr pane
+Given complete valid socket/workspace/pane environment and a validated native ID
+When `wb session register` runs without transport flags
+Then the record retains those exact terminal coordinates and the independently
+observed process generation, without inventing a terminal or native ID
 
 ### AC: identity-degrades-outside-herdr
 
 **Requirements:** herdr-session-transport#req:identity-capture-outside-herdr
 
-Scenario: Register with no herdr and no tmux
-Given `HERDR_PANE_ID` and `TMUX` are both unset and no `--tmux-name` is given
-When `wb session register` runs
-Then registration succeeds, the resolved transport is `none`, and only the
-harness session ID and machine are recorded
+Scenario: Register without complete Herdr coordinates
+Given no valid complete Herdr identity, even if `TMUX` is set
+When registration runs
+Then it succeeds with no terminal, and current-chat pickup remains available
+without probing or selecting tmux
 
 ### AC: subagent-resolves-to-parent-owner
 
@@ -615,6 +491,8 @@ or wake target is created for the subagent
 
 ### AC: session-start-hook-picks-up-a-new-session-id
 
+**Deferred acceptance criterion; not shipped by this cutover.**
+
 **Requirements:** herdr-session-transport#req:reregister-on-session-start-hook
 
 Scenario: `/clear` issues a new harness session ID in the same pane
@@ -629,57 +507,49 @@ and no delivery addresses the stale session ID in the meantime
 
 **Requirements:** herdr-session-transport#req:single-transport-interface
 
-Scenario: A call site is inspected for transport branching
-Given session messaging, move/park/resume delivery, successor launch, the
-courier boundary, and the daemon's record/advisory/submit path all compile
-against the one transport interface
-When any of those call sites is inspected
-Then none of them branches on herdr-vs-tmux directly; only the transport
-selection code (REQ:automatic-transport-selection,
-REQ:explicit-transport-override) does
+Scenario: Inspect active lifecycle boundaries
+Given the typed launcher/message Herdr clients and generic capability policy
+When production launch, message and recovery command sites are inspected
+Then no path executes tmux or falls back to it, and documentation does not claim
+the generic Transport interface is implemented by every lifecycle adapter
 
 ### AC: two-implementations-satisfy-the-same-interface
 
 **Requirements:** herdr-session-transport#req:two-transport-implementations
 
-Scenario: Both shipped transports pass the same contract test suite
-Given a shared transport-interface contract test suite
-When it runs against the herdr implementation and, separately, against the
-tmux implementation
-Then both pass it, and neither implementation requires a distinct test suite
-to prove it satisfies the interface
+Scenario: Inspect the shipped active kind set and policy contract
+Given the generic shared capability/transport contract suite
+When the active kind set and record-only implementation are exercised
+Then only Herdr and none are accepted, none cannot deliver input, and tests of
+bounded Herdr lifecycle clients separately verify their real native protocol
 
 ### AC: transport-selected-automatically
 
 **Requirements:** herdr-session-transport#req:automatic-transport-selection, herdr-session-transport#req:selected-transport-recorded
 
-Scenario: Automatic selection picks herdr over tmux
-Given both `HERDR_PANE_ID` and `TMUX` are set
-When transport selection runs with no explicit override
-Then herdr is selected and recorded on the session, not tmux
+Scenario: Native current-chat pickup does not select a terminal
+Given a registered current caller and complete or absent Herdr environment
+When local pickup runs without an explicit launch or remote target
+Then it prepares continuation for that current caller and starts no agent
 
 ### AC: explicit-override-fails-closed
 
 **Requirements:** herdr-session-transport#req:explicit-transport-override
 
-Scenario: Explicit tmux override with no tmux available
-Given `wb.yaml` names `session.transport: tmux` and no `tmux` binary is on
-`PATH`
-When a session command resolves its transport
-Then WB refuses with an actionable message and does not silently fall back to
-herdr or `none`
+Scenario: Request an unsupported legacy transport
+Given `session.transport: tmux`, whether or not a tmux executable exists
+When the override is resolved
+Then it refuses before any prerequisite probe or terminal fallback
 
 ### AC: tmux-never-delivers-unguarded
 
 **Requirements:** herdr-session-transport#req:transport-capability-matrix, herdr-session-transport#req:tmux-record-only-for-daemon-events
 
-Scenario: A daemon-originated event targets a tmux-transport session
-Given the resolved transport for the owning session is tmux
-When the daemon attempts to deliver any daemon-originated event, including
-the own-PR-outcome class
-Then WB never performs a submitted delivery, and never an advisory paste
-either — by default it records the event only, and the capability matrix is
-the documented reason why
+Scenario: Retained legacy identity is not an active endpoint
+Given a historical tmux receipt or registration
+When new delivery or launch is requested
+Then no tmux process is invoked, and no daemon or successor message is pasted
+through that legacy identity
 
 ### AC: advisory-message-strips-control-characters-and-never-submits
 
@@ -697,16 +567,20 @@ newline
 
 **Requirements:** herdr-session-transport#req:existing-successor-messaging-binding-path, herdr-session-transport#req:recorded-only-receipt-state
 
-Scenario: A predecessor sends a follow-up message to a herdr-hosted successor
-Given a completed handoff with a herdr-transport successor
-When the courier invokes `wb session receive-message` on the target machine
-Then the message is durably recorded and a `delivery: recorded` receipt is
-returned, distinct from tmux's `delivery: pasted` receipt; nothing is
-submitted or pasted into the pane; the successor's next `SessionStart` hook
-announcement names the count, the message ID, and the sender's WB session ID
-— never the body
+Scenario: Submit an explicit receipt-bound schema-2 successor message
+Given a completed Herdr handoff and exact live logical/native recipient
+When its courier invokes `wb session receive-message`
+Then the receiver records the canonical bytes and sole intent, retains the PID
+barrier across final identity/terminal checks, and submits exactly once through
+Herdr; the receipt proves submission, not processing
+And a concurrent logical pickup before the barrier produces zero submission,
+retains an ambiguous intent, and never automatically replays it
+
+The historical AC anchor is retained; hook/read-inbox delivery remains deferred.
 
 ### AC: read-verb-labels-a-message-as-anothers-not-the-founders
+
+**Deferred acceptance criterion; not shipped by this cutover.**
 
 **Requirements:** herdr-session-transport#req:successor-message-read-verb
 
@@ -720,6 +594,8 @@ this message, read or unread, as `--approved-by` or other approval evidence
 
 ### AC: hook-output-never-contains-message-body
 
+**Deferred acceptance criterion; not shipped by this cutover.**
+
 **Requirements:** herdr-session-transport#req:reregister-on-session-start-hook, herdr-session-transport#req:successor-message-read-verb
 
 Scenario: A session has one unread message with a sensitive body
@@ -731,6 +607,8 @@ body is retrievable only via the agent's own explicit
 `wb session messages read <id>`
 
 ### AC: hook-withholds-a-non-conforming-id
+
+**Deferred acceptance criterion; not shipped by this cutover.**
 
 **Requirements:** herdr-session-transport#req:reregister-on-session-start-hook
 
@@ -747,6 +625,8 @@ in the hook's output
 
 ### AC: recorded-only-receipt-is-honest-about-non-delivery
 
+**Deferred acceptance criterion; not shipped by this cutover.**
+
 **Requirements:** herdr-session-transport#req:recorded-only-receipt-state
 
 Scenario: A herdr-hosted message is recorded without a paste
@@ -761,17 +641,16 @@ receipt validates with no `TmuxName`, `PaneID`, `PID`, or `PastedAt`
 
 **Requirements:** herdr-session-transport#req:recorded-only-receipt-state
 
-Scenario: An existing v1 receipt with no `delivery` field
-Given a `MessageReceipt` JSON fixture captured before this Feature — schema
-version 1, no `delivery` key, `TmuxName`/`PaneID`/`PID`/`PastedAt` all
-present — held on disk or sent by an unpatched peer
-When a patched WB decodes and validates it
-Then it decodes without error under `DisallowUnknownFields`, reads as
-`delivery: pasted`, and validates exactly as it did before this Feature; and
-a patched peer's own `pasted` receipt, sent to an unpatched peer, omits
-`delivery` entirely so the unpatched peer's decoder accepts it unchanged
+Scenario: Read historical canonical bytes
+Given a schema-1 message and completed legacy tmux receipt
+When WB decodes and re-encodes them
+Then their canonical bytes and digests remain unchanged
+And undelivered legacy message submission refuses with new-message-ID guidance,
+without rewriting the admitted payload or automatically replaying an intent
 
 ### AC: unpatched-sender-fails-closed-on-a-recorded-receipt
+
+**Deferred acceptance criterion; not shipped by this cutover.**
 
 **Requirements:** herdr-session-transport#req:recorded-only-receipt-state
 
@@ -871,11 +750,11 @@ calling command does not fail
 
 **Requirements:** herdr-session-transport#req:tmux-parity-preserved
 
-Scenario: Existing tmux session-move and messaging tests still pass
-Given the tmux code has moved behind the transport interface
-When the existing `agent-session-move` and `park-and-resume-agent-sessions`
-tmux test suites run
-Then every test passes with unchanged observable behavior
+Scenario: Preserve historical evidence while removing active execution
+Given canonical legacy launch/message/receipt fixtures
+When compatibility readers and active launch/send paths are exercised
+Then sealed bytes remain readable and unchanged, while new tmux execution and
+fallback refuse; historical active-tmux parity is superseded by this cutover
 
 ### AC: own-pr-outcome-is-recorded-and-visible
 
@@ -909,7 +788,7 @@ Scenario: A non-own-PR event occurs
 Given an event outside the enumerated own-PR-outcome class (e.g. `pr.target_advanced`
 — the idea's advisory example, "your candidate is behind")
 When the daemon would notify the owning session
-Then delivery is advisory-only (herdr) or record-only (tmux, by default, or
+Then delivery is advisory-only (Herdr) or record-only (none, or
 where the transport cannot address the session live); WB never submits it
 
 ### AC: template-never-carries-provider-text
@@ -961,8 +840,8 @@ Scenario: herdr is not installed
 Given `herdr` is not found on `PATH` and automatic selection would otherwise
 choose it
 When a session command resolves its transport
-Then WB reports a distinct "herdr binary not found" failure and falls back to
-tmux or `none` per automatic selection, unless herdr was explicitly named
+Then explicit launch/delivery refuses with a distinct unavailable-binary failure
+and no fallback; terminal-free registration/current-chat pickup remains available
 
 ### AC: unreachable-socket-fails-explicitly
 
@@ -979,49 +858,38 @@ Then WB reports a distinct "herdr socket unreachable" failure, separate from
 
 **Requirements:** herdr-session-transport#req:herdr-version-detected-and-bounded
 
-Scenario: An incompatible herdr JSON schema is returned
-Given a fake herdr on the test `PATH` reports a version or an `agent list` /
-`pane current` shape WB's decoder does not recognize
-When WB detects the herdr version or decodes its output
-Then WB reports a distinct version-drift failure rather than silently
-returning partial or wrong data
+Scenario: Unsupported original Herdr version or protocol
+Given a binary other than original TUI 0.9.1 or a socket protocol other than 22
+When an active Herdr operation is initialized
+Then it refuses explicitly before sending input
 
 ## Rehearse Integration
 
-Every acceptance criterion above has a deterministic CLI, environment,
-filesystem, or fake-transport surface. Tests use an injected exec seam or a
-fake `herdr` script on a temporary `PATH`, and unset or override `HERDR_*` so
-no test can reach the real herdr socket or the founder's live panes. Sample
-JSON captured from the real, read-only `herdr agent list` and
-`herdr pane current` (session IDs replaced by fakes) seeds the fixtures under
-`testdata/`.
+Use private synthetic servers and fixtures only; never the user's live panes.
+Unit tests cover strict identity, framing, cancellation, shell quoting, receipts
+and refusal branches. Real Git journeys cover all-member recovery, native-chat
+isolation, ordinary post-pickup command custody and re-parking. An opt-in original
+Herdr 0.9.1 Linux journey proves the actual wire protocol, gated startup,
+pending-before-observation/same-ID retry, raw TTY input, a canonical prompt larger than
+128 KiB, exact received bytes, one submission, exit evidence and foreground
+restoration. Separate native Windows tests exercise named-pipe cancellation,
+private registry ACLs and real interprocess locks. Validation receipts must be
+reported separately from implementation; passing fake clients is insufficient.
 
 ## Not Doing
 
-- Implementing the herdr socket protocol directly; WB only shells out to the
-  `herdr` CLI, the way it already shells out to `gh`.
-- A channel-server or stdin-owned coordinator process (the idea's longer-term
-  typed-event vocabulary); this Feature is the MVP wake flow only.
-- Any autonomous merge behavior beyond what `wb pr land` already does.
-- The "directing agents" command surface itself — proposed and discussed above,
-  but not specified as a REQ pending founder decisions in Open Questions.
-- Relaying provider-authored text (titles, bodies, comments, logs) into any
-  submitted message, on any transport.
-- Supporting a terminal multiplexer other than herdr or tmux.
-- Printing a successor message's body anywhere that reaches a session's
-  context automatically (the `SessionStart` hook, or any future notification
-  surface); reading a body is always an explicit agent action.
+- Starting or replacing the user's Herdr server, or migrating to `hc`/herdr-core.
+- Reintroducing active tmux execution or silently rewriting old receipts.
+- Implementing the deferred daemon watcher, read-inbox hook, recorded-only
+  message receipts, general agent-directing commands or empty-input detection.
+- Converting daemon/provider-authored content into authorized successor prompts.
+- Accepting a message as human approval or claiming that a receipt proves processing.
 
 ## Deferred
 
-The first two items below were open questions; the founder closed them,
-2026-09-19, by ruling the underlying work out of scope for now rather than
-answering the design question. The third is not something the founder was
-asked — it is the lead's ruling that a second submit path (successor
-messaging's herdr side) cannot exist while the first is deferred, since both
-need the identical evidence. All three are specified here as a coherent shape
-so submission activates without a redesign later, but none is built in this
-iteration.
+The daemon's empty-input evidence and terminal-state race remain deferred.
+Receipt-bound successor submission is implemented independently, as documented
+below; it does not enable daemon-originated submitted notifications.
 
 ### Empty-input evidence mechanism
 
@@ -1041,7 +909,7 @@ submits (see AC:guards-are-unconditional-and-block-submission).
 
 The founder, 2026-09-19: "Same out of scope".
 
-Once submission exists, the final idle/done and empty-input check
+For the deferred daemon wake submission, the final idle/done and empty-input check
 immediately before sending should also capture the pane's `state_change_seq`
 (from `herdr agent list`/`agent get`), and the send call itself should
 re-read `state_change_seq` first and refuse to send if it changed since the
@@ -1056,45 +924,19 @@ assumed closed.
 
 ### Successor messaging's herdr submit path
 
-Not something the founder was asked; the lead's ruling, because this path
-depends on the same deferred mechanism above.
-
-`wb session send`'s and `wb session recall`'s herdr implementation
-(REQ:existing-successor-messaging-binding-path) would use `agent prompt`,
-gated by the same idle/done and empty-input-evidence guards as the daemon
-wake. Since that evidence mechanism does not exist, this submit path is not
-built in this iteration either: on herdr, `wb session receive-message`
-durably records the message with `delivery: recorded`
-(REQ:recorded-only-receipt-state), and the recipient sees its count, ID, and
-sender named in its `SessionStart` hook announcement — never its body — and
-reads it only on explicit request through `wb session messages read <id>`
-(REQ:successor-message-read-verb). tmux is unaffected — its existing submit
-behavior is pre-existing and outside this Feature's guard entirely.
+This item is no longer deferred: issues #956/#957 implement receipt-bound
+schema-2 Herdr submission under REQ:existing-successor-messaging-binding-path.
+Its explicit lineage authority is separate from future daemon wake guards.
+The remaining read-inbox/hook and recorded-only-receipt proposals stay deferred.
 
 ## Open Questions
 
-- What is the command surface for a human or the lead to direct a named
-  agent's pane through WB — name, target addressing (session ID, pane ID, or
-  task), and does it default to advisory or submitted delivery? This widens
-  the authority boundary `daemon-as-coordinator` scoped narrowly to one
-  automated event class, so it needs founder approval before it becomes a REQ.
-- Should a directing-agent call be restricted to the founder's own session (or
-  an equivalent human-present check), so WB does not become a second, wider
-  authority-laundering surface reachable by any process that can call WB?
-- Should a directed message get the same visibility guarantee as
-  REQ:wake-visible-in-listings, so a directed instruction leaves the same kind
-  of trace a daemon wake does?
-- The Codex equivalent of `CLAUDE_CODE_SESSION_ID` was not observed in this
-  session (no Codex process was running to inspect); REQ:automatic-transport-identity-capture
-  assumes one exists "when the running Codex build exposes one" and needs
-  confirming against a live Codex session before implementation.
-- Should WB pin a single supported herdr version, or a range? This Feature
-  only requires that drift be detected and explicit (REQ:herdr-version-detected-and-bounded);
-  it does not set an update or compatibility policy.
-- Should tmux get advisory paste later? REQ:tmux-record-only-for-daemon-events
-  is the lead's default, not a founder decision — tmux could instead paste
-  advisory (non-own-PR) events unsubmitted, the way herdr does, once someone
-  decides the mid-typing-human risk is acceptable there too.
+- The general agent-directing command surface, authorization and visibility
+  remain future decisions; receipt-bound successor messages do not create it.
+- A reliable empty-input evidence API and the daemon's residual terminal-state
+  race remain deferred. No record-only notification is upgraded to submission.
+- Broader Herdr version support requires a separately verified protocol and
+  native journey; current support is pinned to original TUI 0.9.1/protocol 22.
 
 ---
 *This document follows the https://specscore.md/feature-specification*

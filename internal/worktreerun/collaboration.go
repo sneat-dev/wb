@@ -16,6 +16,7 @@ type collaborationSessionPorts struct {
 	root            func(string) (string, error)
 	resolveAncestor func(string, int) (session.Record, bool)
 	lookupExact     func(string, int) (session.Record, bool, error)
+	lookupRecord    func(string, session.Record) (session.Record, bool, error)
 	lookupRecipient func(string, string) (session.Record, bool)
 	listSessions    func(string) ([]session.View, error)
 	pid             func() int
@@ -25,7 +26,7 @@ type collaborationSessionPorts struct {
 
 func defaultCollaborationSessionPorts() collaborationSessionPorts {
 	return collaborationSessionPorts{root: wbhome.Root, resolveAncestor: session.ResolveForProcess,
-		lookupExact: session.LookupExact, lookupRecipient: session.LookupByWBSessionID, listSessions: session.List, pid: os.Getpid,
+		lookupExact: session.LookupExact, lookupRecord: session.LookupActiveRecordExact, lookupRecipient: session.LookupByWBSessionID, listSessions: session.List, pid: os.Getpid,
 		resolveCheckout: worktrees.ResolveCollaborationCheckout, observeLegacy: worktrees.ObserveCollaborationLegacyOwner}
 }
 
@@ -48,7 +49,7 @@ func (ports collaborationSessionPorts) service(projectsRoot string) (worktreecol
 		}
 		matches := 0
 		for _, view := range views {
-			if view.WBSessionID == id {
+			if view.WBSessionID == id && (view.State == session.StateLive || view.State == "") {
 				matches++
 			}
 		}
@@ -63,7 +64,7 @@ func (ports collaborationSessionPorts) service(projectsRoot string) (worktreecol
 			if !found {
 				return "", fmt.Errorf("invoke this command from a live registered ancestor session")
 			}
-			exact, live, err := ports.lookupExact(directory, declared.PID)
+			exact, live, err := ports.exactRecord(directory, declared)
 			if err != nil || !live || exact.WBSessionID != declared.WBSessionID || exact.Lifecycle != "" {
 				return "", fmt.Errorf("registered ancestor session cannot be corroborated: %v", err)
 			}
@@ -82,7 +83,7 @@ func (ports collaborationSessionPorts) service(projectsRoot string) (worktreecol
 			if !found {
 				return false, nil
 			}
-			exact, live, err := ports.lookupExact(directory, record.PID)
+			exact, live, err := ports.exactRecord(directory, record)
 			if err != nil {
 				return false, err
 			}
@@ -93,27 +94,34 @@ func (ports collaborationSessionPorts) service(projectsRoot string) (worktreecol
 			if err != nil {
 				return "unknown", nil
 			}
-			status := "unknown"
-			matches := 0
+			liveCount := 0
+			unprovenDuplicates := 0
+			seen := false
+			uncertain := false
 			for _, view := range views {
 				if view.WBSessionID != id {
 					continue
 				}
-				matches++
-				if matches != 1 {
-					return "unknown", nil
+				seen = true
+				if view.State != session.StateGone {
+					unprovenDuplicates++
 				}
-				exact, live, err := ports.lookupExact(directory, view.PID)
+				exact, live, err := ports.exactRecord(directory, view.Record)
 				if err != nil || exact.WBSessionID != id || exact.Lifecycle != "" {
-					return "unknown", nil
+					uncertain = true
+					continue
 				}
 				if live {
-					status = "live"
-				} else {
-					status = "inactive"
+					liveCount++
 				}
 			}
-			return status, nil
+			if liveCount > 1 || unprovenDuplicates > 1 || uncertain || !seen {
+				return "unknown", nil
+			}
+			if liveCount == 1 {
+				return "live", nil
+			}
+			return "inactive", nil
 		},
 		ObserveLegacy: func(checkout worktreecollab.Checkout) (worktreecollab.ObservedOwner, error) {
 			return ports.observeLegacy(checkout.Root, directory)
@@ -123,4 +131,14 @@ func (ports collaborationSessionPorts) service(projectsRoot string) (worktreecol
 		},
 		Now: time.Now, NewMessageID: session.NewID,
 	}}, nil
+}
+
+func (ports collaborationSessionPorts) exactRecord(directory string, record session.Record) (session.Record, bool, error) {
+	if ports.lookupRecord != nil {
+		return ports.lookupRecord(directory, record)
+	}
+	if record.Scope != "" {
+		return session.Record{}, false, fmt.Errorf("scoped collaboration lookup is unavailable")
+	}
+	return ports.lookupExact(directory, record.PID)
 }

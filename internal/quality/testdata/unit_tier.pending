@@ -289,9 +289,6 @@ internal/sessionlaunch/cov_launch_test.go	2	task-14
 internal/sessionlaunch/cov_park_test.go	3	task-14
 internal/sessionlaunch/launch_test.go	7	task-14
 internal/sessionlaunch/retry_test.go	1	task-14
-internal/sessionlaunch/tmux_test.go	4	task-14
-internal/sessionmessage/zz_tailcov_test.go	6	task-15
-internal/sessionmessage/zz_tailcov_unix_test.go	2	task-15
 internal/sessionmessenger/sd_cov_test.go	2	task-15
 internal/sessionparkcourier/zz_tailcov_ssh_test.go	2	task-8
 internal/sessionparkreceive/integration_test.go	23	task-15
@@ -395,3 +392,4 @@ internal/worktrees/wtlog_cov_receive_test.go	2	task-18
 internal/worktrees/wtlog_cov_reconciliation_test.go	6	task-18
 internal/worktrees/wtlog_cov_relocate_test.go	10	task-18
 internal/worktrees/wtlog_cov_rename_test.go	1	task-18
+internal/sessionmessage/zz_tailcov_test.go	1	task-15

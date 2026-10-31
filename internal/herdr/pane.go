@@ -102,8 +102,7 @@ func (c *Client) PaneSendText(ctx context.Context, paneID, text string) error {
 	if err := ValidatePromptText(text); err != nil {
 		return err
 	}
-	_, err := c.call(ctx, "pane", "send-text", paneID, text)
-	return err
+	return c.callEmptyAck(ctx, "pane", "send-text", paneID, text)
 }
 
 // describeParseFailure renders either the json.Unmarshal error or, when

@@ -12,7 +12,7 @@ import (
 	"unicode/utf8"
 )
 
-const maxSessionMessageWireBytes = sessionmove.MaxMessageBodyBytes + (16 << 10)
+const maxSessionMessageWireBytes = sessionmove.MaxMessagePayloadBytes
 
 func NewSend(runtime shared.Runtime, deps Dependencies) *cobra.Command {
 	var message, messageFile, resume, format string
@@ -78,8 +78,8 @@ func runSessionMessage(runtime shared.Runtime, command *cobra.Command, deps Depe
 		return encoder.Encode(result)
 	}
 	_, err = fmt.Fprintf(command.OutOrStdout(),
-		"message %s acknowledged for successor %s as durably recorded and pasted to tmux %s; this does not assert agent processing\n",
-		result.Message.MessageID, target, result.Receipt.TmuxName)
+		"message %s acknowledged for successor %s as durably recorded and pasted to %s; this does not assert agent processing\n",
+		result.Message.MessageID, target, displayTerminal(result.Receipt.Terminal, result.Receipt.TmuxName))
 	return err
 }
 func NewReceiveMessage(runtime shared.Runtime, deps Dependencies) *cobra.Command {
@@ -109,8 +109,8 @@ func NewReceiveMessage(runtime shared.Runtime, deps Dependencies) *cobra.Command
 				return err
 			}
 			_, err = fmt.Fprintf(command.OutOrStdout(),
-				"message %s durably recorded and pasted to tmux %s; this does not assert agent processing\n",
-				result.Receipt.MessageID, result.Receipt.TmuxName)
+				"message %s durably recorded and pasted to %s; this does not assert agent processing\n",
+				result.Receipt.MessageID, displayTerminal(result.Receipt.Terminal, result.Receipt.TmuxName))
 			return err
 		},
 	}
