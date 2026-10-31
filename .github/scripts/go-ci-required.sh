@@ -5,16 +5,22 @@ set -euo pipefail
 : "${ELIGIBILITY_RESULT:?}"
 : "${REUSE_JOB_RESULT:?}"
 : "${GO_SCOPE_RESULT:?}"
+: "${WINDOWS_SCOPE_RESULT:?}"
+: "${WINDOWS_REQUIRED:?}"
 : "${GO_REQUIRED:?}"
 : "${CONTRACT_REQUIRED:?}"
 
-if [[ $ELIGIBILITY_RESULT != success || $REUSE_JOB_RESULT != success || $GO_SCOPE_RESULT != success ]]; then
+if [[ $ELIGIBILITY_RESULT != success || $REUSE_JOB_RESULT != success || $GO_SCOPE_RESULT != success || $WINDOWS_SCOPE_RESULT != success ]]; then
   echo "A required decision job failed or was skipped" >&2
   exit 1
 fi
 case "$GO_REQUIRED:$CONTRACT_REQUIRED" in
   true:false|false:true|false:false) ;;
   *) echo "Invalid Go/contract scope: $GO_REQUIRED/$CONTRACT_REQUIRED" >&2; exit 1 ;;
+esac
+case "$WINDOWS_REQUIRED" in
+  true|false) ;;
+  *) echo "Invalid Windows scope: $WINDOWS_REQUIRED" >&2; exit 1 ;;
 esac
 
 expected_contract=skipped
@@ -47,10 +53,14 @@ for check in "Formatting and dependencies:$SOURCE_RESULT:$expected" \
     exit 1
   fi
 done
-case "$WINDOWS_RESULT" in
-  success|skipped) ;;
-  *) echo "Native Windows compile and test concluded $WINDOWS_RESULT" >&2; exit 1 ;;
-esac
+expected_windows=skipped
+if [[ $expected == success && $WINDOWS_REQUIRED == true ]]; then
+  expected_windows=success
+fi
+if [[ $WINDOWS_RESULT != "$expected_windows" ]]; then
+  echo "Native Windows compile and test concluded $WINDOWS_RESULT; expected $expected_windows" >&2
+  exit 1
+fi
 
 if [[ $GO_REQUIRED == false ]]; then
   echo 'No Go-relevant file changed; Go validation was not required.'

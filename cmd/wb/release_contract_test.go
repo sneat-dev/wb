@@ -64,6 +64,56 @@ func TestReleaseSignsAndNotarizesMacOSArtifacts(t *testing.T) {
 	}
 }
 
+func TestReleasePublishesWindowsArchivesWithChecksums(t *testing.T) {
+	t.Parallel()
+	contents, err := os.ReadFile(filepath.Join("..", "..", ".goreleaser.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config struct {
+		Builds []struct {
+			ID     string   `yaml:"id"`
+			Goos   []string `yaml:"goos"`
+			Goarch []string `yaml:"goarch"`
+		} `yaml:"builds"`
+		Archives []struct {
+			IDs             []string `yaml:"ids"`
+			NameTemplate    string   `yaml:"name_template"`
+			Formats         []string `yaml:"formats"`
+			FormatOverrides []struct {
+				Goos    string   `yaml:"goos"`
+				Formats []string `yaml:"formats"`
+			} `yaml:"format_overrides"`
+		} `yaml:"archives"`
+		Checksum struct {
+			NameTemplate string `yaml:"name_template"`
+			Algorithm    string `yaml:"algorithm"`
+		} `yaml:"checksum"`
+	}
+	if err := yaml.Unmarshal(contents, &config); err != nil {
+		t.Fatal(err)
+	}
+	if len(config.Builds) != 1 || config.Builds[0].ID != "wb" ||
+		!reflect.DeepEqual(config.Builds[0].Goos, []string{"linux", "darwin", "windows"}) ||
+		!reflect.DeepEqual(config.Builds[0].Goarch, []string{"amd64", "arm64"}) {
+		t.Fatalf("WB must publish both architectures on all three OSes: %+v", config.Builds)
+	}
+	if len(config.Archives) != 1 {
+		t.Fatalf("expected one WB archive configuration: %+v", config.Archives)
+	}
+	archive := config.Archives[0]
+	if !reflect.DeepEqual(archive.IDs, []string{"wb"}) ||
+		archive.NameTemplate != "wb_{{ .Version }}_{{ .Os }}_{{ .Arch }}" ||
+		!reflect.DeepEqual(archive.Formats, []string{"tar.gz"}) ||
+		len(archive.FormatOverrides) != 1 || archive.FormatOverrides[0].Goos != "windows" ||
+		!reflect.DeepEqual(archive.FormatOverrides[0].Formats, []string{"zip"}) {
+		t.Fatalf("setup-wb requires platform-named ZIPs on Windows and tar.gz elsewhere: %+v", archive)
+	}
+	if config.Checksum.Algorithm != "sha256" || config.Checksum.NameTemplate != "wb_{{ .Version }}_checksums.txt" {
+		t.Fatalf("release archives must have the checksum manifest consumed by setup-wb: %+v", config.Checksum)
+	}
+}
+
 func TestPublicInstallDocumentationMatchesReleaseContract(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
 	readme, err := os.ReadFile(filepath.Join(repoRoot, "README.md"))
@@ -83,13 +133,15 @@ func TestPublicInstallDocumentationMatchesReleaseContract(t *testing.T) {
 	if !strings.Contains(contents, "On macOS or Linux, install the published Homebrew cask") {
 		t.Error("README.md must document the Homebrew cask for macOS and Linux")
 	}
-	if !strings.Contains(contents, "Native Windows releases are not currently published") {
-		t.Error("README.md must state the current Windows release limitation")
+	for _, required := range []string{"wb_<version>_windows_amd64.zip", "wb_<version>_windows_arm64.zip", "Get-FileHash", "wb_<version>_checksums.txt", "wb.exe", "https://github.com/sneat-dev/setup-wb"} {
+		if !strings.Contains(contents, required) {
+			t.Errorf("README.md must document native Windows installation: missing %q", required)
+		}
 	}
 	if !strings.Contains(contents, "wsl --install") ||
 		!strings.Contains(contents, "wsl sh -lc 'curl -fsSL https://sneat.work/bench/install/get-cli | sh'") ||
 		!strings.Contains(contents, "WB running in WSL") {
-		t.Error("README.md must document WSL as the supported Windows installation path")
+		t.Error("README.md must document WSL as an alternative Windows installation path")
 	}
 }
 
@@ -181,7 +233,7 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 		t.Fatalf("aggregate=%v", aggregate)
 	}
 	assert("required check name", aggregate["name"], "Required checks passed")
-	assert("aggregate prerequisites", aggregate["needs"], []any{"release-eligibility", "validation-reuse", "go-scope", "go-contract-inputs", "source", "static", "lint", "coverage", "race", "e2e", "windows"})
+	assert("aggregate prerequisites", aggregate["needs"], []any{"release-eligibility", "validation-reuse", "go-scope", "windows-scope", "go-contract-inputs", "source", "static", "lint", "coverage", "race", "e2e", "windows"})
 	assert("aggregate failure reporting", aggregate["if"], "${{ always() }}")
 	for _, name := range []string{"source", "static", "lint", "race", "e2e"} {
 		job, ok := jobs[name].(map[string]any)
@@ -239,9 +291,9 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 	assert("Windows scope checkout action", windowsScopeCheckout["uses"], "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803")
 	filtersStep, _ := windowsScopeSteps[1].(map[string]any)
 	filtersWith, _ := filtersStep["with"].(map[string]any)
-	for _, path := range []string{"internal/filewrite/**", "internal/unixcompat/**", "internal/orchestrate/pr_update.go", "internal/orchestrate/pr_update*_test.go"} {
+	for _, path := range []string{".goreleaser.yml", "internal/filewrite/**", "internal/unixcompat/**", "internal/orchestrate/pr_update.go", "internal/orchestrate/pr_update*_test.go"} {
 		if !strings.Contains(fmt.Sprint(filtersWith["filters"]), "- '"+path+"'") {
-			t.Errorf("native Windows scope omits receipt publication owner %q", path)
+			t.Errorf("native Windows scope omits %q", path)
 		}
 	}
 	windows, ok := jobs["windows"].(map[string]any)
@@ -517,8 +569,16 @@ func TestGoCIRequiredChecksRejectIncompleteValidation(t *testing.T) {
 	if len(steps) != 2 || steps[0].Uses != "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803" || steps[1].Run != "bash .github/scripts/go-ci-required.sh" {
 		t.Fatalf("required check must checkout and execute the tested aggregate: %#v", steps)
 	}
-	if len(steps[1].Env) != 15 {
-		t.Fatalf("aggregate receives %d environment values, want fifteen", len(steps[1].Env))
+	if len(steps[1].Env) != 17 {
+		t.Fatalf("aggregate receives %d environment values, want seventeen", len(steps[1].Env))
+	}
+	for name, want := range map[string]string{
+		"WINDOWS_SCOPE_RESULT": "${{ needs.windows-scope.result }}",
+		"WINDOWS_REQUIRED":     "${{ needs.windows-scope.outputs.required }}",
+	} {
+		if got := steps[1].Env[name]; got != want {
+			t.Errorf("aggregate %s = %q, want %q", name, got, want)
+		}
 	}
 	for _, name := range []string{"test-go-scope.sh", "test-go-ci-required.sh"} {
 		command := exec.Command("bash", filepath.Join(".github", "scripts", name))

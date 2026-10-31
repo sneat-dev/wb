@@ -36,6 +36,7 @@ builds:
     goos:
       - linux
       - darwin
+      - windows
     goarch:
       - amd64
       - arm64
@@ -51,6 +52,9 @@ archives:
       - wb
     name_template: "wb_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
 
 checksum:
   name_template: "wb_{{ .Version }}_checksums.txt"
