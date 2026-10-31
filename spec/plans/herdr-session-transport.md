@@ -153,7 +153,7 @@ submission remain deferred; they are not implemented by this task.
 ### Task 5: Capture native identity and continue in the current chat
 
 **Id:** task-5
-**Verifies:** herdr-session-transport#ac:identity-captured-automatically-in-herdr, herdr-session-transport#ac:identity-degrades-outside-herdr, herdr-session-transport#ac:transport-selected-automatically
+**Verifies:** herdr-session-transport#ac:identity-captured-automatically-in-herdr, herdr-session-transport#ac:identity-degrades-outside-herdr, herdr-session-transport#ac:transport-selected-automatically, herdr-session-transport#ac:subagent-resolves-to-parent-owner
 **Depends-On:** 2, 3, 4
 **Status:** in_progress
 
@@ -161,7 +161,7 @@ Capture complete Herdr terminal coordinates when present, otherwise retain no
 terminal. Validate the per-chat Codex thread ID independently from shared root context
 and corroborate the observed process
 and generation. Shared app-server native chats get independent additive scopes;
-private pre-native child registration remains unscoped without ambient adoption.
+private pre-native child registration remains unscoped without ambient adoption. Same-native in-process children retain their existing parent owner; a distinct Codex thread retains independent native-chat custody.
 
 Default/current pickup authenticates the real registered caller, validates every
 member and returns private continuation for the agent to read. Exact context
@@ -278,6 +278,16 @@ interprocess-lock tests. Keep CI/coverage gates unchanged and inspect actual
 profiles including reexecuted fixture instrumentation. Finish public contracts,
 README/specs/skills, exact-head CI and governed landing/release/live pickup.
 Future daemon whole-journey proof remains deferred with Tasks 6-9.
+
+## Deferred AC Coverage
+
+These acceptance criteria belong to the explicitly deferred hook/read-inbox and
+recorded-only receipt extensions, rather than the implemented lifecycle cutover:
+
+- herdr-session-transport#ac:session-start-hook-picks-up-a-new-session-id — automatic SessionStart re-registration remains deferred.
+- herdr-session-transport#ac:hook-withholds-a-non-conforming-id — requires the deferred SessionStart message notification hook.
+- herdr-session-transport#ac:read-verb-labels-a-message-as-anothers-not-the-founders — requires the deferred read-inbox command surface.
+- herdr-session-transport#ac:unpatched-sender-fails-closed-on-a-recorded-receipt — requires the deferred recorded-only message receipt state.
 
 ## Open Questions
 
