@@ -443,7 +443,7 @@ jobs:
     # status check in branch protection when changing it.
     name: Required checks passed
     if: ${{ always() }}
-    needs: [release-eligibility, validation-reuse, go-scope, go-contract-inputs, source, static, lint, coverage, race, e2e, windows]
+    needs: [release-eligibility, validation-reuse, go-scope, windows-scope, go-contract-inputs, source, static, lint, coverage, race, e2e, windows]
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:
@@ -456,6 +456,8 @@ jobs:
           REUSE_JOB_RESULT: ${{ needs.validation-reuse.result }}
           EVENT_NAME: ${{ github.event_name }}
           GO_SCOPE_RESULT: ${{ needs.go-scope.result }}
+          WINDOWS_SCOPE_RESULT: ${{ needs.windows-scope.result }}
+          WINDOWS_REQUIRED: ${{ needs.windows-scope.outputs.required }}
           GO_REQUIRED: ${{ needs.go-scope.outputs.required }}
           CONTRACT_REQUIRED: ${{ needs.go-scope.outputs.contract_required }}
           CONTRACT_RESULT: ${{ needs.go-contract-inputs.result }}

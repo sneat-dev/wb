@@ -233,7 +233,7 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 		t.Fatalf("aggregate=%v", aggregate)
 	}
 	assert("required check name", aggregate["name"], "Required checks passed")
-	assert("aggregate prerequisites", aggregate["needs"], []any{"release-eligibility", "validation-reuse", "go-scope", "go-contract-inputs", "source", "static", "lint", "coverage", "race", "e2e", "windows"})
+	assert("aggregate prerequisites", aggregate["needs"], []any{"release-eligibility", "validation-reuse", "go-scope", "windows-scope", "go-contract-inputs", "source", "static", "lint", "coverage", "race", "e2e", "windows"})
 	assert("aggregate failure reporting", aggregate["if"], "${{ always() }}")
 	for _, name := range []string{"source", "static", "lint", "race", "e2e"} {
 		job, ok := jobs[name].(map[string]any)
@@ -569,8 +569,16 @@ func TestGoCIRequiredChecksRejectIncompleteValidation(t *testing.T) {
 	if len(steps) != 2 || steps[0].Uses != "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803" || steps[1].Run != "bash .github/scripts/go-ci-required.sh" {
 		t.Fatalf("required check must checkout and execute the tested aggregate: %#v", steps)
 	}
-	if len(steps[1].Env) != 15 {
-		t.Fatalf("aggregate receives %d environment values, want fifteen", len(steps[1].Env))
+	if len(steps[1].Env) != 17 {
+		t.Fatalf("aggregate receives %d environment values, want seventeen", len(steps[1].Env))
+	}
+	for name, want := range map[string]string{
+		"WINDOWS_SCOPE_RESULT": "${{ needs.windows-scope.result }}",
+		"WINDOWS_REQUIRED":     "${{ needs.windows-scope.outputs.required }}",
+	} {
+		if got := steps[1].Env[name]; got != want {
+			t.Errorf("aggregate %s = %q, want %q", name, got, want)
+		}
 	}
 	for _, name := range []string{"test-go-scope.sh", "test-go-ci-required.sh"} {
 		command := exec.Command("bash", filepath.Join(".github", "scripts", name))

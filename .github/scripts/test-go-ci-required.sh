@@ -12,7 +12,9 @@ check() {
     ELIGIBILITY_RESULT=success REUSE_JOB_RESULT=success GO_SCOPE_RESULT=success \
     SOURCE_RESULT="$source" STATIC_RESULT="${1:-$source}" LINT_RESULT="$source" \
     COVERAGE_RESULT="$coverage" RACE_RESULT="$source" E2E_RESULT="$source" \
-    WINDOWS_RESULT=skipped bash "$script" >/dev/null 2>&1; then
+    WINDOWS_SCOPE_RESULT="${TEST_WINDOWS_SCOPE_RESULT:-success}" \
+    WINDOWS_REQUIRED="${TEST_WINDOWS_REQUIRED:-false}" \
+    WINDOWS_RESULT="${TEST_WINDOWS_RESULT:-skipped}" bash "$script" >/dev/null 2>&1; then
     actual=pass
   else
     actual=fail
@@ -37,5 +39,17 @@ check fail pull_request true false skipped success skipped false
 check fail push true false skipped skipped success true
 check fail pull_request false true skipped skipped skipped false
 check fail pull_request false false skipped skipped skipped false failure
+
+# Windows may skip only after a successful scope decision or trusted push reuse.
+TEST_WINDOWS_REQUIRED=true TEST_WINDOWS_RESULT=success check pass pull_request true false skipped success success false
+TEST_WINDOWS_REQUIRED=true check fail pull_request true false skipped success success false
+TEST_WINDOWS_SCOPE_RESULT=failure check fail pull_request true false skipped success success false
+TEST_WINDOWS_SCOPE_RESULT=skipped check fail pull_request true false skipped success success false
+TEST_WINDOWS_REQUIRED=invalid check fail pull_request true false skipped success success false
+TEST_WINDOWS_REQUIRED=true TEST_WINDOWS_RESULT=failure check fail pull_request true false skipped success success false
+TEST_WINDOWS_REQUIRED=true TEST_WINDOWS_RESULT=cancelled check fail pull_request true false skipped success success false
+TEST_WINDOWS_REQUIRED=true check pass push true false skipped skipped skipped true
+TEST_WINDOWS_REQUIRED=true TEST_WINDOWS_RESULT=success check fail push true false skipped skipped skipped true
+TEST_WINDOWS_REQUIRED=true check pass pull_request false false skipped skipped skipped false
 
 echo 'go-ci-required tests passed'
