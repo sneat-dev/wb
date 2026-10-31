@@ -24,7 +24,7 @@ The receiver authenticates its target against the validated remote.machine in
 the local wb.yaml, admits the exact request bytes idempotently, fetches the
 declared branch directly, and creates or verifies one clean worktree pinned to
 the exact bundle commit. It starts the fixed requested harness through a
-preallocated WB identity in detached tmux, records the linked target Work Log,
+preallocated WB identity in a fresh Herdr workspace, records the linked target Work Log,
 and returns a receipt only after the successor is live. Replaying completed
 bytes returns the immutable receipt without launching or consulting Git.
 Predecessor custody remains a source-side acknowledgement transaction.`,
@@ -48,17 +48,17 @@ Predecessor custody remains a source-side acknowledgement transaction.`,
 			}
 			if result.Receipt != nil {
 				if result.Successor != nil {
-					_, err = fmt.Fprintf(command.OutOrStdout(), "completed handoff %s for successor %s in tmux %s at exact commit %s; durable target receipt recorded\n",
-						result.Request.HandoffID, result.Receipt.SuccessorWBSessionID, result.Receipt.TmuxName, result.Receipt.PinnedCommit)
+					_, err = fmt.Fprintf(command.OutOrStdout(), "completed handoff %s for successor %s in %s at exact commit %s; durable target receipt recorded\n",
+						result.Request.HandoffID, result.Receipt.SuccessorWBSessionID, displayTerminal(result.Receipt.Terminal, result.Receipt.TmuxName), result.Receipt.PinnedCommit)
 					return err
 				}
-				_, err = fmt.Fprintf(command.OutOrStdout(), "replayed completed handoff %s receipt for successor %s in tmux %s\n",
-					result.Request.HandoffID, result.Receipt.SuccessorWBSessionID, result.Receipt.TmuxName)
+				_, err = fmt.Fprintf(command.OutOrStdout(), "replayed completed handoff %s receipt for successor %s in %s\n",
+					result.Request.HandoffID, result.Receipt.SuccessorWBSessionID, displayTerminal(result.Receipt.Terminal, result.Receipt.TmuxName))
 				return err
 			}
 			if result.Successor != nil {
-				_, err = fmt.Fprintf(command.OutOrStdout(), "handoff %s started successor %s in tmux %s at exact commit %s; predecessor custody remains active pending a receipt\n",
-					result.Request.HandoffID, result.Successor.WBSessionID, result.Successor.TmuxName, result.Successor.PinnedCommit)
+				_, err = fmt.Fprintf(command.OutOrStdout(), "handoff %s started successor %s in %s at exact commit %s; predecessor custody remains active pending a receipt\n",
+					result.Request.HandoffID, result.Successor.WBSessionID, displayTerminal(result.Successor.Terminal, result.Successor.TmuxName), result.Successor.PinnedCommit)
 				return err
 			}
 			worktree := ""

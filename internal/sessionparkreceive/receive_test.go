@@ -17,6 +17,7 @@ import (
 	"github.com/sneat-dev/wb/internal/sessionlaunch"
 	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/sessionpark"
+	"github.com/sneat-dev/wb/internal/sessionterminal"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -318,7 +319,7 @@ func (fixture *receiveFixture) options() Options {
 		StartSuccessor: func(ctx context.Context, options sessionlaunch.Options) (sessionlaunch.Result, error) {
 			record := session.Record{PID: 4242, WBSessionID: fixture.request.SuccessorWBSessionID,
 				PredecessorWBSessionID: fixture.request.PredecessorWBSessionID, Machine: fixture.request.TargetMachine,
-				Runtime: "codex", TmuxName: "wb-session-" + fixture.request.SuccessorWBSessionID,
+				Runtime: "codex", Terminal: sessionterminal.Identity{Kind: "herdr", Socket: filepath.Join(fixture.paths[0], "herdr.sock"), WorkspaceID: "workspace-owned", PaneID: "pane-owned"},
 				HandoffID: fixture.request.ResumeID, StartedAt: fixture.startedAt}
 			ref, err := options.BeforeRelease(ctx, sessionlaunch.Prepared{Authority: *options.Authority,
 				RequestDigest: sessionmove.Digest(options.Authority.AggregateDigest), Session: record,
@@ -329,7 +330,7 @@ func (fixture *receiveFixture) options() Options {
 			}
 			return sessionlaunch.Result{HandoffID: fixture.request.ResumeID, WBSessionID: record.WBSessionID,
 				PredecessorWBSessionID: record.PredecessorWBSessionID, TargetMachine: record.Machine, PID: record.PID,
-				AttemptID: "000001-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", AttemptIndex: 1, TmuxName: record.TmuxName,
+				AttemptID: "000001-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", AttemptIndex: 1, TmuxName: record.TmuxName, Terminal: record.Terminal,
 				Runtime: record.Runtime, TargetWorkLogRef: ref, WorktreeDir: options.WorktreeDir,
 				PinnedCommit: options.PinnedCommit, StartedAt: record.StartedAt}, nil
 		},

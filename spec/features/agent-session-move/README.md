@@ -9,7 +9,7 @@ status: Approved
 **Status:** Approved
 **Source Ideas:** —
 **Supersedes:** —
-**Depends On:** [Herdr Session Transport](../herdr-session-transport/README.md) (the tmux-specific behavior below moves behind that Feature's pluggable transport interface; herdr becomes the default, tmux the kept alternative)
+**Depends On:** [Herdr Session Transport](../herdr-session-transport/README.md) (sole active Herdr lifecycle and legacy immutable receipt compatibility)
 **Grade:** B
 
 ## Summary
@@ -32,24 +32,19 @@ successor for the same handoff.
 
 ## Behavior
 
-> **Transport note.** Every tmux-specific behavior below (successor start,
-> pane messaging, paste-into-pane delivery) now runs through one pluggable
-> transport interface specified in
-> [Herdr Session Transport](../herdr-session-transport/README.md). herdr is
-> that interface's default implementation; tmux is the kept alternative,
-> moved behind the interface with no behavior change. The REQs below still
-> describe today's tmux behavior exactly — they are not duplicated in the new
-> Feature, which instead specifies the interface, the herdr implementation,
-> and transport selection.
+> **Transport contract.** New successors and messages use original Herdr TUI
+> 0.9.1/protocol 22 through bounded typed clients. Legacy tmux receipts remain
+> readable evidence, never an active fallback. Historical REQ/AC anchors remain.
 
 ### Session and target identity
 
 #### REQ: stable-wb-session-identity
 
 Every newly registered session MUST have a stable WB session ID independent of
-its PID, tmux name, native harness session ID, and Synchestra invocation ID.
+its PID, terminal identity, native harness session ID, and courier invocation ID.
 Session records MUST retain the machine, runtime, model, optional native
-harness ID, optional tmux name, predecessor WB session ID, and handoff ID.
+harness ID, optional exact Herdr coordinates, predecessor WB session ID, and handoff ID.
+Legacy tmux fields remain readable without rewriting canonical bytes.
 Existing PID-only records MUST remain readable.
 
 #### REQ: exec-safe-session-registration
@@ -59,8 +54,8 @@ authoritative process evidence identifies an intermediate shell or wrapper.
 When a shell tail-execs the final WB command, registration MAY name the
 process that is WB's direct parent only when authoritative process evidence
 matches the declared harness runtime and role. For Codex, that evidence MUST
-identify the `codex` executable basename and the exact `app-server` role
-argument; nested configuration paths or script names MUST NOT affect the
+identify the actual `codex` executable for interactive CLI or Desktop
+app-server; nested configuration paths or script names MUST NOT affect the
 classification. The command documentation MUST include a shell-safe form
 that keeps the intermediate shell alive for older WB builds.
 
@@ -149,21 +144,31 @@ candidate, missing commit, or repository identity mismatch.
 
 #### REQ: tmux-successor-start
 
-The receiver MUST use the preallocated successor WB session ID and start the
-successor through fixed argv in a detached, predictably named tmux session
-rooted in the pinned worktree. The default harness MUST be the source runtime;
-an explicit `--harness` override MUST permit a supported cross-harness move.
-The fresh successor MUST receive the tracked handover document path in its
-initial prompt and register its PID, WB session ID, tmux name, runtime, model,
-and native harness ID when the harness exposes one.
+The receiver MUST use the preallocated logical successor and a fresh owned
+Herdr workspace/pane rooted in the pinned worktree. Preserve the historical
+anchor for links, not active tmux execution. A strictly quoted fixed private
+bootstrap MUST remain behind the all-member registration/release gate.
+Readiness MUST corroborate recorded socket/workspace/pane, exact foreground
+argv, PID generation and native harness ID plus active Herdr classification.
+Unknown model metadata MUST NOT be passed as a harness model argument. A normal
+startup re-registration may enrich observed native/model metadata only while
+retaining immutable WB, process, terminal and lineage authority.
+If the preallocated row has no native-thread binding yet, both public and auto
+registration MUST return actionable pending without allocating or inheriting a
+WB identity. Only the plan-owned parent can bind actual Herdr observation; the
+ordinary startup retry then preserves that exact WB ID. Public lineage fields
+and equality between thread/root IDs do not authorize bootstrap enrichment.
 
 #### REQ: receipt-records-lineage
 
 The target MUST durably write a receipt containing the handoff ID, successor
-WB session ID, predecessor WB session ID, target machine, tmux name, runtime,
+WB session ID, predecessor WB session ID, target machine, exact Herdr coordinates and process generation, runtime,
 optional native harness ID, pinned commit, and start time before reporting
 success. WB MUST copy that receipt into the source handoff aggregate so the new
 session can be addressed later.
+Older strict peers that cannot decode the new typed Herdr terminal field must
+refuse and be upgraded. Legacy canonical bytes remain unchanged and readable;
+new receipt authority is never silently downgraded for an older peer.
 
 #### REQ: receipt-gated-custody
 
@@ -179,8 +184,13 @@ existing source-local applied handoff path MUST NOT be used for this transfer.
 
 `wb session send <wb-session-id>` MUST deliver a durable typed message through
 the courier recorded in the handoff receipt, append it to the target session's
-inbox, and safely paste it into the recorded tmux session without interpreting
-message text as shell syntax. `wb session recall <wb-session-id>` (alias
+inbox, and submit its canonical schema-2 ASCII-escaped single-line JSON exactly
+once through the recorded Herdr endpoint, without interpreting body text as shell
+syntax. The receiver MUST retain a cancellable PID barrier across complete
+registry equality, final terminal observation and submission; durable intent
+precedes this barrier and receipt publication follows it. No ambiguous intent
+may automatically replay. Legacy schema-1 bytes remain readable, and a new
+message ID is required for new Herdr submission. `wb session recall <wb-session-id>` (alias
 `wb session request-handoff`) MUST send the standard typed request to return
 control, preserving the lineage and reply target. Delivery MUST return a message
 receipt or an actionable failure.
@@ -209,12 +219,12 @@ sequenceDiagram
     participant S as Source WB session
     participant C as SSH or Synchestra courier
     participant R as Target wb session receive
-    participant T as tmux successor
+    participant T as Herdr successor
     S->>S: verify clean work, preallocate successor, commit handover, push exact bundle commit
     S->>C: deliver immutable request
     C->>R: fixed receive boundary
     R->>R: verify digest and pinned remote branch
-    R->>T: allocate WB ID and start harness in tmux
+    R->>T: allocate WB ID and start harness in Herdr
     T-->>R: register successor
     R-->>C: typed receipt
     C-->>S: receipt with successor ID
@@ -235,7 +245,7 @@ receipts, and messages are append-only children of the handoff aggregate.
 Scenario: Move a registered session through SSH
 Given a clean managed named branch whose exact handoff commit can be pushed and a target `hetzner-vm1` configured with `ssh.host: hetzner-vm1`
 When the registered source agent runs `wb session move --to hetzner-vm1 --via ssh` with a non-empty handover
-Then the target checks out the exact pushed commit in an isolated worktree and starts one detached tmux successor using the source harness with the handover path in its initial prompt
+Then the target checks out the exact pushed commit in an isolated worktree and starts one detached Herdr successor using the source harness with the handover path in its initial prompt
 
 ### AC: exec-safe-session-registration
 
@@ -280,7 +290,7 @@ Then WB exits before courier delivery, leaves the source session active, and rep
 Scenario: Complete custody only after target registration
 Given a delivered bundle whose target harness registers successfully
 When the target returns its durable receipt
-Then the source handoff aggregate records both WB session IDs plus target machine and tmux identity, both Work Logs reference the same handoff ID, and only then is predecessor custody sealed as handed off
+Then the source handoff aggregate records both WB session IDs plus target machine and Herdr identity, both Work Logs reference the same handoff ID, and only then is predecessor custody sealed as handed off
 
 ### AC: failed-or-retried-delivery-is-idempotent
 
@@ -289,7 +299,7 @@ Then the source handoff aggregate records both WB session IDs plus target machin
 Scenario: Retry after an ambiguous courier result
 Given the target accepted a handoff but the receipt did not reach the source
 When the identical handoff is delivered again
-Then the receiver returns the existing receipt and there remains exactly one target worktree, one tmux successor, and one successor WB session for that handoff
+Then the receiver returns the existing receipt and there remains exactly one target worktree, one Herdr successor, and one successor WB session for that handoff
 
 ### AC: moved-branch-refuses-at-target
 
@@ -314,15 +324,15 @@ Then Synchestra delivers the byte-identical bundle to `wb session receive` and W
 **Requirements:** agent-session-move#req:successor-messaging, agent-session-move#req:receipt-records-lineage
 
 Scenario: Address the recorded successor
-Given a completed handoff with a live recorded tmux successor
+Given a completed handoff with a live recorded Herdr successor
 When the predecessor sends a message and then requests a handoff back by successor WB session ID
-Then both typed messages are durably recorded, safely delivered into that tmux session, acknowledged to the sender, and retain the original lineage and reply target
+Then both typed messages are durably recorded, safely delivered into that exact Herdr pane, acknowledged to the sender, and retain the original lineage and reply target
 
 ## Rehearse Integration
 
 Every acceptance criterion has a deterministic CLI, Git, filesystem, event, or
-tmux surface. Pending scenario stubs live under `_tests/` and are intended to
-use temporary Git remotes plus fake SSH, Synchestra, tmux, and harness adapters.
+Herdr surface. Pending scenario stubs live under `_tests/` and are intended to
+use temporary Git remotes plus fake SSH, courier, Herdr, and harness adapters.
 
 ## Not Doing
 

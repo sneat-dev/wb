@@ -99,7 +99,7 @@ func TestTerminalPaneObservationRequiresReadableImmutableRelease(t *testing.T) {
 	fx := newLauncherRetryFixture(t)
 	attempt, release, _, ready := slCovReleasedAttempt(t, fx, 8105)
 	t.Cleanup(func() { _ = attempt.state.Close() })
-	fx.tmux.failure = &tmuxFailure{ExitStatus: 1}
+	fx.tmux.failure = &terminalFailure{ExitStatus: 1}
 	if err := os.Remove(filepath.Join(slCovAttemptDir(fx.store.Root, attempt.id), "release.json")); err != nil {
 		t.Fatal(err)
 	}

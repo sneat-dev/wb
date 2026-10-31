@@ -13,18 +13,21 @@ type ProcessEvidence struct {
 	Args       []string
 }
 
-// IsRuntimeProcess reports whether pid is the declared harness runtime. This
-// is intentionally narrower than matching arbitrary command-line text: the
-// executable basename identifies the runtime and its role argument identifies
-// the Codex app-server process.
+// IsRuntimeProcess corroborates an observed harness executable. Interactive
+// Codex embeds its app-server in process; it can host several native threads
+// without an app-server argv role. All observed Codex processes therefore need
+// native-qualified custody, not only the Desktop app-server subprocess.
 func IsRuntimeProcess(pid int, runtime string) bool {
 	evidence, ok := processEvidence(pid)
 	if !ok {
 		return false
 	}
-	return processEvidenceMatchesRuntime(evidence, runtime)
+	observed, known := runtimeForProcessEvidence(evidence)
+	return known && observed == strings.TrimSpace(runtime)
 }
 
+// processEvidenceMatchesRuntime retains the exact Desktop role predicate for
+// callers that need that role specifically. It is not generic harness discovery.
 func processEvidenceMatchesRuntime(evidence ProcessEvidence, runtime string) bool {
 	runtime = strings.TrimSpace(runtime)
 	switch runtime {

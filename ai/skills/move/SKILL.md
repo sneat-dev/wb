@@ -11,12 +11,18 @@ description: >-
 # Move
 
 Whole-session, successor **now**. This process must stop mutating the owned worktrees.
+Local pickup normally continues in the current chat; a move to a fresh local
+agent must explicitly use `--launch`. New agents use original Herdr TUI 0.9.1,
+never tmux. To continue in this same chat, use the pickup skill and its
+agent-driven continuation acknowledgment instead of launching a successor.
 
 Preferred composition (all owned members, dirty local state allowed on local pickup):
 
 ```sh
 wb session park --context-file <file>
-wb session pickup <parked-session-id> [--to <machine>]
+wb session pickup <parked-session-id> --launch
+# Or explicitly choose a remote successor:
+wb session pickup <parked-session-id> --to <machine>
 ```
 
 One owned worktree, clean and pushed, immediate courier (including this machine):

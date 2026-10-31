@@ -336,7 +336,8 @@ type ListResult struct {
 	// WorkLogSessionID is the immutable session link from the active private
 	// claim. It lets session park recover a claim even when the owner event was
 	// not projected, while remaining absent for legacy claims.
-	WorkLogSessionID string `json:"work_log_session_id,omitempty"`
+	WorkLogSessionID string            `json:"work_log_session_id,omitempty"`
+	CurrentOwner     ParkOwnerEvidence `json:"current_owner,omitzero"`
 	// TaskSummary is the optional bounded, non-sensitive description captured
 	// at creation. It is never reconstructed from the private prompt archive.
 	TaskSummary       string       `json:"task_summary,omitempty"`
@@ -4008,6 +4009,11 @@ func (i *lifecycleInspection) enrichOwnership() error {
 	if home, homeErr := wbhome.Root(i.projectsRoot); homeErr == nil {
 		if claim, _, _, claimErr := activeWorkLogClaimReadOnly(home, i.worktree); claimErr == nil {
 			i.result.WorkLogSessionID = strings.TrimSpace(claim.WBSessionID)
+			if events, err := readLocalEvents(i.worktree); err == nil {
+				i.result.CurrentOwner = effectiveParkOwner(i.result.WorkLogSessionID, events)
+			} else {
+				i.result.CurrentOwner = ParkOwnerEvidence{ClaimWBSessionID: i.result.WorkLogSessionID, Binding: "invalid"}
+			}
 			i.result.TaskSummary = claim.TaskSummary
 		} else if terminal, terminalErr := readWorkLogTerminalRecordReadOnly(home, i.worktree); terminalErr == nil && terminal != nil {
 			i.result.WorkLogSessionID = strings.TrimSpace(terminal.WBSessionID)

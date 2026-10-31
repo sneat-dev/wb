@@ -84,8 +84,16 @@ func SameCustody(o, other OwnerRegistration) bool {
 }
 func (p OwnerPorts) RecordOwner(worktree, effort, agent, model string, pid int) (OwnerRegistration, error) {
 	owner := OwnerRegistration{Agent: agent, Model: model, Effort: effort, PID: pid, Initiator: p.MutationInitiator(), WBVersion: p.Version(), At: p.Now().UTC()}
+	var extra map[string]any
+	if p.CurrentIdentity != nil {
+		identity := p.CurrentIdentity()
+		if identity.Registered && identity.WBSessionID != "" && identity.Runtime != "" && identity.PID == pid && (agent == identity.Runtime || agent == identity.Agent() || agent == identity.Runtime+"/"+identity.WBSessionID) {
+			owner.Agent = identity.Runtime + "/" + identity.WBSessionID
+			extra = map[string]any{"owner_wb_session_id": identity.WBSessionID}
+		}
+	}
 	record := toJournalOwner(owner)
-	err := p.AppendEvent(worktree, worktreejournal.LocalWorkLogEvent{Type: LocalEventOwner, Message: "agent session attached", Owner: &record})
+	err := p.AppendEvent(worktree, worktreejournal.LocalWorkLogEvent{Type: LocalEventOwner, Message: "agent session attached", Owner: &record, Extra: extra})
 	return owner, err
 }
 func (p OwnerPorts) LastOwner(worktree string) (OwnerRegistration, bool, error) {
@@ -104,6 +112,11 @@ func (p OwnerPorts) RecordCustody(worktree, effort, command string, identity Age
 		return err
 	}
 	candidate := OwnerRegistration{Agent: identity.Agent(), Model: strings.TrimSpace(identity.Model), Effort: effort, PID: identity.PID, Initiator: p.MutationInitiator(), WBVersion: p.Version(), Command: command}
+	var extra map[string]any
+	if identity.Registered && strings.TrimSpace(identity.WBSessionID) != "" {
+		candidate.Agent = strings.TrimSpace(identity.Runtime) + "/" + strings.TrimSpace(identity.WBSessionID)
+		extra = map[string]any{"owner_wb_session_id": identity.WBSessionID}
+	}
 	if found && SameCustody(previous, candidate) {
 		return nil
 	}
@@ -112,7 +125,7 @@ func (p OwnerPorts) RecordCustody(worktree, effort, command string, identity Age
 	}
 	candidate.At = p.Now().UTC()
 	record := toJournalOwner(candidate)
-	return p.AppendEvent(worktree, worktreejournal.LocalWorkLogEvent{Type: LocalEventOwner, Message: CustodyMessage(identity), Owner: &record})
+	return p.AppendEvent(worktree, worktreejournal.LocalWorkLogEvent{Type: LocalEventOwner, Message: CustodyMessage(identity), Owner: &record, Extra: extra})
 }
 func CustodyMessage(identity AgentIdentity) string {
 	if identity.Declared() {

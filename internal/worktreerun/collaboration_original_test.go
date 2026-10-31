@@ -17,6 +17,9 @@ func TestCollaborationSessionPortsBindAncestorRecipientAndCheckout(t *testing.T)
 		t.Fatal(err)
 	}
 	ports := defaultCollaborationSessionPorts()
+	// This fixture injects legacy PID lookups; scoped production lookup is
+	// exercised separately with immutable record identity.
+	ports.lookupRecord = nil
 	ports.root = func(string) (string, error) { return filepath.Join(root, ".wb"), nil }
 	ports.pid = func() int { return 42 }
 	ports.resolveCheckout = func(_ context.Context, _, value string) (worktreecollab.Checkout, error) {

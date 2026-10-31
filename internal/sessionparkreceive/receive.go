@@ -254,7 +254,7 @@ func Receive(ctx context.Context, options Options) (Result, error) {
 		SchemaVersion: sessionpark.ReceiptSchemaVersion, ResumeID: request.ResumeID, RequestDigest: digest,
 		ParkedSessionID: request.ParkedSessionID, SuccessorWBSessionID: request.SuccessorWBSessionID,
 		PredecessorWBSessionID: request.PredecessorWBSessionID, TargetMachine: request.TargetMachine,
-		TmuxName: successor.TmuxName, Runtime: successor.Runtime, Model: successor.Model, NativeHarnessID: successor.NativeHarnessID,
+		TmuxName: successor.TmuxName, Terminal: successor.Terminal, Runtime: successor.Runtime, Model: successor.Model, NativeHarnessID: successor.NativeHarnessID,
 		AttemptID: successor.AttemptID, AttemptIndex: successor.AttemptIndex, PID: successor.PID,
 		StartedAt: successor.StartedAt, Members: receiptMembers,
 	}

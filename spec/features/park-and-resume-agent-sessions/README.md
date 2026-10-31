@@ -7,16 +7,15 @@ status: Approved
 > [SpecScore.**Studio**](https://specscore.studio): | [Explore](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/park-and-resume-agent-sessions?op=explore) | [Edit](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/park-and-resume-agent-sessions?op=edit) | [Ask question](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/park-and-resume-agent-sessions?op=ask) | [Request change](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/park-and-resume-agent-sessions?op=request-change) |
 **Status:** Approved
 **Source Ideas:** —
-**Depends On:** [Herdr Session Transport](../herdr-session-transport/README.md) (successor launch and pane delivery below move behind that Feature's pluggable transport interface; herdr becomes the default, tmux the kept alternative)
+**Depends On:** [Herdr Session Transport](../herdr-session-transport/README.md) (sole active terminal lifecycle; current-chat pickup requires no terminal)
 
 ## Summary
 
-Park and resume lets a coordinator suspend one active WB session while
-preserving every worktree it owns and bounded private continuation context.
-Later, any coordinator process can resume the whole parked aggregate locally or
-on a configured remote machine. Resume itself starts exactly one fresh
-successor and attaches that same session to every member; it never requires an
-already-running successor.
+Park checkpoints every worktree owned by one native WB session and bounded
+private continuation. Local pickup continues in the identifiable registered
+current chat by default; it starts no terminal or agent. Explicit `--launch`
+starts one Herdr successor, and `--to <machine>` retains remote resume.
+Every mode shares one logical winner, all-member custody and immutable history.
 
 ## Problem
 
@@ -33,15 +32,9 @@ receipt proves the complete target outcome.
 <!-- How the feature works. Group rules under ### topic headings; write each
      enforceable rule as a `#### REQ: <slug>` entry under its topic. -->
 
-> **Transport note.** Successor launch and every pane-delivery path below
-> (local resume, remote resume's successor attach) now run through one
-> pluggable transport interface specified in
-> [Herdr Session Transport](../herdr-session-transport/README.md). herdr is
-> that interface's default implementation; tmux is the kept alternative,
-> moved behind the interface with no behavior change. The REQs below still
-> describe today's tmux-hosted successor behavior exactly — they are not
-> duplicated in the new Feature, which instead specifies the interface, the
-> herdr implementation, and transport selection.
+> **Transport contract.** New terminal successors use original Herdr TUI 0.9.1
+> (protocol 22), with no active tmux fallback. Historical bytes/digests remain
+> readable; current-chat pickup does not use any terminal transport.
 
 ### Session lifecycle and bundle custody
 
@@ -72,26 +65,52 @@ resumed, and the existing fail-closed member checks MUST remain unchanged.
 
 #### REQ: coordinator-starts-one-local-successor
 
-Local `wb session resume <parked-session-id>` MUST preflight every member's
-exact parked branch, HEAD, source claim, and latest owner before any custody
-mutation. It MUST then launch exactly one fresh successor itself, inject the
-private continuation through `WB_SESSION_CONTINUATION_FILE`, and attach the same
-successor to every member. The first admitted member is the launch working
-directory. A zero-member parked session remains locally resumable using a
-deterministic private neutral directory under the retained parked aggregate;
-no caller path or arbitrary current directory is accepted.
+Before any route or member mutation, local resume MUST authenticate the real
+registered caller and validate every member's repository, Work Log, branch,
+HEAD, dirty state and latest bound owner. Default or `--current` mode MUST
+prepare a single logical successor in that same native chat, returning the
+private continuation path and digest. The agent MUST read it and acknowledge
+with `--ack-context`; users MUST NOT manually copy continuation or digests.
+Without an identifiable caller WB MUST refuse with guidance, never spawn.
+Preparation freezes the complete caller registration, including metadata. A
+concurrent re-registration changing that snapshot is an identity conflict, not
+permission to silently rebind an already prepared live actor.
+
+After acknowledgment, lock order MUST remain bundle -> all member journals ->
+PID transition barrier. Revalidate departure and complete caller snapshot under
+that barrier before attachments and atomic publication. Partial Nth-member,
+registry and receipt interruptions MUST retry only the same prepared authority.
+Parallel native chats sharing one physical PID MUST retain independent records,
+lifecycle markers and custody; foreign nonempty WB owner IDs never permit PID
+fallback. Own native legacy registration remains readable without migration.
+
+`--launch` explicitly selects a new Herdr agent. It uses a fixed gated bootstrap
+and exact owned process/native readiness. A zero-member explicit launch uses
+the deterministic private neutral directory, never an arbitrary caller path.
 
 #### REQ: discoverable-resume-identity-and-launch-diagnostics
 
-`wb session list --format json` MUST expose the stable `parked_session_id` for
-every parked source and distinguish it from `wb_session_id`. Help MUST state
-which value `wb session resume` consumes and how to obtain it. A fresh local
-resume MUST preflight its fixed tmux, harness, and WB executables before it
-claims a route or changes custody. If a released harness exits during startup,
-WB MUST retain the exact exit status and a bounded terminal diagnostic against
-that immutable attempt, and an identical retry MUST remain receipt-gated.
+Listings/help MUST distinguish `parked_session_id` from `wb_session_id` and
+explain current-chat acknowledgment plus explicit launch. Current-chat mode MUST
+require no Herdr or harness executable. Explicit launch MUST preflight original
+Herdr TUI 0.9.1, selected running socket, fixed WB/harness executables before
+claiming route or custody. Exact exit status and bounded startup diagnostics
+remain receipt-gated attempt evidence, never permission to create a second agent.
 
 #### REQ: no-later-session-custody-theft
+
+Effective current ownership comes from the latest correctly bound owner event;
+immutable original claim attribution is not rewritten. A newer unbound or
+contradictory event refuses. A completed older checkpoint MUST NOT reactivate a
+successor that has parked or handed off again; departure is rechecked under all
+member journals and the PID transition barrier before mutation.
+
+`--recover-current` MUST prove the previous physical process generation gone,
+then append a digest-linked actor preparation and fresh acknowledgment while
+retaining the same logical winner. It MUST preserve earlier actor completions,
+repair only authorized partial attachments, and reject live/unknown generations,
+cycles, discontinuities, foreign owners or more than 16 recovery links. Shared
+app-server liveness cannot prove that one of its individual chats has died.
 
 A resumer MUST refuse before any member mutation when a worktree's branch,
 HEAD, source Work Log claim, or latest owner differs from the exact parked
@@ -161,6 +180,10 @@ the recorded and the resolved paths.
 The parked-session envelope, request, target aggregate, and receipt MUST have
 their own strict versioned schemas. Existing `sessionmove.Request` schema
 version 1 and public `wb session move` behavior MUST remain wire compatible.
+New Herdr receipts include typed terminal coordinates; an older strict peer
+that cannot decode those fields must refuse and be upgraded. Existing legacy
+canonical fixtures remain unchanged; WB must not silently translate receipt
+authority or claim a mixed-version transfer succeeded.
 The SSH courier MUST use a fixed non-shell argv, configured host and optional
 safe user, bounded stdin/stdout/stderr, canonical envelope bytes on stdin, and
 strict receipt decoding. Credential-bearing Git remotes MUST be rejected
@@ -201,19 +224,19 @@ registry, or custody mutation.
 
 **Given** a locally parked session whose members still match their parked custody, including a dirty or unpushed member
 **When** any coordinator process resumes the checkpoint twice
-**Then** WB launches one fresh successor with private continuation, attaches it to every member, preserves each exact HEAD and dirty status, and returns the same durable outcome on retry.
+**Then** WB returns private continuation for the current caller without launch, and after the agent reads and acknowledges it, attaches the same logical successor to every member, preserving each exact HEAD and dirty status and returning the same durable outcome on retry.
 
 ### AC: zero-member-local-resume-has-private-root (verifies REQ:coordinator-starts-one-local-successor)
 
 **Given** a parked source session owned no worktrees
 **When** a coordinator resumes it locally
-**Then** exactly one successor launches in the deterministic private neutral directory under the retained aggregate, without using the caller's current directory.
+**Then** current-chat pickup still needs no launch; explicit `--launch` starts exactly one successor in the deterministic private neutral directory under the retained aggregate, without using the caller's current directory.
 
 ### AC: resume-is-discoverable-and-startup-failures-are-actionable (verifies REQ:discoverable-resume-identity-and-launch-diagnostics)
 
 **Given** a registered session is parked and only public CLI output is available
 **When** a coordinator lists sessions and starts local resume
-**Then** the parked row exposes the exact resume argument, missing tmux or harness refuses before route or custody mutation, and an immediately exiting harness reports and retains its exact status plus bounded startup diagnostic for a receipt-gated retry.
+**Then** the parked row exposes the exact resume argument, an explicit launch with missing Herdr or harness refuses before route or custody mutation, and an immediately exiting harness reports and retains its exact status plus bounded startup diagnostic for a receipt-gated retry.
 
 ### AC: remote-bundle-resume-completes
 

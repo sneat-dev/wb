@@ -368,11 +368,11 @@ func TestSmCovMsgAdmitMessageUnderLockErrors(t *testing.T) {
 	t.Run("non-canonical JSON payload", func(t *testing.T) {
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		var compact bytes.Buffer
-		if err := json.Compact(&compact, fixture.messageRaw); err != nil {
-			t.Fatalf("json.Compact: %v", err)
+		if err := json.Indent(&compact, fixture.messageRaw, "", "  "); err != nil {
+			t.Fatalf("json.Indent: %v", err)
 		}
 		if bytes.Equal(compact.Bytes(), fixture.messageRaw) {
-			t.Fatal("compacted payload unexpectedly equals the canonical encoding")
+			t.Fatal("indented payload unexpectedly equals the canonical encoding")
 		}
 		_, err := fixture.store.AdmitOutgoingMessageUnderLock(fixture.lock, fixture.request.HandoffID, fixture.digest, compact.Bytes(), fixture.message.SentAt)
 		if err == nil || !strings.Contains(err.Error(), "canonical JSON encoding") {
@@ -616,8 +616,8 @@ func TestSmCovMsgResumeOutgoingMessageUnderLockErrors(t *testing.T) {
 	t.Run("non-canonical payload", func(t *testing.T) {
 		fixture := smCovMsgNewFixture(t, true, false, time.Time{})
 		var compact bytes.Buffer
-		if err := json.Compact(&compact, fixture.messageRaw); err != nil {
-			t.Fatalf("json.Compact: %v", err)
+		if err := json.Indent(&compact, fixture.messageRaw, "", "  "); err != nil {
+			t.Fatalf("json.Indent: %v", err)
 		}
 		smCovMsgWrite(t, filepath.Join(outboxDir(fixture), messagePayloadFileName), compact.Bytes(), 0o600)
 		if _, err := fixture.store.ResumeOutgoingMessageUnderLock(fixture.lock, fixture.request.HandoffID, fixture.digest, fixture.message.MessageID); !errors.Is(err, ErrHandoffConflict) {

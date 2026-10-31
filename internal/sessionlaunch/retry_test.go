@@ -93,7 +93,7 @@ func newLauncherRetryFixture(t *testing.T) *launcherRetryFixture {
 		plan: plan, planDigest: planDigest, tmux: tmux,
 	}
 	fixture.deps = dependencies{
-		tmux: tmux,
+		terminal: tmux,
 		lookPath: func(name string) (string, error) {
 			return filepath.Join(bin, name), nil
 		},

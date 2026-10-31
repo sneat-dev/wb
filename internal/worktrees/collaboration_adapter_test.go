@@ -173,6 +173,8 @@ func TestCollaborationLegacyObservationFaultsAndFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	ports := defaultCollaborationLegacyPorts()
+	// The fixture below owns the legacy exact-PID seam.
+	ports.lookupOwner = nil
 	ports.openLocal = func(string, bool) (*os.File, error) { return os.Open(root) }
 	ports.lock = func(*os.File) (func(), error) { return func() {}, nil }
 	ports.readEvents = func(*os.File) ([]worktreejournal.LocalWorkLogEvent, bool, error) { return nil, false, nil }

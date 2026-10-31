@@ -30,7 +30,7 @@ func TestSlCovResolveAuthorityRejectsRequestThatFailsAuthorityValidation(t *test
 
 func TestSlCovDefaultDependenciesSessionDirFailure(t *testing.T) {
 	bin := t.TempDir()
-	slCovExecutable(t, bin, "tmux")
+	slCovExecutable(t, bin, "herdr")
 	t.Setenv("PATH", bin)
 	deps, err := defaultDependencies(t.TempDir())
 	if err != nil {

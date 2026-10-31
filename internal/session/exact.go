@@ -34,7 +34,7 @@ func nativeExactRecordIO() exactRecordIO {
 
 // LookupExact reads one live registration through no-follow descriptors and
 // proves that the filename, payload PID, and current process all agree. It is
-// used at the tmux delivery boundary where a path-following convenience read
+// used at the exact terminal delivery boundary where a path-following convenience read
 // would let a swapped record redirect message bytes.
 func LookupExact(dir string, pid int) (Record, bool, error) {
 	return lookupExactWithIO(dir, pid, nativeExactRecordIO())
@@ -62,6 +62,12 @@ func lookupExactWithIO(dir string, pid int, access exactRecordIO) (Record, bool,
 		}
 		return Record{}, false, fmt.Errorf("exact session directory is not a directory")
 	}
+
+	return lookupExactDirectoryWithIO(directory, pid, access)
+}
+
+func lookupExactDirectoryWithIO(directory *os.File, pid int, access exactRecordIO) (Record, bool, error) {
+	directoryFD := int(directory.Fd())
 
 	name := strconv.Itoa(pid) + ".json"
 	fd, err := unix.Openat(directoryFD, name, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)

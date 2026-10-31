@@ -7,8 +7,10 @@ import (
 	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/sneat-dev/wb/internal/continuationinput"
 	"github.com/sneat-dev/wb/internal/session"
+	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/sessionpark"
 	"github.com/sneat-dev/wb/internal/sessionrun"
+	"github.com/sneat-dev/wb/internal/sessionterminal"
 	"github.com/spf13/cobra"
 	"strings"
 )
@@ -23,8 +25,8 @@ func NewRegister(runtime shared.Runtime, deps Dependencies) *cobra.Command {
 
 Run it once when a session starts. WB assigns a stable WB session ID, records
 the declared identity along with its own version and binary path, and evaluates
-liveness from the PID whenever the record is read. Re-registering the same PID
-without --wb-session-id preserves its WB identity.
+liveness from the native process generation whenever the record is read.
+Re-registering the same chat without --wb-session-id preserves its WB identity.
 
 The PID must be the agent process, not the shell that runs this command. From a
 harness tool call that is the shell's parent:
@@ -41,8 +43,9 @@ agent, before any mutating command:
   wb session register --pid $PPID --runtime codex --model <exact-model>
 
 On systems where the shell tail-execs its final command, WB may see the live
-Codex app-server as its direct parent. WB accepts that parent only when its
-kernel-reported executable is codex and its process role is app-server. For a
+Codex process as its direct parent. WB accepts a kernel-observed Codex harness
+for either the interactive CLI or the Desktop app-server; the interactive CLI
+embeds its server and need not have an app-server role argument. For a
 shell-safe form that also works with older WB builds, keep the shell alive:
 
   wb session register --pid "$PPID" --runtime codex --model <exact-model>; status=$?; exit "$status"
@@ -51,8 +54,14 @@ Do not substitute $$ (the intermediate shell) or register WB's own PID. An
 agent-mode create requires this live registration; for an intentional human
 operation use --mode manual --initiator <human> instead.
 
-Registering again for the same PID replaces the record, so a session that
-corrects its model does not have to clean up after itself.`,
+Desktop and interactive Codex processes can host multiple native threads. WB
+isolates them using CODEX_THREAD_ID. CODEX_SESSION_ID is shared root context,
+not a conflicting alias or a per-chat ownership key. Session-only context refuses
+with guidance; it cannot identify a descendant chat. Re-registering the same chat preserves its WB identity and
+updates metadata; another chat cannot inherit that identity. An existing live
+same-chat legacy registration stays in its original namespace. PID-only lookup
+cannot select one of several chats. Native chat identity does not replace the
+separate kernel process-generation proof.`,
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, args []string) error {
 			written, err := deps.Register(command.Context(), sessionrun.RegisterRequest{ProjectsRoot: runtime.Flags().ProjectsRoot, Record: record})
@@ -81,7 +90,6 @@ corrects its model does not have to clean up after itself.`,
 	command.Flags().StringVar(&record.Model, "model", "", "model identifier driving the session")
 	command.Flags().StringVar(&record.NativeHarnessID, "native-harness-id", "", "native session ID, when the harness exposes one")
 	command.Flags().StringVar(&record.AgentID, "agent-id", "", "legacy alias for --native-harness-id")
-	command.Flags().StringVar(&record.TmuxName, "tmux-name", "", "tmux session containing this agent")
 	command.Flags().StringVar(&record.PredecessorWBSessionID, "predecessor-wb-session-id", "", "WB session ID that handed off to this session")
 	command.Flags().StringVar(&record.HandoffID, "handoff-id", "", "handoff that created this session")
 	command.Flags().StringVar(&joinWorktree, "join", "", "join an already owned worktree after registration")
@@ -175,27 +183,39 @@ func readParkContext(command *cobra.Command, path string) ([]byte, error) {
 	return continuationinput.ReadRegularFile(path, sessionpark.MaxContinuationBytes)
 }
 func NewResume(runtime shared.Runtime, deps Dependencies) *cobra.Command {
-	var target, via, configPath, format string
+	var target, via, configPath, format, ackContext, ackUnstartedLaunch string
+	var current, launch, recoverCurrent bool
 	command := &cobra.Command{
 		Use:     "resume <parked-session-id>",
 		Aliases: []string{"pickup"},
-		Short:   "Resume a parked session as one fresh successor session",
-		Long: `Resume a parked session as one fresh successor session.
+		Short:   "Resume parked work in this chat or an explicit successor",
+		Long: `Resume a parked session in this registered chat by default.
 
 Use the parked_session_id returned by wb session park or shown for the parked
 row by wb session list --format json. wb_session_id identifies the source
 agent session and is not a resume argument. pickup is an alias of resume.
 
-Before a fresh local resume claims a route or changes custody, WB verifies the
-fixed tmux, harness, and WB executables. If the released harness exits during
-startup, WB retains its exit status and bounded terminal diagnostic for the
-exact retryable attempt.`,
+Current-chat pickup returns a private continuation path and digest. The agent
+reads that file and repeats resume --current --ack-context <digest>; WB then
+adopts every parked worktree without starting another agent or terminal.
+Use --launch explicitly to start a fresh Herdr agent, or --to for a remote
+successor. WB never silently launches an agent when this chat is unidentified.
+Verified native current-chat discovery is currently available on macOS/Linux.
+Windows registry and pipe support does not provide native current-chat discovery;
+choose an explicit launch/target subject to its platform preflights.
+
+A legacy launcher may retain one empty setup attempt. WB refuses it by default
+and reports an exact state digest. Only after verifying saved positive evidence
+that the previous invocation failed BEFORE starting a wrapper may the registered
+operator acknowledge --ack-unstarted-launch <digest>. This records an explicit
+historical assertion; empty directories alone never prove process absence.
+The original plan, route, attempt and logical successor remain unchanged.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := shared.RequireOutputFormat(format, "text", "json"); err != nil {
 				return err
 			}
-			output, err := deps.Resume(command.Context(), sessionrun.ResumeRequest{ProjectsRoot: runtime.Flags().ProjectsRoot, ParkedSessionID: args[0], Target: target, Via: via, ConfigPath: configPath, Stderr: command.ErrOrStderr()})
+			output, err := deps.Resume(command.Context(), sessionrun.ResumeRequest{ProjectsRoot: runtime.Flags().ProjectsRoot, ParkedSessionID: args[0], Target: target, Via: via, ConfigPath: configPath, Stderr: command.ErrOrStderr(), Current: current, Launch: launch, RecoverCurrent: recoverCurrent, Acknowledge: sessionmove.Digest(ackContext), UnstartedLaunchAcknowledgment: sessionmove.Digest(ackUnstartedLaunch)})
 			if err != nil {
 				return err
 			}
@@ -204,6 +224,11 @@ exact retryable attempt.`,
 		},
 	}
 	command.Flags().StringVar(&target, "to", "", "target WB machine for cross-machine resume")
+	command.Flags().BoolVar(&current, "current", false, "continue in this registered chat without starting an agent (default)")
+	command.Flags().BoolVar(&recoverCurrent, "recover-current", false, "append a new current-chat actor after proving the previous actor generation gone")
+	command.Flags().BoolVar(&launch, "launch", false, "explicitly start one fresh agent in Herdr")
+	command.Flags().StringVar(&ackContext, "ack-context", "", "agent acknowledgment of the private continuation digest it has read")
+	command.Flags().StringVar(&ackUnstartedLaunch, "ack-unstarted-launch", "", "operator attestation of the exact legacy attempt state after verifying saved positive pre-start failure evidence; current pickup only")
 	command.Flags().StringVar(&via, "via", "", "resume courier (ssh)")
 	command.Flags().StringVar(&configPath, "config", "", "path to wb.yaml (reserved for cross-machine courier configuration)")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
@@ -215,6 +240,10 @@ func writeSessionResumeOutput(command *cobra.Command, format string, output sess
 		encoder.SetIndent("", "  ")
 		return encoder.Encode(output)
 	}
+	if output.Status == "awaiting_context_ack" {
+		_, err := fmt.Fprintf(command.OutOrStdout(), "current-chat pickup prepared for %s; agent must read %s, then run wb session resume %s --current --ack-context %s\n", output.ParkedSessionID, output.ContinuationPath, output.ParkedSessionID, output.ContinuationDigest)
+		return err
+	}
 	verb := "resumed"
 	if output.Replay {
 		verb = "replayed"
@@ -222,4 +251,11 @@ func writeSessionResumeOutput(command *cobra.Command, format string, output sess
 	_, err := fmt.Fprintf(command.OutOrStdout(), "%s parked session %s as successor %s on %s with %d worktrees\n",
 		verb, output.ParkedSessionID, output.SuccessorWBSessionID, output.TargetMachine, output.MemberCount)
 	return err
+}
+
+func displayTerminal(identity sessionterminal.Identity, legacy string) string {
+	if !identity.IsZero() {
+		return "Herdr " + identity.PaneID
+	}
+	return "tmux " + legacy // Immutable historical receipt rendering only.
 }

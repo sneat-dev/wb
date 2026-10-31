@@ -123,7 +123,7 @@ func slCovFakeDeps(t *testing.T, tmux *fakeTmux) dependencies {
 	slCovExecutable(t, bin, "codex")
 	slCovExecutable(t, bin, "wb")
 	return dependencies{
-		tmux:         tmux,
+		terminal:     tmux,
 		lookPath:     func(name string) (string, error) { return filepath.Join(bin, name), nil },
 		wbExecutable: func() (string, error) { return filepath.Join(bin, "wb"), nil },
 		sessionDir:   func(string) (string, error) { return filepath.Join(bin, "sessions"), nil },

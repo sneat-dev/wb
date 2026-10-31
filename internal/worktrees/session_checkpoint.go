@@ -173,6 +173,7 @@ func createSessionCheckpointWithPorts(ctx context.Context, options SessionCheckp
 		normalizedHandoverSummary(options.Handover), normalizedRemainingWork(options.Handover),
 	)
 	request := sessionmove.Request{
+		Transport:              "herdr",
 		SchemaVersion:          sessionmove.RequestSchemaVersion,
 		HandoffID:              handoffID,
 		SuccessorWBSessionID:   successorID,
@@ -385,6 +386,7 @@ func preflightSessionCheckpoint(ctx context.Context, options SessionCheckpointOp
 	// Validate IDs and request-owned identity before mutation using the same
 	// protocol encoder as the final request.
 	probe := sessionmove.Request{
+		Transport:     "herdr",
 		SchemaVersion: sessionmove.RequestSchemaVersion,
 		HandoffID:     handoffID, SuccessorWBSessionID: successorID,
 		PredecessorWBSessionID: options.SourceSession.WBSessionID,
@@ -447,18 +449,16 @@ func inspectSessionMoveWorkLogWithReads(projectsRoot, worktree string, source se
 	if err != nil {
 		return workLogClaim{}, "", err
 	}
-	owners, err := ownerViews(worktree)
+	events, err := reads.readEvents(worktree)
 	if err != nil {
 		return workLogClaim{}, "", fmt.Errorf("inspect Work Log owners: %w", err)
 	}
-	var owner *OwnerView
-	for index := len(owners) - 1; index >= 0; index-- {
-		if owners[index].PID > 0 {
-			owner = &owners[index]
-			break
-		}
+	evidence := effectiveParkOwner(claim.WBSessionID, events)
+	owned, err := evidence.MatchesSource(source)
+	if err != nil {
+		return workLogClaim{}, "", err
 	}
-	if owner == nil || owner.PID != source.PID || owner.PIDStatus != "active" || owner.At.Before(source.StartedAt) {
+	if !owned || !evidence.HasOwner || ownerPIDStatus(source.PID) != "active" {
 		return workLogClaim{}, "", fmt.Errorf("registered source session %s (PID %d) does not own the active Work Log", source.WBSessionID, source.PID)
 	}
 	reference := fmt.Sprintf("worklog:%s/%s/%s", projection.EffortID, projection.RunID, projection.ClaimID)
@@ -637,7 +637,7 @@ func ParkedSessionWorkLogSnapshot(projectsRoot, worktree string, source session.
 }
 
 func parkedSessionWorkLogSnapshotWithReads(projectsRoot, worktree string, source session.Record, reads sessionWorkLogReads) (string, string, error) {
-	_, reference, err := inspectSessionMoveWorkLogWithReads(projectsRoot, worktree, source, reads)
+	claim, reference, err := inspectSessionMoveWorkLogWithReads(projectsRoot, worktree, source, reads)
 	if err != nil {
 		return "", "", err
 	}
@@ -645,17 +645,13 @@ func parkedSessionWorkLogSnapshotWithReads(projectsRoot, worktree string, source
 	if err != nil {
 		return "", "", fmt.Errorf("inspect exact parked owner event: %w", err)
 	}
-	ownerID := ""
-	for _, event := range events {
-		if event.Type == LocalEventOwner && event.Owner != nil {
-			if event.Owner.PID != source.PID {
-				ownerID = ""
-				continue
-			}
-			ownerID = event.ID
-		}
+	evidence := effectiveParkOwner(claim.WBSessionID, events)
+	owned, err := evidence.MatchesSource(source)
+	if err != nil {
+		return "", "", err
 	}
-	if ownerID == "" {
+	ownerID := evidence.EventID
+	if !owned || ownerID == "" {
 		return "", "", fmt.Errorf("registered source session %s is not the exact latest parked owner", source.WBSessionID)
 	}
 	return reference, ownerID, nil

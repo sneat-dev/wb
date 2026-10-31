@@ -422,6 +422,10 @@ jobs:
         run: >-
           go test ./internal/session
           -run '^TestLookupExactRefusesLinkedRecordsAndRequiresLivePID$'
+      - name: Test native Herdr named pipes and scoped registry custody
+        run: >-
+          go test -tags=e2e ./internal/herdr ./internal/session -count=1 -timeout=60s
+          -run '^(TestOriginalHerdrPipeMappingPreservesRecordedNameExactly|TestWindowsHerdrNamedPipeRoundTripAndCancellation|TestWindowsRegistryPrivateScopesAndLifecycle|TestWindowsRegistryLockExcludesAnotherProcess|TestWindowsRegistryLifecyclePublisherFaultsAndImmutableWinner|TestWindowsRegistryLifecyclePublisherRetainsParentAndPrivateCreation|TestWindowsRegistryLifecyclePublisherConcurrentCollisionAndNativeLayout)$'
       - name: Test lifecycle-hook Windows trust
         run: >-
           go test ./internal/lifecyclehooks

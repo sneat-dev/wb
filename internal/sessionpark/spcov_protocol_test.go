@@ -206,7 +206,13 @@ func TestSpCovReceiptEncodeDecodeAndStrictBounds(t *testing.T) {
 
 func TestSpCovValidateReceiptRejectsEveryIdentityConflict(t *testing.T) {
 	t.Parallel()
-	envelope, raw, digest := spCovEnvelopeFixture(t)
+	envelope, _, _ := spCovEnvelopeFixture(t)
+	envelope.Request.SourceModel = "selected-known-model"
+	raw, err := EncodeEnvelope(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := digestEnvelope(raw)
 	request := envelope.Request
 	receipt := validRemoteReceipt(t, RemoteAdmission{Envelope: envelope, Raw: raw, Digest: digest})
 	if err := ValidateReceipt(receipt, request, digest); err != nil {
@@ -669,5 +675,17 @@ func TestSpCovStrictDecodeRejectsTrailingValuesAndUnknownFields(t *testing.T) {
 	}
 	if err := strictDecode([]byte(`{"unknown":1}`), &decoded); err == nil {
 		t.Fatal("unknown field accepted")
+	}
+}
+
+func TestSpCovValidateReceiptAllowsObservedModelOnlyWhenHerdrSelectionWasUnspecified(t *testing.T) {
+	envelope, raw, digest := spCovEnvelopeFixture(t)
+	if envelope.Request.SourceModel != "" || envelope.Request.Transport != "herdr" {
+		t.Fatal("fixture must have unspecified Herdr selection")
+	}
+	receipt := validRemoteReceipt(t, RemoteAdmission{Envelope: envelope, Raw: raw, Digest: digest})
+	receipt.Model = "observed-model"
+	if err := ValidateReceipt(receipt, envelope.Request, digest); err != nil {
+		t.Fatalf("legitimate observed model refused: %v", err)
 	}
 }

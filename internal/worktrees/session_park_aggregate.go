@@ -276,22 +276,26 @@ func parkedSessionWorkLogSnapshotUnderLock(projectsRoot, worktree string, source
 	if err := corroborateProjectionWithPrivateClaim(home, worktree, projection); err != nil {
 		return "", "", fmt.Errorf("corroborate managed Work Log: %w", err)
 	}
+	run, _, err := openWorkLogRun(home, projection.EffortID, projection.RunID, false)
+	if err != nil {
+		return "", "", err
+	}
+	claim, err := readWorkLogClaimAt(run, projection.ClaimID)
+	_ = run.Close()
+	if err != nil {
+		return "", "", err
+	}
 	events, _, err := readLocalEventsForAppend(journal)
 	if err != nil {
 		return "", "", fmt.Errorf("inspect exact parked owner event: %w", err)
 	}
-	ownerID := ""
-	for _, event := range events {
-		if event.Type != LocalEventOwner || event.Owner == nil {
-			continue
-		}
-		if event.Owner.PID == source.PID && !event.Owner.At.Before(source.StartedAt) && ownerPIDStatus(event.Owner.PID) == "active" {
-			ownerID = event.ID
-		} else {
-			ownerID = ""
-		}
+	evidence := effectiveParkOwner(claim.WBSessionID, events)
+	owned, err := evidence.MatchesSource(source)
+	if err != nil {
+		return "", "", err
 	}
-	if ownerID == "" {
+	ownerID := evidence.EventID
+	if !owned || ownerID == "" || ownerPIDStatus(source.PID) != "active" {
 		return "", "", fmt.Errorf("registered source session %s is not the exact latest parked owner", source.WBSessionID)
 	}
 	return fmt.Sprintf("worklog:%s/%s/%s", projection.EffortID, projection.RunID, projection.ClaimID), ownerID, nil

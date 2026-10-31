@@ -25,7 +25,7 @@ func TestSDCovValidateMessagePayloadBranches(t *testing.T) {
 
 	message, raw := courierTestMessage(t)
 	var compact bytes.Buffer
-	if err := json.Compact(&compact, raw); err != nil {
+	if err := json.Indent(&compact, raw, "", "  "); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := validateMessagePayload(compact.Bytes()); err == nil || !strings.Contains(err.Error(), "canonical JSON") {

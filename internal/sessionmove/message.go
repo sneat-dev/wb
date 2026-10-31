@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/sneat-dev/wb/internal/sessionterminal"
 	"os"
 	"regexp"
 	"strings"
@@ -21,7 +22,7 @@ const (
 	messageRecordFileName  = "record.json"
 	messageIntentFileName  = "paste-intent.json"
 	messageReceiptFileName = "receipt.json"
-	maxMessageBytes        = MaxMessageBodyBytes + (16 << 10)
+	maxMessageBytes        = MaxMessagePayloadBytes
 	maxMessageRecordBytes  = 16 << 10
 	maxMessageIntentBytes  = 16 << 10
 	maxMessageReceiptBytes = 32 << 10
@@ -49,19 +50,20 @@ type MessageRecord struct {
 	RecordedAt    time.Time        `json:"recorded_at"`
 }
 
-// MessagePasteIntent is published before the sole automatic tmux paste
+// MessagePasteIntent is published before the sole automatic Herdr submission
 // attempt. Its presence without a receipt is deliberately ambiguous: replay
 // must not paste again automatically.
 type MessagePasteIntent struct {
-	SchemaVersion        int       `json:"schema_version"`
-	MessageID            string    `json:"message_id"`
-	MessageDigest        Digest    `json:"message_digest"`
-	HandoffID            string    `json:"handoff_id"`
-	RecipientWBSessionID string    `json:"recipient_wb_session_id"`
-	TmuxName             string    `json:"tmux_name"`
-	PaneID               string    `json:"pane_id"`
-	PID                  int       `json:"pid"`
-	IntendedAt           time.Time `json:"intended_at"`
+	SchemaVersion        int                      `json:"schema_version"`
+	MessageID            string                   `json:"message_id"`
+	MessageDigest        Digest                   `json:"message_digest"`
+	HandoffID            string                   `json:"handoff_id"`
+	RecipientWBSessionID string                   `json:"recipient_wb_session_id"`
+	TmuxName             string                   `json:"tmux_name"`
+	Terminal             sessionterminal.Identity `json:"terminal,omitzero"`
+	PaneID               string                   `json:"pane_id"`
+	PID                  int                      `json:"pid"`
+	IntendedAt           time.Time                `json:"intended_at"`
 }
 
 // MessageState is one loaded durable outbox or inbox entry.
@@ -96,7 +98,7 @@ func (r MessageReceipt) validate() error {
 	for field, value := range map[string]string{
 		"message_id": r.MessageID, "handoff_id": r.HandoffID,
 		"sender_wb_session_id": r.SenderWBSessionID, "recipient_wb_session_id": r.RecipientWBSessionID,
-		"reply_to_wb_session_id": r.ReplyToWBSessionID, "tmux_name": r.TmuxName,
+		"reply_to_wb_session_id": r.ReplyToWBSessionID,
 	} {
 		if err := validateID(field, value); err != nil {
 			return err
@@ -108,8 +110,8 @@ func (r MessageReceipt) validate() error {
 	if r.Kind != MessageKindText && r.Kind != MessageKindRequestHandoff {
 		return fmt.Errorf("message receipt kind %q is unsupported", r.Kind)
 	}
-	if !tmuxPaneIDPattern.MatchString(r.PaneID) {
-		return fmt.Errorf("pane_id %q is not a canonical tmux pane ID", r.PaneID)
+	if err := validateMessagePane(r.RecipientWBSessionID, r.TmuxName, r.Terminal, r.PaneID); err != nil {
+		return err
 	}
 	if r.PID <= 0 {
 		return fmt.Errorf("message receipt pid must be positive")
@@ -127,7 +129,7 @@ func (r MessageReceipt) validate() error {
 }
 
 // ValidateMessageReceipt binds an acknowledgement to exact message bytes and
-// the previously corroborated tmux identity. Success means recorded+pasted;
+// the previously corroborated terminal identity. Success means recorded+pasted;
 // it never means processed by the harness.
 func ValidateMessageReceipt(receipt MessageReceipt, message Message, digest Digest, tmuxName string, pid int) error {
 	if err := receipt.validate(); err != nil {
@@ -143,7 +145,7 @@ func ValidateMessageReceipt(receipt MessageReceipt, message Message, digest Dige
 		receipt.SenderWBSessionID != message.SenderWBSessionID || receipt.RecipientWBSessionID != message.RecipientWBSessionID ||
 		receipt.ReplyToWBSessionID != message.ReplyToWBSessionID || receipt.Kind != message.Kind ||
 		receipt.TmuxName != tmuxName || receipt.PID != pid {
-		return fmt.Errorf("%w: message receipt does not match exact message and tmux identity", ErrHandoffConflict)
+		return fmt.Errorf("%w: message receipt does not match exact message and terminal identity", ErrHandoffConflict)
 	}
 	return nil
 }
@@ -368,6 +370,9 @@ func (s Store) SaveIncomingPasteIntentUnderLock(lock *ExecutionLock, handoffID s
 	if err := validatePasteIntent(intent, state); err != nil {
 		return MessagePasteIntent{}, false, err
 	}
+	if err := validateIntentHandoff(intent, handoffReceipt); err != nil {
+		return MessagePasteIntent{}, false, err
+	}
 	raw, err := s.marshal(intent)
 	if err != nil {
 		return MessagePasteIntent{}, false, err
@@ -417,7 +422,7 @@ func (s Store) saveMessageReceiptUnderLock(lock *ExecutionLock, handoffID string
 	if err != nil {
 		return MessageReceipt{}, false, err
 	}
-	if err := ValidateMessageReceipt(receipt, state.Message, state.Digest, handoffReceipt.TmuxName, handoffReceipt.PID); err != nil {
+	if err := ValidateMessageReceiptForHandoff(receipt, state.Message, state.Digest, *handoffReceipt); err != nil {
 		return MessageReceipt{}, false, err
 	}
 	if direction == MessageDirectionIncoming {
@@ -425,7 +430,7 @@ func (s Store) saveMessageReceiptUnderLock(lock *ExecutionLock, handoffID string
 			return MessageReceipt{}, false, fmt.Errorf("incoming message receipt requires a durable paste intent")
 		}
 		if receipt.RecordedAt != state.Record.RecordedAt || receipt.PaneID != state.Intent.PaneID ||
-			receipt.TmuxName != state.Intent.TmuxName || receipt.PID != state.Intent.PID || receipt.PastedAt.Before(state.Intent.IntendedAt) {
+			receipt.TmuxName != state.Intent.TmuxName || receipt.Terminal != state.Intent.Terminal || receipt.PID != state.Intent.PID || receipt.PastedAt.Before(state.Intent.IntendedAt) {
 			return MessageReceipt{}, false, fmt.Errorf("%w: incoming message receipt does not match its durable record and paste intent", ErrHandoffConflict)
 		}
 	}
@@ -486,6 +491,9 @@ func loadMessageStateAt(directory *os.File, request Request, direction MessageDi
 		if validateErr := validatePasteIntent(intent, state); validateErr != nil {
 			return MessageState{}, validateErr
 		}
+		if err := validateIntentHandoff(intent, handoffReceipt); err != nil {
+			return MessageState{}, err
+		}
 		state.Intent = &intent
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return MessageState{}, err
@@ -499,12 +507,12 @@ func loadMessageStateAt(directory *os.File, request Request, direction MessageDi
 		if handoffReceipt == nil {
 			return MessageState{}, fmt.Errorf("durable message receipt has no completed handoff receipt authority")
 		}
-		if validateErr := ValidateMessageReceipt(receipt, message, digest, handoffReceipt.TmuxName, handoffReceipt.PID); validateErr != nil {
+		if validateErr := ValidateMessageReceiptForHandoff(receipt, message, digest, *handoffReceipt); validateErr != nil {
 			return MessageState{}, validateErr
 		}
 		if direction == MessageDirectionIncoming {
 			if state.Intent == nil || receipt.RecordedAt != state.Record.RecordedAt || receipt.PaneID != state.Intent.PaneID ||
-				receipt.TmuxName != state.Intent.TmuxName || receipt.PID != state.Intent.PID || receipt.PastedAt.Before(state.Intent.IntendedAt) {
+				receipt.TmuxName != state.Intent.TmuxName || receipt.Terminal != state.Intent.Terminal || receipt.PID != state.Intent.PID || receipt.PastedAt.Before(state.Intent.IntendedAt) {
 				return MessageState{}, fmt.Errorf("%w: durable inbox receipt does not match its record and paste intent", ErrHandoffConflict)
 			}
 		}
@@ -541,17 +549,19 @@ func decodeMessagePasteIntent(raw []byte) (MessagePasteIntent, error) {
 	if err := decodeJSON(raw, &intent); err != nil {
 		return MessagePasteIntent{}, fmt.Errorf("decode message paste intent: %w", err)
 	}
-	if intent.SchemaVersion != MessagePasteIntentSchemaVersion || intent.IntendedAt.IsZero() || intent.PID <= 0 ||
-		!tmuxPaneIDPattern.MatchString(intent.PaneID) {
+	if intent.SchemaVersion != MessagePasteIntentSchemaVersion || intent.IntendedAt.IsZero() || intent.PID <= 0 {
 		return MessagePasteIntent{}, fmt.Errorf("message paste intent is invalid")
 	}
 	for field, value := range map[string]string{
 		"message_id": intent.MessageID, "handoff_id": intent.HandoffID,
-		"recipient_wb_session_id": intent.RecipientWBSessionID, "tmux_name": intent.TmuxName,
+		"recipient_wb_session_id": intent.RecipientWBSessionID,
 	} {
 		if err := validateID(field, value); err != nil {
 			return MessagePasteIntent{}, err
 		}
+	}
+	if err := validateMessagePane(intent.RecipientWBSessionID, intent.TmuxName, intent.Terminal, intent.PaneID); err != nil {
+		return MessagePasteIntent{}, fmt.Errorf("message paste intent is invalid: %w", err)
 	}
 	if err := intent.MessageDigest.validate(); err != nil {
 		return MessagePasteIntent{}, err
@@ -560,9 +570,11 @@ func decodeMessagePasteIntent(raw []byte) (MessagePasteIntent, error) {
 }
 
 func validatePasteIntent(intent MessagePasteIntent, state MessageState) error {
-	if intent.SchemaVersion != MessagePasteIntentSchemaVersion || intent.IntendedAt.IsZero() || intent.PID <= 0 ||
-		!tmuxPaneIDPattern.MatchString(intent.PaneID) {
+	if intent.SchemaVersion != MessagePasteIntentSchemaVersion || intent.IntendedAt.IsZero() || intent.PID <= 0 {
 		return fmt.Errorf("message paste intent is invalid")
+	}
+	if err := validateMessagePane(intent.RecipientWBSessionID, intent.TmuxName, intent.Terminal, intent.PaneID); err != nil {
+		return fmt.Errorf("message paste intent is invalid: %w", err)
 	}
 	if intent.MessageID != state.Message.MessageID || intent.MessageDigest != state.Digest ||
 		intent.HandoffID != state.Message.HandoffID || intent.RecipientWBSessionID != state.Message.RecipientWBSessionID {
@@ -616,4 +628,40 @@ func openSecureDirectoryAtWithStat(parent *os.File, name string, create bool, la
 		return nil, fmt.Errorf("%s directory is not mode 0700", label)
 	}
 	return directory, nil
+}
+
+func validateMessagePane(recipient, legacy string, terminal sessionterminal.Identity, pane string) error {
+	if err := sessionterminal.ValidateReceipt(recipient, legacy, terminal); err != nil {
+		return err
+	}
+	if terminal.IsZero() {
+		if !tmuxPaneIDPattern.MatchString(pane) {
+			return fmt.Errorf("pane_id is not a canonical legacy pane ID")
+		}
+	} else if pane != terminal.PaneID {
+		return fmt.Errorf("pane_id differs from exact Herdr receipt identity")
+	}
+	return nil
+}
+
+func validateIntentHandoff(intent MessagePasteIntent, receipt *Receipt) error {
+	if receipt != nil && receipt.Terminal.IsZero() && intent.Terminal.IsZero() {
+		return nil
+	}
+	if receipt == nil || intent.TmuxName != receipt.TmuxName || intent.Terminal != receipt.Terminal || intent.PID != receipt.PID {
+		return fmt.Errorf("%w: message intent differs from exact handoff terminal identity", ErrHandoffConflict)
+	}
+	return nil
+}
+
+// ValidateMessageReceiptForHandoff binds new Herdr coordinates as well as the
+// immutable legacy convention; existing receipt encoding/digests stay intact.
+func ValidateMessageReceiptForHandoff(receipt MessageReceipt, message Message, digest Digest, handoff Receipt) error {
+	if err := ValidateMessageReceipt(receipt, message, digest, handoff.TmuxName, handoff.PID); err != nil {
+		return err
+	}
+	if receipt.Terminal != handoff.Terminal {
+		return fmt.Errorf("%w: message receipt differs from exact handoff Herdr identity", ErrHandoffConflict)
+	}
+	return nil
 }

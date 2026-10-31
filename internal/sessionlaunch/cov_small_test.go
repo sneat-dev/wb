@@ -383,21 +383,6 @@ func TestSlCovEqualHelpersDetectDivergence(t *testing.T) {
 	}
 }
 
-func TestSlCovBoundedTmuxDetailTruncatesAndFlattens(t *testing.T) {
-	t.Parallel()
-	long := strings.Repeat("a", 4096)
-	got := boundedTmuxDetail([]byte("line one\r\nline two\n" + long))
-	if len(got) != 1024 {
-		t.Fatalf("bounded detail length = %d, want 1024", len(got))
-	}
-	if strings.ContainsAny(got, "\r\n") {
-		t.Fatalf("bounded detail retained newlines: %q", got[:32])
-	}
-	if got := boundedTmuxDetail([]byte("  spaced \n")); got != "spaced" {
-		t.Fatalf("bounded detail = %q", got)
-	}
-}
-
 func TestSlCovDigestRoundTripMatchesRequestDigest(t *testing.T) {
 	t.Parallel()
 	plan := slCovPlan("handoff-123")

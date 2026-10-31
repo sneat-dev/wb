@@ -8,8 +8,8 @@ import (
 // NoneTransport is the first-class no-op transport
 // REQ:none-transport-is-first-class requires: every method returns a plain,
 // honest, non-error outcome, because there never was anywhere live to
-// deliver to. It is the transport a session resolves to when neither herdr
-// nor tmux identity is observable (REQ:identity-capture-outside-herdr,
+// deliver to. It is the transport a session resolves to when no Herdr
+// identity is observable (REQ:identity-capture-outside-herdr,
 // Task 5's to wire onto this type). The zero value is ready to use.
 type NoneTransport struct{}
 

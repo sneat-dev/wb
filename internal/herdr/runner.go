@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -27,12 +28,34 @@ type execRunner struct{}
 func (execRunner) Run(ctx context.Context, binary string, args []string, env []string) ([]byte, []byte, error) {
 	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Env = env
-	var stdout, stderr bytes.Buffer
+	stdout, stderr := boundedCommandOutput{limit: 1 << 20}, boundedCommandOutput{limit: 16 << 10}
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
-	return stdout.Bytes(), stderr.Bytes(), err
+	if stdout.exceeded || stderr.exceeded {
+		return nil, nil, fmt.Errorf("%w: Herdr command output exceeded bounded capture", ErrCommandFailed)
+	}
+	return stdout.buffer.Bytes(), stderr.buffer.Bytes(), err
 }
+
+type boundedCommandOutput struct {
+	buffer   bytes.Buffer
+	limit    int
+	exceeded bool
+}
+
+func (b *boundedCommandOutput) Write(raw []byte) (int, error) {
+	length := len(raw)
+	remaining := b.limit - b.buffer.Len()
+	if remaining < len(raw) {
+		b.exceeded = true
+		raw = raw[:max(0, remaining)]
+	}
+	_, _ = b.buffer.Write(raw)
+	return length, nil
+}
+
+var _ io.Writer = (*boundedCommandOutput)(nil)
 
 // osEnviron is os.Environ, seamed so a test can prove [buildEnv] overrides
 // an ambient HERDR_SOCKET_PATH without needing a real subprocess.

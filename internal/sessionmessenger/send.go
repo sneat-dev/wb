@@ -25,7 +25,7 @@ type Hooks struct {
 }
 
 // WorkLogRecord is the exact source-side evidence recorded only after the
-// target has acknowledged durable recording plus a successful tmux paste.
+// target has acknowledged durable recording plus a successful Herdr submission.
 type WorkLogRecord struct {
 	ProjectsRoot   string
 	Request        sessionmove.Request
@@ -143,6 +143,9 @@ func Send(ctx context.Context, options Options) (Result, error) {
 		}
 		return result, nil
 	}
+	if err := sessionmove.RequireActionableMessage(messageState.Message); err != nil {
+		return result, err
+	}
 	if options.Hooks.BeforeCourier != nil {
 		if err := options.Hooks.BeforeCourier(messageState); err != nil {
 			return result, deliveryError(result, err)
@@ -161,7 +164,7 @@ func Send(ctx context.Context, options Options) (Result, error) {
 	if err != nil {
 		return result, deliveryError(result, err)
 	}
-	if err := sessionmove.ValidateMessageReceipt(receipt, messageState.Message, messageState.Digest, address.TmuxName, address.PID); err != nil {
+	if err := sessionmove.ValidateMessageReceiptForHandoff(receipt, messageState.Message, messageState.Digest, *state.Receipt); err != nil {
 		return result, deliveryError(result, fmt.Errorf("validate target acknowledgement: %w", err))
 	}
 	receipt, receiptReplay, err := options.Store.SaveOutgoingMessageReceiptUnderLock(lock, address.HandoffID, address.RequestDigest, receipt)

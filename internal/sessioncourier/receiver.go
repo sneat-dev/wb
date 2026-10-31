@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/sneat-dev/wb/internal/sessionterminal"
 	"io"
 	"path/filepath"
 	"strings"
 
+	"github.com/sneat-dev/wb/internal/sessionauthority"
 	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/sessionreceive"
 )
@@ -111,16 +113,12 @@ func validateReceiverResult(result sessionreceive.Result, request sessionmove.Re
 	if successor.Runtime != wantRuntime {
 		return fmt.Errorf("response successor runtime %q does not match requested runtime %q", successor.Runtime, wantRuntime)
 	}
-	wantModel := ""
-	if wantRuntime == strings.TrimSpace(request.SourceRuntime) {
-		wantModel = strings.TrimSpace(request.SourceModel)
-	}
-	if successor.Model != wantModel {
+	wantModel := sessionauthority.SelectedModel(request.SourceRuntime, request.SourceModel, wantRuntime, request.RequestedModel)
+	if !successor.Terminal.MatchesModel(wantModel, successor.Model) {
 		return fmt.Errorf("response successor model %q does not match expected model %q", successor.Model, wantModel)
 	}
-	wantTmuxName := "wb-session-" + request.SuccessorWBSessionID
-	if successor.TmuxName != wantTmuxName {
-		return fmt.Errorf("response successor tmux_name %q does not match %q", successor.TmuxName, wantTmuxName)
+	if err := sessionterminal.ValidateBoundReceipt(request.SuccessorWBSessionID, successor.TmuxName, successor.Terminal); err != nil {
+		return err
 	}
 	if successor.PinnedCommit != request.BundleCommit {
 		return fmt.Errorf("response successor pinned_commit %q does not match bundle_commit %q", successor.PinnedCommit, request.BundleCommit)
@@ -140,9 +138,11 @@ func validateReceiverResult(result sessionreceive.Result, request sessionmove.Re
 	if successor.AttemptID != receipt.AttemptID || successor.AttemptIndex != receipt.AttemptIndex || successor.PID != receipt.PID {
 		return fmt.Errorf("response successor launch attempt does not match completion receipt")
 	}
-	// Both identities and tmux names are already bound to the same request:
-	// ValidateReceiptForRequest checks the receipt, and the checks above bind
-	// the successor. Only fields not fixed by that request need comparison.
+	// Herdr coordinates are allocated on the target, so request validation alone
+	// cannot prove that these two independently valid identities name one pane.
+	if successor.Terminal != receipt.Terminal || successor.TmuxName != receipt.TmuxName {
+		return fmt.Errorf("response successor terminal identity does not match completion receipt")
+	}
 	if successor.Runtime != receipt.Runtime || successor.Model != receipt.Model || successor.NativeHarnessID != receipt.NativeHarnessID {
 		return fmt.Errorf("response successor harness identity does not match completion receipt")
 	}

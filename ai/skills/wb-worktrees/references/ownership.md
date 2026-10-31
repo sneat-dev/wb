@@ -40,8 +40,9 @@ wb worktree create <task> --mode agent --model <exact-model> \
 Use `$PPID` from the harness tool-call shell. Never use `$$`: that is the
 intermediate shell and would leave claims attached to a process that exits
 immediately. If the shell tail-execs its final command, WB may see a Codex
-app-server as its direct parent; WB accepts that parent only when kernel
-process evidence confirms the `codex` executable and `app-server` role. To
+harness as its direct parent; kernel evidence must identify the actual Codex
+executable, whether interactive CLI or Desktop app-server. Both may host multiple
+native threads. To
 keep the shell alive for older builds, use:
 
 ```sh
@@ -57,15 +58,17 @@ confirms a declaration rather than guessing an owner, since an unregistered
 ancestor is never treated as one.
 
 Registration assigns a stable WB session ID and records the local machine.
-The ID is independent of the PID and any harness-native session ID, and is
-preserved when the same PID re-registers. A WB-managed successor supplies its
+The ID is independent of the PID and any harness-native session ID. Re-registering
+the same native chat preserves its logical WB identity. Parallel Codex chats may
+share the same app-server PID: WB stores validated native scopes separately and
+never inherits another chat's WB identity or custody. `CODEX_THREAD_ID` identifies each chat; `CODEX_SESSION_ID` is shared root
+context and never an ownership key; recipient/source lookup uses the recorded namespace. A WB-managed successor supplies its
 preallocated identity and lineage explicitly:
 
 ```sh
 wb session register --pid 12345 --wb-session-id wbs-successor \
   --machine hetzner-vm1 --runtime codex --model unknown \
   --native-harness-id native-123 \
-  --tmux-name wb-session-wbs-successor \
   --predecessor-wb-session-id wbs-source --handoff-id handoff-123
 ```
 
@@ -201,12 +204,13 @@ remote `wb_path` as the handoff's immutable courier route. It sends the
 canonical request bytes only on SSH stdin, with batch mode, no TTY, bounded
 timeouts, and no request data in remote argv. An SSH failure never falls back
 to another courier. The target's validated `remote.machine` must match the
-request, with `tmux` and the selected harness available on its `PATH`.
+request, with original Herdr TUI 0.9.1 and the selected harness available on
+its `PATH`, plus a running explicitly selected Herdr server.
 
 Successful delivery means the target has verified the exact pinned worktree,
 registered the preallocated WB successor identity, and started the selected
-harness in detached tmux named
-`wb-session-<successor-wb-session-id>`. The reported phase is
+harness in a fresh owned Herdr workspace/pane, retaining its socket, exact
+process generation and native harness session in the receipt. The reported phase is
 `successor_started`; the predecessor remains active until a later valid
 receipt transfers custody.
 
@@ -260,8 +264,18 @@ containing every worktree owned by the active session. The context file may be
 `-` for stdin and is read as a bounded, regular, no-follow private input. It
 preserves dirty local work and does not commit, push, or remove any worktree.
 Local `wb session pickup <parked-session-id>` (alias of `wb session resume`)
-launches one fresh successor and attaches it to every retained member. Before a fresh launch claims its route or
-changes custody, it preflights the fixed tmux, harness, and WB executables. An
+continues in the current registered chat. It returns a private continuation path
+and digest; the agent reads that file and repeats pickup with `--current
+--ack-context <digest>` itself. The user never copies context or acknowledgment.
+WB attaches the same logical successor to every retained member while holding
+all custody locks and the native-scoped registry transition barrier. Without an
+identifiable caller it refuses, never silently spawns an agent. Use `--launch`
+for a new local Herdr successor or `--to <machine>` for a remote successor.
+`--recover-current` appends a new actor only after conclusive old-process
+generation death; no immutable record is rewritten. Replaying a checkpoint
+after its successor parks again refuses and points at the newer checkpoint.
+Before explicit launch claims its route or changes custody, WB preflights the
+fixed Herdr, harness and WB executables. An
 early harness exit retains its exit status and a bounded terminal diagnostic;
 retry uses the same receipt-gated attempt evidence rather than allocating a
 second successor silently.
@@ -271,7 +285,8 @@ second successor silently.
 `wb session receive-park` accepts one bounded canonical parked-session envelope
 on stdin. It authenticates the local target and returns only a durable target
 receipt; private continuation is never printed. The public command is
-implemented, but source resume and coordinator launch remain gated.
+implemented with source resume and all-member coordinator barriers. A target
+receipt alone never substitutes for validating source custody.
 
 ```sh
 wb session receive-park --format json
@@ -295,14 +310,14 @@ missing), fetches the declared branch directly, and requires the live tip to
 equal the exact bundle commit. It then verifies source ancestry and the tracked
 handover blob before creating or reusing one clean linked worktree pinned to
 that commit. It then selects a fixed Codex or Claude Code argv, creates or
-reuses the deterministic tmux session, registers the preallocated WB identity
-against the exact pane PID, and releases that process to `exec` the harness
+reuses its exact owned Herdr attempt, registers the preallocated WB identity
+against the exact pane PID and process generation, and releases that process to `exec` the harness
 only after registration and PID binding are durable.
 
 A moved branch, wrong remote, missing/non-ancestor commit, digest mismatch, or
 unsafe existing worktree records an actionable failed phase before any
 successor can be released. Identical retries serialize by handoff ID and reuse
-the matching worktree, launch state, tmux session, and successor PID; a
+the matching worktree, launch state, Herdr identity and successor PID; a
 completed `successor_started` replay performs no Git fetch. The receiver does
 not create a receipt or change predecessor custody in this stage.
 
@@ -310,7 +325,7 @@ not create a receipt or change predecessor custody in this stage.
 
 After a completed move, address the successor only by the stable WB session ID
 printed in the receipt. WB resolves the immutable successor address and its
-recorded SSH or Synchestra courier; there is no host, runner, tmux, or PID
+recorded courier; there is no host, runner, terminal, or PID
 override on these commands.
 
 ```sh
@@ -324,8 +339,12 @@ standard recall message (`request_handoff` on the wire) has an empty body; its
 typed kind and `reply_to_wb_session_id` identify the predecessor to which
 control should return. `wb session request-handoff` remains an alias of `recall`.
 WB durably records the exact canonical JSON before courier use, and the
-receiver pastes those exact typed bytes through a verified named tmux buffer.
-Acknowledgement proves durable recording and paste to the recorded live pane;
+receiver submits the exact compact ASCII-escaped schema-2 typed bytes through
+one original Herdr `agent_prompt`. A durable intent precedes the cancellable PID
+barrier, complete registry/terminal recheck and submission. A logical recipient
+replacement cannot receive stale input. Legacy schema-1 messages stay readable;
+new submission requires a new message ID, never automatic rewriting.
+Acknowledgment proves recording and submission to the recorded live pane;
 it does not assert that the agent processed the input.
 
 If delivery is ambiguous, use the exact successor and message ID printed by

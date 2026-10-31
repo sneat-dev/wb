@@ -200,12 +200,13 @@ type collaborationLegacyPorts struct {
 	readManifest func(string) (Manifest, error)
 	processAlive func(int) bool
 	lookupExact  func(string, int) (session.Record, bool, error)
+	lookupOwner  func(string, []worktreejournal.LocalWorkLogEvent) (session.Record, bool, error)
 }
 
 func defaultCollaborationLegacyPorts() collaborationLegacyPorts {
 	return collaborationLegacyPorts{openLocal: openLocalWorkLogDir, lock: lockCollaborationLegacyJournal,
 		readEvents: readLocalEventsForAppend, readManifest: ReadManifest,
-		processAlive: session.ProcessAlive, lookupExact: session.LookupExact}
+		processAlive: session.ProcessAlive, lookupExact: session.LookupExact, lookupOwner: lookupCollaborationOwner}
 }
 
 func (ports collaborationLegacyPorts) observe(worktree, sessionDirectory string, create bool) (worktreecollab.ObservedOwner, error) {
@@ -240,9 +241,20 @@ func (ports collaborationLegacyPorts) observe(worktree, sessionDirectory string,
 			observation.Status = "inactive"
 			return observation, nil
 		}
-		record, live, err := ports.lookupExact(sessionDirectory, owner.PID)
+		var record session.Record
+		var live bool
+		var err error
+		if ports.lookupOwner != nil {
+			record, live, err = ports.lookupOwner(sessionDirectory, events)
+		} else {
+			record, live, err = ports.lookupExact(sessionDirectory, owner.PID)
+		}
+		matchesAgent := (AgentIdentity{Runtime: record.Runtime, AgentID: record.NativeHarnessID}).Agent() == owner.Agent
+		if ports.lookupOwner != nil {
+			matchesAgent = true
+		}
 		if err == nil && live && record.Lifecycle == "" && record.WBSessionID != "" &&
-			(AgentIdentity{Runtime: record.Runtime, AgentID: record.NativeHarnessID}).Agent() == owner.Agent &&
+			matchesAgent &&
 			!record.StartedAt.After(owner.At) {
 			observation.SessionID = record.WBSessionID
 			observation.Status = "live"
@@ -270,4 +282,43 @@ func (ports collaborationLegacyPorts) observeManifest(worktree string) (worktree
 func legacyOwnerObservationID(record, agent string, pid int) string {
 	sum := sha256.Sum256([]byte(record + "\x00" + agent + "\x00" + strconv.Itoa(pid)))
 	return "legacy-" + hex.EncodeToString(sum[:])
+}
+
+// The journal event and registered record jointly define ownership. A physical
+// PID alone cannot select a recipient when Codex hosts more than one chat.
+func lookupCollaborationOwner(directory string, events []worktreejournal.LocalWorkLogEvent) (session.Record, bool, error) {
+	evidence := effectiveParkOwner("", events)
+	if !evidence.HasOwner {
+		return session.Record{}, false, nil
+	}
+	views, err := session.List(directory)
+	if err != nil {
+		return session.Record{}, false, err
+	}
+	var selected session.Record
+	found := false
+	for _, view := range views {
+		if view.State != session.StateLive || view.PID != evidence.Owner.PID {
+			continue
+		}
+		matches, err := evidence.MatchesSource(view.Record)
+		if err != nil {
+			return session.Record{}, false, err
+		}
+		if !matches {
+			continue
+		}
+		record, live, err := session.LookupActiveRecordExact(directory, view.Record)
+		if err != nil {
+			return session.Record{}, false, err
+		}
+		if !live {
+			continue
+		}
+		if found {
+			return session.Record{}, false, fmt.Errorf("current worktree owner is ambiguous across native chats")
+		}
+		selected, found = record, true
+	}
+	return selected, found, nil
 }

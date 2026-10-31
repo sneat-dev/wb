@@ -247,9 +247,9 @@ wb worktree create <task> --mode agent --model <exact-model> \
 
 `$PPID` from the harness tool-call shell identifies the live agent; `$$` is an
 intermediate shell and is rejected. If the shell tail-execs its final command,
-WB may see a Codex app-server as its direct parent; WB accepts that parent only
-when kernel process evidence confirms the `codex` executable and `app-server`
-role. To keep the shell alive for older builds, use:
+WB may see the Codex harness as its direct parent. Kernel process evidence
+must identify the actual `codex` executable; interactive CLI and Desktop
+app-server both qualify and can host multiple native threads. To keep the shell alive for older builds, use:
 
 ```sh
 wb session register --pid "$PPID" --runtime codex --model <exact-model>; status=$?; exit "$status"

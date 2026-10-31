@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 
 	"gopkg.in/yaml.v3"
 
@@ -98,11 +97,11 @@ func mappingValue(document yaml.Node, key string) (yaml.Node, bool, error) {
 	return yaml.Node{}, false, nil
 }
 
-// PrerequisiteCheck reports whether kind's runtime prerequisite (a tmux
-// binary on PATH, a resolvable herdr binary) is usable right now. It
+// PrerequisiteCheck reports whether kind's runtime prerequisite (a resolvable
+// Herdr binary) is usable right now. It
 // returns a descriptive error rather than a bool so [ResolveOverride]'s
 // refusal is actionable, per REQ:explicit-transport-override. A check that
-// has nothing to say about kind (a herdr check asked about tmux) MUST
+// has nothing to say about kind (a Herdr check asked about none) MUST
 // return nil, not an unrelated error.
 type PrerequisiteCheck func(kind Kind) error
 
@@ -120,31 +119,6 @@ func ComposeChecks(checks ...PrerequisiteCheck) PrerequisiteCheck {
 			if err := check(kind); err != nil {
 				return err
 			}
-		}
-		return nil
-	}
-}
-
-// LookPath matches exec.LookPath's signature. Production code passes
-// exec.LookPath (the default when nil is given to [CheckTmuxBinary]); tests
-// pass a fake so no test result depends on the host's actual PATH.
-type LookPath func(file string) (string, error)
-
-// CheckTmuxBinary is a [PrerequisiteCheck] for [KindTmux]: it fails closed,
-// naming the missing binary, when tmux cannot be resolved on PATH. It
-// reports nil for every other [Kind]. A nil lookPath defaults to
-// exec.LookPath.
-func CheckTmuxBinary(lookPath LookPath) PrerequisiteCheck {
-	return func(kind Kind) error {
-		if kind != KindTmux {
-			return nil
-		}
-		resolve := lookPath
-		if resolve == nil {
-			resolve = exec.LookPath
-		}
-		if _, err := resolve("tmux"); err != nil {
-			return fmt.Errorf("%w: tmux binary not found on PATH: %w", ErrOverridePrerequisiteUnavailable, err)
 		}
 		return nil
 	}
@@ -177,11 +151,10 @@ func CheckHerdrBinary(lookup herdr.EnvLookup) PrerequisiteCheck {
 
 // defaultPrerequisiteCheck is what [ResolveOverride] applies when its check
 // argument is nil, so nil never means "skip validation" — a nil check must
-// still enforce tmux's binary-on-PATH check and herdr's binary-resolution
-// check, both against the real process environment. It is a package var,
+// still enforce Herdr's binary-resolution check, both against the real process environment. It is a package var,
 // not a direct call, only so a test can substitute a fake without touching
 // the real PATH or environment.
-var defaultPrerequisiteCheck PrerequisiteCheck = ComposeChecks(CheckTmuxBinary(nil), CheckHerdrBinary(nil))
+var defaultPrerequisiteCheck PrerequisiteCheck = CheckHerdrBinary(nil)
 
 // ErrOverrideInvalid means an explicit override named a value that is not
 // one of the transports WB actually ships (REQ:explicit-transport-override).

@@ -79,22 +79,19 @@ func harnessSpecForAuthority(authority sessionauthority.Launch, worktree string)
 	if err != nil {
 		return HarnessSpec{}, err
 	}
-	model := strings.TrimSpace(authority.RequestedModel)
-	if model == "" && runtime == strings.TrimSpace(authority.SourceRuntime) {
-		model = strings.TrimSpace(authority.SourceModel)
-	}
+	model := sessionauthority.SelectedModel(authority.SourceRuntime, authority.SourceModel, runtime, authority.RequestedModel)
 	prompt := launchPromptForAuthority(authority)
 	switch runtime {
 	case RuntimeCodex:
 		args := []string{"-C", worktree}
-		if model != "" {
+		if model != "" && !strings.EqualFold(model, "unknown") {
 			args = append(args, "-m", model)
 		}
 		args = append(args, prompt)
 		return HarnessSpec{Runtime: runtime, Model: model, Executable: "codex", Args: args}, nil
 	default: // NormalizeRuntime admits only Codex or Claude Code.
 		args := make([]string, 0, 5)
-		if model != "" {
+		if model != "" && !strings.EqualFold(model, "unknown") {
 			args = append(args, "--model", model)
 		}
 		args = append(args, "--name", authority.SuccessorWBSessionID, prompt)

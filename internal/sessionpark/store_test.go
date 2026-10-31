@@ -11,6 +11,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessionmove"
+	"github.com/sneat-dev/wb/internal/sessionterminal"
 )
 
 func testBundle(t *testing.T) Bundle {
@@ -543,9 +544,14 @@ func validRemoteReceipt(t *testing.T, admission RemoteAdmission) Receipt {
 		members[index] = ReceiptMember{MemberID: member.MemberID, Repository: member.Repository, TargetPath: "/tmp/target-" + member.MemberID,
 			Pin: MemberPin(request.ResumeID, member.MemberID), Commit: member.Commit, TargetWorkLogReference: reference}
 	}
-	return Receipt{SchemaVersion: ReceiptSchemaVersion, ResumeID: request.ResumeID, RequestDigest: admission.Digest,
+	receipt := Receipt{SchemaVersion: ReceiptSchemaVersion, ResumeID: request.ResumeID, RequestDigest: admission.Digest,
 		ParkedSessionID: request.ParkedSessionID, SuccessorWBSessionID: request.SuccessorWBSessionID,
 		PredecessorWBSessionID: request.PredecessorWBSessionID, TargetMachine: request.TargetMachine,
 		TmuxName: "wb-session-" + request.SuccessorWBSessionID, Runtime: request.SourceRuntime, Model: request.SourceModel,
 		AttemptID: "000001-11111111111111111111111111111111", AttemptIndex: 1, PID: os.Getpid(), StartedAt: time.Unix(150, 0).UTC(), Members: members}
+	if request.Transport == "herdr" {
+		receipt.TmuxName = ""
+		receipt.Terminal = sessionterminal.Identity{Kind: "herdr", Socket: filepath.Join(os.TempDir(), "wb-owned-herdr-fixture.sock"), WorkspaceID: "workspace-owned", PaneID: "pane-owned"}
+	}
+	return receipt
 }

@@ -54,3 +54,24 @@ func TestProcessEvidenceMatchesCodexAppServerByExecutableAndRole(t *testing.T) {
 		})
 	}
 }
+
+func TestObservedHarnessDiscoverySeparatesCodexCLIFromDesktopRole(t *testing.T) {
+	t.Parallel()
+	for _, evidence := range []ProcessEvidence{
+		{Executable: "/owned/bin/codex", Args: []string{"codex"}},
+		{Executable: "/owned/bin/codex", Args: []string{"codex", "--model", "owned-model", "owned prompt"}},
+		{Executable: "/owned/bin/codex", Args: []string{"codex", "app-server"}},
+	} {
+		if runtime, known := runtimeForProcessEvidence(evidence); !known || runtime != "codex" {
+			t.Fatalf("actual Codex harness not discovered: %#v", evidence)
+		}
+		if role := processEvidenceMatchesRuntime(evidence, "codex"); role != hasExactArgument(evidence.Args, "app-server") {
+			t.Fatal("generic discovery changed exact Desktop role predicate")
+		}
+	}
+	for _, executable := range []string{"/bin/sh", "/bin/node", "/tmp/not-codex"} {
+		if _, known := runtimeForProcessEvidence(ProcessEvidence{Executable: executable, Args: []string{"codex", "app-server"}}); known {
+			t.Fatalf("argv text overrode kernel executable: %s", executable)
+		}
+	}
+}

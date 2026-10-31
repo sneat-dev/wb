@@ -17,6 +17,7 @@ import (
 	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/sessionpark"
 	"github.com/sneat-dev/wb/internal/sessionparkreceive"
+	"github.com/sneat-dev/wb/internal/sessionterminal"
 )
 
 type courierRunner struct {
@@ -226,6 +227,10 @@ func courierResultJSON(t *testing.T, request sessionpark.RemoteRequest, raw []by
 		AttemptID: "000001-" + strings.Repeat("e", 32), AttemptIndex: 1, PID: 123, StartedAt: time.Unix(40, 0).UTC(),
 		Members: make([]sessionpark.ReceiptMember, len(request.Members)),
 	}
+	if request.Transport == "herdr" {
+		receipt.TmuxName = ""
+		receipt.Terminal = sessionterminal.Identity{Kind: "herdr", Socket: filepath.Join(os.TempDir(), "wb-owned-herdr-fixture.sock"), WorkspaceID: "workspace-owned", PaneID: "pane-owned"}
+	}
 	for index, member := range request.Members {
 		reference, err := sessionpark.TargetWorkLogReference(request, digest, member)
 		if err != nil {
@@ -241,4 +246,29 @@ func courierResultJSON(t *testing.T, request sessionpark.RemoteRequest, raw []by
 		t.Fatal(err)
 	}
 	return append(encoded, '\n')
+}
+
+func TestSSHDelivererRefusesLegacyDowngradeForExplicitHerdrParkRequest(t *testing.T) {
+	request, raw := courierEnvelope(t)
+	if request.Transport != "herdr" {
+		t.Fatal("fixture must admit explicit Herdr")
+	}
+	var response sessionparkreceive.Result
+	if err := json.Unmarshal(courierResultJSON(t, request, raw), &response); err != nil {
+		t.Fatal(err)
+	}
+	response.Receipt.Terminal = sessionterminal.Identity{}
+	response.Receipt.TmuxName = "wb-session-" + request.SuccessorWBSessionID
+	responseRaw, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &courierRunner{stdout: responseRaw}
+	deliverer := testSSHDeliverer(t, sessionmove.SSHConfig{Host: "target-vm"}, runner)
+	if _, err := deliverer.Deliver(context.Background(), raw); err == nil || !strings.Contains(err.Error(), "explicit Herdr request") {
+		t.Fatalf("park courier accepted downgraded receipt: %v", err)
+	}
+	if runner.calls != 1 {
+		t.Fatalf("ambiguous delivery retried: %d calls", runner.calls)
+	}
 }

@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	maxMessageCourierBytes = sessionmove.MaxMessageBodyBytes + (16 << 10)
+	maxMessageCourierBytes = sessionmove.MaxMessagePayloadBytes
 	messageDeliveryTimeout = 2 * time.Minute
 )
 
@@ -102,8 +102,11 @@ func decodeMessageReceipt(raw []byte, message sessionmove.Message, messageRaw []
 	if !bytes.Equal(raw, canonical) {
 		return sessionmove.MessageReceipt{}, fmt.Errorf("message receipt must use WB's canonical JSON encoding")
 	}
-	if err := sessionmove.ValidateMessageReceipt(receipt, message, sessionmove.DigestBytes(messageRaw),
-		"wb-session-"+message.RecipientWBSessionID, receipt.PID); err != nil {
+	legacyName := ""
+	if receipt.Terminal.IsZero() {
+		legacyName = "wb-session-" + message.RecipientWBSessionID
+	}
+	if err := sessionmove.ValidateMessageReceipt(receipt, message, sessionmove.DigestBytes(messageRaw), legacyName, receipt.PID); err != nil {
 		return sessionmove.MessageReceipt{}, err
 	}
 	return receipt, nil

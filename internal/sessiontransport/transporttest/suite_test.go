@@ -134,8 +134,8 @@ func TestRunReturnsEmptyStringWhenEveryCheckPasses(t *testing.T) {
 func TestRunCollectsEveryFailureNotJustTheFirst(t *testing.T) {
 	t.Parallel()
 	broken := fakeTransport{
-		kind:         sessiontransport.KindTmux,
-		caps:         sessiontransport.TmuxCapabilities(),
+		kind:         sessiontransport.KindHerdr,
+		caps:         restrictedHerdrCapabilities(),
 		kindMismatch: true,                                      // breaks CheckKindMatchesCapabilities
 		deliverErr:   errors.New("deliberately broken Deliver"), // breaks CheckDeliverNeverErrors and every check downstream of it
 	}
@@ -195,7 +195,7 @@ func TestCheckDeliverNeverErrorsCatchesAnErroringDeliver(t *testing.T) {
 // transport ignored Operation.
 func TestCheckDeliverNeverErrorsCatchesRound3sExactBug(t *testing.T) {
 	t.Parallel()
-	fake := conformingFake(sessiontransport.KindTmux, sessiontransport.TmuxCapabilities())
+	fake := conformingFake(sessiontransport.KindHerdr, restrictedHerdrCapabilities())
 	fake.ignoreOperationAndTarget = true
 	if err := CheckDeliverNeverErrors(context.Background(), fake); err == nil {
 		t.Fatal("CheckDeliverNeverErrors() = nil, want an error: Outcome exceeded the ResolveDeliveryMode bound")
@@ -220,7 +220,7 @@ func TestCheckDeliverNeverErrorsAllowsAConservativeDowngrade(t *testing.T) {
 func TestCheckAdvisoryNeverExceedsCapabilityPasses(t *testing.T) {
 	t.Parallel()
 	for _, fake := range []fakeTransport{
-		conformingFake(sessiontransport.KindTmux, sessiontransport.TmuxCapabilities()),   // AdvisoryDelivery false
+		conformingFake(sessiontransport.KindHerdr, restrictedHerdrCapabilities()),        // AdvisoryDelivery false
 		conformingFake(sessiontransport.KindHerdr, sessiontransport.HerdrCapabilities()), // AdvisoryDelivery true
 	} {
 		if err := CheckAdvisoryNeverExceedsCapability(context.Background(), fake); err != nil {
@@ -231,7 +231,7 @@ func TestCheckAdvisoryNeverExceedsCapabilityPasses(t *testing.T) {
 
 func TestCheckAdvisoryNeverExceedsCapabilityCatchesForcedAdvisoryWithoutCapability(t *testing.T) {
 	t.Parallel()
-	fake := conformingFake(sessiontransport.KindTmux, sessiontransport.TmuxCapabilities())
+	fake := conformingFake(sessiontransport.KindHerdr, restrictedHerdrCapabilities())
 	fake.forceOutcome = sessiontransport.ModeAdvisory
 	if err := CheckAdvisoryNeverExceedsCapability(context.Background(), fake); err == nil {
 		t.Fatal("CheckAdvisoryNeverExceedsCapability() = nil, want an error when a non-advisory-capable transport reports advisory")
@@ -261,8 +261,8 @@ func TestCheckAdvisoryNeverExceedsCapabilityCatchesDeliverError(t *testing.T) {
 func TestCheckSuccessorMessageNeverExceedsCapabilityPasses(t *testing.T) {
 	t.Parallel()
 	for _, fake := range []fakeTransport{
-		conformingFake(sessiontransport.KindTmux, sessiontransport.TmuxCapabilities()),   // LineageSubmit true
-		conformingFake(sessiontransport.KindHerdr, sessiontransport.HerdrCapabilities()), // LineageSubmit false
+		conformingFake(sessiontransport.KindHerdr, restrictedHerdrCapabilities()),      // LineageSubmit true
+		conformingFake(sessiontransport.KindNone, sessiontransport.NoneCapabilities()), // LineageSubmit false
 	} {
 		if err := CheckSuccessorMessageNeverExceedsCapability(context.Background(), fake); err != nil {
 			t.Fatalf("CheckSuccessorMessageNeverExceedsCapability(%s) = %v, want nil", fake.Kind(), err)
@@ -272,7 +272,7 @@ func TestCheckSuccessorMessageNeverExceedsCapabilityPasses(t *testing.T) {
 
 func TestCheckSuccessorMessageNeverExceedsCapabilityCatchesForcedAdvisory(t *testing.T) {
 	t.Parallel()
-	fake := conformingFake(sessiontransport.KindTmux, sessiontransport.TmuxCapabilities())
+	fake := conformingFake(sessiontransport.KindHerdr, restrictedHerdrCapabilities())
 	fake.forceOutcome = sessiontransport.ModeAdvisory
 	if err := CheckSuccessorMessageNeverExceedsCapability(context.Background(), fake); err == nil {
 		t.Fatal("CheckSuccessorMessageNeverExceedsCapability() = nil, want an error: this path is never advisory")
@@ -281,7 +281,7 @@ func TestCheckSuccessorMessageNeverExceedsCapabilityCatchesForcedAdvisory(t *tes
 
 func TestCheckSuccessorMessageNeverExceedsCapabilityCatchesForcedSubmitWithoutLineageSubmit(t *testing.T) {
 	t.Parallel()
-	fake := conformingFake(sessiontransport.KindHerdr, sessiontransport.HerdrCapabilities())
+	fake := conformingFake(sessiontransport.KindNone, sessiontransport.NoneCapabilities())
 	fake.forceOutcome = sessiontransport.ModeSubmit
 	if err := CheckSuccessorMessageNeverExceedsCapability(context.Background(), fake); err == nil {
 		t.Fatal("CheckSuccessorMessageNeverExceedsCapability() = nil, want an error when a non-LineageSubmit transport reports submit")
@@ -290,7 +290,7 @@ func TestCheckSuccessorMessageNeverExceedsCapabilityCatchesForcedSubmitWithoutLi
 
 func TestCheckSuccessorMessageNeverExceedsCapabilityCatchesDeliverError(t *testing.T) {
 	t.Parallel()
-	fake := conformingFake(sessiontransport.KindTmux, sessiontransport.TmuxCapabilities())
+	fake := conformingFake(sessiontransport.KindHerdr, restrictedHerdrCapabilities())
 	fake.deliverErr = errors.New("deliberately broken")
 	if err := CheckSuccessorMessageNeverExceedsCapability(context.Background(), fake); err == nil {
 		t.Fatal("CheckSuccessorMessageNeverExceedsCapability() = nil, want an error when Deliver errors")
@@ -303,7 +303,7 @@ func TestCheckDaemonClassNeverUsesLineageSubmitPasses(t *testing.T) {
 	t.Parallel()
 	// tmux declares LineageSubmit true, but a conforming Deliver still never
 	// lets a daemon-originated class reach submit.
-	fake := conformingFake(sessiontransport.KindTmux, sessiontransport.TmuxCapabilities())
+	fake := conformingFake(sessiontransport.KindHerdr, restrictedHerdrCapabilities())
 	if err := CheckDaemonClassNeverUsesLineageSubmit(context.Background(), fake); err != nil {
 		t.Fatalf("CheckDaemonClassNeverUsesLineageSubmit() = %v, want nil", err)
 	}
@@ -313,7 +313,7 @@ func TestCheckDaemonClassNeverUsesLineageSubmitCatchesAMisbehavingTransport(t *t
 	t.Parallel()
 	// A transport that (incorrectly) lets LineageSubmit leak into a
 	// daemon-originated class must be caught.
-	fake := conformingFake(sessiontransport.KindTmux, sessiontransport.TmuxCapabilities())
+	fake := conformingFake(sessiontransport.KindHerdr, restrictedHerdrCapabilities())
 	fake.forceOutcome = sessiontransport.ModeSubmit
 	if err := CheckDaemonClassNeverUsesLineageSubmit(context.Background(), fake); err == nil {
 		t.Fatal("CheckDaemonClassNeverUsesLineageSubmit() = nil, want an error when a daemon-class delivery reports submit")
@@ -322,7 +322,7 @@ func TestCheckDaemonClassNeverUsesLineageSubmitCatchesAMisbehavingTransport(t *t
 
 func TestCheckDaemonClassNeverUsesLineageSubmitCatchesDeliverError(t *testing.T) {
 	t.Parallel()
-	fake := conformingFake(sessiontransport.KindTmux, sessiontransport.TmuxCapabilities())
+	fake := conformingFake(sessiontransport.KindHerdr, restrictedHerdrCapabilities())
 	fake.deliverErr = errors.New("deliberately broken")
 	if err := CheckDaemonClassNeverUsesLineageSubmit(context.Background(), fake); err == nil {
 		t.Fatal("CheckDaemonClassNeverUsesLineageSubmit() = nil, want an error when Deliver errors")
@@ -333,7 +333,7 @@ func TestCheckDaemonClassNeverUsesLineageSubmitCatchesDeliverError(t *testing.T)
 
 func TestCheckMismatchedOperationNeverSubmitsPasses(t *testing.T) {
 	t.Parallel()
-	fake := conformingFake(sessiontransport.KindTmux, sessiontransport.TmuxCapabilities())
+	fake := conformingFake(sessiontransport.KindHerdr, restrictedHerdrCapabilities())
 	if err := CheckMismatchedOperationNeverSubmits(context.Background(), fake); err != nil {
 		t.Fatalf("CheckMismatchedOperationNeverSubmits() = %v, want nil", err)
 	}
@@ -346,7 +346,7 @@ func TestCheckMismatchedOperationNeverSubmitsPasses(t *testing.T) {
 // declares LineageSubmit true.
 func TestCheckMismatchedOperationNeverSubmitsCatchesRound3sExactBug(t *testing.T) {
 	t.Parallel()
-	fake := conformingFake(sessiontransport.KindTmux, sessiontransport.TmuxCapabilities())
+	fake := conformingFake(sessiontransport.KindHerdr, restrictedHerdrCapabilities())
 	fake.ignoreOperationAndTarget = true
 	if err := CheckMismatchedOperationNeverSubmits(context.Background(), fake); err == nil {
 		t.Fatal("CheckMismatchedOperationNeverSubmits() = nil, want an error: a wake mislabelled as a successor message must never submit")
@@ -355,7 +355,7 @@ func TestCheckMismatchedOperationNeverSubmitsCatchesRound3sExactBug(t *testing.T
 
 func TestCheckMismatchedOperationNeverSubmitsCatchesDeliverError(t *testing.T) {
 	t.Parallel()
-	fake := conformingFake(sessiontransport.KindTmux, sessiontransport.TmuxCapabilities())
+	fake := conformingFake(sessiontransport.KindHerdr, restrictedHerdrCapabilities())
 	fake.deliverErr = errors.New("deliberately broken")
 	if err := CheckMismatchedOperationNeverSubmits(context.Background(), fake); err == nil {
 		t.Fatal("CheckMismatchedOperationNeverSubmits() = nil, want an error when Deliver errors")
@@ -368,7 +368,7 @@ func TestCheckZeroTargetAlwaysRecordsOnlyPasses(t *testing.T) {
 	t.Parallel()
 	for _, fake := range []fakeTransport{
 		conformingFake(sessiontransport.KindNone, sessiontransport.NoneCapabilities()),
-		conformingFake(sessiontransport.KindTmux, sessiontransport.TmuxCapabilities()),
+		conformingFake(sessiontransport.KindHerdr, restrictedHerdrCapabilities()),
 		conformingFake(sessiontransport.KindHerdr, sessiontransport.HerdrCapabilities()),
 	} {
 		if err := CheckZeroTargetAlwaysRecordsOnly(context.Background(), fake); err != nil {
@@ -427,4 +427,8 @@ func TestCheckResolvePaneRequiresNoUniqueTargetCatchesTheWrongError(t *testing.T
 	if err := CheckResolvePaneRequiresNoUniqueTarget(context.Background(), fake); err == nil {
 		t.Fatal("CheckResolvePaneRequiresNoUniqueTarget() = nil, want an error when ResolvePane fails with the wrong sentinel")
 	}
+}
+
+func restrictedHerdrCapabilities() sessiontransport.Capabilities {
+	return sessiontransport.Capabilities{Kind: sessiontransport.KindHerdr, LineageSubmit: true}
 }

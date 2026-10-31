@@ -30,7 +30,7 @@ successor. WB performs a normal non-force push of the exact source commit,
 verifies that exact commit as the remote branch tip, and records an offer
 without transferring source custody. It then delivers the exact request
 through the selected immutable courier route and starts the successor in a
-named tmux session. Omit --to, or pass this machine's validated
+named Herdr workspace. Omit --to, or pass this machine's validated
 remote.machine, to deliver in-process via the loopback courier rather than
 SSH. Only a durable target receipt lets WB publish the stable successor
 address and seal predecessor custody. If delivery or acknowledgement is

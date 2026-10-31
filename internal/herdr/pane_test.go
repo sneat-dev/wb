@@ -197,9 +197,7 @@ func TestPaneGet(t *testing.T) {
 
 func TestPaneSendText(t *testing.T) {
 	text := "sneat-dev/wb#598: checks failed"
-	runner := newFakeRunner(t).on([]string{"pane", "send-text", "w1:p2", text}, fakeCall{
-		stdout: []byte(`{"id":"cli:pane:send-text","result":{"type":"ok"}}`),
-	})
+	runner := newFakeRunner(t).on([]string{"pane", "send-text", "w1:p2", text}, fakeCall{})
 	client := newTestClient(t, runner)
 
 	if err := client.PaneSendText(context.Background(), "w1:p2", text); err != nil {
@@ -237,7 +235,8 @@ func TestPaneSendTextRejectsLeadingHyphen(t *testing.T) {
 
 func TestPaneSendTextPropagatesCommandError(t *testing.T) {
 	runner := newFakeRunner(t).on([]string{"pane", "send-text", "w9:p9", "hi"}, fakeCall{
-		stdout: mustReadTestdata(t, "error_pane_not_found.json"),
+		stderr: mustReadTestdata(t, "error_pane_not_found.json"),
+		err:    errors.New("herdr mutation exited with status1"),
 	})
 	client := newTestClient(t, runner)
 

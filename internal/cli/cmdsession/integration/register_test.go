@@ -29,7 +29,6 @@ func TestSessionRegisterAcceptsPreallocatedSuccessorIdentity(t *testing.T) {
 		"--machine", "hetzner-vm1",
 		"--runtime", "codex",
 		"--native-harness-id", "native-123",
-		"--tmux-name", "wb-session-wbs-successor",
 		"--predecessor-wb-session-id", "wbs-source",
 		"--handoff-id", "handoff-123",
 	})
@@ -42,7 +41,7 @@ func TestSessionRegisterAcceptsPreallocatedSuccessorIdentity(t *testing.T) {
 		t.Fatal("registered successor was not readable")
 	}
 	if record.WBSessionID != "wbs-successor" || record.Machine != "hetzner-vm1" ||
-		record.NativeHarnessID != "native-123" || record.TmuxName != "wb-session-wbs-successor" ||
+		record.NativeHarnessID != "native-123" || record.TmuxName != "" ||
 		record.PredecessorWBSessionID != "wbs-source" || record.HandoffID != "handoff-123" {
 		t.Fatalf("record = %+v", record)
 	}

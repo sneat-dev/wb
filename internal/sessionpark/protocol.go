@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/sneat-dev/wb/internal/sessionterminal"
 	"io"
 	"path/filepath"
 	"regexp"
@@ -45,6 +46,7 @@ type Envelope struct {
 // one parked aggregate and every exact member needed for an atomic target
 // reconstruction.
 type RemoteRequest struct {
+	Transport              string         `json:"transport,omitempty"`
 	SchemaVersion          int            `json:"schema_version"`
 	ResumeID               string         `json:"resume_id"`
 	ParkedSessionID        string         `json:"parked_session_id"`
@@ -70,22 +72,23 @@ type RemoteMember struct {
 }
 
 type Receipt struct {
-	SchemaVersion          int                `json:"schema_version"`
-	ResumeID               string             `json:"resume_id"`
-	RequestDigest          sessionmove.Digest `json:"request_digest"`
-	ParkedSessionID        string             `json:"parked_session_id"`
-	SuccessorWBSessionID   string             `json:"successor_wb_session_id"`
-	PredecessorWBSessionID string             `json:"predecessor_wb_session_id"`
-	TargetMachine          string             `json:"target_machine"`
-	TmuxName               string             `json:"tmux_name"`
-	Runtime                string             `json:"runtime"`
-	Model                  string             `json:"model,omitempty"`
-	NativeHarnessID        string             `json:"native_harness_id,omitempty"`
-	AttemptID              string             `json:"attempt_id"`
-	AttemptIndex           uint64             `json:"attempt_index"`
-	PID                    int                `json:"pid"`
-	StartedAt              time.Time          `json:"started_at"`
-	Members                []ReceiptMember    `json:"members"`
+	SchemaVersion          int                      `json:"schema_version"`
+	ResumeID               string                   `json:"resume_id"`
+	RequestDigest          sessionmove.Digest       `json:"request_digest"`
+	ParkedSessionID        string                   `json:"parked_session_id"`
+	SuccessorWBSessionID   string                   `json:"successor_wb_session_id"`
+	PredecessorWBSessionID string                   `json:"predecessor_wb_session_id"`
+	TargetMachine          string                   `json:"target_machine"`
+	TmuxName               string                   `json:"tmux_name"`
+	Terminal               sessionterminal.Identity `json:"terminal,omitzero"`
+	Runtime                string                   `json:"runtime"`
+	Model                  string                   `json:"model,omitempty"`
+	NativeHarnessID        string                   `json:"native_harness_id,omitempty"`
+	AttemptID              string                   `json:"attempt_id"`
+	AttemptIndex           uint64                   `json:"attempt_index"`
+	PID                    int                      `json:"pid"`
+	StartedAt              time.Time                `json:"started_at"`
+	Members                []ReceiptMember          `json:"members"`
 }
 
 type ReceiptMember struct {
@@ -155,20 +158,26 @@ func DecodeReceipt(raw []byte) (Receipt, error) {
 }
 
 func ValidateReceipt(receipt Receipt, request RemoteRequest, digest sessionmove.Digest) error {
+	if err := sessionterminal.ValidateBoundReceipt(receipt.SuccessorWBSessionID, receipt.TmuxName, receipt.Terminal); err != nil {
+		return err
+	}
 	if err := validateRequest(request); err != nil {
 		return err
 	}
 	if err := validateReceiptShape(receipt); err != nil {
 		return err
 	}
+	if request.Transport == "herdr" && receipt.Terminal.IsZero() {
+		return fmt.Errorf("explicit Herdr request requires a Herdr completion receipt")
+	}
 	if receipt.ResumeID != request.ResumeID || receipt.RequestDigest != digest ||
 		receipt.ParkedSessionID != request.ParkedSessionID || receipt.SuccessorWBSessionID != request.SuccessorWBSessionID ||
 		receipt.PredecessorWBSessionID != request.PredecessorWBSessionID || receipt.TargetMachine != request.TargetMachine ||
-		receipt.TmuxName != "wb-session-"+request.SuccessorWBSessionID || len(receipt.Members) != len(request.Members) {
+		len(receipt.Members) != len(request.Members) {
 		return fmt.Errorf("park resume receipt conflicts with admitted request identity")
 	}
 	runtime, model := RequestedRuntimeModel(request)
-	if receipt.Runtime != runtime || strings.TrimSpace(receipt.Model) != model {
+	if receipt.Runtime != runtime || !receipt.Terminal.MatchesModel(model, strings.TrimSpace(receipt.Model)) {
 		return fmt.Errorf("park resume receipt harness identity conflicts with admitted request")
 	}
 	for index, member := range request.Members {
@@ -271,10 +280,9 @@ func LocalLaunchAuthority(bundle Bundle, digest sessionmove.Digest, continuation
 		!bytes.HasPrefix(continuation, []byte(bundle.Continuation)) {
 		return sessionauthority.Launch{}, fmt.Errorf("private local successor context does not match the exact parked bundle")
 	}
-	seed := sha256.Sum256([]byte("wb.session.park-local.v1\x00" + bundle.ParkedSessionID))
 	launch := sessionauthority.Launch{
 		AggregateID: bundle.ParkedSessionID, AggregateDigest: string(digest), AggregateFile: BundleFileName,
-		SuccessorWBSessionID: "wbs-" + hex.EncodeToString(seed[:16]), PredecessorWBSessionID: bundle.Source.WBSessionID,
+		SuccessorWBSessionID: localSuccessorID(bundle.ParkedSessionID), PredecessorWBSessionID: bundle.Source.WBSessionID,
 		TargetMachine: bundle.Source.Machine, SourceRuntime: bundle.Source.Runtime, SourceModel: bundle.Source.Model,
 		ContinuationKind: sessionauthority.ContinuationPrivate, ContinuationPath: continuationPath,
 		ContinuationDigest: string(sessionmove.DigestBytes(continuation)), RootMode: sessionauthority.LaunchRootParkedNeutral,
@@ -285,6 +293,11 @@ func LocalLaunchAuthority(bundle Bundle, digest sessionmove.Digest, continuation
 		launch.RootMode = sessionauthority.LaunchRootParkedLocal
 	}
 	return launch, launch.Validate()
+}
+
+func localSuccessorID(parkedID string) string {
+	seed := sha256.Sum256([]byte("wb.session.park-local.v1\x00" + parkedID))
+	return "wbs-" + hex.EncodeToString(seed[:16])
 }
 
 func validateEnvelope(envelope Envelope) error {
@@ -298,6 +311,9 @@ func validateEnvelope(envelope Envelope) error {
 }
 
 func validateRequest(request RemoteRequest) error {
+	if request.Transport != "" && request.Transport != "herdr" {
+		return fmt.Errorf("unsupported session terminal protocol")
+	}
 	if request.SchemaVersion != RequestSchemaVersion {
 		return fmt.Errorf("park resume request schema_version %d unsupported; want %d", request.SchemaVersion, RequestSchemaVersion)
 	}
@@ -361,13 +377,16 @@ func validateRemoteMember(member RemoteMember) error {
 }
 
 func validateReceiptShape(receipt Receipt) error {
+	if err := sessionterminal.ValidateReceipt(receipt.SuccessorWBSessionID, receipt.TmuxName, receipt.Terminal); err != nil {
+		return err
+	}
 	if receipt.SchemaVersion != ReceiptSchemaVersion {
 		return fmt.Errorf("park resume receipt schema_version %d unsupported; want %d", receipt.SchemaVersion, ReceiptSchemaVersion)
 	}
 	for name, value := range map[string]string{
 		"resume_id": receipt.ResumeID, "parked_session_id": receipt.ParkedSessionID,
 		"successor_wb_session_id": receipt.SuccessorWBSessionID, "predecessor_wb_session_id": receipt.PredecessorWBSessionID,
-		"target_machine": receipt.TargetMachine, "tmux_name": receipt.TmuxName,
+		"target_machine": receipt.TargetMachine,
 	} {
 		if !sessionauthority.ValidID(value) {
 			return fmt.Errorf("receipt %s is not one fixed safe ID", name)
@@ -409,6 +428,7 @@ func strictDecode(raw []byte, value any) error {
 func BuildRemoteRequest(bundle Bundle, target, requestedHarness string, now time.Time) RemoteRequest {
 	seed := sha256.Sum256([]byte("wb.session.park-resume.v1\x00" + bundle.ParkedSessionID + "\x00" + target))
 	request := RemoteRequest{
+		Transport:     "herdr",
 		SchemaVersion: RequestSchemaVersion, ResumeID: "resume-" + hex.EncodeToString(seed[:16]),
 		ParkedSessionID: bundle.ParkedSessionID, SuccessorWBSessionID: "wbs-" + hex.EncodeToString(seed[16:]),
 		PredecessorWBSessionID: bundle.Source.WBSessionID, SourceMachine: bundle.Source.Machine, TargetMachine: target,
@@ -430,5 +450,5 @@ func ReceiptSession(receipt Receipt) session.Record {
 	return session.Record{PID: receipt.PID, WBSessionID: receipt.SuccessorWBSessionID,
 		PredecessorWBSessionID: receipt.PredecessorWBSessionID, Machine: receipt.TargetMachine,
 		Runtime: receipt.Runtime, Model: receipt.Model, NativeHarnessID: receipt.NativeHarnessID,
-		TmuxName: receipt.TmuxName, HandoffID: receipt.ResumeID, StartedAt: receipt.StartedAt}
+		TmuxName: receipt.TmuxName, Terminal: receipt.Terminal, HandoffID: receipt.ResumeID, StartedAt: receipt.StartedAt}
 }

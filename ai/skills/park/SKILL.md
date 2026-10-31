@@ -21,7 +21,9 @@ wb session park --context-file <file>
 
 Write a cold-start brief: goal, decisions, traps, next step, exact ids. No secrets,
 transcript dumps, or raw logs. Then **stop editing those worktrees**. Resume later
-with `/pickup`.
+with `/pickup`; local pickup continues in the current registered chat and the
+agent reads/acknowledges the private continuation itself. `--launch` is required
+to explicitly start a fresh local Herdr successor.
 
 ## A portion of work
 

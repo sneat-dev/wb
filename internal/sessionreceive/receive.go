@@ -167,7 +167,7 @@ func Receive(ctx context.Context, options Options) (Result, error) {
 		}
 		if errors.Is(inspectErr, sessionlaunch.ErrRetryableLaunch) {
 			// Inspect has already proved an exact immutable terminal launcher
-			// failure, dead PID, released fence, and absent tmux session. Route
+			// failure, dead PID, released fence, and absent owned Herdr pane. Route
 			// only that typed outcome back through Start under the retained
 			// execution lock. Start rechecks every replacement gate; Git must
 			// not be consulted because the failed harness may have changed the
@@ -358,7 +358,7 @@ func receiptFromSuccessor(request sessionmove.Request, digest sessionmove.Digest
 	receipt := sessionmove.Receipt{
 		SchemaVersion: sessionmove.ReceiptSchemaVersion, HandoffID: request.HandoffID, RequestDigest: digest,
 		SuccessorWBSessionID: successor.WBSessionID, PredecessorWBSessionID: successor.PredecessorWBSessionID,
-		TargetMachine: successor.TargetMachine, TmuxName: successor.TmuxName, Runtime: successor.Runtime,
+		TargetMachine: successor.TargetMachine, TmuxName: successor.TmuxName, Terminal: successor.Terminal, Runtime: successor.Runtime,
 		Model: successor.Model, NativeHarnessID: successor.NativeHarnessID,
 		AttemptID: successor.AttemptID, AttemptIndex: successor.AttemptIndex, PID: successor.PID,
 		TargetWorkLogReference: successor.TargetWorkLogRef, PinnedCommit: successor.PinnedCommit, StartedAt: successor.StartedAt,

@@ -37,7 +37,7 @@ type Fence interface {
 	RetainSessionDir(expectedRoot, aggregateID, digest string) (*os.File, error)
 }
 
-// Launch is the immutable identity used by the one hardened tmux launcher.
+// Launch is the immutable identity used by the one hardened Herdr launcher.
 // AggregateFile is authenticated inside the retained aggregate directory.
 type Launch struct {
 	AggregateID            string
@@ -138,4 +138,27 @@ func (launch Launch) Validate() error {
 		return fmt.Errorf("continuation kind %q is unsupported", launch.ContinuationKind)
 	}
 	return nil
+}
+
+// ModelEnrichmentCompatible allows a selected empty/unknown model to become
+// known observational metadata; a selected known model remains exact.
+func ModelEnrichmentCompatible(expected, current string) bool {
+	if expected == current {
+		return true
+	}
+	unknown := strings.TrimSpace(expected) == "" || strings.EqualFold(strings.TrimSpace(expected), "unknown")
+	return unknown && strings.TrimSpace(current) != ""
+}
+
+// SelectedModel applies an explicit model override first. Without an override,
+// only a target using the source runtime inherits the source's selected model.
+// Observed model enrichment is validated separately at the terminal boundary.
+func SelectedModel(sourceRuntime, sourceModel, targetRuntime, requestedModel string) string {
+	if model := strings.TrimSpace(requestedModel); model != "" {
+		return model
+	}
+	if strings.TrimSpace(targetRuntime) == strings.TrimSpace(sourceRuntime) {
+		return strings.TrimSpace(sourceModel)
+	}
+	return ""
 }

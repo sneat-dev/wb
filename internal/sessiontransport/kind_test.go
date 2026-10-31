@@ -9,7 +9,7 @@ func TestKindValid(t *testing.T) {
 		want bool
 	}{
 		{KindHerdr, true},
-		{KindTmux, true},
+		{Kind("tmux"), false},
 		{KindNone, true},
 		{"", false},
 		{"docker", false},
@@ -41,7 +41,7 @@ func TestKindsListsEveryShippedTransportExactlyOnce(t *testing.T) {
 		}
 		seen[kind] = true
 	}
-	for _, kind := range []Kind{KindHerdr, KindTmux, KindNone} {
+	for _, kind := range []Kind{KindHerdr, KindNone} {
 		if !seen[kind] {
 			t.Errorf("Kinds() is missing shipped transport %q", kind)
 		}

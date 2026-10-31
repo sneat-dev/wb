@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/sneat-dev/wb/internal/filewrite"
+	"github.com/sneat-dev/wb/internal/sessionauthority"
 	"github.com/sneat-dev/wb/internal/unixcompat"
 )
 
@@ -566,6 +567,9 @@ func ValidateReceiptForRequest(receipt Receipt, request Request, digest Digest) 
 	if err := receipt.validate(); err != nil {
 		return err
 	}
+	if request.Transport == "herdr" && receipt.Terminal.IsZero() {
+		return fmt.Errorf("%w: explicit Herdr request requires a Herdr completion receipt", ErrHandoffConflict)
+	}
 	expectedReference, err := ExpectedTargetWorkLogReference(request, digest)
 	if err != nil {
 		return fmt.Errorf("derive target Work Log reference for handoff %s: %w", request.HandoffID, err)
@@ -574,9 +578,13 @@ func ValidateReceiptForRequest(receipt Receipt, request Request, digest Digest) 
 	if expectedRuntime == "" {
 		expectedRuntime = strings.TrimSpace(request.SourceRuntime)
 	}
-	expectedModel := ""
-	if expectedRuntime == strings.TrimSpace(request.SourceRuntime) {
-		expectedModel = strings.TrimSpace(request.SourceModel)
+	expectedModel := sessionauthority.SelectedModel(request.SourceRuntime, request.SourceModel, expectedRuntime, request.RequestedModel)
+	modelCompatible := receipt.Model == expectedModel
+	if !receipt.Terminal.IsZero() {
+		modelCompatible = sessionauthority.ModelEnrichmentCompatible(expectedModel, receipt.Model)
+	}
+	if !modelCompatible {
+		return fmt.Errorf("%w: receipt model conflicts with selected model", ErrHandoffConflict)
 	}
 	want := map[string][2]string{
 		"handoff_id":                {receipt.HandoffID, request.HandoffID},
@@ -585,10 +593,11 @@ func ValidateReceiptForRequest(receipt Receipt, request Request, digest Digest) 
 		"predecessor_wb_session_id": {receipt.PredecessorWBSessionID, request.PredecessorWBSessionID},
 		"target_machine":            {receipt.TargetMachine, request.TargetMachine},
 		"pinned_commit":             {receipt.PinnedCommit, request.BundleCommit},
-		"tmux_name":                 {receipt.TmuxName, "wb-session-" + request.SuccessorWBSessionID},
 		"runtime":                   {receipt.Runtime, expectedRuntime},
-		"model":                     {receipt.Model, expectedModel},
 		"target_work_log_reference": {receipt.TargetWorkLogReference, expectedReference.String()},
+	}
+	if receipt.Terminal.IsZero() {
+		want["tmux_name"] = [2]string{receipt.TmuxName, "wb-session-" + request.SuccessorWBSessionID}
 	}
 	for field, values := range want {
 		if values[0] != values[1] {

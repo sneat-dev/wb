@@ -22,6 +22,13 @@ func TestHarnessSpecUsesFixedSameAndCrossHarnessArgv(t *testing.T) {
 		t.Fatalf("codex spec = %#v, want argv %#v", codex, wantCodex)
 	}
 
+	request.RequestedModel = "new-codex-model"
+	overridden, err := harnessSpec(request, "/target/worktree")
+	if err != nil || overridden.Model != "new-codex-model" || !reflect.DeepEqual(overridden.Args, []string{"-C", "/target/worktree", "-m", "new-codex-model", launchPrompt(request)}) {
+		t.Fatalf("same-harness explicit override = %#v, error=%v", overridden, err)
+	}
+	request.RequestedModel = ""
+
 	request.RequestedHarness = RuntimeClaudeCode
 	claude, err := harnessSpec(request, "/target/worktree")
 	if err != nil {

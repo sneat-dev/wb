@@ -369,13 +369,19 @@ func (p Ports) ListPromptsIn(directory *os.File) ([]PromptHeader, error) {
 	if readNames == nil {
 		readNames = func(dir *os.File) ([]string, error) { return dir.Readdirnames(-1) }
 	}
-	names, err := readNames(directory)
-	if err != nil {
-		return nil, fmt.Errorf("read prompt sequence: %w", err)
-	}
 	rewind := p.Rewind
 	if rewind == nil {
 		rewind = func(dir *os.File) error { _, err := dir.Seek(0, 0); return err }
+	}
+	// A descriptor may have been opened before it waited for the journal lock.
+	// Reset its directory stream under that lock before observing the current
+	// committed sequence, including files published by the previous holder.
+	if err := rewind(directory); err != nil {
+		return nil, fmt.Errorf("rewind prompt sequence before read: %w", err)
+	}
+	names, err := readNames(directory)
+	if err != nil {
+		return nil, fmt.Errorf("read prompt sequence: %w", err)
 	}
 	if err := rewind(directory); err != nil {
 		return nil, fmt.Errorf("rewind prompt sequence: %w", err)

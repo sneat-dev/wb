@@ -185,7 +185,16 @@ func inspectUnpublishedConflictWithPorts(ctx context.Context, root string, r Wor
 	}
 	if found {
 		owner := lane.Owner
-		_, liveSession := session.Lookup(filepath.Join(home, session.DirName), owner.PID)
+		var liveSession bool
+		directory := filepath.Join(home, session.DirName)
+		if owner.WBSessionID != "" {
+			record, found := session.LookupByWBSessionID(directory, owner.WBSessionID)
+			liveSession = found && record.PID == owner.PID
+		} else if session.IsRuntimeProcess(owner.PID, "codex") {
+			liveSession = session.ProcessAlive(owner.PID)
+		} else {
+			_, liveSession = session.Lookup(directory, owner.PID)
+		}
 		if liveSession || session.ProcessAlive(owner.OperationPID) {
 			return zero, errors.New("landing lane has an active owner; release it through its owning session before recovery")
 		}

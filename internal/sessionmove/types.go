@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/sneat-dev/wb/internal/sessionterminal"
 	"io"
 	"path"
 	"regexp"
@@ -24,15 +25,19 @@ import (
 const (
 	RequestSchemaVersion            = 1
 	ReceiptSchemaVersion            = 1
-	MessageSchemaVersion            = 1
+	MessageSchemaVersion            = 2
+	LegacyMessageSchemaVersion      = 1
 	MessageReceiptSchemaVersion     = 1
 	MessageRecordSchemaVersion      = 1
 	MessagePasteIntentSchemaVersion = 1
 	EventSchemaVersion              = 1
 	DigestAlgorithmSHA256           = "sha256"
 	// MaxMessageBodyBytes bounds agent-authored message content before it is
-	// admitted to an outbox, transported, or copied into a tmux buffer.
+	// admitted to an outbox, transported, or submitted to an exact Herdr endpoint.
 	MaxMessageBodyBytes = 64 << 10
+	// ASCII JSON can expand one control byte into six bytes. The semantic
+	// body limit stays unchanged; couriers bound the canonical wire payload.
+	MaxMessagePayloadBytes = 6*MaxMessageBodyBytes + (16 << 10)
 	// MaxSourceOfferFieldBytes bounds each exact Work Log offer field carried
 	// by a request. Keeping the source-authored content in the immutable
 	// request lets crash repair recreate the offer without parsing Markdown.
@@ -90,6 +95,7 @@ func (d Digest) Matches(raw []byte) bool {
 // Request is the immutable courier-neutral handoff description. Its encoded
 // bytes, rather than a re-marshalled projection, are what Digest authenticates.
 type Request struct {
+	Transport              string `json:"transport,omitempty"`
 	SchemaVersion          int    `json:"schema_version"`
 	HandoffID              string `json:"handoff_id"`
 	SuccessorWBSessionID   string `json:"successor_wb_session_id"`
@@ -131,22 +137,23 @@ type Request struct {
 // Receipt is written only after the target successor is durably registered.
 // RequestDigest binds it to the exact admitted request bytes.
 type Receipt struct {
-	SchemaVersion          int       `json:"schema_version"`
-	HandoffID              string    `json:"handoff_id"`
-	RequestDigest          Digest    `json:"request_digest"`
-	SuccessorWBSessionID   string    `json:"successor_wb_session_id"`
-	PredecessorWBSessionID string    `json:"predecessor_wb_session_id"`
-	TargetMachine          string    `json:"target_machine"`
-	TmuxName               string    `json:"tmux_name"`
-	Runtime                string    `json:"runtime"`
-	Model                  string    `json:"model,omitempty"`
-	NativeHarnessID        string    `json:"native_harness_id,omitempty"`
-	AttemptID              string    `json:"attempt_id"`
-	AttemptIndex           uint64    `json:"attempt_index"`
-	PID                    int       `json:"pid"`
-	TargetWorkLogReference string    `json:"target_work_log_reference"`
-	PinnedCommit           string    `json:"pinned_commit"`
-	StartedAt              time.Time `json:"started_at"`
+	SchemaVersion          int                      `json:"schema_version"`
+	HandoffID              string                   `json:"handoff_id"`
+	RequestDigest          Digest                   `json:"request_digest"`
+	SuccessorWBSessionID   string                   `json:"successor_wb_session_id"`
+	PredecessorWBSessionID string                   `json:"predecessor_wb_session_id"`
+	TargetMachine          string                   `json:"target_machine"`
+	TmuxName               string                   `json:"tmux_name"`
+	Terminal               sessionterminal.Identity `json:"terminal,omitzero"`
+	Runtime                string                   `json:"runtime"`
+	Model                  string                   `json:"model,omitempty"`
+	NativeHarnessID        string                   `json:"native_harness_id,omitempty"`
+	AttemptID              string                   `json:"attempt_id"`
+	AttemptIndex           uint64                   `json:"attempt_index"`
+	PID                    int                      `json:"pid"`
+	TargetWorkLogReference string                   `json:"target_work_log_reference"`
+	PinnedCommit           string                   `json:"pinned_commit"`
+	StartedAt              time.Time                `json:"started_at"`
 }
 
 // WorkLogReference is the parsed identity of one Work Log claim. Its wire
@@ -290,22 +297,23 @@ type Message struct {
 }
 
 // MessageReceipt acknowledges only durable target recording plus one
-// successful paste into the exact corroborated tmux pane. It deliberately
+// successful paste into the exact corroborated Herdr pane. It deliberately
 // contains no field that could imply the harness or agent processed the bytes.
 type MessageReceipt struct {
-	SchemaVersion        int         `json:"schema_version"`
-	MessageID            string      `json:"message_id"`
-	MessageDigest        Digest      `json:"message_digest"`
-	HandoffID            string      `json:"handoff_id"`
-	SenderWBSessionID    string      `json:"sender_wb_session_id"`
-	RecipientWBSessionID string      `json:"recipient_wb_session_id"`
-	ReplyToWBSessionID   string      `json:"reply_to_wb_session_id"`
-	Kind                 MessageKind `json:"kind"`
-	TmuxName             string      `json:"tmux_name"`
-	PaneID               string      `json:"pane_id"`
-	PID                  int         `json:"pid"`
-	RecordedAt           time.Time   `json:"recorded_at"`
-	PastedAt             time.Time   `json:"pasted_at"`
+	SchemaVersion        int                      `json:"schema_version"`
+	MessageID            string                   `json:"message_id"`
+	MessageDigest        Digest                   `json:"message_digest"`
+	HandoffID            string                   `json:"handoff_id"`
+	SenderWBSessionID    string                   `json:"sender_wb_session_id"`
+	RecipientWBSessionID string                   `json:"recipient_wb_session_id"`
+	ReplyToWBSessionID   string                   `json:"reply_to_wb_session_id"`
+	Kind                 MessageKind              `json:"kind"`
+	TmuxName             string                   `json:"tmux_name"`
+	Terminal             sessionterminal.Identity `json:"terminal,omitzero"`
+	PaneID               string                   `json:"pane_id"`
+	PID                  int                      `json:"pid"`
+	RecordedAt           time.Time                `json:"recorded_at"`
+	PastedAt             time.Time                `json:"pasted_at"`
 }
 
 // Phase is one durable point in the handoff state machine. Phase records are
@@ -372,6 +380,9 @@ func validateSchema(kind string, got, supported int) error {
 }
 
 func (r Request) validate() error {
+	if r.Transport != "" && r.Transport != "herdr" {
+		return fmt.Errorf("unsupported session terminal protocol")
+	}
 	if err := validateSchema("session move request", r.SchemaVersion, RequestSchemaVersion); err != nil {
 		return err
 	}
@@ -457,13 +468,15 @@ func (r Request) validate() error {
 }
 
 func (r Receipt) validate() error {
+	if err := sessionterminal.ValidateReceipt(r.SuccessorWBSessionID, r.TmuxName, r.Terminal); err != nil {
+		return err
+	}
 	if err := validateSchema("session move receipt", r.SchemaVersion, ReceiptSchemaVersion); err != nil {
 		return err
 	}
 	for field, value := range map[string]string{
 		"handoff_id": r.HandoffID, "successor_wb_session_id": r.SuccessorWBSessionID,
 		"predecessor_wb_session_id": r.PredecessorWBSessionID, "target_machine": r.TargetMachine,
-		"tmux_name": r.TmuxName,
 	} {
 		if err := validateID(field, value); err != nil {
 			return err
@@ -505,8 +518,13 @@ func validateLaunchAttemptIdentity(attemptID string, attemptIndex uint64, pid in
 }
 
 func (m Message) validate() error {
-	if err := validateSchema("session message", m.SchemaVersion, MessageSchemaVersion); err != nil {
-		return err
+	if m.SchemaVersion != LegacyMessageSchemaVersion {
+		if err := validateSchema("session message", m.SchemaVersion, MessageSchemaVersion); err != nil {
+			return err
+		}
+	}
+	if m.SchemaVersion == MessageSchemaVersion && len(m.MessageID)+len(m.HandoffID)+len(m.SenderWBSessionID)+len(m.RecipientWBSessionID)+len(m.ReplyToWBSessionID) > 15<<10 {
+		return fmt.Errorf("session message identity metadata exceeds canonical payload limit")
 	}
 	if err := validateID("message_id", m.MessageID); err != nil {
 		return err
@@ -582,10 +600,16 @@ func EncodeMessage(message Message) ([]byte, error) {
 	if err := message.validate(); err != nil {
 		return nil, err
 	}
-	return marshalJSON(message)
+	if message.SchemaVersion == LegacyMessageSchemaVersion {
+		return marshalJSON(message)
+	}
+	return encodeASCIIMessage(message)
 }
 
 func DecodeMessage(raw []byte) (Message, error) {
+	if !utf8.Valid(raw) {
+		return Message{}, fmt.Errorf("session message bytes must be valid UTF-8")
+	}
 	var message Message
 	if err := decodeJSON(raw, &message); err != nil {
 		return Message{}, fmt.Errorf("parse session message: %w", err)

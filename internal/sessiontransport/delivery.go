@@ -2,13 +2,9 @@ package sessiontransport
 
 import "time"
 
-// Operation names one of the two terminal-addressing responsibilities that
-// actually place text into a pane; every other session code path
-// REQ:single-transport-interface lists (move, park, receive, successor
-// launch) addresses a pane through [Transport.ResolvePane], [Transport.Launch]
-// or [Transport.Inspect] instead, and confirms identity through
-// [Transport.MatchesReceiptIdentity] — none of them deliver text, so none of
-// them is tagged here.
+// Operation distinguishes explicit successor messages from daemon notifications
+// in the generic capability policy. Production launch and custody use separate
+// bounded typed clients and do not submit notification text through this type.
 type Operation string
 
 const (
@@ -61,7 +57,7 @@ const (
 // [Transport.Deliver] must honor exactly: [ModeRecordOnly] must never touch
 // a live pane, [ModeAdvisory] must never submit, and [ModeSubmit] is
 // reserved for [EventSuccessorMessage] on a [Capabilities.LineageSubmit]
-// transport (today, only tmux) or for [EventOwnPROutcome] once the Deferred
+// transport (Herdr) or for [EventOwnPROutcome] once the Deferred
 // empty-input evidence mechanism lands (REQ:prompt-restricted-to-own-pr-outcome).
 type DeliveryMode string
 
@@ -76,8 +72,8 @@ const (
 	// ModeSubmit means WB submits text as if the session's own operator had
 	// typed and pressed enter. For [EventOwnPROutcome], no shipped
 	// [Capabilities] value ever causes [ResolveDeliveryMode] to return this
-	// today (Deferred in the Feature). For [EventSuccessorMessage], tmux
-	// does reach it, matching its pre-existing, unchanged behavior.
+	// today (Deferred in the Feature). For [EventSuccessorMessage], Herdr
+	// reaches it only under explicit receipt-bound lineage authority.
 	ModeSubmit DeliveryMode = "submit"
 )
 
@@ -91,9 +87,7 @@ const (
 type Delivery struct {
 	Operation Operation
 	Class     EventClass
-	// Key is the idempotency key a keyed delivery mechanism needs — tmux's
-	// buffer name is `wb-message-<Key>` (internal/sessionmessage/receive.go:189,
-	// asserted by receive_test.go:97). Required for [OperationMessage];
+	// Key is the durable idempotency key. Required for [OperationMessage];
 	// [OperationWake] leaves it empty.
 	Key string
 	// Text is the exact bytes to deliver.
@@ -127,9 +121,9 @@ type Receipt struct {
 // REQ:delivery-guards-enforced-and-rechecked). It only ever inspects the
 // resolved transport's declared capability matrix, the Operation, and the
 // event's class — never a specific transport [Kind] — so no call site
-// branches on herdr-vs-tmux directly (REQ:single-transport-interface;
-// Task 3's job is to prove no production call site does, this function
-// only proves the mechanism itself does not need to). [Transport.Deliver]
+// branches on a transport implementation directly (REQ:single-transport-interface;
+// this function proves the policy mechanism needs no implementation branch).
+// [Transport.Deliver]
 // implementations call this themselves rather than trusting a
 // caller-supplied mode; its result is an upper bound a transport MAY
 // downgrade further (a zero [Target], for instance — see
@@ -157,7 +151,7 @@ type Receipt struct {
 // resolve [ModeSubmit] only when LineageSubmit is true — never because of
 // LiveStatus, EmptyInputEvidence, or AdvisoryDelivery, which govern only
 // the daemon-wake classes. A transport that declares LineageSubmit true
-// (tmux) still never reaches ModeSubmit for [EventOwnPROutcome] or
+// (Herdr) still never reaches ModeSubmit for [EventOwnPROutcome] or
 // [EventAdvisory]: LineageSubmit is consulted in exactly one branch, this
 // one, and only when Operation is OperationMessage
 // (AC:tmux-never-delivers-unguarded's guarantee holds regardless of
@@ -166,7 +160,7 @@ type Receipt struct {
 // [EventAdvisory] (only ever evaluated for [OperationWake]) resolves
 // [ModeAdvisory] only when AdvisoryDelivery is true, and [ModeRecordOnly]
 // otherwise — which is why a Capabilities value with AdvisoryDelivery
-// false (tmux's default, none's only value) always resolves ModeRecordOnly
+// false (none's only value) always resolves ModeRecordOnly
 // for it (AC:tmux-never-delivers-unguarded, AC:none-transport-records-only).
 //
 // Any other, unrecognized, or empty EventClass resolves [ModeRecordOnly]:
