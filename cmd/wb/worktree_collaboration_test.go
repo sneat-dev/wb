@@ -381,3 +381,43 @@ func TestWorktreeRebindCommandRefusesLiveOwnerRecovery(t *testing.T) {
 		t.Fatalf("refused live-owner recovery changed the snapshot: %+v, %t, %v", state, found, err)
 	}
 }
+
+func TestWorktreeRebindUnknownOwnerRequiresExplicitHandoff(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []string{"approved", "no-approval", "live", "mixed-modes", "approval-without-mode"} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
+			factory, old, current := rebindRecoveryFixture(t)
+			service, err := factory()
+			if err != nil {
+				t.Fatal(err)
+			}
+			service.Ports.OwnerStatus = func(string) (string, error) {
+				if scenario == "live" {
+					return "live", nil
+				}
+				return "unknown", nil
+			}
+			args := []string{current.Root, "--take-unknown-ownership", "--expected-root", old.Root, "--expected-owner", "gone", "--expected-owner-epoch", "1", "--expected-revision", "1", "--reason", "explicit handoff"}
+			if scenario != "no-approval" {
+				args = append(args, "--handoff-approval", "User approved exact checkout transfer")
+			}
+			if scenario == "mixed-modes" {
+				args = append(args, "--take-inactive-ownership")
+			}
+			if scenario == "approval-without-mode" {
+				args[1] = "--take-unknown-ownership=false"
+			}
+			out, err := executeCollaborationCommand(t, newWorktreeRebindCmd(func() (worktreecollab.Service, error) { return service, nil }), args...)
+			if scenario != "approved" {
+				if err == nil || out != "" {
+					t.Fatal("unsafe recovery accepted", scenario, out, err)
+				}
+				return
+			}
+			if err != nil || !strings.Contains(out, "owner gone -> successor") {
+				t.Fatal(out, err)
+			}
+		})
+	}
+}

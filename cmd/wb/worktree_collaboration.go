@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/sneat-dev/wb/internal/cli/cmdworktree"
 	"github.com/sneat-dev/wb/internal/worktreecollab"
@@ -31,9 +32,9 @@ func addCollaborationCommands(command *cobra.Command, inv *invocation) {
 }
 
 func newWorktreeRebindCmd(factory collaborationServiceFactory) *cobra.Command {
-	var expectedRoot, expectedOwner, reason string
+	var expectedRoot, expectedOwner, reason, handoffApproval string
 	var expectedOwnerEpoch, expectedRevision uint64
-	var takeInactiveOwnership bool
+	var takeInactiveOwnership, takeUnknownOwnership bool
 	command := &cobra.Command{
 		Use:   "rebind <current-path>",
 		Short: "Repair a stale collaboration root after a worktree path was retired",
@@ -47,13 +48,30 @@ With --take-inactive-ownership it also transfers ownership away from the owner
 recorded in the stale snapshot, but only when every observed field is supplied
 exactly, the caller is a separately corroborated live session, and the recorded
 owner is proven inactive. Live, unknown, ambiguous, or unreadable owners refuse,
-and the recovery then publishes one ownership change plus one root rebind.`,
+and the recovery then publishes one ownership change plus one root rebind.
+
+With --take-unknown-ownership and --handoff-approval, explicit user authority
+may recover an unknown historical owner. The exact snapshot and retired-root
+checks remain mandatory. Live owners and unreadable status always refuse.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if takeInactiveOwnership {
+			if takeInactiveOwnership && takeUnknownOwnership {
+				return fmt.Errorf("choose only one ownership recovery mode")
+			}
+			if takeUnknownOwnership && strings.TrimSpace(handoffApproval) == "" {
+				return fmt.Errorf("--take-unknown-ownership requires --handoff-approval recording explicit user authority")
+			}
+			if !takeUnknownOwnership && cmd.Flags().Changed("handoff-approval") {
+				return fmt.Errorf("--handoff-approval requires --take-unknown-ownership")
+			}
+			if takeInactiveOwnership || takeUnknownOwnership {
+				modeFlag := "--take-inactive-ownership"
+				if takeUnknownOwnership {
+					modeFlag = "--take-unknown-ownership"
+				}
 				for _, required := range []string{"expected-root", "expected-owner", "expected-owner-epoch", "expected-revision", "reason"} {
 					if !cmd.Flags().Changed(required) {
-						return fmt.Errorf("--take-inactive-ownership requires --%s with the exact value observed in the stale snapshot", required)
+						return fmt.Errorf("%s requires --%s with the exact value observed in the stale snapshot", modeFlag, required)
 					}
 				}
 				if expectedOwnerEpoch == 0 || expectedRevision == 0 {
@@ -73,9 +91,9 @@ and the recovery then publishes one ownership change plus one root rebind.`,
 			if err != nil {
 				return err
 			}
-			if takeInactiveOwnership {
+			if takeInactiveOwnership || takeUnknownOwnership {
 				state, err := service.RecoverInactiveOwner(cmd.Context(), args[0], worktreecollab.InactiveOwnerRecovery{
-					ExpectedRoot: expectedRoot, ExpectedOwner: expectedOwner,
+					HandoffApproval: handoffApproval, ExpectedRoot: expectedRoot, ExpectedOwner: expectedOwner,
 					ExpectedEpoch: expectedOwnerEpoch, ExpectedRevision: expectedRevision, Reason: reason,
 				})
 				if err != nil {
@@ -97,6 +115,8 @@ and the recovery then publishes one ownership change plus one root rebind.`,
 		},
 	}
 	command.Flags().StringVar(&expectedRoot, "expected-root", "", "exact prior checkout root recorded in the stale snapshot")
+	command.Flags().BoolVar(&takeUnknownOwnership, "take-unknown-ownership", false, "replace an unknown historical owner only with explicit user handoff authority")
+	command.Flags().StringVar(&handoffApproval, "handoff-approval", "", "record the explicit user approval; required only for unknown-owner handoff")
 	command.Flags().BoolVar(&takeInactiveOwnership, "take-inactive-ownership", false, "also replace a recorded owner that is proven inactive")
 	command.Flags().StringVar(&expectedOwner, "expected-owner", "", "exact owner recorded in the stale snapshot")
 	command.Flags().Uint64Var(&expectedOwnerEpoch, "expected-owner-epoch", 0, "exact owner epoch recorded in the stale snapshot")

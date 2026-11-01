@@ -18,6 +18,14 @@ an audit event and does not change ownership.
 wb worktree rebind <current-path> --expected-root <retired-path>
 ```
 
+An unknown historical owner is not proven inactive. Only with explicit user
+approval for that exact checkout may you use `wb worktree rebind <current-path>
+--take-unknown-ownership --handoff-approval <approval-reference> --expected-root
+<retired-path> --expected-owner <observed-owner> --expected-owner-epoch <epoch>
+--expected-revision <revision> --reason <reason>`. This separate route retains
+all exact identity and absent-root checks, refuses live or unreadable owners,
+and records user authority and the observed unknown status in the audit.
+
 ## Inspect
 
 For one named task/effort across every live worktree:

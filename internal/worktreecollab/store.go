@@ -165,11 +165,12 @@ func requireAbsentPreviousRoot(root string) error {
 }
 
 // RecoverInactiveOwner publishes the explicit recovery that repairs a stale
-// root and replaces a recorded owner proven inactive. It shares the one
+// root and replaces a recorded owner proven inactive, or unknown with explicit
+// user handoff approval. It shares the one
 // per-checkout lock with every other transition, and revalidate runs under that
 // lock immediately before the single atomic write, so a caller must re-corroborate
 // the invoking session, the current checkout's Git identity, the retired root's
-// absence, and the old owner's inactive status after the CAS comparison.
+// absence, and the old owner's permitted observed status after the CAS comparison.
 func (store Store) RecoverInactiveOwner(ctx context.Context, checkout Checkout, recovery InactiveOwnerRecovery, revalidate func() error) (State, error) {
 	if err := recovery.validate(); err != nil {
 		return State{}, err

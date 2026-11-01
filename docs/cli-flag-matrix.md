@@ -273,3 +273,8 @@ pull-request candidate as well as a direct target, so a repository with no CI at
 all lands instead of polling until the slice deadline; both phases still require
 stable exact-head check observations whenever checks exist. Prepare does not
 accept the flag because it performs no remote landing or CI-fence decision.
+
+`worktree rebind --take-unknown-ownership` requires exact expected root, owner,
+owner epoch and revision, plus `--reason` and `--handoff-approval` recording
+explicit user authority. It refuses live owners, unreadable status and a previous
+root that still exists; it preserves checkout Git identity and writes one audit.
