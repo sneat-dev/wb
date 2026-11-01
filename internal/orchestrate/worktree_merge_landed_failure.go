@@ -32,6 +32,9 @@ func acknowledgeLandedMergeFailure(ctx context.Context, options WorktreeMergeLan
 	if err := validateLandedFailureAcknowledgementReceipt(receipt, receiptPath); err != nil {
 		return WorktreeMergeLandedFailureAcknowledgement{}, err
 	}
+	if receipt.Candidate.SHA == "" && receipt.Status == WorktreeMergeValidationFailed {
+		return acknowledgeLegacyLandedValidationFailure(ctx, options, receipt, receiptPath, run, readReceipt, persist)
+	}
 	if receipt.Repository == "" || receipt.Target == "" || receipt.TargetSHA == "" || receipt.Candidate.SHA == "" || receipt.Candidate.Worktree == "" || receipt.Candidate.Branch == "" || len(receipt.Sources) == 0 {
 		return WorktreeMergeLandedFailureAcknowledgement{}, fmt.Errorf("receipt %s lacks complete immutable target, candidate, or source identity", receiptPath)
 	}
