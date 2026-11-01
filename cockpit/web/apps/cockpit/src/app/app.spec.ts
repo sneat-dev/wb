@@ -33,12 +33,17 @@ describe('App', () => {
   }
 
   it('renders the top bar, the page and the overlays, with a tab for every page', async () => {
-    const { root } = await open('/')
+    const ensure = vi.spyOn(TestBed.inject(OverlayLoader), 'ensure')
+    const { fixture, root } = await open('/')
     expect([...root.querySelectorAll('nav a.tab')].map((a) => a.textContent?.replace(/\d+|\s+| need.*|agents running|tasks need you/g, '').trim())).toEqual(PAGE_LINKS.map((link) => link.label))
     expect(root.querySelector('main router-outlet')).not.toBeNull()
     expect(root.querySelector('main app-fleet-banner')).not.toBeNull()
-    // The palette and the sheet are a lazy chunk the shell fetches once it has rendered.
-    await vi.waitFor(() => expect(root.querySelector('app-overlays app-command-palette')).not.toBeNull())
+    // Await the real lazy import, not a wall-clock poll that can expire while
+    // the first chunk is still being transformed by the instrumented runner.
+    await vi.waitFor(() => expect(ensure).toHaveBeenCalled())
+    await ensure.mock.results[0].value
+    await fixture.whenStable()
+    expect(root.querySelector('app-overlays app-command-palette')).not.toBeNull()
     expect(root.querySelector('app-overlays app-shortcut-sheet')).not.toBeNull()
   })
 

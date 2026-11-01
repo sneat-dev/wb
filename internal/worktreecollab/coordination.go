@@ -121,12 +121,16 @@ type TakeRequest struct {
 }
 
 // InactiveOwnerRecovery is one explicit, exactly-bound repair of a stale
-// checkout root whose recorded owner is proven inactive. Every field is an
+// checkout root whose recorded owner is inactive, or unknown with explicit
+// user handoff approval. Every field is an
 // observation the caller must state exactly, so nothing is inferred from age,
 // a worker label, or Git's reused registration name. OwnerStatus is the
-// corroborated status of ExpectedOwner: only "inactive" is admitted, and the
-// caller is a separately corroborated live session.
+// corroborated status of ExpectedOwner; it is never inferred from approval.
+// The caller is a separately corroborated live session.
 type InactiveOwnerRecovery struct {
+	// HandoffApproval records explicit operator authority for unknown-owner
+	// recovery. It never admits a live owner or an unreadable status.
+	HandoffApproval  string
 	ExpectedRoot     string
 	ExpectedOwner    string
 	ExpectedEpoch    uint64
@@ -153,9 +157,11 @@ type coordinationBinding struct {
 // no path, owner, epoch or revision can be confused with another by
 // concatenation. Later revision-changing operations cannot rewrite it.
 type inactiveOwnerRecoveryAudit struct {
-	Reason    string              `json:"reason"`
-	Expected  coordinationBinding `json:"expected"`
-	Resulting coordinationBinding `json:"resulting"`
+	HandoffApproval string              `json:"handoff_approval,omitempty"`
+	OwnerStatus     string              `json:"owner_status,omitempty"`
+	Reason          string              `json:"reason"`
+	Expected        coordinationBinding `json:"expected"`
+	Resulting       coordinationBinding `json:"resulting"`
 }
 
 // auditReason encodes the comparison this recovery performed and the transition
@@ -168,7 +174,9 @@ type inactiveOwnerRecoveryAudit struct {
 // so the canonical bytes remain the only thing the audit can hold.
 func (recovery InactiveOwnerRecovery) auditReason(checkout Checkout) (string, error) {
 	encoded, err := json.Marshal(inactiveOwnerRecoveryAudit{
-		Reason: strings.TrimSpace(recovery.Reason),
+		Reason:          strings.TrimSpace(recovery.Reason),
+		HandoffApproval: recovery.HandoffApproval,
+		OwnerStatus:     recovery.handoffOwnerStatus(),
 		Expected: coordinationBinding{
 			Root: recovery.ExpectedRoot, Owner: recovery.ExpectedOwner,
 			Epoch: recovery.ExpectedEpoch, Revision: recovery.ExpectedRevision,
@@ -267,7 +275,7 @@ func (recovery InactiveOwnerRecovery) validate() error {
 	if recovery.ExpectedEpoch == 0 || recovery.ExpectedRevision == 0 {
 		return fmt.Errorf("inactive owner recovery requires the exact recorded owner epoch and coordination revision")
 	}
-	if recovery.OwnerStatus != "inactive" {
+	if !recovery.allowsOwnerStatus(recovery.OwnerStatus) {
 		return fmt.Errorf("inactive owner recovery requires a proven inactive owner; observed %q", recovery.OwnerStatus)
 	}
 	if strings.TrimSpace(recovery.Reason) == "" {
@@ -323,7 +331,7 @@ func (state *State) RecoverInactiveOwner(checkout Checkout, recovery InactiveOwn
 			PreviousRoot: recovery.ExpectedRoot, CurrentRoot: checkout.Root, Actor: recovery.Actor, At: recovery.At.UTC(),
 		})
 		state.recordChange(OwnerChange{Epoch: state.OwnerEpoch, Previous: recovery.ExpectedOwner, Current: recovery.Actor,
-			Actor: recovery.Actor, Reason: reason, At: recovery.At.UTC()})
+			Actor: recovery.Actor, Reason: reason, Forced: recovery.HandoffApproval != "", At: recovery.At.UTC()})
 	}
 	return err
 }
@@ -570,4 +578,18 @@ func (state *State) Ack(recipient, messageID, messageDigest string, at time.Time
 		return state.Cursors[recipient], nil
 	}
 	return 0, fmt.Errorf("message %s is not in recipient inbox", messageID)
+}
+
+// Explicit handoff authority is a distinct route, never evidence of inactivity.
+func (recovery InactiveOwnerRecovery) allowsOwnerStatus(status string) bool {
+	if recovery.HandoffApproval != "" {
+		return strings.TrimSpace(recovery.HandoffApproval) != "" && status == "unknown"
+	}
+	return status == "inactive"
+}
+func (recovery InactiveOwnerRecovery) handoffOwnerStatus() string {
+	if recovery.HandoffApproval != "" {
+		return recovery.OwnerStatus
+	}
+	return ""
 }

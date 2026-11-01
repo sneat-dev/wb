@@ -18905,15 +18905,18 @@
                 "--expected-owner-epoch",
                 "--expected-revision",
                 "--expected-root",
+                "--handoff-approval",
                 "--reason",
-                "--take-inactive-ownership"
+                "--take-inactive-ownership",
+                "--take-unknown-ownership"
               ],
               "modes": [
                 "Repairs a stale collaboration root only after the prior path was retired and Git reused the linked-worktree identity",
                 "Requires the exact recorded prior root, an absent old path, and matching GitDir and CommonDir",
                 "Requires a live admitted WB session and does not change ownership or infer a checkout identity",
                 "With --take-inactive-ownership it also replaces the recorded owner, but only when the exact prior root, owner, owner epoch, and coordination revision all match the stale snapshot",
-                "Recovery requires a separately corroborated live caller and a recorded owner proven inactive; live, unknown, ambiguous, or unreadable owners refuse, and a repeated request never advances the owner epoch twice"
+                "Inactive recovery requires a separately corroborated live caller and a recorded owner proven inactive; unknown, live and unreadable owners refuse in that mode",
+                "With --take-unknown-ownership and --handoff-approval, explicit user authority may recover only an unknown historical owner under the same exact CAS, Git identity and absent-root checks; live and unreadable owners always refuse, and repeats never advance the epoch twice"
               ]
             }
           ],

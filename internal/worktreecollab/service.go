@@ -123,9 +123,10 @@ func (service Service) Rebind(ctx context.Context, idOrPath, expectedRoot string
 }
 
 // RecoverInactiveOwner repairs a stale checkout root and replaces its recorded
-// owner only when that owner is proven inactive. The invoking registered
+// owner only when inactive, or unknown with explicit user handoff approval.
+// The invoking registered
 // session becomes the owner in the same snapshot. Liveness is never inferred:
-// live, unknown, ambiguous, or unreadable owners refuse, and the caller,
+// live or unreadable owners refuse; unknown requires separate approval. The caller,
 // current checkout identity, retired root, and old owner's inactivity are all
 // re-corroborated under the coordination lock immediately before publication.
 func (service Service) RecoverInactiveOwner(ctx context.Context, idOrPath string, recovery InactiveOwnerRecovery) (State, error) {
@@ -144,7 +145,7 @@ func (service Service) RecoverInactiveOwner(ctx context.Context, idOrPath string
 	if recovery.OwnerStatus, err = service.Ports.OwnerStatus(recovery.ExpectedOwner); err != nil {
 		return State{}, err
 	}
-	if recovery.OwnerStatus != "inactive" {
+	if !recovery.allowsOwnerStatus(recovery.OwnerStatus) {
 		return State{}, fmt.Errorf("inactive owner recovery requires the recorded owner to be proven inactive; observed %q", recovery.OwnerStatus)
 	}
 	revalidate := func() error {
@@ -162,7 +163,7 @@ func (service Service) RecoverInactiveOwner(ctx context.Context, idOrPath string
 		if err != nil {
 			return err
 		}
-		if status != "inactive" {
+		if !recovery.allowsOwnerStatus(status) {
 			return fmt.Errorf("recorded owner liveness changed before recovery; observed %q", status)
 		}
 		return nil
