@@ -632,10 +632,16 @@ with recorded failed validation, or a landed_post_target_ci_failed receipt has
 its clean candidate and every receipted source contained in the exact current remote target, then record a
 separate audited acknowledgement so a fresh forward repair can own the lane.
 The landed failed-validation form may preserve source worktrees that advanced
-after landing; other forms still require their exact source heads. Post-target CI receipts must also prove their exact failed landing. The immutable
+after landing; other forms still require their exact source heads, except the
+legacy prepare validation_failed shape that omitted candidate.SHA. That narrow
+compatibility path correlates the immutable validation revision, preserves its
+clean same-claim descendant checkout, and authenticates every retired source
+through its exact descendant terminal cleanup and merged PR. Both identity and
+landed acknowledgement artifacts are required; the preserved descendant is not
+declared landed or retired. Post-target CI receipts must also prove their exact failed landing. The immutable
 Work Log and historical merge receipt are never rewritten. This is a dry-run by
 default; --apply requires --actor and --reason and writes only the new
-acknowledgement artifact. Any missing claim, target, ancestry, or cleanliness
+acknowledgement artifacts. Any missing claim, target, ancestry, or cleanliness
 proof refuses closed.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {

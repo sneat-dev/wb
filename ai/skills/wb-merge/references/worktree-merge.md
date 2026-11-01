@@ -267,6 +267,17 @@ landing that is not an ancestor of the current target, a missing active claim,
 or any dirty/drifted receipt/source identity refuses closed; branch names,
 patch similarity, and PR state are never substitutes for the ancestry proof.
 
+The legacy prepare `validation_failed` shape that omitted `candidate.SHA` has
+a narrower compatibility proof: correlate its immutable validation revision,
+require that historical revision on the fresh remote target, and preserve the
+same clean claimed checkout at that revision or a proven descendant. Every
+missing source requires an authenticated WB terminal cleanup at its exact final
+head, original-source ancestry, and a freshly verified merged PR. A separate
+digest-bound identity and landed acknowledgement are both required by lane
+readers. A newer preserved checkout is never declared landed or retired by
+this acknowledgement. Missing, contradictory, changed or corrupt evidence
+refuses closed; supersede and unpublished-failure policies remain unchanged.
+
 When a non-terminal land receipt is stuck because its own landing-result read
 failed on I/O or environment error -- most commonly because the candidate
 worktree was already removed before a resume could confirm the server

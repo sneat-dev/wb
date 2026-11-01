@@ -16945,7 +16945,7 @@
                 "--reason"
               ],
               "modes": [
-                "Proves an exact clean candidate and every receipted source commit are contained in the freshly fetched remote target; only the landed failed-validation form may preserve subsequently advanced source worktrees",
+                "Proves an exact clean candidate and every receipted source commit are contained in the freshly fetched remote target; landed failed-validation may preserve advanced live sources; legacy missing-candidate-SHA prepare validation failures authenticate the immutable validation revision, clean same-claim descendant custody and every retired source through descendant terminal cleanup and merged PR evidence",
                 "Acknowledges only stale prepare validation_failed, landed failed-validation, or landed_post_target_ci_failed receipts without falsely making a failed validation successful"
               ]
             }
@@ -16988,6 +16988,11 @@
             {
               "path": "internal/orchestrate/worktree_merge_ack_test.go",
               "name": "TestAcknowledgeLandedValidationFailureLeavesHistoricalReceiptUntouched",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_legacy_landed_test.go",
+              "name": "TestLegacyLandedValidationPreservesAdvancedCheckoutAndReleasesOnlyHistoricalLane",
               "kind": "integration"
             },
             {

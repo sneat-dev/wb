@@ -176,6 +176,7 @@ type WorktreeMergePreparedRebatch struct {
 // be present in the current target but whose validation boundary never became
 // terminal. The original merge receipt and Work Log remain untouched.
 type WorktreeMergeLandedFailureAcknowledgement struct {
+	LegacyValidation *WorktreeMergeLegacyLandedValidation `json:"legacy_validation,omitempty"`
 	// Historical descendant acknowledgements bind these optional fields into ID.
 	// Readers retain them; current acknowledgement generation remains unchanged.
 	ReceiptSHA256       string                `json:"receipt_sha256,omitempty"`
@@ -1001,6 +1002,15 @@ func landedFailureAcknowledgementID(ack WorktreeMergeLandedFailureAcknowledgemen
 			}
 		}
 	}
+	if ack.LegacyValidation != nil {
+		// This additive domain separator leaves every older acknowledgement ID
+		// unchanged. The concrete evidence type contains no fallible JSON values.
+		evidence, _ := json.Marshal(ack.LegacyValidation)
+		for _, value := range []string{"legacy_landed_validation", ack.ReceiptSHA256, string(evidence), ack.ClaimBaseSHA, ack.CandidateWorktree, ack.CandidateBranch, ack.Actor, ack.Reason, ack.RecordedAt.UTC().Format(time.RFC3339Nano)} {
+			_, _ = hash.Write([]byte(value))
+			_, _ = hash.Write([]byte{0})
+		}
+	}
 	return hex.EncodeToString(hash.Sum(nil))
 }
 
@@ -1028,13 +1038,17 @@ func readLandedFailureAcknowledgement(path string, receipt WorktreeMergeReceipt)
 	if err := readMergeAcknowledgement(path, "landed-failure acknowledgement", &ack); err != nil {
 		return WorktreeMergeLandedFailureAcknowledgement{}, err
 	}
-	if err := validateLandedFailureObservedSources(ack, receipt); err != nil {
+	effective, err := resolveLegacyLandedAcknowledgement(ack, receipt)
+	if err != nil {
+		return WorktreeMergeLandedFailureAcknowledgement{}, fmt.Errorf("landed-failure acknowledgement %s: %w", path, err)
+	}
+	if err := validateLandedFailureObservedSources(ack, effective); err != nil {
 		return WorktreeMergeLandedFailureAcknowledgement{}, fmt.Errorf("landed-failure acknowledgement %s: %w", path, err)
 	}
 	if ack.SchemaVersion != worktreeMergeLandedFailureAcknowledgementSchemaVersion || ack.Status != "landed_failure_acknowledged" ||
 		ack.AcknowledgementPath != path || ack.CurrentTargetSHA == "" || ack.CandidateSHA == "" || ack.ClaimBaseSHA == "" ||
 		ack.ReceiptPath != receipt.ReceiptPath || ack.ReceiptID != receipt.ID || ack.Lane != receipt.Lane || ack.Repository != receipt.Repository ||
-		ack.Target != receipt.Target || ack.ReceiptStatus != receipt.Status || ack.ReceiptTargetSHA != receipt.TargetSHA || ack.ReceiptLandingSHA != receipt.LandingSHA || ack.CandidateSHA != receipt.Candidate.SHA ||
+		ack.Target != receipt.Target || ack.ReceiptStatus != receipt.Status || ack.ReceiptTargetSHA != receipt.TargetSHA || ack.ReceiptLandingSHA != receipt.LandingSHA || ack.CandidateSHA != effective.Candidate.SHA ||
 		!sameWorktreeMergeSources(ack.Sources, receipt.Sources) || ack.ID != landedFailureAcknowledgementID(ack) {
 		return WorktreeMergeLandedFailureAcknowledgement{}, fmt.Errorf("landed-failure acknowledgement %s has invalid receipt identity", path)
 	}
