@@ -26,8 +26,13 @@ const (
 )
 
 var (
-	defaultRetryDelays   = []time.Duration{250 * time.Millisecond, 500 * time.Millisecond}
-	ErrClaimsUnsupported = errors.New("the HTTP hub provider does not yet support remote claims")
+	defaultRetryDelays = []time.Duration{250 * time.Millisecond, 500 * time.Millisecond}
+	// ErrClaimsUnsupported is the shared capability refusal, kept here so
+	// callers that named it on this package keep compiling.
+	ErrClaimsUnsupported = remotestate.ErrClaimsUnsupported
+	// errHubClaimsUnsupported keeps the provider in the user-facing message
+	// while still matching the shared sentinel.
+	errHubClaimsUnsupported = fmt.Errorf("HTTP hub provider: %w", ErrClaimsUnsupported)
 )
 
 // StatusError is a hub's refusal of a request with an HTTP status. It
@@ -199,16 +204,21 @@ func (provider *Provider) Status(ctx context.Context) (remotestate.StatusSnapsho
 	return remotestate.StatusSnapshot{Machines: machines, Claims: []remotestate.ClaimEntry{}}, nil
 }
 
+// SupportsClaims reports that the hosted hub has no claim store yet, so the
+// automatic claim and release paths skip it instead of reporting a leak
+// (sneat-dev/wb#626).
+func (*Provider) SupportsClaims() bool { return false }
+
 func (provider *Provider) Claim(context.Context, remotestate.Claim, remotestate.ClaimMode, string) (remotestate.ClaimOutcome, error) {
-	return remotestate.ClaimOutcome{}, ErrClaimsUnsupported
+	return remotestate.ClaimOutcome{}, errHubClaimsUnsupported
 }
 
 func (provider *Provider) Release(context.Context, string, string, string, bool) (remotestate.ReleaseOutcome, error) {
-	return remotestate.ReleaseOutcome{}, ErrClaimsUnsupported
+	return remotestate.ReleaseOutcome{}, errHubClaimsUnsupported
 }
 
 func (provider *Provider) Claims(context.Context) ([]remotestate.ClaimEntry, error) {
-	return nil, ErrClaimsUnsupported
+	return nil, errHubClaimsUnsupported
 }
 
 func (provider *Provider) PollRepositoryEvents(ctx context.Context, cursor string, limit int, wait time.Duration) (repositoryevent.PollResponse, error) {

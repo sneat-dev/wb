@@ -281,11 +281,14 @@ func TestHubProviderClaimReleaseClaimsReportUnsupported(t *testing.T) {
 	})
 	ctx := context.Background()
 
-	if outcome, err := provider.Claim(ctx, remotestate.Claim{Task: "t-1"}, remotestate.ClaimTakeOverStale, "alice/laptop"); !errors.Is(err, ErrClaimsUnsupported) || outcome.Kind != "" {
-		t.Fatalf("Claim = %+v, %v; want the unsupported-claims error", outcome, err)
+	if provider.SupportsClaims() || remotestate.SupportsClaims(provider) {
+		t.Fatal("hub provider must declare that it cannot store claims")
 	}
-	if outcome, err := provider.Release(ctx, "t-1", "alice", dqCovMachine, true); !errors.Is(err, ErrClaimsUnsupported) || outcome.Kind != "" {
-		t.Fatalf("Release = %+v, %v; want the unsupported-claims error", outcome, err)
+	if outcome, err := provider.Claim(ctx, remotestate.Claim{Task: "t-1"}, remotestate.ClaimTakeOverStale, "alice/laptop"); !errors.Is(err, ErrClaimsUnsupported) || outcome.Kind != "" || !strings.Contains(err.Error(), "HTTP hub provider") {
+		t.Fatalf("Claim = %+v, %v; want the hub-named unsupported-claims error", outcome, err)
+	}
+	if outcome, err := provider.Release(ctx, "t-1", "alice", dqCovMachine, true); !errors.Is(err, ErrClaimsUnsupported) || outcome.Kind != "" || !strings.Contains(err.Error(), "HTTP hub provider") {
+		t.Fatalf("Release = %+v, %v; want the hub-named unsupported-claims error", outcome, err)
 	}
 	if claims, err := provider.Claims(ctx); !errors.Is(err, ErrClaimsUnsupported) || claims != nil {
 		t.Fatalf("Claims = %+v, %v; want nil and the unsupported-claims error", claims, err)

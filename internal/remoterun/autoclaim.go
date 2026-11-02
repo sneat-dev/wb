@@ -11,6 +11,11 @@ import (
 	"github.com/sneat-dev/wb/internal/worktreerun"
 )
 
+// claimsUnsupportedDetail names the provider capability gap without pretending
+// that a claim leaked: a provider that cannot store claims cannot have acquired
+// one (sneat-dev/wb#626).
+const claimsUnsupportedDetail = "provider does not support remote claims (sneat-dev/wb#626)"
+
 func tryAutoClaim(deps Dependencies, projectsRoot, task string, stale time.Duration, out io.Writer) worktreerun.RemoteClaimOutcome {
 	cfg, provider, err := loadRemote(deps, projectsRoot)
 	if err != nil {
@@ -18,6 +23,9 @@ func tryAutoClaim(deps Dependencies, projectsRoot, task string, stale time.Durat
 		// silently: worktree create must behave exactly as it did before
 		// `wb remote` existed for any fleet that never opted in.
 		return worktreerun.RemoteClaimOutcome{Outcome: "disabled"}
+	}
+	if !remotestate.SupportsClaims(provider) {
+		return skippedAutoClaim(out, task, claimsUnsupportedDetail)
 	}
 	login, err := deps.Login()
 	if err != nil {
@@ -36,8 +44,7 @@ func tryAutoClaim(deps Dependencies, projectsRoot, task string, stale time.Durat
 	ctx := context.Background()
 	outcome, err := provider.Claim(ctx, mine, remotestate.ClaimNormal, "")
 	if err != nil {
-		warnSyncFailing(out, err)
-		return skippedAutoClaim(out, task, err.Error())
+		return skippedClaimError(out, task, err)
 	}
 	switch outcome.Kind {
 	case remotestate.ClaimAcquired:
@@ -64,8 +71,7 @@ func tryAutoTakeOverStale(ctx context.Context, provider remotestate.Provider, de
 	}
 	outcome, err := provider.Claim(ctx, mine, remotestate.ClaimTakeOverStale, holder.Holder())
 	if err != nil {
-		warnSyncFailing(out, err)
-		return skippedAutoClaim(out, mine.Task, err.Error())
+		return skippedClaimError(out, mine.Task, err)
 	}
 	if outcome.Kind == remotestate.ClaimHeld {
 		// The holder judged stale above already changed hands before this
@@ -86,11 +92,25 @@ func tryAutoTakeOverStale(ctx context.Context, provider remotestate.Provider, de
 	return worktreerun.RemoteClaimOutcome{Outcome: "took_over", Detail: who}
 }
 
+// skippedClaimError classifies a claim failure. A provider that cannot store
+// claims gets the capability skip and no sync warning; every other failure
+// keeps the existing skipped-claim behaviour and warning.
+func skippedClaimError(out io.Writer, task string, err error) worktreerun.RemoteClaimOutcome {
+	if errors.Is(err, remotestate.ErrClaimsUnsupported) {
+		return skippedAutoClaim(out, task, claimsUnsupportedDetail)
+	}
+	warnSyncFailing(out, err)
+	return skippedAutoClaim(out, task, err.Error())
+}
+
 func tryAutoRelease(deps Dependencies, projectsRoot, task string, out io.Writer) ReleaseAdvisory {
 	cfg, provider, err := loadRemote(deps, projectsRoot)
 	if err != nil {
 		// Unconfigured: silent, matching tryAutoClaim's own "disabled" path.
 		return ReleaseAdvisory{Outcome: "disabled"}
+	}
+	if !remotestate.SupportsClaims(provider) {
+		return UnsupportedAutoRelease(out, claimsUnsupportedDetail)
 	}
 	login, err := deps.Login()
 	if err != nil {
@@ -101,6 +121,9 @@ func tryAutoRelease(deps Dependencies, projectsRoot, task string, out io.Writer)
 	}
 	outcome, err := provider.Release(context.Background(), task, login, cfg.Machine, false)
 	if err != nil {
+		if errors.Is(err, remotestate.ErrClaimsUnsupported) {
+			return UnsupportedAutoRelease(out, claimsUnsupportedDetail)
+		}
 		warnSyncFailing(out, err)
 		return FailedAutoRelease(out, task, err.Error())
 	}
@@ -142,6 +165,14 @@ func SkippedAutoRelease(out io.Writer, detail string) ReleaseAdvisory {
 	return ReleaseAdvisory{Outcome: "skipped", Detail: detail}
 }
 
+// UnsupportedAutoRelease reports that the provider cannot store claims. No
+// claim can exist, so callers must treat this as settled rather than as a
+// release that was skipped with a claim still standing (sneat-dev/wb#626).
+func UnsupportedAutoRelease(out io.Writer, detail string) ReleaseAdvisory {
+	_, _ = fmt.Fprintf(out, "remote claim release skipped: %s\n", detail)
+	return ReleaseAdvisory{Outcome: "skipped", Detail: detail, Unsupported: true}
+}
+
 func FailedAutoRelease(out io.Writer, task, detail string) ReleaseAdvisory {
 	_, _ = fmt.Fprintf(out, "remote claim release FAILED: %s claim was not released (its worktree is already gone): %s\n", task, detail)
 	return ReleaseAdvisory{Outcome: "failed", Detail: detail}
@@ -150,6 +181,9 @@ func FailedAutoRelease(out io.Writer, task, detail string) ReleaseAdvisory {
 type ReleaseAdvisory struct {
 	Outcome string `json:"outcome"`
 	Detail  string `json:"detail,omitempty"`
+	// Unsupported says the provider cannot store claims, so there is nothing
+	// to release and the skip is final rather than a standing claim.
+	Unsupported bool `json:"unsupported,omitempty"`
 }
 
 func (r ReleaseAdvisory) Leaked() bool { return r.Outcome == "failed" }

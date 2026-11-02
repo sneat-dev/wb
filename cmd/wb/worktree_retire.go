@@ -102,7 +102,7 @@ func retireReleaseClaim(ctx context.Context, root, task string, out io.Writer,
 		return skippedAutoRelease(out, fmt.Sprintf("%d task worktrees remain", len(remaining.Results)))
 	}
 	result := release(root, task, out)
-	if result.Outcome != "released" && result.Outcome != "noop" && !result.Leaked() {
+	if !result.Unsupported && result.Outcome != "released" && result.Outcome != "noop" && !result.Leaked() {
 		return failedAutoRelease(out, task, "remote claim release outcome: "+result.Outcome+" "+result.Detail)
 	}
 	return result
