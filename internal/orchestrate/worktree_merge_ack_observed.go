@@ -6,6 +6,9 @@ import "fmt"
 // Like the other acknowledgement readers, it checks immutable byte/identity
 // evidence; it neither grants a fresh Git custody proof nor writes a new record.
 func validateLandedFailureObservedSources(ack WorktreeMergeLandedFailureAcknowledgement, receipt WorktreeMergeReceipt) error {
+	if ack.LegacyRemovedPR != "" {
+		return validateLegacyRemovedPRAcknowledgement(ack, receipt)
+	}
 	if ack.LegacyValidation != nil {
 		if len(ack.ObservedSources) != 0 {
 			return fmt.Errorf("legacy validation evidence cannot include historical observed sources")

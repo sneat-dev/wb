@@ -16941,6 +16941,7 @@
                 "--apply",
                 "--format",
                 "--initiator",
+                "--legacy-removed-pr",
                 "--mode",
                 "--reason"
               ],
@@ -16962,6 +16963,7 @@
                 "--apply",
                 "--actor",
                 "--initiator",
+                "--legacy-removed-pr",
                 "--mode",
                 "--reason"
               ]
