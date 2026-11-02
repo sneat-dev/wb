@@ -25,6 +25,18 @@ wb disk --skip-sizes       # headroom and roots only, no tree walk
 It reports; it never deletes. Retiring a worktree is `wb clean`, which
 knows what still holds unlanded work.
 
+`wb disk dependency-cache` is a separate, Linux non-root pnpm archive command.
+Its default plan does not write cache files or a source-worktree heartbeat.
+`wb disk dependency-cache --apply` explicitly restores/installs into mounted
+dependency masks, using the exact project `packageManager` and a separately
+provided immutable `--image`. Contained snapshots pass their read-only
+`--source-manifest`; no `.git` bootstrap is needed. The same retained writer
+lock protects restore/publication and age/aggregate-size/free-space policy.
+Only recognized completed archives are evicted; active and unknown files stay.
+This does not prune global package stores, browsers, source, databases or evidence.
+Runner adoption and actual cold/warm checks must be bound to the reviewed asset;
+the command alone is not proof that another executor uses it.
+
 `wb deadcode` answers a question the other three cannot: does every mechanism
 still have a caller on a path that runs? A missing feature is loud — nothing
 compiles, a test fails. A feature that is present but unreachable is silent,

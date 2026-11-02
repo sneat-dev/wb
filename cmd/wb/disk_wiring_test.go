@@ -62,3 +62,23 @@ func TestDiskWiringPreservesRootUsageErrorIdentity(t *testing.T) {
 		t.Fatalf("unexpected report = %q", out.String())
 	}
 }
+
+func TestDependencyCachePlanningAloneSuppressesWorktreeHeartbeat(t *testing.T) {
+	t.Parallel()
+	for _, apply := range []string{"false", "true"} {
+		root := newRootCmdFor(&invocation{})
+		command, _, err := root.Find([]string{"disk", "dependency-cache"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := command.ParseFlags([]string{"--apply=" + apply}); err != nil {
+			t.Fatal(err)
+		}
+		if dependencyCachePlan(command) != (apply == "false") {
+			t.Fatalf("apply=%s has wrong planning classification", apply)
+		}
+		if dependencyCachePlan(root) {
+			t.Fatal("unrelated command was classified as a cache plan")
+		}
+	}
+}

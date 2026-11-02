@@ -5938,6 +5938,85 @@
       "notes": "Exists because on 2026-09-17 this fleet's workstation reached 101 MB free of 150 GB and nothing reported it: the first symptom was a Go link step failing with 'no space left on device'. The split mattered more than the total \u2014 worktrees held 340 MB fleet-wide while per-task scratch held 46 GB \u2014 so a reader reasoning from 'worktrees are the big thing WB creates' would have cleaned the wrong 0.2%."
     },
     {
+      "id": "wb.disk.dependency-cache",
+      "feature_refs": [
+        "spec/features/managed-job-cache/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb disk dependency-cache",
+              "flags": [
+                "--apply",
+                "--growth-bytes",
+                "--image",
+                "--max-age-seconds",
+                "--max-bytes",
+                "--min-free-bytes",
+                "--source-manifest",
+                "--store-dir"
+              ],
+              "modes": [
+                "Linux non-root dependency archives only: plan without cache writes or a worktree heartbeat by default; --apply restores or installs the exact packageManager version into mounted dependency masks.",
+                "Enforces completed-archive age, aggregate bytes, three-generation retention and free-space admission under the same retained writer lock. Active archives and unknown files are preserved; unreachable bounds fail closed.",
+                "Frozen source-manifest input supports source snapshots without .git. Global package stores, browser installs, databases, source and evidence are never reclaimed. Async workers and unrelated cache producers are not integrated."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb disk dependency-cache --help",
+              "contains": [
+                "--apply",
+                "--source-manifest",
+                "--max-bytes",
+                "--min-free-bytes"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/quality.md",
+              "marker": "# Coverage and verification",
+              "examples": [
+                "wb disk dependency-cache",
+                "wb disk dependency-cache --apply"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/cli/cmddisk/dependency_cache_test.go",
+              "name": "TestDependencyCacheKeepsPlanningDefaultAndForwardsExplicitPolicy",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/dependencycache/cache_test.go",
+              "name": "TestArchivePolicyFilesystemAndInheritedLeaseRegressions",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Explicit Linux non-root managed archive slice; no global store or unrelated executor coverage. Cold/warm validation-runtime adoption qualification is pending. Existing broad Draft Disk Reclaim is not promoted or implemented by this command."
+    },
+    {
       "id": "wb.fleet",
       "feature_refs": [
         "spec/features/fleet-status/README.md"

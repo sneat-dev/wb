@@ -64,6 +64,7 @@ format: https://specscore.md/features-index-specification
 | [Quiet Verbs and Masked Exit Status Guard](quiet-verbs-and-masked-status-guard/README.md) | Draft | State-changing wb verbs gain a `--quiet` outcome-only mode, and the agent pre-tool-use hook refuses a shell command in which such a verb's output is piped into another command, because the pipe hides the verb's exit status. |
 | [Integration Branch Batches](integration-branch-batches/README.md) | Draft | Merge independently reviewed lane commits, pinned at their reviewed SHAs, into a long-lived integration branch locally with merge commits, check the result locally, push it, and promote the integration branch to its target through one fully checked pull request whose reviewer reads only the integration delta. |
 | [PR Land Waivers](pr-land-waivers/README.md) | Approved | Make `wb pr land --waive-check` usable on integration branches: settle pending waived checks before judging them, accept a bounded first-parent baseline when the target tip never ran a check, waive an aggregator whose `needs:` are all waived, and never waive a required check. |
+| [Managed job cache policy](managed-job-cache/README.md) | Draft | Apply size, age and free-space policy to WB-owned immutable Linux dependency archives at real job boundaries. This is the directly authorized 2026-11-02 archive-helper adoption slice; it does not approve or implement the broader Draft [Disk Reclaim](../disk-reclaim/README.md) feature. |
 
 ## Open Questions
 

@@ -179,7 +179,7 @@ func newRootCmdFor(inv *invocation) *cobra.Command {
 			// login directory, and is a read-only export that must write
 			// nothing. Skip both for these alone — every other command still
 			// gets them.
-			if sideEffectFreeCommand(id) {
+			if sideEffectFreeCommand(id) || dependencyCachePlan(cmd) {
 				return nil
 			}
 			// Publish which command is running so anything it writes into a
