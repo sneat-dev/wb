@@ -32,6 +32,9 @@ func acknowledgeLandedMergeFailure(ctx context.Context, options WorktreeMergeLan
 	if err := validateLandedFailureAcknowledgementReceipt(receipt, receiptPath); err != nil {
 		return WorktreeMergeLandedFailureAcknowledgement{}, err
 	}
+	if options.LegacyRemovedPR {
+		return acknowledgeLegacyRemovedPRFailure(ctx, options, receipt, receiptPath, run, readReceipt, persist)
+	}
 	if receipt.Candidate.SHA == "" && receipt.Status == WorktreeMergeValidationFailed {
 		return acknowledgeLegacyLandedValidationFailure(ctx, options, receipt, receiptPath, run, readReceipt, persist)
 	}
