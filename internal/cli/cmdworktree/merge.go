@@ -622,7 +622,7 @@ func newWorktreeMergeRevertCmd(inv *mergeInvocation) *cobra.Command {
 }
 
 func newWorktreeMergeAcknowledgeLandedFailedCmd(inv *mergeInvocation) *cobra.Command {
-	var apply bool
+	var apply, legacyRemovedPR bool
 	var actor, reason, format string
 	command := &cobra.Command{
 		Use:   "acknowledge-landed-failed <merge-receipt>",
@@ -654,7 +654,7 @@ proof refuses closed.`,
 			}
 			defer releaseAdmission()
 			ack, err := inv.operations.AcknowledgeLandedMergeFailure(command.Context(), orchestrate.WorktreeMergeLandedFailureAcknowledgementOptions{
-				ProjectsRoot: inv.runtime.Flags().ProjectsRoot, Receipt: args[0], Apply: apply, Actor: actor, Reason: reason,
+				ProjectsRoot: inv.runtime.Flags().ProjectsRoot, Receipt: args[0], Apply: apply, Actor: actor, Reason: reason, LegacyRemovedPR: legacyRemovedPR,
 			})
 			if err != nil {
 				return err
@@ -672,6 +672,7 @@ proof refuses closed.`,
 			return err
 		},
 	}
+	command.Flags().BoolVar(&legacyRemovedPR, "legacy-removed-pr", false, "prove an exact legacy merged PR with every receipted checkout and branch absent; preserves failed CI")
 	command.Flags().BoolVar(&apply, "apply", false, "write the separate audited acknowledgement artifact")
 	command.Flags().StringVar(&actor, "actor", "", "required with --apply: trusted operator or agent identity")
 	command.Flags().StringVar(&reason, "reason", "", "required with --apply: bounded audited acknowledgement reason")

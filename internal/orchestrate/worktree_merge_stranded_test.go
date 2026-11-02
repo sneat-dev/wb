@@ -62,12 +62,22 @@ func installStrandedLandingGH(t *testing.T, pullRequest, remoteGitDir string) {
 	t.Helper()
 	bin := t.TempDir()
 	script := filepath.Join(bin, "gh")
+	number := pullRequest[strings.LastIndex(pullRequest, "/")+1:]
 	body := "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$*\" >>\"$WB_TEST_GH_LOG\"\ncase \"$*\" in\n  'pr view " + pullRequest + ` --repo acme/app --json state,mergedAt,mergeCommit,headRefOid,baseRefName')
     pr_head="${WB_TEST_PR_HEAD_SHA:-$WB_TEST_CANDIDATE_SHA}"
     if [ "$WB_TEST_PR_STATE" = MERGED ]; then
       printf '{"state":"MERGED","mergedAt":"2026-09-01T00:00:00Z","headRefOid":"%s","baseRefName":"main","mergeCommit":{"oid":"%s"}}\n' "$pr_head" "$WB_TEST_MERGE_COMMIT_SHA"
     else
       printf '{"state":"%s","mergedAt":"","headRefOid":"%s","baseRefName":"main","mergeCommit":{"oid":""}}\n' "$WB_TEST_PR_STATE" "$pr_head"
+    fi ;;
+  'pr view ` + number + ` --repo acme/app --json number,url,state,mergedAt,mergeCommit,headRefOid,baseRefName')
+    pr_head="${WB_TEST_PR_HEAD_SHA:-$WB_TEST_CANDIDATE_SHA}"
+    pr_url="${WB_TEST_PR_URL:-` + pullRequest + `}"
+    pr_number="${WB_TEST_PR_NUMBER:-` + number + `}"
+    if [ "$WB_TEST_PR_STATE" = MERGED ]; then
+      printf '{"number":%s,"url":"%s","state":"MERGED","mergedAt":"2026-09-01T00:00:00Z","headRefOid":"%s","baseRefName":"main","mergeCommit":{"oid":"%s"}}\n' "$pr_number" "$pr_url" "$pr_head" "$WB_TEST_MERGE_COMMIT_SHA"
+    else
+      printf '{"number":%s,"url":"%s","state":"%s","mergedAt":"","headRefOid":"%s","baseRefName":"main","mergeCommit":{"oid":""}}\n' "$pr_number" "$pr_url" "$WB_TEST_PR_STATE" "$pr_head"
     fi ;;
   'api repos/acme/app/git/ref/heads/main --include'|'api repos/acme/app/git/ref/heads/main')
     sha="$(git --git-dir="$WB_TEST_REMOTE" rev-parse refs/heads/main)"
