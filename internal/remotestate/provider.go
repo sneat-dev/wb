@@ -1,6 +1,14 @@
 package remotestate
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+// ErrClaimsUnsupported reports that a provider cannot store task claims at all.
+// It is not a store failure: when no claim can ever exist there is nothing to
+// leak, so automatic paths report it as an informational skip.
+var ErrClaimsUnsupported = errors.New("remote claims are not supported by this provider")
 
 // PublishResult says where a snapshot landed: a commit SHA for a git store,
 // a URL for a hub.
@@ -28,6 +36,23 @@ type StatusSnapshot struct {
 // falls back to its two self-contained methods.
 type StatusProvider interface {
 	Status(ctx context.Context) (StatusSnapshot, error)
+}
+
+// ClaimsSupport is the optional provider capability that reports whether the
+// store can hold task claims. Providers that do not implement it are assumed to
+// support claims, so every existing provider keeps its contract.
+type ClaimsSupport interface {
+	SupportsClaims() bool
+}
+
+// SupportsClaims reports whether provider can acquire and release task claims.
+// A provider that declares no support is skipped by the automatic claim and
+// release paths rather than reported as a leak.
+func SupportsClaims(provider Provider) bool {
+	if capability, ok := provider.(ClaimsSupport); ok {
+		return capability.SupportsClaims()
+	}
+	return true
 }
 
 // ReadStatus returns the machine and claim projections needed by remote

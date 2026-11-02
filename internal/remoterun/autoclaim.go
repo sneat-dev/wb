@@ -11,6 +11,11 @@ import (
 	"github.com/sneat-dev/wb/internal/worktreerun"
 )
 
+// claimsUnsupportedDetail names the provider capability gap without pretending
+// that a claim leaked: a provider that cannot store claims cannot have acquired
+// one (sneat-dev/wb#626).
+const claimsUnsupportedDetail = "provider does not support remote claims (sneat-dev/wb#626)"
+
 func tryAutoClaim(deps Dependencies, projectsRoot, task string, stale time.Duration, out io.Writer) worktreerun.RemoteClaimOutcome {
 	cfg, provider, err := loadRemote(deps, projectsRoot)
 	if err != nil {
@@ -18,6 +23,9 @@ func tryAutoClaim(deps Dependencies, projectsRoot, task string, stale time.Durat
 		// silently: worktree create must behave exactly as it did before
 		// `wb remote` existed for any fleet that never opted in.
 		return worktreerun.RemoteClaimOutcome{Outcome: "disabled"}
+	}
+	if !remotestate.SupportsClaims(provider) {
+		return skippedAutoClaim(out, task, claimsUnsupportedDetail)
 	}
 	login, err := deps.Login()
 	if err != nil {
@@ -92,6 +100,9 @@ func tryAutoRelease(deps Dependencies, projectsRoot, task string, out io.Writer)
 		// Unconfigured: silent, matching tryAutoClaim's own "disabled" path.
 		return ReleaseAdvisory{Outcome: "disabled"}
 	}
+	if !remotestate.SupportsClaims(provider) {
+		return SkippedAutoRelease(out, claimsUnsupportedDetail)
+	}
 	login, err := deps.Login()
 	if err != nil {
 		return SkippedAutoRelease(out, "determine GitHub login: "+err.Error())
@@ -102,6 +113,9 @@ func tryAutoRelease(deps Dependencies, projectsRoot, task string, out io.Writer)
 	outcome, err := provider.Release(context.Background(), task, login, cfg.Machine, false)
 	if err != nil {
 		warnSyncFailing(out, err)
+		if errors.Is(err, remotestate.ErrClaimsUnsupported) {
+			return SkippedAutoRelease(out, claimsUnsupportedDetail)
+		}
 		return FailedAutoRelease(out, task, err.Error())
 	}
 	switch outcome.Kind {

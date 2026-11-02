@@ -281,6 +281,9 @@ func TestHubProviderClaimReleaseClaimsReportUnsupported(t *testing.T) {
 	})
 	ctx := context.Background()
 
+	if provider.SupportsClaims() || remotestate.SupportsClaims(provider) {
+		t.Fatal("hub provider must declare that it cannot store claims")
+	}
 	if outcome, err := provider.Claim(ctx, remotestate.Claim{Task: "t-1"}, remotestate.ClaimTakeOverStale, "alice/laptop"); !errors.Is(err, ErrClaimsUnsupported) || outcome.Kind != "" {
 		t.Fatalf("Claim = %+v, %v; want the unsupported-claims error", outcome, err)
 	}
