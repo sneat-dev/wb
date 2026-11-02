@@ -44,8 +44,7 @@ func tryAutoClaim(deps Dependencies, projectsRoot, task string, stale time.Durat
 	ctx := context.Background()
 	outcome, err := provider.Claim(ctx, mine, remotestate.ClaimNormal, "")
 	if err != nil {
-		warnSyncFailing(out, err)
-		return skippedAutoClaim(out, task, err.Error())
+		return skippedClaimError(out, task, err)
 	}
 	switch outcome.Kind {
 	case remotestate.ClaimAcquired:
@@ -72,8 +71,7 @@ func tryAutoTakeOverStale(ctx context.Context, provider remotestate.Provider, de
 	}
 	outcome, err := provider.Claim(ctx, mine, remotestate.ClaimTakeOverStale, holder.Holder())
 	if err != nil {
-		warnSyncFailing(out, err)
-		return skippedAutoClaim(out, mine.Task, err.Error())
+		return skippedClaimError(out, mine.Task, err)
 	}
 	if outcome.Kind == remotestate.ClaimHeld {
 		// The holder judged stale above already changed hands before this
@@ -94,6 +92,17 @@ func tryAutoTakeOverStale(ctx context.Context, provider remotestate.Provider, de
 	return worktreerun.RemoteClaimOutcome{Outcome: "took_over", Detail: who}
 }
 
+// skippedClaimError classifies a claim failure. A provider that cannot store
+// claims gets the capability skip and no sync warning; every other failure
+// keeps the existing skipped-claim behaviour and warning.
+func skippedClaimError(out io.Writer, task string, err error) worktreerun.RemoteClaimOutcome {
+	if errors.Is(err, remotestate.ErrClaimsUnsupported) {
+		return skippedAutoClaim(out, task, claimsUnsupportedDetail)
+	}
+	warnSyncFailing(out, err)
+	return skippedAutoClaim(out, task, err.Error())
+}
+
 func tryAutoRelease(deps Dependencies, projectsRoot, task string, out io.Writer) ReleaseAdvisory {
 	cfg, provider, err := loadRemote(deps, projectsRoot)
 	if err != nil {
@@ -112,10 +121,10 @@ func tryAutoRelease(deps Dependencies, projectsRoot, task string, out io.Writer)
 	}
 	outcome, err := provider.Release(context.Background(), task, login, cfg.Machine, false)
 	if err != nil {
-		warnSyncFailing(out, err)
 		if errors.Is(err, remotestate.ErrClaimsUnsupported) {
 			return SkippedAutoRelease(out, claimsUnsupportedDetail)
 		}
+		warnSyncFailing(out, err)
 		return FailedAutoRelease(out, task, err.Error())
 	}
 	switch outcome.Kind {

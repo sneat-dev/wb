@@ -36,7 +36,7 @@ func TestAutoClaimAndReleaseSkipProviderWithoutClaimsSupport(t *testing.T) {
 	if claim.Outcome != "skipped" || !strings.Contains(claim.Detail, "sneat-dev/wb#626") {
 		t.Fatalf("claim outcome = %+v", claim)
 	}
-	if !strings.Contains(claimOut.String(), "remote claim skipped:") || strings.Contains(claimOut.String(), "FAILED") {
+	if !strings.Contains(claimOut.String(), "remote claim skipped:") || strings.Contains(claimOut.String(), "FAILED") || strings.Contains(claimOut.String(), "WARNING") {
 		t.Fatalf("claim output = %q", claimOut.String())
 	}
 
@@ -45,8 +45,30 @@ func TestAutoClaimAndReleaseSkipProviderWithoutClaimsSupport(t *testing.T) {
 	if release.Outcome != "skipped" || release.Leaked() || !strings.Contains(release.Detail, "sneat-dev/wb#626") {
 		t.Fatalf("release outcome = %+v", release)
 	}
-	if !strings.Contains(releaseOut.String(), "remote claim release skipped:") || strings.Contains(releaseOut.String(), "FAILED") {
+	if !strings.Contains(releaseOut.String(), "remote claim release skipped:") || strings.Contains(releaseOut.String(), "FAILED") || strings.Contains(releaseOut.String(), "WARNING") {
 		t.Fatalf("release output = %q", releaseOut.String())
+	}
+}
+
+// The same classification applies to a claim attempt that reports the shared
+// capability error without declaring the capability: it is a skip, not a
+// store failure, and it must not print a sync warning.
+func TestAutoClaimClassifiesUnsupportedClaimsAsSkip(t *testing.T) {
+	t.Parallel()
+	p := &observedProvider{
+		claim: func(context.Context, remotestate.Claim, remotestate.ClaimMode, string) (remotestate.ClaimOutcome, error) {
+			return remotestate.ClaimOutcome{}, remotestate.ErrClaimsUnsupported
+		},
+	}
+	s := providerService(t, p)
+
+	var out bytes.Buffer
+	got := s.AutoClaim("explicit", "task", time.Hour, &out)
+	if got.Outcome != "skipped" || !strings.Contains(got.Detail, "sneat-dev/wb#626") {
+		t.Fatalf("claim outcome = %+v", got)
+	}
+	if strings.Contains(out.String(), "WARNING") || strings.Contains(out.String(), "FAILED") {
+		t.Fatalf("claim output = %q", out.String())
 	}
 }
 
@@ -73,7 +95,11 @@ func TestAutoReleaseClassifiesUnsupportedClaimsSeparatelyFromStoreFailure(t *tes
 	p.release = func(context.Context, string, string, string, bool) (remotestate.ReleaseOutcome, error) {
 		return remotestate.ReleaseOutcome{}, errObservedProvider
 	}
+	out.Reset()
 	if got := s.AutoRelease("explicit", "task", &out); !got.Leaked() || got.Outcome != "failed" {
 		t.Fatalf("store failure outcome = %+v, want a leaked claim", got)
+	}
+	if !strings.Contains(out.String(), "remote claim release FAILED:") {
+		t.Fatalf("store failure output = %q, want the leak line", out.String())
 	}
 }
