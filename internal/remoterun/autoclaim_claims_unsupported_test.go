@@ -42,7 +42,7 @@ func TestAutoClaimAndReleaseSkipProviderWithoutClaimsSupport(t *testing.T) {
 
 	var releaseOut bytes.Buffer
 	release := s.AutoRelease("explicit", "task", &releaseOut)
-	if release.Outcome != "skipped" || release.Leaked() || !strings.Contains(release.Detail, "sneat-dev/wb#626") {
+	if release.Outcome != "skipped" || !release.Unsupported || release.Leaked() || !strings.Contains(release.Detail, "sneat-dev/wb#626") {
 		t.Fatalf("release outcome = %+v", release)
 	}
 	if !strings.Contains(releaseOut.String(), "remote claim release skipped:") || strings.Contains(releaseOut.String(), "FAILED") || strings.Contains(releaseOut.String(), "WARNING") {
@@ -85,10 +85,10 @@ func TestAutoReleaseClassifiesUnsupportedClaimsSeparatelyFromStoreFailure(t *tes
 	s := providerService(t, p)
 
 	var out bytes.Buffer
-	if got := s.AutoRelease("explicit", "task", &out); got.Outcome != "skipped" || got.Leaked() {
+	if got := s.AutoRelease("explicit", "task", &out); got.Outcome != "skipped" || !got.Unsupported || got.Leaked() || !strings.Contains(got.Detail, "sneat-dev/wb#626") {
 		t.Fatalf("unsupported outcome = %+v", got)
 	}
-	if strings.Contains(out.String(), "FAILED") {
+	if strings.Contains(out.String(), "FAILED") || strings.Contains(out.String(), "WARNING") {
 		t.Fatalf("unsupported output = %q", out.String())
 	}
 

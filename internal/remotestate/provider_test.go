@@ -56,14 +56,14 @@ func (p *dqCovStatusProvider) Status(context.Context) (StatusSnapshot, error) {
 	return p.batched, p.batchedErr
 }
 
-// dqCovClaimsSupport adds the optional claims capability to the scripted
+// claimsCapabilityProvider adds the optional claims capability to the scripted
 // Provider so a test can prove both the declared value and the default.
-type dqCovClaimsSupport struct {
+type claimsCapabilityProvider struct {
 	dqCovProvider
 	supported bool
 }
 
-func (p *dqCovClaimsSupport) SupportsClaims() bool { return p.supported }
+func (p *claimsCapabilityProvider) SupportsClaims() bool { return p.supported }
 
 // TestSupportsClaimsDefaultsToSupportedAndHonoursTheCapability pins the
 // compatibility promise: a provider that predates the optional interface keeps
@@ -73,10 +73,10 @@ func TestSupportsClaimsDefaultsToSupportedAndHonoursTheCapability(t *testing.T) 
 	if !SupportsClaims(&dqCovProvider{}) {
 		t.Fatal("a provider without the optional capability must still support claims")
 	}
-	if !SupportsClaims(&dqCovClaimsSupport{supported: true}) {
+	if !SupportsClaims(&claimsCapabilityProvider{supported: true}) {
 		t.Fatal("a provider that declares claim support must support claims")
 	}
-	if SupportsClaims(&dqCovClaimsSupport{supported: false}) {
+	if SupportsClaims(&claimsCapabilityProvider{supported: false}) {
 		t.Fatal("a provider that declares no claim support must be reported as unsupported")
 	}
 }

@@ -239,6 +239,7 @@ func TestRetireReleaseClaimOnlyAfterLastTaskWorktree(t *testing.T) {
 		{name: "malformed candidate remains", inventory: worktrees.ListOutcome{Diagnostics: []worktrees.ListDiagnostic{{}}}, wantStatus: "failed"},
 		{name: "inventory unavailable", listErr: errors.New("offline"), wantStatus: "failed"},
 		{name: "release unavailable", release: autoReleaseResult{Outcome: "disabled"}, wantCalled: true, wantStatus: "failed"},
+		{name: "provider without claim support", release: autoReleaseResult{Outcome: "skipped", Unsupported: true}, wantCalled: true, wantStatus: "skipped"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var out bytes.Buffer

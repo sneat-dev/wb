@@ -110,7 +110,7 @@ func tryAutoRelease(deps Dependencies, projectsRoot, task string, out io.Writer)
 		return ReleaseAdvisory{Outcome: "disabled"}
 	}
 	if !remotestate.SupportsClaims(provider) {
-		return SkippedAutoRelease(out, claimsUnsupportedDetail)
+		return UnsupportedAutoRelease(out, claimsUnsupportedDetail)
 	}
 	login, err := deps.Login()
 	if err != nil {
@@ -122,7 +122,7 @@ func tryAutoRelease(deps Dependencies, projectsRoot, task string, out io.Writer)
 	outcome, err := provider.Release(context.Background(), task, login, cfg.Machine, false)
 	if err != nil {
 		if errors.Is(err, remotestate.ErrClaimsUnsupported) {
-			return SkippedAutoRelease(out, claimsUnsupportedDetail)
+			return UnsupportedAutoRelease(out, claimsUnsupportedDetail)
 		}
 		warnSyncFailing(out, err)
 		return FailedAutoRelease(out, task, err.Error())
@@ -165,6 +165,14 @@ func SkippedAutoRelease(out io.Writer, detail string) ReleaseAdvisory {
 	return ReleaseAdvisory{Outcome: "skipped", Detail: detail}
 }
 
+// UnsupportedAutoRelease reports that the provider cannot store claims. No
+// claim can exist, so callers must treat this as settled rather than as a
+// release that was skipped with a claim still standing (sneat-dev/wb#626).
+func UnsupportedAutoRelease(out io.Writer, detail string) ReleaseAdvisory {
+	_, _ = fmt.Fprintf(out, "remote claim release skipped: %s\n", detail)
+	return ReleaseAdvisory{Outcome: "skipped", Detail: detail, Unsupported: true}
+}
+
 func FailedAutoRelease(out io.Writer, task, detail string) ReleaseAdvisory {
 	_, _ = fmt.Fprintf(out, "remote claim release FAILED: %s claim was not released (its worktree is already gone): %s\n", task, detail)
 	return ReleaseAdvisory{Outcome: "failed", Detail: detail}
@@ -173,6 +181,9 @@ func FailedAutoRelease(out io.Writer, task, detail string) ReleaseAdvisory {
 type ReleaseAdvisory struct {
 	Outcome string `json:"outcome"`
 	Detail  string `json:"detail,omitempty"`
+	// Unsupported says the provider cannot store claims, so there is nothing
+	// to release and the skip is final rather than a standing claim.
+	Unsupported bool `json:"unsupported,omitempty"`
 }
 
 func (r ReleaseAdvisory) Leaked() bool { return r.Outcome == "failed" }
