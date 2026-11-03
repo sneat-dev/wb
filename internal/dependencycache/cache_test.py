@@ -27,6 +27,15 @@ def functions():
     return namespace
 
 
+def mount_record(point, identity=21, parent=14, options='rw,relatime', super_options='rw',
+                 mount_root='/qdv/dependencies', optional=()):
+    def encoded(path):
+        return os.fsencode(path).replace(b'\\', b'\\134').replace(b' ', b'\\040').replace(b'\t', b'\\011').replace(b'\n', b'\\012')
+    fields = [str(identity).encode(), str(parent).encode(), b'0:47', encoded(mount_root),
+              encoded(point), options.encode(), *optional]
+    return b' '.join(fields) + b' - ext4 /dev/fictional ' + super_options.encode() + b'\n'
+
+
 class ArchivePolicyTest(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -214,23 +223,134 @@ class ArchivePolicyTest(unittest.TestCase):
         manifest.write_text(json.dumps({'files': {n: {'sha256': hashlib.sha256(v.encode()).hexdigest()} for n, v in inputs.items()}}))
         self.ns['args'].source_manifest = str(manifest)
 
-    def test_child_only_workspace_refuses_unmounted_root_before_any_package_command(self):
-        self.child_only_inputs({'packageManager': 'pnpm@12.16.1'})
-        canary = self.root / 'source-canary'
-        canary.write_bytes(b'unchanged source')
-        self.ns['version'] = '12.16.1'
-        # Execute the actual apply admission statements up to identity/tool probing.
+    def admission(self):
         body = ast.parse(ASSET.read_text()).body
         start = next(i for i, n in enumerate(body) if isinstance(n, ast.Assign)
                      and isinstance(n.targets[0], ast.Tuple)
                      and isinstance(n.targets[0].elts[0], ast.Name) and n.targets[0].elts[0].id == 'inputs_key')
         end = next(i for i in range(start, len(body)) if isinstance(body[i], ast.Assign)
                    and isinstance(body[i].targets[0], ast.Name) and body[i].targets[0].id == 'identity')
+        return compile(ast.Module(body=body[start:end], type_ignores=[]), str(ASSET), 'exec')
+
+    def test_same_filesystem_mount_records_admit_every_mask_before_the_version_probe(self):
+        self.child_only_inputs({'packageManager': 'pnpm@12.16.1'})
+        self.ns['version'] = '12.16.1'
+        targets = [self.root / 'node_modules', self.root / 'landings/incidentius/node_modules']
+        for target in targets:
+            target.mkdir(parents=True, exist_ok=True)
+            self.assertEqual(target.stat().st_dev, self.root.stat().st_dev)
+            self.assertFalse(os.path.ismount(target))
+        raw = mount_record(self.root, identity=14, parent=1, mount_root='/')
+        raw += mount_record(targets[0], optional=(b'shared:7', b'future:ignored'))
+        raw += mount_record(targets[1], identity=22, mount_root='/qdv/incidentius')
+        self.ns['read_mountinfo'] = lambda: raw
+        self.assertTrue(self.ns['masked']('node_modules'))
+        self.assertTrue(self.ns['masked']('landings/incidentius/node_modules'))
+        with patch.object(self.ns['subprocess'], 'check_output', return_value='12.16.1') as called:
+            exec(self.admission(), self.ns)
+            called.assert_called_once_with(['pnpm', '--version'], text=True, timeout=10)
+        self.assertEqual(self.ns['required_masks'], {'node_modules', 'landings/incidentius/node_modules'})
+
+    def test_mount_records_decode_kernel_paths_without_double_unescaping(self):
+        project = self.root / 'project space\ttab\nline\\040'
+        target = project / 'node_modules'
+        target.mkdir(parents=True)
+        self.ns['root'] = project
+        raw = mount_record(project, identity=14, parent=1, mount_root='/') + mount_record(target)
+        self.ns['read_mountinfo'] = lambda: raw
+        self.assertTrue(self.ns['masked']('node_modules'))
+        self.assertIn(str(target), self.ns['parse_mountinfo'](raw))
+
+    def test_masks_need_one_exact_writable_mount_not_a_parent_or_descendant(self):
+        target = self.root / 'node_modules'
+        target.mkdir()
+        cases = {
+            'parent only': mount_record(self.root),
+            'descendant only': mount_record(target / 'nested'),
+            'duplicate point': mount_record(target) + mount_record(target, identity=22),
+            'read-only mount': mount_record(target, options='ro,relatime'),
+            'read-only superblock': mount_record(target, super_options='ro'),
+            'contradictory mount flags': mount_record(target, options='rw,ro'),
+            'contradictory superblock flags': mount_record(target, super_options='rw,ro'),
+            'repeated writable flag': mount_record(target, options='rw,rw'),
+            'missing writable flag': mount_record(target, options='relatime'),
+        }
+        for label, raw in cases.items():
+            with self.subTest(label=label):
+                self.ns['read_mountinfo'] = lambda: raw
+                self.assertFalse(self.ns['masked']('node_modules'))
+
+    def test_mount_records_reject_malformed_identities_paths_and_bounds(self):
+        target = self.root / 'node_modules'
+        target.mkdir()
+        valid = mount_record(target)
+        cases = {
+            'empty': b'',
+            'incomplete': valid[:-1],
+            'zero id': mount_record(target, identity=0),
+            'negative id': mount_record(target, identity=-1),
+            'oversized id': mount_record(target, identity=2**32),
+            'zero parent': mount_record(target, parent=0),
+            'duplicate id': valid + mount_record(self.root, identity=21),
+            'wrong escape': valid.replace(b'node_modules', b'node\\057modules'),
+            'literal backslash': valid.replace(b'node_modules', b'node\\modules'),
+            'nul path': valid.replace(b'node_modules', b'node\0modules'),
+            'path alias': mount_record(str(target) + '/../node_modules'),
+            'extra separator': valid.replace(b' - ', b' - extra - '),
+            'missing field': valid.replace(b'ext4 /dev/fictional rw', b'ext4 rw'),
+            'byte bound': b'x' * (1024**2) + b'\n',
+            'record bound': valid * 4097,
+            'line bound': valid[:-1] + b'x' * 16384 + b'\n',
+        }
+        for label, raw in cases.items():
+            with self.subTest(label=label):
+                self.ns['read_mountinfo'] = lambda: raw
+                with self.assertRaises(RuntimeError):
+                    self.ns['masked']('node_modules')
+
+    def test_mask_mount_records_do_not_authorize_files_or_symlink_aliases(self):
+        target = self.root / 'node_modules'
+        actual = self.root / 'actual'
+        actual.mkdir()
+        target.symlink_to(actual, target_is_directory=True)
+        self.ns['read_mountinfo'] = lambda: mount_record(target)
+        self.assertFalse(self.ns['masked']('node_modules'))
+        target.unlink()
+        target.write_text('not a directory')
+        self.assertFalse(self.ns['masked']('node_modules'))
+        target.unlink()
+        (actual / 'incidentius/node_modules').mkdir(parents=True)
+        (self.root / 'landings').symlink_to(actual, target_is_directory=True)
+        alias = self.root / 'landings/incidentius/node_modules'
+        self.ns['read_mountinfo'] = lambda: mount_record(alias)
+        self.assertFalse(self.ns['masked']('landings/incidentius/node_modules'))
+        self.assertFalse(self.ns['masked']('../actual'))
+        self.assertFalse(self.ns['masked'](str(actual)))
+
+    def test_mountinfo_reader_is_bounded_and_unavailable_authority_refuses(self):
+        with patch('builtins.open', return_value=io.BytesIO(b'x' * (1024**2 + 50))) as opened:
+            raw = self.ns['read_mountinfo']()
+            opened.assert_called_once_with('/proc/self/mountinfo', 'rb')
+        self.assertEqual(len(raw), 1024**2 + 1)
+        with self.assertRaisesRegex(RuntimeError, 'byte bound'):
+            self.ns['parse_mountinfo'](raw)
+        (self.root / 'node_modules').mkdir()
+        self.ns['read_mountinfo'] = lambda: (_ for _ in ()).throw(PermissionError('mount table unavailable'))
+        with self.assertRaises(PermissionError):
+            self.ns['masked']('node_modules')
+
+    def test_child_only_workspace_refuses_unmounted_root_before_any_package_command(self):
+        self.child_only_inputs({'packageManager': 'pnpm@12.16.1'})
+        canary = self.root / 'source-canary'
+        canary.write_bytes(b'unchanged source')
+        self.ns['version'] = '12.16.1'
+        # Execute the actual apply admission statements up to identity/tool probing.
         child = self.root / 'landings/incidentius/node_modules'
-        with patch.object(self.ns['os'].path, 'ismount', lambda p: Path(p) == child), \
-             patch.object(self.ns['subprocess'], 'check_output', side_effect=AssertionError('package command ran')) as called:
+        child.mkdir(parents=True)
+        self.ns['read_mountinfo'] = lambda: mount_record(child)
+        with patch.object(self.ns['subprocess'], 'check_output', side_effect=AssertionError('package command ran')) as called:
             with self.assertRaisesRegex(RuntimeError, 'every workspace dependency target is masked'):
-                exec(compile(ast.Module(body=body[start:end], type_ignores=[]), str(ASSET), 'exec'), self.ns)
+                exec(self.admission(), self.ns)
             called.assert_not_called()
         self.assertEqual(canary.read_bytes(), b'unchanged source')
         self.assertFalse((self.root / 'node_modules').exists())

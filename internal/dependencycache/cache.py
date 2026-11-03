@@ -165,9 +165,63 @@ def secure_read(path):
     return os.fdopen(descriptor, "rb")
 
 
+def mountinfo_path(value):
+    """Decode only the four path escapes emitted by the Linux mount table."""
+    escapes = {b'040': b' ', b'011': b'\t', b'012': b'\n', b'134': b'\\'}
+    pattern = rb'\\(040|011|012|134)'
+    require(not any(c in value for c in (b'\0', b' ', b'\t', b'\n'))
+            and b'\\' not in re.sub(pattern, b'', value), 'Invalid Linux mount path escape')
+    decoded = os.fsdecode(re.sub(pattern, lambda match: escapes[match[1]], value))
+    require(decoded.startswith('/') and not decoded.startswith('//')
+            and '..' not in pathlib.PurePosixPath(decoded).parts
+            and str(pathlib.PurePosixPath(decoded)) == decoded, 'Noncanonical Linux mount path')
+    return decoded
+
+
+def parse_mountinfo(raw):
+    require(isinstance(raw, bytes) and 0 < len(raw) <= 1024**2 and raw.endswith(b'\n') and b'\0' not in raw,
+            'Linux mount table byte bound or incomplete record')
+    lines = raw[:-1].split(b'\n')
+    require(len(lines) <= 4096, 'Linux mount table record bound')
+    mounts, identities = {}, set()
+    for line in lines:
+        require(0 < len(line) <= 16384 and line.count(b' - ') == 1, 'Invalid Linux mount record')
+        left, right = (part.split(b' ') for part in line.split(b' - '))
+        require(len(left) >= 6 and len(right) == 3 and all(left) and all(right),
+                'Invalid Linux mount fields')
+        require(all(re.fullmatch(rb'[1-9][0-9]{0,9}', value) is not None
+                    and int(value) <= 2**32 - 1 for value in left[:2])
+                and re.fullmatch(rb'[0-9]+:[0-9]+', left[2]) is not None,
+                'Invalid Linux mount identity')
+        identity = int(left[0])
+        require(identity not in identities, 'Duplicate Linux mount identity')
+        identities.add(identity)
+        mountinfo_path(left[3])
+        point = mountinfo_path(left[4])
+        options, super_options = left[5].split(b','), right[2].split(b',')
+        require(all(options) and all(super_options), 'Invalid Linux mount options')
+        writable = all(values.count(b'rw') == 1 and b'ro' not in values
+                       for values in (options, super_options))
+        # Unknown optional fields are intentionally ignored, as the kernel contract requires.
+        mounts.setdefault(point, []).append((identity, writable))
+    return mounts
+
+
+def read_mountinfo():
+    with open('/proc/self/mountinfo', 'rb') as stream:
+        return stream.read(1024**2 + 1)
+
+
 def masked(name):
+    relative = pathlib.PurePosixPath(name)
+    if relative.is_absolute() or '..' in relative.parts or str(relative) != name:
+        return False
     target = root / name
-    return not target.is_symlink() and os.path.ismount(target)
+    if target.is_symlink() or not target.is_dir() or target.resolve() != target:
+        return False
+    # st_dev-based ismount cannot recognize a bind of a subtree on the same filesystem.
+    records = parse_mountinfo(read_mountinfo()).get(str(target), [])
+    return len(records) == 1 and records[0][1]
 
 
 def checked_filter(member):
