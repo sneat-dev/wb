@@ -88,6 +88,7 @@ func (host *Host) servePrepared(projectsRoot string, ctx context.Context, out, e
 		}
 		return fmt.Errorf("listen for WB daemon on %s: %w", address, err)
 	}
+	listener = shareListenerClose(listener)
 	closeListener := sync.OnceFunc(func() { _ = listener.Close() })
 	defer closeListener()
 	// The name that was asked for may have resolved to an interface that is not
@@ -157,6 +158,7 @@ func (host *Host) servePrepared(projectsRoot string, ctx context.Context, out, e
 	if err != nil {
 		return err
 	}
+	localListener = shareListenerClose(localListener)
 	defer func() { _ = localListener.Close() }()
 	rawExecutionPolicyPath, err := host.effects.rawPolicyPath()
 	if err != nil {
@@ -319,6 +321,22 @@ func (host *Host) servePrepared(projectsRoot string, ctx context.Context, out, e
 		}
 	}()
 	return awaitDaemonServeResult(<-errorsCh)
+}
+
+// shareListenerClose makes HTTP shutdown and owner cleanup wait for the same
+// Close call. A second raw Close can report net.ErrClosed while the first is
+// still waiting for references to release the underlying OS descriptor.
+func shareListenerClose(listener net.Listener) net.Listener {
+	return &sharedCloseListener{Listener: listener, closeOnce: sync.OnceValue(listener.Close)}
+}
+
+type sharedCloseListener struct {
+	net.Listener
+	closeOnce func() error
+}
+
+func (listener *sharedCloseListener) Close() error {
+	return listener.closeOnce()
 }
 
 func classifyServeResult(err error) error {
