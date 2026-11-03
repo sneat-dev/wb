@@ -449,3 +449,5 @@ as a required root. The command creates no receipt or acknowledgement, so pass
 the resulting candidate to `supersede-validation-failed` to append the only
 lane-releasing transition. Use `--progress` for heartbeat updates during long
 Git operations while JSON output remains stable.
+
+For an exact historical failed post-target CI PR receipt with every recorded checkout, worktree registration, and local/origin branch absent, preview `wb worktree merge acknowledge-landed-failed <merge-receipt> --legacy-removed-pr`. This opt-in variant authenticates the exact merged PR head, recorded landing and base, source ancestry and fresh target containment under the lane lock. It binds the original receipt bytes in a separate audit acknowledgement and preserves failed CI; it neither certifies terminal cleanup nor creates Work Log evidence. Apply only with `--apply --actor <operator> --reason <reason>` after the preview succeeds.
