@@ -57,6 +57,30 @@ declared = re.fullmatch(r'pnpm@(\d+\.\d+\.\d+)(?:\+sha512\.[0-9a-f]+)?', manager
 require(declared is not None, 'Exact packageManager pnpm version required')
 version = declared[1]
 started = time.monotonic()
+
+
+def workspace_packages():
+    workspace = (root / "pnpm-workspace.yaml").read_text()
+    require(len(re.findall(r"^packages:", workspace, re.M)) == 1, "One explicit workspace package list required")
+    lines = workspace.splitlines()
+    headers = [i for i, line in enumerate(lines) if re.fullmatch(r"packages:\s*", line)]
+    require(len(headers) == 1, "Unsupported workspace package-list syntax")
+    packages = set()
+    for line in lines[headers[0] + 1:]:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if not line[0].isspace():
+            break
+        require(re.fullmatch(r"[ \t]+-[ \t]+.+", line) is not None, "Unsupported workspace package-list entry")
+        package = ast.literal_eval(line.strip()[1:].strip())
+        require(isinstance(package, str) and not any(c in package for c in "*?[]{}"), "Explicit workspace paths required")
+        relative = pathlib.PurePosixPath(package)
+        require(not relative.is_absolute() and ".." not in relative.parts
+                and str(relative) == package, "Workspace path leaves worktree")
+        packages.add(package)
+    return packages
+
+
 def snapshot_inputs():
     pinned = json.loads(pathlib.Path(args.source_manifest).read_text())['files'] if args.source_manifest else None
     tracked = set(pinned) if pinned is not None else set(subprocess.check_output([
@@ -70,24 +94,11 @@ def snapshot_inputs():
     for name in (".npmrc", ".pnpmfile.cjs"):
         if (root / name).exists() and name not in inputs:
             inputs.append(name)
-    workspace = (root / "pnpm-workspace.yaml").read_text()
-    require(len(re.findall(r"^packages:", workspace, re.M)) == 1, "One explicit workspace package list required")
-    lines = workspace.splitlines()
-    headers = [i for i, line in enumerate(lines) if re.fullmatch(r"packages:\s*", line)]
-    require(len(headers) == 1, "Unsupported workspace package-list syntax")
     required_masks = {'node_modules'}
     package_manifests = {'package.json'}
     inputs.append('package.json')
-    for line in lines[headers[0] + 1:]:
-        if not line.strip() or line.lstrip().startswith("#"):
-            continue
-        if not line[0].isspace():
-            break
-        require(re.fullmatch(r"[ \t]+-[ \t]+.+", line) is not None, "Unsupported workspace package-list entry")
-        package = ast.literal_eval(line.strip()[1:].strip())
-        require(isinstance(package, str) and not any(c in package for c in "*?[]{}"), "Explicit workspace paths required")
+    for package in workspace_packages():
         relative = pathlib.PurePosixPath(package)
-        require(not relative.is_absolute() and ".." not in relative.parts, "Workspace path leaves worktree")
         package_manifest = str(relative / "package.json")
         inputs.append(package_manifest)
         package_manifests.add(package_manifest)
@@ -117,6 +128,22 @@ def snapshot_inputs():
                     'Dependency input differs from frozen source manifest')
         digest.update(name.encode() + b"\0" + data + b"\0")
     return digest.hexdigest(), inputs, required_masks
+
+
+def frozen_workspace_directories():
+    """Authorize pointers, never archived contents, to explicitly pinned packages."""
+    if not args.source_manifest:
+        return set()
+    pinned = json.loads(pathlib.Path(args.source_manifest).read_text())['files']
+    directories = set()
+    for package in workspace_packages():
+        name = str(pathlib.PurePosixPath(package) / 'package.json')
+        source = root / name
+        require(name in pinned and not source.is_symlink() and source.resolve() == source
+                and source.is_file() and hashlib.sha256(source.read_bytes()).hexdigest() == pinned[name]['sha256'],
+                'Workspace pointer needs a frozen package manifest')
+        directories.add(package)
+    return directories
 
 
 def verify_inputs_unchanged():
@@ -231,12 +258,64 @@ def checked_filter(member):
     require(member.isfile() or member.isdir() or member.issym() or member.islnk(), "Unsupported archive member")
     if member.issym() or member.islnk():
         require(not member.linkname.startswith("/"), "Absolute archive link")
+        named = False
+        for component in pathlib.PurePosixPath(member.linkname).parts:
+            require(component != '..' or not named, 'Archive link cancels a named path component')
+            named = named or component not in ('.', '..')
         link = posixpath.normpath(posixpath.join(
             posixpath.dirname(name) if member.issym() else "", member.linkname))
         require(link != ".." and not link.startswith("../"), "Archive link leaves worktree")
-        require(any(link == prefix or link.startswith(prefix + "/") for prefix in selected),
+        require(any(link == prefix or link.startswith(prefix + "/") for prefix in selected)
+                or (member.issym() and link in workspace_directories),
                 "Archive link leaves dependency masks")
     return member
+
+
+def preflight_archive(path):
+    """Validate the complete link graph before publishing or writing any member."""
+    entries, symlinks, targets = set(), {}, []
+    total = count = 0
+    with secure_read(path) as cached, tarfile.open(fileobj=cached, mode='r|gz') as stored:
+        for member in stored:
+            count += 1
+            total += member.size
+            require(count <= 500000 and total <= 4 * 1024**3, 'Unpacked cache bound exceeded')
+            checked_filter(member)
+            name = posixpath.normpath(member.name)
+            require(name not in entries, 'Duplicate archive member')
+            entries.add(name)
+            if member.issym() or member.islnk():
+                target = posixpath.normpath(posixpath.join(
+                    posixpath.dirname(name) if member.issym() else '', member.linkname))
+                targets.append((name, target, member.islnk()))
+                if member.issym():
+                    symlinks[name] = target
+    pointers = {name for name, target in symlinks.items()
+                if not any(target == prefix or target.startswith(prefix + '/') for prefix in selected)}
+
+    def prefixes(name):
+        parts = pathlib.PurePosixPath(name).parts
+        return ['/'.join(parts[:i]) for i in range(1, len(parts) + 1)]
+
+    for name in entries:
+        require(not any(parent in symlinks for parent in prefixes(name)[:-1]),
+                'Archive member traverses a symlink')
+    for name, target, hardlink in targets:
+        if name in pointers:
+            continue  # Only this exact symlink may point to the frozen package root.
+        seen = set()
+        while True:
+            crossed = next((p for p in prefixes(target) if p in symlinks), None)
+            if crossed is None:
+                break
+            require(not hardlink and crossed not in pointers and crossed not in seen,
+                    'Archive link traverses a workspace pointer, hardlink alias, or cycle')
+            seen.add(crossed)
+            suffix = target[len(crossed):].lstrip('/')
+            target = posixpath.normpath(posixpath.join(symlinks[crossed], suffix))
+            require(any(target == prefix or target.startswith(prefix + '/') for prefix in selected),
+                    'Archive link route leaves dependency masks')
+    return count, total
 
 
 def destination_for(name):
@@ -333,6 +412,7 @@ if not args.apply:
     plan = cache_policy(growth=args.growth_bytes)
     sys.exit(1 if not plan['reserveSatisfied'] or not plan['budgetSatisfied'] or any(c['action'] == 'delete' for c in plan['candidates']) else 0)
 inputs_key, inputs, required_masks = snapshot_inputs()
+workspace_directories = frozen_workspace_directories()
 require(all(masked(n) for n in required_masks),
         'Refuse dependency work before every workspace dependency target is masked')
 require(subprocess.check_output(['pnpm', '--version'], text=True, timeout=10).strip() == version,
@@ -364,6 +444,7 @@ if manifest.is_file() and archive.is_file():
     require(archive.stat().st_size <= 2 * 1024**3, "Cache archive size bound exceeded")
     if checksum(archive) == meta["sha256"]:
         require(all(not any((root / n).iterdir()) for n in selected), "Restore only into empty Linux masks")
+        preflight_archive(archive)
         total = count = 0
         links = []
         with secure_read(archive) as cached, tarfile.open(fileobj=cached, mode="r|gz") as stored:
@@ -436,6 +517,7 @@ if not hit:
         temporary.chmod(0o600)
         with temporary.open('rb') as completed:
             os.fsync(completed.fileno())
+        preflight_archive(temporary)
         meta = {"identity": identity, "sha256": checksum(temporary), "roots": selected,
                 "entries": count, "unpackedBytes": total, 'format': 'wb-dependency-cache/1',
                 'complete': True, 'lastUsed': time.time()}

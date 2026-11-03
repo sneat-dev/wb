@@ -50,6 +50,7 @@ class ArchivePolicyTest(unittest.TestCase):
         self.addCleanup(lambda: os.close(self.lock_fd) if self.lock_fd >= 0 else None)
         self.ns = functions()
         self.ns.update(root=self.root, cache=self.cache, cache_fd=self.cache_fd, lock_fd=self.lock_fd,
+                       workspace_directories=set(),
                        args=types.SimpleNamespace(max_bytes=100000, max_age_seconds=86400,
                                                  min_free_bytes=1, source_manifest=None))
 
@@ -177,6 +178,170 @@ class ArchivePolicyTest(unittest.TestCase):
         unsafe.name = '../outside'
         with self.assertRaisesRegex(RuntimeError, 'Unsafe archive name'):
             self.ns['checked_filter'](unsafe)
+
+    def workspace_fixture(self):
+        files = {'package.json': '{"packageManager":"pnpm@12.16.1"}',
+                 'pnpm-workspace.yaml': "packages:\n  - 'packages/fictional-landing'\n",
+                 'pnpm-lock.yaml': 'fictional lock',
+                 'packages/fictional-landing/package.json': '{"name":"fictional-landing"}',
+                 'packages/unlisted/package.json': '{"name":"not-a-workspace-package"}'}
+        for name, text in files.items():
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        manifest = self.root / 'frozen.json'
+        manifest.write_text(json.dumps({'files': {name: {'sha256': hashlib.sha256(text.encode()).hexdigest()}
+                                                 for name, text in files.items()}}))
+        self.ns['args'].source_manifest = str(manifest)
+        self.ns['inputs_key'], self.ns['inputs'], self.ns['required_masks'] = self.ns['snapshot_inputs']()
+        self.ns['workspace_directories'] = self.ns['frozen_workspace_directories']()
+        self.ns['selected'] = ['node_modules', 'packages/fictional-landing/node_modules']
+        return manifest
+
+    def archive_fixture(self, entries):
+        path = self.cache / 'fixture.tar.gz'
+        with tarfile.open(path, 'w:gz') as archive:
+            for name, kind, value in entries:
+                member = tarfile.TarInfo(name)
+                if kind == 'file':
+                    member.size = len(value)
+                    archive.addfile(member, io.BytesIO(value))
+                else:
+                    member.type = tarfile.SYMTYPE if kind == 'symlink' else tarfile.LNKTYPE
+                    member.linkname = value
+                    archive.addfile(member)
+        return path
+
+    def test_workspace_pointer_needs_an_exact_declared_and_frozen_package_manifest(self):
+        manifest = self.workspace_fixture()
+        self.assertEqual(self.ns['workspace_directories'], {'packages/fictional-landing'})
+        pointer = tarfile.TarInfo('node_modules/.pnpm/node_modules/fictional-landing')
+        pointer.type = tarfile.SYMTYPE
+        pointer.linkname = '../../../packages/fictional-landing'
+        self.assertIs(self.ns['checked_filter'](pointer), pointer)
+        for target in ('../../../packages/unlisted', '../../../packages/fictional-landing/package.json',
+                       str(self.root / 'packages/fictional-landing')):
+            with self.subTest(target=target), self.assertRaises(RuntimeError):
+                pointer.linkname = target
+                self.ns['checked_filter'](pointer)
+        pointer.linkname = '../../../packages/fictional-landing'
+        pointer.type = tarfile.LNKTYPE
+        with self.assertRaises(RuntimeError):
+            self.ns['checked_filter'](pointer)
+        pinned = json.loads(manifest.read_text())
+        del pinned['files']['packages/fictional-landing/package.json']
+        manifest.write_text(json.dumps(pinned))
+        with self.assertRaisesRegex(RuntimeError, 'frozen package manifest'):
+            self.ns['frozen_workspace_directories']()
+        self.workspace_fixture()
+        package = self.root / 'packages/fictional-landing/package.json'
+        package.write_text('{"name":"changed"}')
+        with self.assertRaisesRegex(RuntimeError, 'frozen package manifest'):
+            self.ns['frozen_workspace_directories']()
+        self.workspace_fixture()
+        package.unlink()
+        package.symlink_to(self.root / 'package.json')
+        with self.assertRaisesRegex(RuntimeError, 'frozen package manifest'):
+            self.ns['frozen_workspace_directories']()
+        self.ns['args'].source_manifest = None
+        self.assertEqual(self.ns['frozen_workspace_directories'](), set())
+
+    def test_workspace_pointer_pack_and_real_restore_preserve_source_without_archiving_it(self):
+        self.workspace_fixture()
+        source = self.root / 'packages/fictional-landing/source.txt'
+        source.write_bytes(b'fictional source must stay outside the archive')
+        mask = self.root / 'node_modules'
+        pointer = mask / '.pnpm/node_modules/fictional-landing'
+        pointer.parent.mkdir(parents=True)
+        pointer.symlink_to('../../../packages/fictional-landing')
+        (mask / '.bin').mkdir()
+        for name in ('nx', 'playwright'):
+            (mask / '.bin' / name).write_bytes(b'fictional executable shim')
+        archive = self.cache / 'fixture.tar.gz'
+        with tarfile.open(archive, 'w:gz', dereference=False) as stored:
+            stored.add(mask, arcname='node_modules', filter=self.ns['checked_filter'])
+        with tarfile.open(archive, 'r:gz') as stored:
+            members = stored.getmembers()
+            self.assertTrue(any(m.name == str(pointer.relative_to(self.root)) and m.issym() for m in members))
+            self.assertFalse(any(m.name.startswith('packages/') or m.name.endswith('source.txt') for m in members))
+        self.ns['preflight_archive'](archive)
+        self.ns['shutil'].rmtree(mask)
+        for name in self.ns['selected']:
+            (self.root / name).mkdir(parents=True, exist_ok=True)
+        before = {str(p.relative_to(self.root)): hashlib.sha256(p.read_bytes()).hexdigest()
+                  for p in (self.root / 'packages').rglob('*') if p.is_file()}
+        tree = ast.parse(ASSET.read_text())
+        restore = next(n for n in ast.walk(tree) if isinstance(n, ast.If)
+                       and isinstance(n.test, ast.Compare) and isinstance(n.test.left, ast.Call)
+                       and isinstance(n.test.left.func, ast.Name) and n.test.left.func.id == 'checksum')
+        self.ns.update(archive=archive, started=time.monotonic())
+        with contextlib.redirect_stdout(io.StringIO()):
+            exec(compile(ast.Module(body=restore.body, type_ignores=[]), str(ASSET), 'exec'), self.ns)
+        self.assertTrue(self.ns['hit'])
+        self.assertTrue(pointer.is_symlink())
+        self.assertEqual(pointer.resolve(), self.root / 'packages/fictional-landing')
+        self.assertEqual({str(p.relative_to(self.root)): hashlib.sha256(p.read_bytes()).hexdigest()
+                          for p in (self.root / 'packages').rglob('*') if p.is_file()}, before)
+
+    def test_complete_archive_preflight_refuses_forward_descendants_and_aliases_of_workspace_pointers(self):
+        self.workspace_fixture()
+        pointer = ('node_modules/.pnpm/node_modules/fictional-landing', 'symlink',
+                   '../../../packages/fictional-landing')
+        attacks = [
+            [(pointer[0] + '/source.txt', 'file', b'replace source')],
+            [('node_modules/hard', 'hardlink', pointer[0] + '/source.txt')],
+            [('node_modules/hard', 'hardlink', pointer[0])],
+            [('node_modules/alias', 'symlink', '.pnpm/node_modules/fictional-landing/source.txt')],
+            [('node_modules/alias', 'symlink', '.pnpm/node_modules/fictional-landing')],
+            [('node_modules/alias', 'symlink', 'intermediate/source.txt'),
+             ('node_modules/intermediate', 'symlink', '.pnpm/node_modules/fictional-landing')],
+            [('node_modules/alias', 'symlink', 'intermediate/source.txt'),
+             ('node_modules/intermediate', 'symlink', 'alias')],
+        ]
+        source = self.root / 'packages/fictional-landing/source.txt'
+        source.write_bytes(b'keep fictional source')
+        for attack in attacks:
+            for entries in ([pointer, *attack], [*attack, pointer]):
+                with self.subTest(entries=entries), self.assertRaises(RuntimeError):
+                    self.ns['preflight_archive'](self.archive_fixture(entries))
+                self.assertEqual(source.read_bytes(), b'keep fictional source')
+                self.assertFalse((self.root / 'node_modules').exists())
+
+    def test_preflight_keeps_ordinary_internal_links_and_hardlinks_inside_dependency_masks(self):
+        self.workspace_fixture()
+        path = self.archive_fixture([('node_modules/data', 'file', b'fictional dependency'),
+                                     ('node_modules/link', 'symlink', 'data'),
+                                     ('node_modules/hard', 'hardlink', 'node_modules/data')])
+        self.assertEqual(self.ns['preflight_archive'](path), (3, len(b'fictional dependency')))
+        for entries in ([('node_modules/data', 'file', b'1'), ('node_modules/data', 'file', b'2')],
+                        [('node_modules/out', 'hardlink', 'packages/fictional-landing/package.json')]):
+            with self.subTest(entries=entries), self.assertRaises(RuntimeError):
+                self.ns['preflight_archive'](self.archive_fixture(entries))
+
+    def test_raw_link_components_cannot_cancel_a_workspace_pointer_before_archive_preflight(self):
+        self.workspace_fixture()
+        pointer_name = 'node_modules/.pnpm/node_modules/fictional-landing'
+        pointer = (pointer_name, 'symlink', '../../../packages/fictional-landing')
+        actual_pointer = self.root / pointer_name
+        actual_pointer.parent.mkdir(parents=True)
+        actual_pointer.symlink_to(pointer[2])
+        source = self.root / 'packages/unlisted/source.txt'
+        source.write_bytes(b'keep unlisted fictional source')
+        alias = self.root / 'node_modules/alias'
+        alias.symlink_to('.pnpm/node_modules/fictional-landing/../unlisted/source.txt')
+        self.assertEqual(alias.resolve(), source)
+        attacks = [
+            ('node_modules/alias', 'symlink', alias.readlink().as_posix()),
+            ('node_modules/.pnpm/node_modules/second', 'symlink',
+             'fictional-landing/../../../../packages/fictional-landing'),
+            ('node_modules/hard', 'hardlink', pointer_name + '/../unlisted/source.txt'),
+        ]
+        for attack in attacks:
+            for entries in ([pointer, attack], [attack, pointer]):
+                with self.subTest(entries=entries), self.assertRaisesRegex(RuntimeError, 'cancels a named path component'):
+                    self.ns['preflight_archive'](self.archive_fixture(entries))
+                self.assertEqual(source.read_bytes(), b'keep unlisted fictional source')
+        self.assertEqual(self.ns['preflight_archive'](self.archive_fixture([pointer])), (1, 0))
 
     def test_failed_second_unlink_retains_manifest_and_reports_failure(self):
         archive, meta = self.pair('1', 172800)
