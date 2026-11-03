@@ -110,6 +110,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `coverage`, `verify`, `check` | `--fleet` only | `--fleet` only | rejected | yes |
 | `deadcode` | rejected | rejected | rejected | yes |
 | `disk` | yes | rejected | rejected | yes |
+| `disk dependency-cache` | rejected | rejected | rejected | yes |
 | `status` | no-path default fleet only | no-path default fleet only | rejected | yes |
 | `fleet`, `fleet overview`, `fleet stats`, `fleet status` | yes | yes | rejected | yes |
 | `fleet merge-policy` | yes | yes | yes | yes |

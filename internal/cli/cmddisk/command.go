@@ -23,7 +23,8 @@ type diskOptions struct {
 
 // Dependencies contains the disk-report operation supplied by composition.
 type Dependencies struct {
-	Collect func(context.Context, disk.Options) (disk.Report, error)
+	Collect         func(context.Context, disk.Options) (disk.Report, error)
+	DependencyCache func(context.Context, []string, io.Writer, io.Writer) error
 }
 
 // New constructs a fresh disk command with invocation policy read at execution.
@@ -97,6 +98,7 @@ Exit codes: 0 nothing to flag, 1 findings, 2 usage.
 	command.Flags().BoolVar(&options.skipSizes, "skip-sizes", false, "Report roots and filesystem headroom without walking trees")
 	command.Flags().Float64Var(&options.minimum, "minimum-available", disk.DefaultMinimumAvailableRatio,
 		"Raise a finding when available space falls below this share of the volume")
+	command.AddCommand(newDependencyCacheCmd(runtime, deps))
 	return command
 }
 
