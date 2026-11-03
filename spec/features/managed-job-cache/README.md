@@ -1,12 +1,12 @@
 ---
 format: https://specscore.md/feature-specification
-status: Draft
+status: Stable
 ---
 
 # Feature: Managed job cache policy
 
 > [SpecScore.**Studio**](https://specscore.studio): | [Explore](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/managed-job-cache?op=explore) | [Edit](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/managed-job-cache?op=edit) | [Ask question](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/managed-job-cache?op=ask) | [Request change](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/managed-job-cache?op=request-change) |
-**Status:** Draft
+**Status:** Stable
 **Source Ideas:** —
 
 ## Summary
@@ -73,7 +73,7 @@ Adopt the first-party asset/command in a new, independently reviewed successor o
 
 ## Open Questions
 
-None requiring product permission. Source/asset hashes, measured cold/warm results and final runner bindings remain implementation evidence to collect; no passing runtime or release is claimed by this Draft.
+None requiring product permission. The Plan records verified source, cold/warm policy and cleanup evidence for [WB v0.205.0](https://github.com/sneat-dev/wb/releases/tag/v0.205.0), published through successful main CI, signed macOS promotion and published-artifact checks.
 
 ---
 *This document follows the https://specscore.md/feature-specification*
