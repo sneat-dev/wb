@@ -81,7 +81,7 @@ func TestE2EPreparedAdoptionProvesPublishedDescendantWithoutChangingOriginalRece
 		t.Fatal(err)
 	}
 	owner := landinglane.Owner{WBSessionID: "prepared-owner", PID: os.Getpid(), Runtime: "test", Model: "test-model", Command: "prepared fixture"}
-	if _, err := session.Register(filepath.Join(home, session.DirName), session.Record{PID: os.Getpid(), WBSessionID: owner.WBSessionID, Runtime: "test", Model: "test-model", StartedAt: time.Now().UTC()}); err != nil {
+	if _, err := session.Register(filepath.Join(home, session.DirName), session.Record{PID: os.Getpid(), WBSessionID: owner.WBSessionID, NativeHarnessID: "prepared-owner", Runtime: "test", Model: "test-model", StartedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
 	source := createMergeSource(t, f, "prepared-source", "feature/prepared-source", "source.txt", "source\n")
@@ -94,7 +94,21 @@ func TestE2EPreparedAdoptionProvesPublishedDescendantWithoutChangingOriginalRece
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The same native owner legitimately receives a new registration session;
+	// immutable custody/receipt provenance must not be rewritten to that SID.
+	if _, err := session.Register(filepath.Join(home, session.DirName), session.Record{PID: os.Getpid(), WBSessionID: "prepared-current-session", NativeHarnessID: "prepared-owner", Runtime: "test", Model: "test-model", StartedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	registered := func() (worktrees.AgentIdentity, bool) {
+		r, ok := session.ResolveForProcess(filepath.Join(home, session.DirName), os.Getpid())
+		return worktrees.AgentIdentity{AgentID: r.NativeHarnessID, WBSessionID: r.WBSessionID, Runtime: r.Runtime, Model: r.Model, PID: r.PID, Registered: ok}, ok
+	}
+	worktrees.SetSessionResolver(registered)
+	t.Cleanup(func() { worktrees.SetSessionResolver(nil) })
 	actor := currentSessionIdentity()
+	if actor.Session != "prepared-current-session" {
+		t.Fatal("fixture did not resolve current registered session", actor)
+	}
 	if receipt.LaneOwner == nil {
 		t.Log("library prepare has no CLI lane-owner attachment")
 	}
@@ -145,6 +159,9 @@ esac
 	if err != nil || dry.Applied || dry.Record.Prepared == nil || dry.Record.Prepared.PublishedHead != head {
 		t.Fatalf("dry=%+v error=%v", dry, err)
 	}
+	if dry.Record.OriginalMerger != owner.WBSessionID || dry.Record.Adopter.Session != actor.Session || dry.Record.OriginalMerger == dry.Record.Adopter.Session {
+		t.Fatal("historical/current provenance collapsed", dry.Record)
+	}
 	if strings.Contains(legacyJSON(dry.Record), "token-like-private-material") || strings.Contains(legacyJSON(dry.Record), "/home/fixture") {
 		t.Fatal("private receipt prose leaked into portable record")
 	}
@@ -165,6 +182,20 @@ esac
 	if strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD")) != head {
 		t.Fatal("adoption rewrote source history")
 	}
+	t.Run("completed receipt cannot enter prepared mode", func(t *testing.T) {
+		completed := receipt
+		completed.Status = WorktreeMergeComplete
+		if err := persistWorktreeMergeReceipt(completed); err != nil {
+			t.Fatal(err)
+		}
+		defer os.WriteFile(receipt.ReceiptPath, original, 0600)
+		if _, err := AdoptLegacyIntegration(t.Context(), o); err == nil || !strings.Contains(err.Error(), "unsupported prepared receipt") {
+			t.Fatal("completed receipt adopted", err)
+		}
+		if archive.creates != 1 {
+			t.Fatal("refused receipt appended evidence")
+		}
+	})
 	for _, fault := range []string{"source read", "branch read", "branch drift", "missing ancestor", "parent read", "parent mismatch", "origin read", "second origin read", "foreign origin", "PR read", "missing PR"} {
 		t.Run(fault, func(t *testing.T) {
 			bad := o
@@ -237,12 +268,58 @@ esac
 			}
 		})
 	}
-	t.Run("foreign current claim owner", func(t *testing.T) {
-		t.Setenv(worktrees.EnvAgentID, "replacement-owner")
-		if _, err := AdoptLegacyIntegration(t.Context(), o); err == nil {
-			t.Fatal("replacement claim identity accepted")
-		}
-	})
+	for _, fault := range []string{"foreign native", "unregistered", "env only", "empty native", "empty SID", "actor SID", "actor runtime", "actor model"} {
+		t.Run(fault, func(t *testing.T) {
+			identity, _ := registered()
+			bad := o
+			ok := true
+			switch fault {
+			case "foreign native":
+				identity.AgentID = "foreign-native"
+			case "unregistered":
+				identity.Registered = false
+			case "env only":
+				ok = false
+			case "empty native":
+				identity.AgentID = ""
+			case "empty SID":
+				identity.WBSessionID = ""
+			case "actor SID":
+				bad.actor.Session = "foreign-SID"
+			case "actor runtime":
+				bad.actor.Harness = "foreign-runtime"
+			case "actor model":
+				bad.actor.Model = "foreign-model"
+			}
+			worktrees.SetSessionResolver(func() (worktrees.AgentIdentity, bool) { return identity, ok })
+			defer worktrees.SetSessionResolver(registered)
+			if _, err := AdoptLegacyIntegration(t.Context(), bad); err == nil {
+				t.Fatal("unproven current identity accepted", fault)
+			}
+		})
+	}
+	for _, existing := range []bool{true, false} {
+		t.Run(fmt.Sprintf("registered identity changes before append existing=%t", existing), func(t *testing.T) {
+			bad := o
+			if !existing {
+				bad.archive = &legacyArchiveFixture{fakeIntegrationGitHub: &fakeIntegrationGitHub{comments: map[int64]CommitComment{}}}
+			}
+			reads := 0
+			reader := func(path string) (WorktreeMergeReceipt, string, error) {
+				reads++
+				if reads == 4 {
+					identity, _ := registered()
+					identity.WBSessionID = "replacement-registration"
+					worktrees.SetSessionResolver(func() (worktrees.AgentIdentity, bool) { return identity, true })
+				}
+				return readWorktreeMergeReceiptSnapshot(path)
+			}
+			defer worktrees.SetSessionResolver(registered)
+			if _, err := adoptPreparedIntegrationWithSnapshot(t.Context(), bad, reader); err == nil {
+				t.Fatal("changed registration accepted")
+			}
+		})
+	}
 	t.Run("unwritable operation lock", func(t *testing.T) {
 		directory := filepath.Join(home, "worktrees", receipt.Lane)
 		backup := directory + ".retained"

@@ -90,7 +90,7 @@ func TestPreparedPortableInventoryKeepsUnreviewedMergeAndPublishedDescendant(t *
 		t.Fatal(v, err)
 	}
 	// No lane review is fabricated: the merge remains in full delta inventory and the adopter is conflicted out of review.
-	if len(v.Lanes) != 0 || !v.mergedBy(r.Adopter.Session) {
+	if len(v.Lanes) != 0 || !v.mergedBy(r.Adopter.Session) || !v.mergedBy(r.OriginalMerger) {
 		t.Fatal(v)
 	}
 	for _, fault := range []string{"missing published head", "published before merge", "tampered", "duplicate", "trailer"} {
@@ -132,12 +132,16 @@ func TestPreparedReceiptRejectsCompletedDirtyForeignAndUnboundEvidence(t *testin
 	if err := validatePreparedReceipt(r, r.ReceiptPath, o, actor); err != nil {
 		t.Fatal(err)
 	}
+	actor.Session = "new-current-session"
+	if err := validatePreparedReceipt(r, r.ReceiptPath, o, actor); err != nil {
+		t.Fatal("historical session blocked a current adopter", err)
+	}
 	withRoute := r
 	withRoute.Route.Route = WorktreeMergeRoutePullRequest
 	if err := validatePreparedReceipt(withRoute, r.ReceiptPath, o, actor); err != nil {
 		t.Fatal("explicit PR route refused", err)
 	}
-	for _, fault := range []string{"status", "phase", "owner", "dirty", "missing check", "passed check", "source", "candidate", "repository", "target", "worktree", "deferral", "reason", "rebase", "direct route", "unknown route"} {
+	for _, fault := range []string{"status", "phase", "missing historical owner", "invalid historical owner", "dirty", "missing check", "passed check", "source", "candidate", "repository", "target", "worktree", "deferral", "reason", "rebase", "direct route", "unknown route"} {
 		t.Run(fault, func(t *testing.T) {
 			r, o, a := preparedTestReceipt()
 			switch fault {
@@ -145,8 +149,10 @@ func TestPreparedReceiptRejectsCompletedDirtyForeignAndUnboundEvidence(t *testin
 				r.Status = WorktreeMergeComplete
 			case "phase":
 				r.Phase = WorktreeMergePhaseLand
-			case "owner":
-				a.Session = "foreign"
+			case "missing historical owner":
+				r.LaneOwner.Owner.WBSessionID = ""
+			case "invalid historical owner":
+				r.LaneOwner.Owner.WBSessionID = "private/path"
 			case "dirty":
 				r.Validation.WorkspaceClean = false
 			case "missing check":

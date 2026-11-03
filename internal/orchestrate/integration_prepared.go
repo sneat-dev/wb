@@ -103,8 +103,9 @@ func adoptPreparedIntegrationWithSnapshot(ctx context.Context, o LegacyAdoptOpti
 		if proofErr != nil {
 			return proofErr
 		}
-		identity := worktrees.CurrentIdentity()
-		if identity.AgentID == "" || claim.AgentID != identity.AgentID || claim.AgentRuntime != actor.Harness || claim.Model != actor.Model {
+		identity, registered := worktrees.RegisteredIdentity()
+		if !registered || identity.AgentID == "" || identity.WBSessionID == "" || identity.WBSessionID != actor.Session || identity.Runtime != actor.Harness || identity.Model != actor.Model ||
+			claim.AgentID != identity.AgentID || claim.AgentRuntime != identity.Runtime || claim.Model != identity.Model {
 			return fmt.Errorf("prepared candidate has foreign/unknown owner")
 		}
 		if err := validatePublishedCandidateAdoptionSources(ctx, git.run, receipt); err != nil {
@@ -187,7 +188,7 @@ func validatePreparedReceipt(r WorktreeMergeReceipt, path string, o LegacyAdoptO
 		!strings.HasPrefix(r.Candidate.Branch, "wb/integration/"+r.Target+"/") || len(r.Sources) != 1 || !r.Sources[0].Merged || !legacySHA.MatchString(r.Sources[0].SHA) || !validBranchName(r.Sources[0].Branch) ||
 		r.ValidationDeferral == nil || r.Validation.Status != quality.StatusSkipped || r.Validation.Revision != r.Candidate.SHA || !r.Validation.WorkspaceClean ||
 		len(r.Validation.Results) != 1 || r.Validation.Results[0].Status != quality.StatusSkipped || r.ValidationIdentity != nil || r.PullRequest != "" || r.PublishedCandidateSHA != "" || r.LandingSHA != "" || r.Rebase != nil || r.RevertOf != nil || r.RebatchOf != "" ||
-		len(r.TargetRefreshes) > 0 || len(r.SourceRefreshes) > 0 || len(r.ForwardRepairs) > 0 || r.LaneOwner == nil || r.LaneOwner.Owner.WBSessionID != actor.Session || !identityComplete(actor) {
+		len(r.TargetRefreshes) > 0 || len(r.SourceRefreshes) > 0 || len(r.ForwardRepairs) > 0 || r.LaneOwner == nil || r.LaneOwner.Owner.WBSessionID == "" || !safeLegacyIdentities(actor, r.LaneOwner.Owner.WBSessionID) || !identityComplete(actor) {
 		return fmt.Errorf("unsupported prepared receipt or foreign adopter")
 	}
 	if r.ValidationDeferral.Reason == "" || r.ValidationDeferral.Reason != r.Validation.Results[0].Detail {
