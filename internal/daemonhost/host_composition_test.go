@@ -5,14 +5,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -189,13 +193,73 @@ func TestServeEarlyPreparationFailuresReleaseTheDashboardListener(t *testing.T) 
 
 type acceptingHostListener struct {
 	net.Listener
-	ready chan struct{}
-	once  sync.Once
+	ready     chan struct{}
+	once      sync.Once
+	closeMu   sync.Mutex
+	closes    int
+	completed chan error
 }
 
 func (listener *acceptingHostListener) Accept() (net.Conn, error) {
 	listener.once.Do(func() { close(listener.ready) })
 	return listener.Listener.Accept()
+}
+
+func (listener *acceptingHostListener) Close() error {
+	listener.closeMu.Lock()
+	listener.closes++
+	listener.closeMu.Unlock()
+	err := listener.Listener.Close()
+	select {
+	case listener.completed <- err:
+	default:
+	}
+	return err
+}
+
+// Only this fixture uses this pool. Ports outside the kernel's automatic range
+// cannot be claimed by another test's :0/connect between Close and rebind.
+func listenCompositionDashboard(network, address string) (net.Listener, error) {
+	if runtime.GOOS != "linux" {
+		return net.Listen(network, address)
+	}
+	rangeText, err := os.ReadFile("/proc/sys/net/ipv4/ip_local_port_range")
+	if err != nil {
+		return nil, err
+	}
+	startText, err := os.ReadFile("/proc/sys/net/ipv4/ip_unprivileged_port_start")
+	if err != nil {
+		return nil, err
+	}
+	fields := strings.Fields(string(rangeText))
+	if len(rangeText) > 128 || len(startText) > 128 || len(fields) != 2 {
+		return nil, errors.New("invalid Linux automatic port bounds")
+	}
+	first, firstErr := strconv.Atoi(fields[0])
+	last, lastErr := strconv.Atoi(fields[1])
+	unprivileged, startErr := strconv.Atoi(strings.TrimSpace(string(startText)))
+	if firstErr != nil || lastErr != nil || startErr != nil || first < 1 || last < first || last > 65535 || unprivileged < 0 || unprivileged > 65535 {
+		return nil, errors.New("invalid Linux automatic port bounds")
+	}
+	if network != "tcp" || address != "127.0.0.1:0" {
+		return nil, fmt.Errorf("unexpected dashboard fixture address: %s %s", network, address)
+	}
+	attempts := 0
+	for port := max(1024, unprivileged); port <= 65535 && attempts < 32; port++ {
+		if port >= first && port <= last {
+			port = last
+			continue
+		}
+		attempts++
+		listener, err := net.Listen(network, net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+		if err == nil {
+			return listener, nil
+		}
+		if !errors.Is(err, syscall.EADDRINUSE) {
+			return nil, err
+		}
+	}
+	return nil, fmt.Errorf("no dashboard fixture port outside automatic range after %d candidates", attempts)
 }
 
 func TestServeKeepsRawCommandsDeniedWhenTheRepositoryReceiverIsDisabled(t *testing.T) {
@@ -218,13 +282,15 @@ func TestServeKeepsRawCommandsDeniedWhenTheRepositoryReceiverIsDisabled(t *testi
 	h.effects.rawPolicyPath = func() (string, error) { return policy, nil }
 	ready := make(chan struct{})
 	var listener net.Listener
+	var observed *acceptingHostListener
 	h.deps.Listen = func(network, address string) (net.Listener, error) {
 		var err error
-		listener, err = net.Listen(network, address)
+		listener, err = listenCompositionDashboard(network, address)
 		if err != nil {
 			return nil, err
 		}
-		return &acceptingHostListener{Listener: listener, ready: ready}, nil
+		observed = &acceptingHostListener{Listener: listener, ready: ready, completed: make(chan error, 1)}
+		return observed, nil
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
@@ -267,6 +333,20 @@ func TestServeKeepsRawCommandsDeniedWhenTheRepositoryReceiverIsDisabled(t *testi
 	stop()
 	if !exited {
 		t.Fatal("cannot inspect daemon outputs before it has stopped")
+	}
+	observed.closeMu.Lock()
+	closeCalls := observed.closes
+	observed.closeMu.Unlock()
+	if closeCalls != 1 {
+		t.Fatalf("underlying dashboard Close calls=%d, want 1", closeCalls)
+	}
+	select {
+	case err := <-observed.completed:
+		if err != nil {
+			t.Fatalf("underlying dashboard Close=%v", err)
+		}
+	default:
+		t.Fatal("Serve returned before underlying dashboard Close completed")
 	}
 	if configReads != 4 || !strings.Contains(diagnostics.String(), "repository event receiver disabled:") || !strings.Contains(diagnostics.String(), "WB hub: engine=memory") {
 		t.Fatalf("hub narration or receiver diagnostic missing: config reads=%d diagnostics=%s", configReads, diagnostics.String())
