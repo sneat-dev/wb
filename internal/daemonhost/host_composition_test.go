@@ -81,7 +81,7 @@ func TestPeerAdminInviteReturnsThePersistedCredential(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	gitContext, cancelGit := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancelGit()
+	t.Cleanup(cancelGit)
 	command := exec.CommandContext(gitContext, "git", "-C", root, "init", "--quiet")
 	command.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull}
 	if output, err := command.CombinedOutput(); err != nil {
