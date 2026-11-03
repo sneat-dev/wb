@@ -279,3 +279,5 @@ accept the flag because it performs no remote landing or CI-fence decision.
 owner epoch and revision, plus `--reason` and `--handoff-approval` recording
 explicit user authority. It refuses live owners, unreadable status and a previous
 root that still exists; it preserves checkout Git identity and writes one audit.
+
+`integration adopt-legacy --prepared --to <target>` explicitly selects separately typed prepared/CI-deferred provenance; completed-direct mode remains the default. This metadata does not approve code or waive required CI.

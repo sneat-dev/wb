@@ -98,3 +98,16 @@ func TestLegacyRecordFlagsReachBothPromotionAndDelta(t *testing.T) {
 		t.Fatal(code, got, errOut.String())
 	}
 }
+
+func TestPreparedAdoptionCLIRequiresExplicitModeAndCarriesProjectsRoot(t *testing.T) {
+	t.Parallel()
+	var got orchestrate.LegacyAdoptOptions
+	deps := IntegrationDependencies{AdoptLegacy: func(_ context.Context, o orchestrate.LegacyAdoptOptions) (orchestrate.LegacyAdoptResult, error) {
+		got = o
+		return orchestrate.LegacyAdoptResult{}, nil
+	}}
+	var out, errOut bytes.Buffer
+	if code := executeTest(NewIntegration(testRuntime(), deps), []string{"adopt-legacy", "acme/app", "wb/integration/main/task", "--prepared", "--receipt", "/receipt", "--to", "main"}, &out, &errOut); code != 0 || !got.Prepared || got.ProjectsRoot != "/projects" || !strings.Contains(out.String(), "CI-deferred") {
+		t.Fatal(code, got, out.String(), errOut.String())
+	}
+}

@@ -37,6 +37,7 @@ type LegacyMerge struct {
 // LegacyProvenance is a safe portable projection. ReceiptDigest is audit
 // identity of unsigned local bytes, NOT proof of authorship or review.
 type LegacyProvenance struct {
+	Prepared         *PreparedProvenance             `json:"prepared,omitempty"`
 	Version          int                             `json:"v"`
 	Repository       string                          `json:"repository"`
 	Integration      string                          `json:"integration"`
@@ -70,10 +71,13 @@ type legacyArchive interface {
 // LegacyAdoptOptions describes an explicit dry-run/apply provenance adoption.
 type LegacyAdoptOptions struct {
 	PromoteOptions
-	Receipt string
-	Apply   bool
-	archive legacyArchive
-	actor   ReviewerIdentity
+	Receipt       string
+	Apply         bool
+	Prepared      bool
+	ProjectsRoot  string
+	beforeArchive func() error
+	archive       legacyArchive
+	actor         ReviewerIdentity
 }
 
 type LegacyAdoptResult struct {
@@ -92,6 +96,9 @@ func legacyInventoryDigest(records []LegacyBinding) string {
 }
 
 func validateLegacyRecord(record LegacyProvenance) error {
+	if record.Prepared != nil {
+		return validatePreparedRecord(record)
+	}
 	if !safeLegacyIdentities(record.Adopter, record.OriginalMerger) {
 		return fmt.Errorf("invalid legacy projection identity component")
 	}
@@ -130,15 +137,19 @@ func validateLegacyRecord(record LegacyProvenance) error {
 
 func legacyComment(body string) (LegacyProvenance, error) {
 	var record LegacyProvenance
-	if !strings.HasPrefix(body, legacyRecordPrefix) {
+	prefix := legacyRecordPrefix
+	if strings.HasPrefix(body, preparedRecordPrefix) {
+		prefix = preparedRecordPrefix
+	}
+	if !strings.HasPrefix(body, prefix) {
 		return record, fmt.Errorf("not a legacy provenance record")
 	}
-	decoder := json.NewDecoder(strings.NewReader(strings.TrimPrefix(body, legacyRecordPrefix)))
+	decoder := json.NewDecoder(strings.NewReader(strings.TrimPrefix(body, prefix)))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&record); err != nil {
 		return record, err
 	}
-	if body != legacyRecordPrefix+legacyJSON(record) {
+	if body != prefix+legacyJSON(record) || (record.Prepared != nil) != (prefix == preparedRecordPrefix) {
 		return record, fmt.Errorf("noncanonical legacy record")
 	}
 	return record, validateLegacyRecord(record)
@@ -160,6 +171,9 @@ func legacyBindingID(repository string, binding LegacyBinding) (string, int64, e
 // AdoptLegacyIntegration reads a completed direct WB receipt and verifies the
 // entire remotely published first-parent chain. Dry-run performs no writes.
 func AdoptLegacyIntegration(ctx context.Context, options LegacyAdoptOptions) (LegacyAdoptResult, error) {
+	if options.Prepared {
+		return adoptPreparedIntegration(ctx, options)
+	}
 	var result LegacyAdoptResult
 	if !legacyRepositoryPattern.MatchString(options.Repository) {
 		return result, fmt.Errorf("invalid repository")
@@ -245,12 +259,20 @@ func AdoptLegacyIntegration(ctx context.Context, options LegacyAdoptOptions) (Le
 	if err := validateLegacyRecord(record); err != nil {
 		return result, err
 	}
+	return archiveProvenance(ctx, options, record)
+}
+
+func archiveProvenance(ctx context.Context, options LegacyAdoptOptions, record LegacyProvenance) (LegacyAdoptResult, error) {
+	var result LegacyAdoptResult
 	result.Record = record
 	if !options.Apply {
 		return result, nil
 	}
 	archive := options.resolveLegacyArchive()
 	body := legacyRecordPrefix + legacyJSON(record)
+	if record.Prepared != nil {
+		body = preparedRecordPrefix + legacyJSON(record)
+	}
 	bindings, err := archive.LegacyComments(ctx, record.Repository, record.CandidateSHA)
 	if err != nil {
 		return result, err
@@ -276,10 +298,23 @@ func AdoptLegacyIntegration(ctx context.Context, options LegacyAdoptOptions) (Le
 		comparable := record
 		comparable.Adopter = archived.Adopter
 		if legacyJSON(comparable) == legacyJSON(archived) {
+			if options.beforeArchive != nil {
+				if err := options.beforeArchive(); err != nil {
+					return result, err
+				}
+			}
 			result.Record = archived
 			result.Binding = &binding
 			result.Applied = true
 			return result, nil
+		}
+		if record.Prepared != nil {
+			return result, fmt.Errorf("conflicting prepared provenance already exists")
+		}
+	}
+	if options.beforeArchive != nil {
+		if err := options.beforeArchive(); err != nil {
+			return result, err
 		}
 	}
 	binding, err := archive.CreateLegacyComment(ctx, record.Repository, record.CandidateSHA, body)
@@ -322,8 +357,10 @@ func parseLegacyInventory(body string) ([]LegacyBinding, error) {
 
 func verifyLegacyProvenance(ctx context.Context, reader commitCommentReader, repository, integration, to string, walk []integrationCommit, verdict *provenance, bindings []LegacyBinding) error {
 	bySHA := map[string]integrationCommit{}
-	for _, c := range walk {
+	positions := map[string]int{}
+	for i, c := range walk {
 		bySHA[c.SHA] = c
+		positions[c.SHA] = i
 	}
 	claimed := map[string]bool{}
 	unknown := map[string]bool{}
@@ -350,6 +387,12 @@ func verifyLegacyProvenance(ctx context.Context, reader commitCommentReader, rep
 		}
 		if record.Repository != repository || record.Integration != integration || record.To != to || record.CandidateSHA != candidate {
 			return fmt.Errorf("foreign legacy provenance")
+		}
+		if record.Prepared != nil {
+			position, ok := positions[record.Prepared.PublishedHead]
+			if !ok || position > positions[record.CandidateSHA] {
+				return fmt.Errorf("prepared published head is absent or not a descendant")
+			}
 		}
 		for _, m := range record.Merges {
 			c, ok := bySHA[m.SHA]
@@ -399,7 +442,7 @@ func (adapter githubIntegration) LegacyComments(ctx context.Context, repository,
 			return nil, fmt.Errorf("incomplete legacy comment page")
 		}
 		for _, comment := range page {
-			if strings.HasPrefix(comment.Body, legacyRecordPrefix) {
+			if strings.HasPrefix(comment.Body, legacyRecordPrefix) || strings.HasPrefix(comment.Body, preparedRecordPrefix) {
 				binding := LegacyBinding{comment.URL, legacyHash([]byte(comment.Body))}
 				sha, _, err := legacyBindingID(repository, binding)
 				if err != nil || sha != candidate || comment.CommitID != candidate {
