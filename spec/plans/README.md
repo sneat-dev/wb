@@ -21,7 +21,7 @@ Canonical index of all plans in this repository. Each plan is a single Markdown 
 | [fleet-metrics-web](fleet-metrics-web.md) | Implemented | fleet-quality | 2026-09-26 | alex |
 | [herdr-session-transport](herdr-session-transport.md) | Draft | herdr-session-transport | 2026-09-19 | ai |
 | [linux-container-execution-policy](linux-container-execution-policy/README.md) | Draft | none | 2026-10-28 | alex |
-| [managed-job-cache](managed-job-cache/README.md) | Draft | managed-job-cache | 2026-11-02 | querydock_improvements_spec |
+| [managed-job-cache](managed-job-cache/README.md) | Implemented | managed-job-cache | 2026-11-02 | querydock_improvements_spec |
 | [mechanical-worktree-merge](mechanical-worktree-merge.md) | Implemented | mechanical-worktree-merge | 2026-08-27 | alex |
 | [park-and-resume-agent-sessions](park-and-resume-agent-sessions.md) | Executing | park-and-resume-agent-sessions | 2026-08-26 | codex |
 | [peer-connectivity](peer-connectivity.md) | Draft | peer-connectivity | 2026-09-18 | alex |
