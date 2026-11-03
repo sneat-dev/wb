@@ -8045,11 +8045,13 @@
                 "--to",
                 "--worktree",
                 "--format",
-                "--apply"
+                "--apply",
+                "--prepared"
               ],
               "modes": [
                 "Dry-run validates exact completed direct WB receipt and remotely published parent chain without mutations",
-                "Apply archives sanitized portable provenance, never historical approval or code changes"
+                "Apply archives sanitized portable provenance, never historical approval or code changes",
+                "Explicit --prepared --to validates one prepared/CI-deferred merge and exact published descendant PR without inventing passed checks"
               ]
             }
           ],

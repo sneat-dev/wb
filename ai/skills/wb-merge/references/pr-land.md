@@ -502,3 +502,13 @@ can be proved; WB does not invent a hidden authority list. Ordinary PR review
 and CI still apply. Harness/session identities are bounded ASCII atoms; models additionally allow
 relative provider/model segments. Absolute paths, controls, empty/dot segments
 and oversized values are rejected before publication without rewriting identity.
+
+### Prepared / CI-deferred provenance
+
+For an immutable single-source `prepare`/`prepared` receipt whose original merge is now on the current published candidate's first-parent history, use the explicit typed mode (dry-run first):
+
+```sh
+wb integration adopt-legacy <owner/repository> <candidate-branch> --to <target> --worktree <candidate-worktree> --receipt <original-receipt> --prepared
+```
+
+The same command with `--apply` appends a separate portable record; it never edits the original receipt or source history. It requires clean managed custody by the recorded owner, unchanged source/merge identities, exact current local/remote/open-PR head, and fresh authoritative strict required-check policy. A deferred check remains deferred, never a fabricated pass. Use the returned exact `--legacy-record` binding in the normal full-delta/promotion flow; the independent current-head review still binds the inventory digest, and all CI/target/landing gates remain unchanged. This narrow mode rejects completed/failed/rewritten, multi-source and unknown-remote shapes rather than guessing recovery.
