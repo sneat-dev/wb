@@ -165,20 +165,48 @@ func pathWithin(root, path string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
 }
 
+// gitPathExistsAtHEAD reports whether path, relative to worktree, is
+// committed in HEAD.
+//
+// "Absent" must never be inferred from Git failing: undo removes an absent
+// artefact, so a Git that cannot read the repository — a leaked GIT_DIR, a
+// pruned gitdir, safe.directory — would otherwise turn a tracked file into a
+// deletion. Only three answers are trusted: the path listed (or not) in HEAD,
+// an unborn HEAD (nothing is committed), and a directory with no `.git` at or
+// above it (nothing can be tracked). Every other failure is an error.
 func gitPathExistsAtHEAD(worktree, path string) (bool, error) {
-	// `HEAD:./<path>` resolves against -C, like the diff and restore
-	// pathspecs beside it; a bare `HEAD:<path>` would name the repository
-	// root's file when the worktree is a subdirectory.
-	command := exec.Command("git", "-C", worktree, "cat-file", "-e", "HEAD:./"+filepath.ToSlash(path))
-	err := command.Run()
+	// `./<path>` resolves against -C, like the diff and restore pathspecs
+	// beside it, so a worktree that is a subdirectory is judged at its own path.
+	command := exec.Command("git", "-C", worktree, "ls-tree", "--name-only", "-z", "HEAD", "--", "./"+filepath.ToSlash(path))
+	output, err := command.Output()
 	if err == nil {
-		return true, nil
+		return len(output) > 0, nil
 	}
 	var exit *exec.ExitError
-	if errors.As(err, &exit) {
+	if !errors.As(err, &exit) {
+		return false, err
+	}
+	// `rev-parse --verify -q HEAD` exits 1 only when the repository is
+	// readable and HEAD names no commit yet.
+	if probeErr := exec.Command("git", "-C", worktree, "rev-parse", "--verify", "-q", "HEAD").Run(); errors.As(probeErr, &exit) && exit.ExitCode() == 1 {
 		return false, nil
 	}
-	return false, err
+	if !withinGitCheckout(worktree) {
+		return false, nil
+	}
+	return false, fmt.Errorf("git cannot say whether %s is committed in %s: %w: %s", path, worktree, err, strings.TrimSpace(string(exit.Stderr)))
+}
+
+// withinGitCheckout reports whether dir or any ancestor carries a `.git`.
+func withinGitCheckout(dir string) bool {
+	for current := filepath.Clean(dir); ; current = filepath.Dir(current) {
+		if _, err := os.Lstat(filepath.Join(current, ".git")); err == nil {
+			return true
+		}
+		if filepath.Dir(current) == current {
+			return false
+		}
+	}
 }
 
 func gitPathUnchangedFromHEAD(worktree, path string) (bool, error) {

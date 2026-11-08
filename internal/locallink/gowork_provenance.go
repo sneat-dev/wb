@@ -72,9 +72,11 @@ func GoWorkRemedy(worktree string, provenance GoWorkProvenance, recorded bool) s
 	}
 	switch provenance {
 	case GoWorkUntracked:
+		// Only go.work is named: its provenance is the one this guard
+		// established, and a go.work.sum left behind is inert without it.
 		return fmt.Sprintf(
-			"no stream records %s/go.work, so WB has no link to reverse; inspect it, then commit it or remove it by hand: rm %s %s",
-			worktree, filepath.Join(worktree, goWorkFile), filepath.Join(worktree, goWorkSum))
+			"no stream records %s/go.work, so WB has no link to reverse; inspect it, then commit it or remove it by hand: rm %s",
+			worktree, filepath.Join(worktree, goWorkFile))
 	case GoWorkModified:
 		return fmt.Sprintf(
 			"no stream records the change to the committed %s/go.work; commit it, or discard it with: git -C %s restore --source=HEAD --staged --worktree -- go.work",
@@ -139,8 +141,9 @@ func goWorkArtefacts(link streams.Link) []string {
 //
 // An artefact absent from HEAD is removed. An artefact in HEAD is tracked
 // content: it is restored from HEAD when it differs and left alone when it
-// does not — never deleted. A recorded path that escapes the worktree is
-// refused rather than followed.
+// does not — never deleted. A committed go.work that still carries the link
+// is refused, keeping the record. A recorded path that escapes the worktree
+// is refused rather than followed.
 func (files headFiles) restoreLinkArtefacts(worktree string, artefacts []string) ([]string, error) {
 	var notes []string
 	for _, artefact := range artefacts {
@@ -162,6 +165,14 @@ func (files headFiles) restoreLinkArtefacts(worktree string, artefacts []string)
 			}
 			notes = append(notes, fmt.Sprintf("restored tracked %s from HEAD", artefact))
 		default:
+			if artefact == goWorkFile {
+				// The caller has just shown this go.work still names the
+				// library, so the link itself was committed. Clearing the
+				// record would hide a live link from `stream end` and
+				// `worktree end`; WB never rewrites history to remove it.
+				return notes, fmt.Errorf(
+					"the linked %s is committed in HEAD of %s; revert that commit, then re-run --undo", artefact, worktree)
+			}
 			notes = append(notes, fmt.Sprintf("tracked %s is unchanged from HEAD; left as committed", artefact))
 		}
 	}

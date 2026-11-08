@@ -62,6 +62,7 @@ func TestLgCovGuardGitProbeFailures(t *testing.T) {
 		worktree := lgCovGuardWorktree(t, "./mod")
 		lgCovGitScript(t, `case "$*" in
   *"diff --quiet"*) exit 2 ;;
+  *"ls-tree"*) printf 'go.work' ;;
   *) exit 0 ;;
 esac`)
 		_, err := HasLiveLink(nil, worktree)
@@ -74,6 +75,7 @@ esac`)
 		worktree := lgCovGuardWorktree(t, "./mod")
 		lgCovGitScript(t, `case "$*" in
   *"diff --quiet"*) exit 1 ;;
+  *"ls-tree"*) printf 'go.work' ;;
   *) exit 0 ;;
 esac`)
 		found, err := HasLiveLink(nil, worktree)
@@ -89,7 +91,7 @@ esac`)
 func TestLgCovUnpublishedGoWorkEntriesModuleProbes(t *testing.T) {
 	t.Run("a module directory that does not resolve", func(t *testing.T) {
 		worktree := lgCovGuardWorktree(t, "./missing")
-		lgCovGitScript(t, "exit 0")
+		lgCovGitScript(t, "printf tracked")
 		entries, err := unpublishedGoWorkEntries(worktree, []string{"./missing"})
 		if err != nil {
 			t.Fatal(err)
@@ -104,7 +106,7 @@ func TestLgCovUnpublishedGoWorkEntriesModuleProbes(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(worktree, "mod", "go.mod"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		lgCovGitScript(t, "exit 0")
+		lgCovGitScript(t, "printf tracked")
 		entries, err := unpublishedGoWorkEntries(worktree, []string{"./mod"})
 		if err != nil {
 			t.Fatal(err)
@@ -118,8 +120,8 @@ func TestLgCovUnpublishedGoWorkEntriesModuleProbes(t *testing.T) {
 		worktree := lgCovGuardWorktree(t, "./mod")
 		lgCovWriteFile(t, filepath.Join(worktree, "mod", "go.mod"), "module example.test/mod\n")
 		lgCovGitScript(t, `case "$*" in
-  *"cat-file"*"go.work"*) exit 0 ;;
-  *"cat-file"*) exit 1 ;;
+  *"ls-tree"*"go.work"*) printf 'go.work' ;;
+  *"ls-tree"*) exit 0 ;;
   *) exit 0 ;;
 esac`)
 		entries, err := unpublishedGoWorkEntries(worktree, []string{"./mod"})
@@ -134,7 +136,7 @@ esac`)
 	t.Run("a tracked and unchanged module is intrinsic", func(t *testing.T) {
 		worktree := lgCovGuardWorktree(t, "./mod")
 		lgCovWriteFile(t, filepath.Join(worktree, "mod", "go.mod"), "module example.test/mod\n")
-		lgCovGitScript(t, "exit 0")
+		lgCovGitScript(t, "printf tracked")
 		entries, err := unpublishedGoWorkEntries(worktree, []string{"./mod"})
 		if err != nil {
 			t.Fatal(err)
@@ -154,6 +156,7 @@ esac`)
 		// so the later module probe fails to start at all.
 		lgCovGitScript(t, `case "$*" in
   *"diff --quiet"*) /bin/rm -f "$LGCOV_GIT_SELF"; exit 0 ;;
+  *"ls-tree"*) printf 'go.work' ;;
   *) exit 0 ;;
 esac`)
 		_, err := unpublishedGoWorkEntries(worktree, []string{"./mod"})

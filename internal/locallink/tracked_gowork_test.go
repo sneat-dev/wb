@@ -158,7 +158,8 @@ func TestHasLiveLinkNamesAHonestRemedyForAnUnrecordedGoWork(t *testing.T) {
 		if err != nil || len(links) != 1 {
 			t.Fatalf("links = %#v, err = %v", links, err)
 		}
-		if strings.Contains(links[0].Sanctioned, "--undo") || !strings.Contains(links[0].Sanctioned, "rm ") {
+		if strings.Contains(links[0].Sanctioned, "--undo") || !strings.Contains(links[0].Sanctioned, "rm ") ||
+			strings.Contains(links[0].Sanctioned, goWorkSum) {
 			t.Fatalf("sanctioned = %q, want the manual removal of an untracked file", links[0].Sanctioned)
 		}
 	})
@@ -286,9 +287,19 @@ func TestRestoreLinkArtefactsNeverDeletesTrackedContent(t *testing.T) {
 		t.Parallel()
 		restored := false
 		files := headFiles{exists: yes, unchanged: yes, restore: func(string, string) error { restored = true; return nil }}
-		notes, err := files.restoreLinkArtefacts(t.TempDir(), []string{goWorkFile})
+		notes, err := files.restoreLinkArtefacts(t.TempDir(), []string{goWorkSum})
 		if err != nil || restored || len(notes) != 1 || !strings.Contains(notes[0], "unchanged from HEAD") {
 			t.Fatalf("notes = %v, err = %v, restored = %v", notes, err, restored)
+		}
+	})
+
+	t.Run("a committed linked go.work is refused, not cleared", func(t *testing.T) {
+		t.Parallel()
+		worktree := t.TempDir()
+		writeGuardTestFile(t, worktree, goWorkFile, "linked\n")
+		_, err := headFiles{exists: yes, unchanged: yes}.restoreLinkArtefacts(worktree, []string{goWorkFile})
+		if err == nil || !strings.Contains(err.Error(), "revert that commit") || !fileExists(filepath.Join(worktree, goWorkFile)) {
+			t.Fatalf("err = %v; want the committed link refused and the file kept", err)
 		}
 	})
 
@@ -451,4 +462,41 @@ func TestClassifyGoWorkJudgesTheWorktreePathNotTheRepositoryRoot(t *testing.T) {
 	if got, err := ClassifyGoWork(repository); err != nil || got != GoWorkCommitted {
 		t.Fatalf("ClassifyGoWork(root) = (%q, %v), want committed", got, err)
 	}
+}
+
+// Git failing is never read as "not committed": undo would remove a tracked
+// file. An unborn HEAD and a directory outside any checkout are the only
+// failures that genuinely mean nothing is tracked.
+func TestGitPathExistsAtHEADNeverReadsAGitFailureAsAbsent(t *testing.T) {
+	t.Parallel()
+
+	t.Run("outside any checkout", func(t *testing.T) {
+		t.Parallel()
+		if exists, err := gitPathExistsAtHEAD(t.TempDir(), goWorkFile); err != nil || exists {
+			t.Fatalf("exists = %v, err = %v, want absent", exists, err)
+		}
+	})
+
+	t.Run("unborn HEAD", func(t *testing.T) {
+		t.Parallel()
+		repository := initGuardTestRepository(t)
+		writeGuardTestFile(t, repository, goWorkFile, committedWorkspace)
+		if exists, err := gitPathExistsAtHEAD(repository, goWorkFile); err != nil || exists {
+			t.Fatalf("exists = %v, err = %v, want absent before the first commit", exists, err)
+		}
+	})
+
+	t.Run("an unreadable repository", func(t *testing.T) {
+		t.Parallel()
+		worktree := t.TempDir()
+		writeGuardTestFile(t, worktree, ".git", "gitdir: "+filepath.Join(t.TempDir(), "pruned")+"\n")
+		writeGuardTestFile(t, worktree, goWorkFile, committedWorkspace)
+		if _, err := gitPathExistsAtHEAD(worktree, goWorkFile); err == nil || !strings.Contains(err.Error(), "git cannot say") {
+			t.Fatalf("err = %v, want the Git failure reported", err)
+		}
+		// Undo keeps the file and the record rather than guessing.
+		if _, err := gitHeadFiles.restoreLinkArtefacts(worktree, []string{goWorkFile}); err == nil || !fileExists(filepath.Join(worktree, goWorkFile)) {
+			t.Fatalf("err = %v; want the restore refused and go.work kept", err)
+		}
+	})
 }
