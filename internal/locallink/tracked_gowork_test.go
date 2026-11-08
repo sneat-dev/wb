@@ -528,7 +528,8 @@ func TestGitPathExistsAtHEADKeepsTheGitDiagnostic(t *testing.T) {
 	worktree := t.TempDir()
 	writeGuardTestFile(t, worktree, ".git", "gitdir: "+filepath.Join(t.TempDir(), "pruned")+"\n")
 	_, err := gitPathExistsAtHEAD(worktree, goWorkFile)
-	if err == nil || !strings.Contains(err.Error(), "not a git repository") {
+	// Git's wording differs between versions; its "fatal:" prefix does not.
+	if err == nil || !strings.Contains(err.Error(), "fatal:") {
 		t.Fatalf("err = %v, want git's own diagnostic kept", err)
 	}
 }
