@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/sneat-dev/wb/internal/console"
+	"github.com/sneat-dev/wb/internal/locallink"
 	"github.com/sneat-dev/wb/internal/streams"
 	"github.com/sneat-dev/wb/internal/worktreeend"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -44,14 +45,17 @@ func (worktreeInventory) Worktrees(ctx context.Context, projectsRoot, task, repo
 // streamLinkGuard is the one refusal `wb worktree end` enforces.
 //
 // It reads both independent signals: a link recorded in stream state, and a
-// `go.work` carrying `use` entries. State alone would miss a hand-written
-// workspace; the workspace alone would miss an npm link.
+// `go.work` carrying `use` entries that is untracked or differs from HEAD.
+// State alone would miss a hand-written workspace; the workspace alone would
+// miss an npm link.
 type streamLinkGuard struct{ store *streams.Store }
 
 func (guard streamLinkGuard) LiveLinks(worktree string) ([]string, []string, error) {
 	var reasons, sanctioned []string
+	var recorded []streams.StreamLink
 	if guard.store != nil {
-		recorded, err := guard.store.LiveLinksForWorktree(worktree)
+		var err error
+		recorded, err = guard.store.LiveLinksForWorktree(worktree)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -62,13 +66,15 @@ func (guard streamLinkGuard) LiveLinks(worktree string) ([]string, []string, err
 				"wb deps propagate local %s --to %s --undo", link.Link.Library, worktree))
 		}
 	}
-	entries, err := streams.GoWorkUseEntries(worktree)
+	// A go.work committed and unchanged from HEAD is repository content, not
+	// a link: retiring the checkout loses nothing a commit does not hold.
+	signal, err := locallink.RetirementGoWorkSignal(worktree, locallink.RecordsGoWorkLink(recorded))
 	if err != nil {
 		return nil, nil, err
 	}
-	if len(entries) > 0 {
-		reasons = append(reasons, fmt.Sprintf("%s/go.work carries use entries: %s", worktree, strings.Join(entries, ", ")))
-		sanctioned = append(sanctioned, "wb deps propagate local --to "+worktree+" --undo")
+	if signal != nil {
+		reasons = append(reasons, signal.Detail)
+		sanctioned = append(sanctioned, signal.Sanctioned)
 	}
 	return reasons, sanctioned, nil
 }

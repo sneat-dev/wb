@@ -6,9 +6,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
+	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/streams"
 )
 
@@ -47,9 +49,15 @@ type LiveLinkStore interface {
 //
 // Implements: dependency-streams#req:merge-refuses-a-linked-worktree.
 func HasLiveLink(store LiveLinkStore, worktree string) ([]LiveLink, error) {
+	return hasLiveLinkWith(store, worktree, gitHeadFiles)
+}
+
+func hasLiveLinkWith(store LiveLinkStore, worktree string, files headFiles) ([]LiveLink, error) {
 	var found []LiveLink
+	var recorded []streams.StreamLink
 	if store != nil {
-		recorded, err := store.LiveLinksForWorktree(worktree)
+		var err error
+		recorded, err = store.LiveLinksForWorktree(worktree)
 		if err != nil {
 			return nil, fmt.Errorf("read stream link records for %s: %w", worktree, err)
 		}
@@ -72,10 +80,17 @@ func HasLiveLink(store LiveLinkStore, worktree string) ([]LiveLink, error) {
 	}
 	if len(unpublished) > 0 {
 		sort.Strings(unpublished)
+		// The remedy depends on where the file came from: `--undo` clears
+		// only what a record names, and nothing here may suggest deleting
+		// tracked content.
+		provenance, err := files.classify(worktree, goWorkFile)
+		if err != nil {
+			return nil, err
+		}
 		found = append(found, LiveLink{
 			Source:     "go.work",
 			Detail:     fmt.Sprintf("%s/go.work carries unpublished use entries: %s", worktree, strings.Join(unpublished, ", ")),
-			Sanctioned: fmt.Sprintf("wb deps propagate local --to %s --undo", worktree),
+			Sanctioned: GoWorkRemedy(worktree, provenance, RecordsGoWorkLink(recorded)),
 		})
 	}
 	return found, nil
@@ -152,22 +167,79 @@ func pathWithin(root, path string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
 }
 
+// gitPathExistsAtHEAD reports whether path, relative to worktree, is
+// committed in HEAD.
+//
+// "Absent" must never be inferred from Git failing: undo removes an absent
+// artefact, so a Git that cannot read the repository — a leaked GIT_DIR, a
+// pruned gitdir, safe.directory — would otherwise turn a tracked file into a
+// deletion. Only three answers are trusted: the path listed (or not) in HEAD,
+// an unborn HEAD (nothing is committed), and a directory with no `.git` at or
+// above it (nothing can be tracked). Every other failure is an error.
 func gitPathExistsAtHEAD(worktree, path string) (bool, error) {
-	command := exec.Command("git", "-C", worktree, "cat-file", "-e", "HEAD:"+filepath.ToSlash(path))
-	err := command.Run()
+	// `./<path>` resolves against -C, like the diff and restore pathspecs
+	// beside it, so a worktree that is a subdirectory is judged at its own path.
+	output, err := headGitCommand(worktree, "ls-tree", "--name-only", "-z", "HEAD", "--", "./"+filepath.ToSlash(path)).Output()
 	if err == nil {
-		return true, nil
+		return len(output) > 0, nil
 	}
 	var exit *exec.ExitError
-	if errors.As(err, &exit) {
+	if !errors.As(err, &exit) {
+		return false, err
+	}
+	// `rev-parse --verify -q HEAD` exits 1 only when the repository is
+	// readable and HEAD names no commit yet.
+	var probeExit *exec.ExitError
+	if probeErr := headGitCommand(worktree, "rev-parse", "--verify", "-q", "HEAD").Run(); errors.As(probeErr, &probeExit) && probeExit.ExitCode() == 1 {
 		return false, nil
 	}
-	return false, err
+	if !withinGitCheckout(worktree) {
+		return false, nil
+	}
+	return false, fmt.Errorf("git cannot say whether %s is committed in %s: %w: %s", path, worktree, err, strings.TrimSpace(string(exit.Stderr)))
+}
+
+// headGitCommand runs Git against worktree's own repository. An inherited
+// GIT_DIR, GIT_INDEX_FILE or similar — set by an outer hook or a parent Git —
+// would point these probes at another repository, where a tracked go.work
+// reads as absent and undo would delete it.
+func headGitCommand(worktree string, args ...string) *exec.Cmd {
+	command := exec.Command("git", append([]string{"-C", worktree}, args...)...)
+	command.Env = withoutRepositoryOverrides(console.Env())
+	return command
+}
+
+var repositoryOverrideVariables = []string{
+	"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
+	"GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE",
+}
+
+func withoutRepositoryOverrides(environment []string) []string {
+	kept := make([]string, 0, len(environment))
+	for _, entry := range environment {
+		name, _, _ := strings.Cut(entry, "=")
+		if slices.Contains(repositoryOverrideVariables, name) {
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	return kept
+}
+
+// withinGitCheckout reports whether dir or any ancestor carries a `.git`.
+func withinGitCheckout(dir string) bool {
+	for current := filepath.Clean(dir); ; current = filepath.Dir(current) {
+		if _, err := os.Lstat(filepath.Join(current, ".git")); err == nil {
+			return true
+		}
+		if filepath.Dir(current) == current {
+			return false
+		}
+	}
 }
 
 func gitPathUnchangedFromHEAD(worktree, path string) (bool, error) {
-	command := exec.Command("git", "-C", worktree, "diff", "--quiet", "HEAD", "--", path)
-	err := command.Run()
+	err := headGitCommand(worktree, "diff", "--quiet", "HEAD", "--", path).Run()
 	if err == nil {
 		return true, nil
 	}

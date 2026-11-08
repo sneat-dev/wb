@@ -87,6 +87,9 @@ Every link is recorded in stream state at the moment it is created, with enough
 detail to reverse it exactly. --undo restores the published versions and removes
 the link, and succeeds even when the library worktree has since been removed,
 because the record — not the library — is the source of truth for reversal.
+It touches only the artefacts a record names: an untracked one is removed, a
+tracked one is restored from HEAD and never deleted. A consumer with no record
+is reported as having nothing to undo, and no file is changed.
 
 --verify runs each consumer's lint and tests against the linked copy through the
 existing wb verify profiles, constrained to a single worker: Go with

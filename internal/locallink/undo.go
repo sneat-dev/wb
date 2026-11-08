@@ -24,7 +24,7 @@ func (engine *Engine) undo(ctx context.Context, options Options) (Result, error)
 func (engine *Engine) undoWithAbsolute(ctx context.Context, options Options, absolute func(string) (string, error)) (Result, error) {
 	result := Result{Plan: []string{
 		"read every recorded link for the named consumers from stream state",
-		"remove the untracked link artefacts, restoring the published versions the record names",
+		"remove the untracked artefacts each record names and restore any tracked one from HEAD, so the published versions resolve again",
 		"clear the link records so the merge refusal and stream end stop firing",
 	}}
 	if engine.Store == nil {
@@ -153,11 +153,11 @@ func (engine *Engine) undoWithAbsolute(ctx context.Context, options Options, abs
 		}
 	}
 
-	// A named consumer with no record can still carry a `go.work` — the
-	// window MF-1 used to open, or a hand-written one. The merge guard fires
-	// on that file and names this command, so this command has to be able to
-	// clear it; otherwise the refusal names something that cannot satisfy it
-	// and the worktree can never be landed.
+	// A named consumer with no record has nothing to undo. Its go.work — a
+	// committed workspace, or a hand-written one — is reported and never
+	// touched: undo acts on records alone, and on 2026-11-08 guessing here
+	// deleted a repository's committed go.work. The guards name a remedy
+	// other than this command for a go.work no record holds.
 	for _, consumerPath := range options.Consumers {
 		consumer, absErr := absolute(consumerPath)
 		if absErr != nil {
@@ -166,7 +166,7 @@ func (engine *Engine) undoWithAbsolute(ctx context.Context, options Options, abs
 		if undone[normalizeWorktree(consumer)] {
 			continue
 		}
-		result.Consumers = append(result.Consumers, engine.undoUnrecorded(consumer))
+		result.Consumers = append(result.Consumers, undoUnrecorded(consumer))
 	}
 	if len(result.Consumers) == 0 {
 		result.Consumers = append(result.Consumers, ConsumerResult{
@@ -178,26 +178,36 @@ func (engine *Engine) undoWithAbsolute(ctx context.Context, options Options, abs
 	return result, nil
 }
 
-// undoUnrecorded clears a `go.work` that stream state does not know about.
-func (engine *Engine) undoUnrecorded(consumer string) ConsumerResult {
-	outcome := ConsumerResult{Consumer: consumer}
+// undoUnrecorded reports a consumer stream state holds no link for. It never
+// changes the filesystem.
+func undoUnrecorded(consumer string) ConsumerResult {
+	return undoUnrecordedWith(consumer, gitHeadFiles)
+}
+
+func undoUnrecordedWith(consumer string, files headFiles) ConsumerResult {
+	outcome := ConsumerResult{Consumer: consumer, Skipped: true}
 	entries, err := streams.GoWorkUseEntries(consumer)
 	if err != nil {
+		outcome.Skipped = false
 		outcome.Errors = append(outcome.Errors, err.Error())
 		return outcome
 	}
 	if len(entries) == 0 {
-		outcome.Skipped = true
 		outcome.Reason = "no recorded link and no go.work; nothing to undo"
 		return outcome
 	}
-	if err := removeGoWork(consumer); err != nil {
+	provenance, err := files.classify(consumer, goWorkFile)
+	if err != nil {
+		outcome.Skipped = false
 		outcome.Errors = append(outcome.Errors, err.Error())
 		return outcome
 	}
 	outcome.Reason = fmt.Sprintf(
-		"removed an unrecorded go.work carrying %d use entry/entries; stream state had no record of it",
-		len(entries))
+		"no recorded link; nothing to undo. The %s go.work (use %s) was left untouched because no stream records WB creating it",
+		provenance, strings.Join(entries, ", "))
+	if provenance != GoWorkCommitted {
+		outcome.Reason += "; " + GoWorkRemedy(consumer, provenance, false)
+	}
 	return outcome
 }
 
@@ -218,6 +228,10 @@ func normalizeWorktree(path string) string {
 // keeps the merge guard closed and `stream end` refusing while the artefact is
 // still on disk.
 func (engine *Engine) undoLinks(ctx context.Context, worktree string, links []streams.Link) (ConsumerResult, []streams.Link) {
+	return engine.undoLinksWith(ctx, worktree, links, gitHeadFiles)
+}
+
+func (engine *Engine) undoLinksWith(ctx context.Context, worktree string, links []streams.Link, files headFiles) (ConsumerResult, []streams.Link) {
 	outcome := ConsumerResult{Consumer: worktree, Links: links}
 	var remaining []streams.Link
 	removedWorkspace := false
@@ -243,7 +257,12 @@ func (engine *Engine) undoLinks(ctx context.Context, worktree string, links []st
 				removedWorkspace = true
 				continue
 			}
-			if err := removeGoWork(worktree); err != nil {
+			// Only the artefacts the record names are touched, and a tracked
+			// one is restored from HEAD rather than deleted: a link written
+			// over a committed go.work must give the committed file back.
+			notes, err := files.restoreLinkArtefacts(worktree, goWorkArtefacts(link))
+			outcome.Notes = append(outcome.Notes, notes...)
+			if err != nil {
 				outcome.Errors = append(outcome.Errors, err.Error())
 				remaining = append(remaining, link)
 				continue

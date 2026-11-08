@@ -252,29 +252,6 @@ func TestLgCovUndoReportsUnclearableRecords(t *testing.T) {
 			t.Fatalf("consumers = %#v, want the unreadable go.work reported", result.Consumers)
 		}
 	})
-
-	t.Run("an unrecorded go.work that cannot be removed is reported", func(t *testing.T) {
-		t.Parallel()
-		store := streams.OpenAt(filepath.Join(t.TempDir(), "streams"))
-		consumer := t.TempDir()
-		lgCovWriteGoWork(t, consumer, filepath.Join(t.TempDir(), "library"))
-		sumPath := filepath.Join(consumer, streams.GoWorkSum)
-		if err := os.MkdirAll(sumPath, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		lgCovWriteFile(t, filepath.Join(sumPath, "keep.txt"), "keep\n")
-		engine := &Engine{Store: store}
-		result, err := engine.Run(ctx, Options{Undo: true, Consumers: []string{consumer}})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(result.Consumers) != 1 || len(result.Consumers[0].Errors) == 0 {
-			t.Fatalf("consumers = %#v, want the failed removal reported", result.Consumers)
-		}
-		if !fileExists(sumPath) {
-			t.Error("a failed removal consumed what it could not delete")
-		}
-	})
 }
 
 // undoLinks' per-mechanism branches: repeated go.work records, an unreadable
