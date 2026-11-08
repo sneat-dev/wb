@@ -6,9 +6,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
+	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/streams"
 )
 
@@ -177,8 +179,7 @@ func pathWithin(root, path string) bool {
 func gitPathExistsAtHEAD(worktree, path string) (bool, error) {
 	// `./<path>` resolves against -C, like the diff and restore pathspecs
 	// beside it, so a worktree that is a subdirectory is judged at its own path.
-	command := exec.Command("git", "-C", worktree, "ls-tree", "--name-only", "-z", "HEAD", "--", "./"+filepath.ToSlash(path))
-	output, err := command.Output()
+	output, err := headGitCommand(worktree, "ls-tree", "--name-only", "-z", "HEAD", "--", "./"+filepath.ToSlash(path)).Output()
 	if err == nil {
 		return len(output) > 0, nil
 	}
@@ -188,13 +189,41 @@ func gitPathExistsAtHEAD(worktree, path string) (bool, error) {
 	}
 	// `rev-parse --verify -q HEAD` exits 1 only when the repository is
 	// readable and HEAD names no commit yet.
-	if probeErr := exec.Command("git", "-C", worktree, "rev-parse", "--verify", "-q", "HEAD").Run(); errors.As(probeErr, &exit) && exit.ExitCode() == 1 {
+	var probeExit *exec.ExitError
+	if probeErr := headGitCommand(worktree, "rev-parse", "--verify", "-q", "HEAD").Run(); errors.As(probeErr, &probeExit) && probeExit.ExitCode() == 1 {
 		return false, nil
 	}
 	if !withinGitCheckout(worktree) {
 		return false, nil
 	}
 	return false, fmt.Errorf("git cannot say whether %s is committed in %s: %w: %s", path, worktree, err, strings.TrimSpace(string(exit.Stderr)))
+}
+
+// headGitCommand runs Git against worktree's own repository. An inherited
+// GIT_DIR, GIT_INDEX_FILE or similar — set by an outer hook or a parent Git —
+// would point these probes at another repository, where a tracked go.work
+// reads as absent and undo would delete it.
+func headGitCommand(worktree string, args ...string) *exec.Cmd {
+	command := exec.Command("git", append([]string{"-C", worktree}, args...)...)
+	command.Env = withoutRepositoryOverrides(console.Env())
+	return command
+}
+
+var repositoryOverrideVariables = []string{
+	"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
+	"GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE",
+}
+
+func withoutRepositoryOverrides(environment []string) []string {
+	kept := make([]string, 0, len(environment))
+	for _, entry := range environment {
+		name, _, _ := strings.Cut(entry, "=")
+		if slices.Contains(repositoryOverrideVariables, name) {
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	return kept
 }
 
 // withinGitCheckout reports whether dir or any ancestor carries a `.git`.
@@ -210,8 +239,7 @@ func withinGitCheckout(dir string) bool {
 }
 
 func gitPathUnchangedFromHEAD(worktree, path string) (bool, error) {
-	command := exec.Command("git", "-C", worktree, "diff", "--quiet", "HEAD", "--", path)
-	err := command.Run()
+	err := headGitCommand(worktree, "diff", "--quiet", "HEAD", "--", path).Run()
 	if err == nil {
 		return true, nil
 	}

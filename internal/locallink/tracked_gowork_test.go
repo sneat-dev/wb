@@ -500,3 +500,35 @@ func TestGitPathExistsAtHEADNeverReadsAGitFailureAsAbsent(t *testing.T) {
 		}
 	})
 }
+
+// An inherited GIT_DIR or index would aim the HEAD probes at another
+// repository, where a tracked go.work reads as absent; they are stripped.
+func TestHeadGitCommandIgnoresInheritedRepositoryOverrides(t *testing.T) {
+	t.Parallel()
+	kept := withoutRepositoryOverrides([]string{
+		"PATH=/bin", "GIT_DIR=/elsewhere/.git", "GIT_INDEX_FILE=/elsewhere/index", "GIT_WORK_TREE=/elsewhere", "HOME=/home/x",
+	})
+	if strings.Join(kept, " ") != "PATH=/bin HOME=/home/x" {
+		t.Fatalf("environment = %v, want only the non-repository variables", kept)
+	}
+	command := headGitCommand("/worktree", "status")
+	for _, entry := range command.Env {
+		if strings.HasPrefix(entry, "GIT_DIR=") {
+			t.Fatalf("headGitCommand kept %s", entry)
+		}
+	}
+	if strings.Join(command.Args, " ") != "git -C /worktree status" {
+		t.Fatalf("args = %v", command.Args)
+	}
+}
+
+// The Git diagnostic of the failed listing survives into the error.
+func TestGitPathExistsAtHEADKeepsTheGitDiagnostic(t *testing.T) {
+	t.Parallel()
+	worktree := t.TempDir()
+	writeGuardTestFile(t, worktree, ".git", "gitdir: "+filepath.Join(t.TempDir(), "pruned")+"\n")
+	_, err := gitPathExistsAtHEAD(worktree, goWorkFile)
+	if err == nil || !strings.Contains(err.Error(), "not a git repository") {
+		t.Fatalf("err = %v, want git's own diagnostic kept", err)
+	}
+}

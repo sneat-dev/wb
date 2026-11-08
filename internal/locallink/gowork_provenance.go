@@ -3,7 +3,6 @@ package locallink
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -182,8 +181,7 @@ func (files headFiles) restoreLinkArtefacts(worktree string, artefacts []string)
 // gitRestoreFromHEAD is the `git checkout HEAD -- <path>` equivalent: the
 // index and working tree both return to the committed content.
 func gitRestoreFromHEAD(worktree, path string) error {
-	command := exec.Command("git", "-C", worktree, "restore", "--source=HEAD", "--staged", "--worktree", "--", filepath.ToSlash(path))
-	if output, err := command.CombinedOutput(); err != nil {
+	if output, err := headGitCommand(worktree, "restore", "--source=HEAD", "--staged", "--worktree", "--", filepath.ToSlash(path)).CombinedOutput(); err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return nil
