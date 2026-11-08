@@ -1278,21 +1278,26 @@ func TestNoLinkIsWrittenWhenTheRecordCannotBe(t *testing.T) {
 	}
 }
 
-// MF-2. `--undo` clears a `go.work` that stream state has no record of, so the
-// command the merge guard names can actually satisfy the guard.
-func TestUndoRemovesAnUnrecordedGoWork(t *testing.T) {
+// MF-2, revised 2026-11-08. `--undo` acts on records alone: a `go.work` that
+// stream state has no record of is reported and left in place, and the guard
+// names a remedy other than `--undo` for it — so the refusal never names a
+// command that cannot satisfy it, and undo never guesses what to delete.
+func TestUndoLeavesAnUnrecordedGoWorkInPlace(t *testing.T) {
 	t.Parallel()
 	fixture := newFixture(t,
 		map[string]string{"backend/go.mod": goLibraryModule},
 		map[string]string{"backend/go.mod": "module github.com/acme/app/backend\n\ngo 1.27\n"})
 	workspace := filepath.Join(fixture.consumer, "go.work")
-	if err := os.WriteFile(workspace, []byte("go 1.27\n\nuse (\n\t./backend\n\t/elsewhere/library\n)\n"), 0o644); err != nil {
+	contents := "go 1.27\n\nuse (\n\t./backend\n\t/elsewhere/library\n)\n"
+	if err := os.WriteFile(workspace, []byte(contents), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// The guard fires and names exactly this command.
 	links, err := HasLiveLink(fixture.store, fixture.consumer)
 	if err != nil || len(links) != 1 {
 		t.Fatalf("links = %#v, err = %v; want the go.work signal", links, err)
+	}
+	if strings.Contains(links[0].Sanctioned, "--undo") {
+		t.Fatalf("the guard names --undo for a go.work no record holds: %s", links[0].Sanctioned)
 	}
 
 	result, err := fixture.engine.Run(context.Background(), Options{
@@ -1301,17 +1306,16 @@ func TestUndoRemovesAnUnrecordedGoWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("undo: %v", err)
 	}
-	if result.Failed() {
-		t.Fatalf("undo reported errors: %#v", result.Consumers)
+	if result.Failed() || len(result.Consumers) != 1 || !result.Consumers[0].Skipped {
+		t.Fatalf("consumers = %#v, want one skipped consumer", result.Consumers)
 	}
-	if _, statErr := os.Stat(workspace); !os.IsNotExist(statErr) {
-		t.Fatalf("the unrecorded go.work survived --undo: %v", statErr)
+	reason := result.Consumers[0].Reason
+	if !strings.Contains(reason, "nothing to undo") || !strings.Contains(reason, "left untouched") || !strings.Contains(reason, "rm ") {
+		t.Fatalf("reason = %q, want nothing-to-undo with the manual remedy", reason)
 	}
-	// The guard is now satisfied — which is what makes the refusal's named
-	// command a real next step rather than a dead end.
-	after, err := HasLiveLink(fixture.store, fixture.consumer)
-	if err != nil || len(after) != 0 {
-		t.Fatalf("the guard still fires after --undo: %#v (err %v)", after, err)
+	got, err := os.ReadFile(workspace)
+	if err != nil || string(got) != contents {
+		t.Fatalf("the unrecorded go.work changed: %q, %v", got, err)
 	}
 }
 

@@ -173,18 +173,6 @@ func compareGoVersions(left, right string) int {
 	return 0
 }
 
-// removeGoWork deletes the workspace files. It never removes the exclude
-// entries: an exclude for a file that does not exist is inert, and removing it
-// would rewrite a file the operator may have edited.
-func removeGoWork(consumer string) error {
-	for _, name := range []string{goWorkFile, goWorkSum} {
-		if err := os.Remove(filepath.Join(consumer, name)); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("remove %s: %w", name, err)
-		}
-	}
-	return nil
-}
-
 // GoWorkUseEntries reads the `use` entries of a worktree's go.work.
 //
 // It delegates to the streams package, which is where `wb worktree end` reads

@@ -387,8 +387,11 @@ In order, and the order is the contract:
 
 1. **refuse** while any worktree holds a live local link — a checkout that
    builds against an unpublished library working tree must never be retired
-   silently. The refusal names the exact
-   `wb deps propagate local <library> --to <consumer> --undo` that clears it.
+   silently. For a recorded link the refusal names the exact
+   `wb deps propagate local <library> --to <consumer> --undo` that clears it;
+   for a `go.work` no stream records, it names a commit, restore or manual
+   removal instead. A `go.work` committed and unchanged from `HEAD` is
+   repository content and is not refused.
 2. **capture** uncommitted work and print where it went, **before** anything is
    removed. A dirty worktree is *not* a refusal: refusing one would leave
    exactly the choice this verb exists to remove — hand-roll the removal, or

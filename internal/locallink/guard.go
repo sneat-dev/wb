@@ -47,9 +47,15 @@ type LiveLinkStore interface {
 //
 // Implements: dependency-streams#req:merge-refuses-a-linked-worktree.
 func HasLiveLink(store LiveLinkStore, worktree string) ([]LiveLink, error) {
+	return hasLiveLinkWith(store, worktree, gitHeadFiles)
+}
+
+func hasLiveLinkWith(store LiveLinkStore, worktree string, files headFiles) ([]LiveLink, error) {
 	var found []LiveLink
+	var recorded []streams.StreamLink
 	if store != nil {
-		recorded, err := store.LiveLinksForWorktree(worktree)
+		var err error
+		recorded, err = store.LiveLinksForWorktree(worktree)
 		if err != nil {
 			return nil, fmt.Errorf("read stream link records for %s: %w", worktree, err)
 		}
@@ -72,10 +78,17 @@ func HasLiveLink(store LiveLinkStore, worktree string) ([]LiveLink, error) {
 	}
 	if len(unpublished) > 0 {
 		sort.Strings(unpublished)
+		// The remedy depends on where the file came from: `--undo` clears
+		// only what a record names, and nothing here may suggest deleting
+		// tracked content.
+		provenance, err := files.classify(worktree, goWorkFile)
+		if err != nil {
+			return nil, err
+		}
 		found = append(found, LiveLink{
 			Source:     "go.work",
 			Detail:     fmt.Sprintf("%s/go.work carries unpublished use entries: %s", worktree, strings.Join(unpublished, ", ")),
-			Sanctioned: fmt.Sprintf("wb deps propagate local --to %s --undo", worktree),
+			Sanctioned: GoWorkRemedy(worktree, provenance, RecordsGoWorkLink(recorded)),
 		})
 	}
 	return found, nil
@@ -153,7 +166,10 @@ func pathWithin(root, path string) bool {
 }
 
 func gitPathExistsAtHEAD(worktree, path string) (bool, error) {
-	command := exec.Command("git", "-C", worktree, "cat-file", "-e", "HEAD:"+filepath.ToSlash(path))
+	// `HEAD:./<path>` resolves against -C, like the diff and restore
+	// pathspecs beside it; a bare `HEAD:<path>` would name the repository
+	// root's file when the worktree is a subdirectory.
+	command := exec.Command("git", "-C", worktree, "cat-file", "-e", "HEAD:./"+filepath.ToSlash(path))
 	err := command.Run()
 	if err == nil {
 		return true, nil

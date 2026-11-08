@@ -115,8 +115,10 @@ func TestWorktreeEndLinkGuardReadsBothSignals(t *testing.T) {
 	if len(reasons) != 1 || !strings.Contains(reasons[0], "/elsewhere/library/backend") {
 		t.Fatalf("reasons = %v, want the hand-written go.work named", reasons)
 	}
-	if len(sanctioned) == 0 || !strings.Contains(sanctioned[0], "--undo") {
-		t.Errorf("sanctioned = %v, want the clearing command", sanctioned)
+	// No stream records this workspace, so --undo cannot clear it; the
+	// remedy is the operator's manual removal of an untracked file.
+	if len(sanctioned) == 0 || strings.Contains(sanctioned[0], "--undo") || !strings.Contains(sanctioned[0], "rm ") {
+		t.Errorf("sanctioned = %v, want the manual removal of the untracked workspace", sanctioned)
 	}
 }
 
@@ -207,7 +209,7 @@ func TestCwWtStreamLinkGuard(t *testing.T) {
 	if len(reasons) != 1 || !strings.Contains(reasons[0], "go.work carries use entries") {
 		t.Fatalf("go.work reasons = %v", reasons)
 	}
-	if len(sanctioned) != 1 || !strings.Contains(sanctioned[0], "--undo") {
+	if len(sanctioned) != 1 || !strings.Contains(sanctioned[0], "no stream records") {
 		t.Fatalf("go.work sanctioned = %v", sanctioned)
 	}
 

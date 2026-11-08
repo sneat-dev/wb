@@ -18,7 +18,8 @@ through `wb deps propagate local`; the orchestrator runs `remote` at the end.*
 End with `wb worktree end`.
 
 A worktree holding a live local link is **refused** by `wb worktree merge`; the
-refusal names the exact `--undo` that clears it.
+refusal names the exact `--undo` that clears a recorded link, and never a
+command that deletes tracked content.
 
 Choose the narrowest operation:
 

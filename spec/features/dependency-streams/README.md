@@ -789,6 +789,13 @@ restore those published versions and remove the link. `--undo` MUST succeed even
 if the library worktree has since been removed, because the recorded state — not
 the library — is the source of truth for reversal.
 
+`--undo` MUST act on records alone and MUST touch only the artefacts a record
+names. An artefact absent from `HEAD` is removed; an artefact tracked in `HEAD`
+MUST be restored from `HEAD` when it differs and MUST NOT be deleted. A consumer
+with no record has nothing to undo: `--undo` MUST report it and leave any
+`go.work` untouched. No refusal may name `--undo` for a `go.work` that no record
+holds, or name any command that deletes tracked content.
+
 The record MUST distinguish a pre-operation intent from an applied npm link.
 Undoing an intent whose build failed before linking MUST preserve the published
 package already installed in `node_modules`. An applied npm link MUST leave an
@@ -1513,6 +1520,10 @@ checkout wb did not create is a checkout wb cannot retire.
 `wb worktree end <task>` MUST be the closing line of the lane contract, and
 `wb session end` MUST sweep everything the session created and did not explicitly
 hand over. A session that exits leaving an unended worktree MUST be reported.
+`wb worktree end` MUST refuse a worktree that holds a recorded link, or a
+`go.work` with `use` entries that is untracked or differs from `HEAD`. A
+`go.work` committed and unchanged from `HEAD` is repository content and MUST NOT
+refuse.
 
 #### REQ: stream-end-removes-every-stream-worktree
 
@@ -1994,6 +2005,20 @@ library's change
 `go test -p 1` without `-race`, concurrency stays within the workstation cap,
 the failure is attributed to its consumer, and the passing consumer is still
 reported.
+
+### AC: undo-never-deletes-tracked-content
+
+**Requirements:** dependency-streams#req:links-are-recorded-and-undoable, dependency-streams#req:sessions-and-tasks-have-explicit-ends
+
+**Given** a consumer whose committed `go.work` (`use ./backend`) no stream
+records, and separately a recorded link written over a committed `go.work`
+beside an untracked `go.work.sum`
+**When** the operator runs `wb worktree end` on the first and
+`wb deps propagate local --to <consumer> --undo` on each
+**Then** `wb worktree end` does not refuse the committed workspace, undo reports
+nothing to undo and leaves it byte-for-byte unchanged, and on the linked consumer
+undo restores `go.work` to `HEAD`, removes only the recorded `go.work.sum`, and
+clears the record.
 
 ### AC: undo-restores-published-versions
 

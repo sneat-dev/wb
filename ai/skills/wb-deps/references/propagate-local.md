@@ -141,9 +141,18 @@ Restores the published versions the record names and removes the links. It
 succeeds **even when the library worktree has since been removed**, because the
 recorded state — not the library — is the source of truth for reversal.
 
-It also clears an **unrecorded** `go.work` it finds in a named consumer — a
-hand-written one, or one left by an interrupted link. That is what makes the
-command the merge guard names able to actually satisfy the guard.
+It acts on **records alone** and touches only the artefacts a record names. An
+untracked artefact is removed; a **tracked** one (a link written over a
+committed `go.work`) is restored from `HEAD`, never deleted. A consumer with no
+record has nothing to undo: `--undo` reports it and changes no file. On
+2026-11-08 the old guess — "clear any `go.work` in a named consumer" — deleted a
+repository's committed `go.work`.
+
+So the guards name `--undo` only for a recorded link. A `go.work` no record
+holds gets a different remedy: an untracked one is the operator's to commit or
+remove by hand; a modified committed one is committed or restored with
+`git restore --source=HEAD`. A `go.work` committed and unchanged from `HEAD` is
+repository content and does not stop `wb worktree end`.
 
 A removal that **fails keeps its record**. The link is still on disk, so the
 merge guard and `wb stream end` must keep refusing; clearing the record would
@@ -166,7 +175,7 @@ untracked link artefacts are gone.
 | what fired | do this |
 |---|---|
 | `link-not-recordable` — no open stream has **the consumer** as a member | `wb stream join <name> <owner/repository>` the consumer first, or pass `--stream <name>`. Membership is checked per consumer, not from the library: a stream holding the library does not make a link into some other worktree recordable. A link WB cannot record cannot be undone and is invisible to the merge guard, so it is refused **before** anything is written, and one unrecordable consumer stops the whole invocation. |
-| `wb worktree merge` or `wb pr land` refuses a linked worktree | run the exact `wb deps propagate local <library> --to <consumer> --undo` the refusal names |
+| `wb worktree merge`, `wb pr land` or `wb worktree end` refuses a linked worktree | run the exact command the refusal names: `--undo` for a recorded link; for a `go.work` no stream records, commit it, restore it from `HEAD`, or (untracked only) remove it by hand |
 | the library publishes no discoverable identity | fix the library's `backend/go.mod` or a repository-owned npm workspace's `libs/**/package.json`; WB will not accept a supplied name as a substitute |
 | the frozen install failed | fix the consumer's lockfile (`pnpm install`, commit the lockfile) and re-run |
 | a restarted frontend still resolves the previous package target | preserve useful diagnostics, explicitly clear the framework's generated resolver cache (for Angular, `.angular/cache`), and rebuild; WB does not delete generated caches |

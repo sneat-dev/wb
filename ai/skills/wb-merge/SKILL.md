@@ -170,11 +170,14 @@ The land verbs take a **receipt** rather than a worktree path, so they resolve
 the worktrees to guard out of it — preparing before linking and then landing the
 receipt used to walk a linked worktree straight past the guard.
 
-The refusal names the exact command that clears it:
+The refusal names the exact command that clears it — for a recorded link:
 
 ```sh
 wb deps propagate local <library-worktree> --to <consumer-worktree> --undo
 ```
+
+`--undo` reverses recorded links only, so a `go.work` no stream records gets a
+commit, restore-from-`HEAD`, or (untracked only) manual-removal remedy instead.
 
 **There is no flag that both bypasses this guard and pushes.** Do not hand-roll
 `git push` around it.

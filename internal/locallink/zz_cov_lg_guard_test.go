@@ -357,21 +357,6 @@ func TestLgCovGoDirectiveAndVersionComparison(t *testing.T) {
 
 func TestLgCovRemoveGoWorkAndStillReferences(t *testing.T) {
 	t.Parallel()
-	t.Run("a workspace sum that cannot be removed is reported", func(t *testing.T) {
-		t.Parallel()
-		consumer := t.TempDir()
-		lgCovWriteFile(t, filepath.Join(consumer, goWorkFile), "go 1.27\n")
-		sumPath := filepath.Join(consumer, goWorkSum)
-		if err := os.MkdirAll(sumPath, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		lgCovWriteFile(t, filepath.Join(sumPath, "keep.txt"), "keep\n")
-		err := removeGoWork(consumer)
-		if err == nil || !strings.Contains(err.Error(), "remove "+goWorkSum) {
-			t.Fatalf("error = %v, want the failed sum removal reported", err)
-		}
-	})
-
 	t.Run("an empty library never looks referenced", func(t *testing.T) {
 		t.Parallel()
 		consumer := t.TempDir()
