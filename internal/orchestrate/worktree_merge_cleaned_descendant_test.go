@@ -44,6 +44,7 @@ func cleanedDescendantFailureFixture(t *testing.T) (engineFixture, WorktreeMerge
 	return fixture, receipt, finalSource
 }
 
+//nolint:paralleltest // The real Git fixture configures process environment with t.Setenv.
 func TestE2EAcknowledgeCleanedPostTargetFailureWithLaterSourceDescendant(t *testing.T) {
 	fixture, receipt, finalSource := cleanedDescendantFailureFixture(t)
 	before, err := os.ReadFile(receipt.ReceiptPath)
@@ -72,6 +73,7 @@ func TestE2EAcknowledgeCleanedPostTargetFailureWithLaterSourceDescendant(t *test
 	}
 }
 
+//nolint:paralleltest // The real Git fixture configures process environment with t.Setenv.
 func TestE2EAcknowledgeCleanedPostTargetFailureRefusesUnreadableReceiptDigest(t *testing.T) {
 	fixture, receipt, _ := cleanedDescendantFailureFixture(t)
 	sentinel := errors.New("digest read failed")
@@ -87,6 +89,7 @@ func TestE2EAcknowledgeCleanedPostTargetFailureRefusesUnreadableReceiptDigest(t 
 	}
 }
 
+//nolint:paralleltest // The real Git fixture configures process environment with t.Setenv.
 func TestE2EAcknowledgeCleanedPostTargetFailureRejectsDivergentSource(t *testing.T) {
 	fixture, source, receipt, _ := landedTerminalCleanupFixture(t)
 	// In this disposable Git fixture the source branch is replaced after its
@@ -121,6 +124,7 @@ func TestE2EAcknowledgeCleanedPostTargetFailureRejectsDivergentSource(t *testing
 	}
 }
 
+//nolint:paralleltest // The real Git fixture configures process environment with t.Setenv.
 func TestE2EAcknowledgeCleanedPostTargetFailureRejectsAdvancedCandidate(t *testing.T) {
 	fixture, _, receipt, _ := landedTerminalCleanupFixture(t)
 	// A later candidate commit can be clean and present on the target, but it
