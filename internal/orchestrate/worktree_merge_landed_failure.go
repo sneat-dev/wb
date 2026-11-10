@@ -149,7 +149,7 @@ func acknowledgeCleanedDirectPostTargetFailure(ctx context.Context, options Work
 	if receipt.Route.Route != WorktreeMergeRouteDirect || receipt.LandingSHA == "" || receipt.LandingSHA != receipt.Candidate.SHA {
 		return WorktreeMergeLandedFailureAcknowledgement{}, errors.New("cleaned post-target-CI recovery requires a direct route with landing equal to candidate SHA")
 	}
-	return acknowledgeCleanedPostTargetFailure(ctx, options, receipt, receiptPath, run, persist, false)
+	return acknowledgeCleanedPostTargetFailure(ctx, options, receipt, receiptPath, run, persist, false, worktreeMergeReceiptSHA256)
 }
 
 // A cleaned PR failure has already recorded a landing SHA. Require GitHub to
@@ -159,10 +159,10 @@ func acknowledgeCleanedPullRequestPostTargetFailure(ctx context.Context, options
 	if receipt.Route.Route != WorktreeMergeRoutePullRequest || receipt.PullRequest == "" || receipt.LandingSHA == "" || receipt.PublishedCandidateSHA != receipt.Candidate.SHA {
 		return WorktreeMergeLandedFailureAcknowledgement{}, errors.New("cleaned PR post-target-CI recovery requires the exact published candidate, pull request, and recorded landing")
 	}
-	return acknowledgeCleanedPostTargetFailure(ctx, options, receipt, receiptPath, run, persist, true)
+	return acknowledgeCleanedPostTargetFailure(ctx, options, receipt, receiptPath, run, persist, true, worktreeMergeReceiptSHA256)
 }
 
-func acknowledgeCleanedPostTargetFailure(ctx context.Context, options WorktreeMergeLandedFailureAcknowledgementOptions, receipt WorktreeMergeReceipt, receiptPath string, run runner.Runner, persist func(string, WorktreeMergeLandedFailureAcknowledgement) error, pullRequest bool) (WorktreeMergeLandedFailureAcknowledgement, error) {
+func acknowledgeCleanedPostTargetFailure(ctx context.Context, options WorktreeMergeLandedFailureAcknowledgementOptions, receipt WorktreeMergeReceipt, receiptPath string, run runner.Runner, persist func(string, WorktreeMergeLandedFailureAcknowledgement) error, pullRequest bool, digestReceipt func(string) (string, error)) (WorktreeMergeLandedFailureAcknowledgement, error) {
 	expectations, err := terminalWorkLogExpectations(receipt)
 	if err != nil {
 		return WorktreeMergeLandedFailureAcknowledgement{}, err
@@ -273,7 +273,7 @@ func acknowledgeCleanedPostTargetFailure(ctx context.Context, options WorktreeMe
 		Actor: strings.TrimSpace(options.Actor), Reason: strings.TrimSpace(options.Reason), RecordedAt: time.Now().UTC(),
 	}
 	if advancedSource {
-		receiptDigest, digestErr := worktreeMergeReceiptSHA256(receiptPath)
+		receiptDigest, digestErr := digestReceipt(receiptPath)
 		if digestErr != nil {
 			return WorktreeMergeLandedFailureAcknowledgement{}, digestErr
 		}
