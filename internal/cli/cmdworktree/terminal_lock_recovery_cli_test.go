@@ -12,6 +12,7 @@ import (
 )
 
 func TestRetireTerminalLockModeRequiresOneBoundReceipt(t *testing.T) {
+	t.Parallel()
 	root := "private-projects"
 	for _, args := range [][]string{
 		{"operation", "--recover-terminal-lock"},
@@ -30,6 +31,7 @@ func TestRetireTerminalLockModeRequiresOneBoundReceipt(t *testing.T) {
 }
 
 func TestRetireTerminalLockModePreservesDryRunApplyAndOutput(t *testing.T) {
+	t.Parallel()
 	root := "private-projects"
 	sentinel := errors.New("recovery refused")
 	for _, test := range []struct {
@@ -42,6 +44,7 @@ func TestRetireTerminalLockModePreservesDryRunApplyAndOutput(t *testing.T) {
 		{"failed recovery", "text", false, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			deps := retireDeps()
 			deps.RecoverTerminalLock = func(_ context.Context, options worktrees.TerminalLockRecoveryOptions) (worktrees.TerminalLockRecoveryOutcome, error) {
 				if options.ProjectsRoot != root || options.Task != "operation" || options.ReceiptPath != "receipt.json" || options.Apply != test.apply {

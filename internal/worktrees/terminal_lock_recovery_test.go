@@ -16,6 +16,7 @@ import (
 )
 
 func TestTerminalLockOperationNameBindsMergeReceipt(t *testing.T) {
+	t.Parallel()
 	const receipt = "merge-sneat-co-bookius-main-c97cdfb3334d-1d2d9879e050"
 	for _, task := range []string{
 		"merge-sneat-co-bookius-main-c97cdfb3334d",
@@ -76,6 +77,7 @@ func terminalLockRecoveryFixture(t *testing.T) (TerminalLockRecoveryOptions, str
 	return TerminalLockRecoveryOptions{ProjectsRoot: fixture.projectsRoot, Task: task, ReceiptPath: receiptPath}, lockPath, content
 }
 
+//nolint:paralleltest // The real Git fixture scopes WB configuration through t.Setenv.
 func TestTerminalLockRecoveryRequiresFreshContainedLandingAndRetiresOnlyLock(t *testing.T) {
 	options, lockPath, receipt := terminalLockRecoveryFixture(t)
 	planned, err := RecoverTerminalOperationLock(context.Background(), options)
@@ -112,6 +114,7 @@ func TestTerminalLockRecoveryRequiresFreshContainedLandingAndRetiresOnlyLock(t *
 	}
 }
 
+//nolint:paralleltest // Every case creates a real Git fixture that calls t.Setenv.
 func TestTerminalLockRecoveryRefusesUnprovenOrLiveOperations(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -177,6 +180,7 @@ func TestTerminalLockRecoveryRefusesUnprovenOrLiveOperations(t *testing.T) {
 		}, want: "not proven"},
 	}
 	for _, test := range tests {
+		//nolint:paralleltest // The fixture's t.Setenv requires this subtest to stay serial.
 		t.Run(test.name, func(t *testing.T) {
 			options, lock, receipt := terminalLockRecoveryFixture(t)
 			options.Apply = true
@@ -191,6 +195,7 @@ func TestTerminalLockRecoveryRefusesUnprovenOrLiveOperations(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // Every case creates a real Git fixture that calls t.Setenv.
 func TestTerminalLockRecoveryPreservesEvidenceOnBoundaryFailures(t *testing.T) {
 	sentinel := errors.New("injected boundary failure")
 	tests := []struct {
@@ -248,6 +253,7 @@ func TestTerminalLockRecoveryPreservesEvidenceOnBoundaryFailures(t *testing.T) {
 		}},
 	}
 	for _, test := range tests {
+		//nolint:paralleltest // The fixture's t.Setenv requires this subtest to stay serial.
 		t.Run(test.name, func(t *testing.T) {
 			options, lock, receipt := terminalLockRecoveryFixture(t)
 			options.Apply = true
@@ -266,6 +272,7 @@ func TestTerminalLockRecoveryPreservesEvidenceOnBoundaryFailures(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // Every case creates a real Git fixture that calls t.Setenv.
 func TestTerminalLockRecoveryRefusesRemainingCandidatesAndBacklog(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -282,6 +289,7 @@ func TestTerminalLockRecoveryRefusesRemainingCandidatesAndBacklog(t *testing.T) 
 		}, "cleanup backlog"},
 	}
 	for _, test := range tests {
+		//nolint:paralleltest // The fixture's t.Setenv requires this subtest to stay serial.
 		t.Run(test.name, func(t *testing.T) {
 			options, lock, _ := terminalLockRecoveryFixture(t)
 			options.Apply = true
@@ -297,6 +305,7 @@ func TestTerminalLockRecoveryRefusesRemainingCandidatesAndBacklog(t *testing.T) 
 	}
 }
 
+//nolint:paralleltest // The real Git fixture scopes WB configuration through t.Setenv.
 func TestTerminalLockRecoveryRequiresWritableAuditBeforeRetirement(t *testing.T) {
 	options, lock, _ := terminalLockRecoveryFixture(t)
 	options.Apply = true
@@ -312,6 +321,7 @@ func TestTerminalLockRecoveryRequiresWritableAuditBeforeRetirement(t *testing.T)
 	}
 }
 
+//nolint:paralleltest // The real Git fixture scopes WB configuration through t.Setenv.
 func TestTerminalLockRecoveryReportsUnexpectedShellAfterAuditedRelease(t *testing.T) {
 	options, _, _ := terminalLockRecoveryFixture(t)
 	options.Apply = true
