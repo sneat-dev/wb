@@ -75,6 +75,12 @@ claim, or unavailable or public retirement repository refuses it; retry the
 same command to resume. A coordinated task is preserved one repository at a
 time with --filter.
 
+Preservation also accepts a recorded base that is not an ancestor of the live
+head, after all other claim, branch, path and custody proofs pass. It preserves
+both histories in a verified history.bundle in the private archive and leaves
+the original claim unchanged. Missing Git objects or other claim mismatches
+still refuse. Ordinary attachment, park and landing checks remain strict.
+
 Without --preserve, retirement requires landing evidence:
 
 Cleanup requires every repository in a coordinated task to be clean, unlocked,

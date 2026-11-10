@@ -29,6 +29,7 @@ type Receipt struct {
 
 type Claim struct {
 	ClaimID, Repository, Branch, PromptArchive, PromptDigest string
+	BaseSHA                                                  string
 }
 
 type Terminal struct {
@@ -43,6 +44,7 @@ type Manifest struct {
 	SourceSHA  string            `json:"source_sha"`
 	RetiredRef string            `json:"retired_ref"`
 	ClaimID    string            `json:"claim_id"`
+	BaseSHA    string            `json:"base_sha,omitempty"`
 	Files      map[string]string `json:"files"`
 }
 
@@ -209,7 +211,33 @@ func PublishArchive(ctx context.Context, home, remote string, result *Receipt, p
 	if preserve == "" {
 		preserve = "branch"
 	}
-	manifest := Manifest{Version: 1, Repository: result.Repository, Branch: result.Branch, Preserve: preserve, SourceSHA: result.SourceSHA, RetiredRef: result.RetiredRef, ClaimID: result.ClaimID, Files: hashes}
+	ref := "refs/heads/" + result.ArchiveRef
+	existing, err := ports.RemoteSHA(ctx, result.Canonical, remote, ref)
+	if err != nil {
+		return err
+	}
+	if existing != "" && claim.BaseSHA != "" {
+		legacy, err := legacyHistoryArchive(ctx, working, remote, ref, existing, ports)
+		if err != nil {
+			return err
+		}
+		if legacy {
+			// An older preservation already backed up the base through its
+			// source history. Continue that exact immutable archive only when
+			// the original ancestry proof still succeeds; divergence never
+			// inherits this compatibility exception.
+			if _, err := ports.Git(ctx, result.Worktree, "merge-base", "--is-ancestor", claim.BaseSHA, result.SourceSHA); err != nil {
+				return fmt.Errorf("legacy retirement archive cannot preserve a diverged base: %w", err)
+			}
+			claim.BaseSHA = ""
+		}
+	}
+	if claim.BaseSHA != "" {
+		if err := archiveSourceHistory(ctx, working, remote, existing, *result, claim, hashes, ports); err != nil {
+			return err
+		}
+	}
+	manifest := Manifest{Version: 1, Repository: result.Repository, Branch: result.Branch, Preserve: preserve, SourceSHA: result.SourceSHA, RetiredRef: result.RetiredRef, ClaimID: result.ClaimID, BaseSHA: claim.BaseSHA, Files: hashes}
 	// Manifest has a fixed schema of strings, integers, and map[string]string.
 	body, _ := json.MarshalIndent(manifest, "", "  ")
 	writeManifest := ports.WriteManifest
@@ -217,11 +245,6 @@ func PublishArchive(ctx context.Context, home, remote string, result *Receipt, p
 		writeManifest = os.WriteFile
 	}
 	if err := writeManifest(filepath.Join(working, "retirement.json"), append(body, '\n'), 0o600); err != nil {
-		return err
-	}
-	ref := "refs/heads/" + result.ArchiveRef
-	existing, err := ports.RemoteSHA(ctx, result.Canonical, remote, ref)
-	if err != nil {
 		return err
 	}
 	if existing != "" {
@@ -251,6 +274,106 @@ func PublishArchive(ctx context.Context, home, remote string, result *Receipt, p
 		return err
 	}
 	result.ArchiveSHA, result.Phase = sha, "archive_published"
+	return nil
+}
+
+// Keep the original base as an advertised recovery ref even when it is not
+// reachable from the source branch. The archive commit itself remains a
+// metadata-only root; these histories travel in its verified bundle blob.
+// A pre-history-bundle archive is accepted only by the ancestry-valid
+// compatibility path above. The ordinary full archive verification still runs.
+func legacyHistoryArchive(ctx context.Context, working, remote, ref, sha string, ports Ports) (bool, error) {
+	if err := fetchHistoryArchive(ctx, working, remote, ref, sha, ports); err != nil {
+		return false, err
+	}
+	body, err := ports.GitBytes(ctx, working, "show", "FETCH_HEAD:retirement.json")
+	if err != nil {
+		return false, err
+	}
+	var manifest Manifest
+	if err := json.Unmarshal(body, &manifest); err != nil {
+		return false, err
+	}
+	return manifest.BaseSHA == "" && manifest.Files["history.bundle"] == "", nil
+}
+
+func fetchHistoryArchive(ctx context.Context, working, remote, ref, sha string, ports Ports) error {
+	if _, err := ports.Git(ctx, working, "fetch", "--no-tags", remote, ref); err != nil {
+		return err
+	}
+	head, err := ports.Git(ctx, working, "rev-parse", "FETCH_HEAD")
+	if err != nil || head != sha {
+		return fmt.Errorf("private archive commit changed while recovering history: %w", err)
+	}
+	return nil
+}
+
+func archiveSourceHistory(ctx context.Context, working, remote, existing string, result Receipt, claim Claim, hashes map[string]string, ports Ports) error {
+	bundle := filepath.Join(working, ".git", "source-history.bundle")
+	if existing != "" {
+		// Pack bytes are not canonical. Reuse the published backup on retry,
+		// proving its actual refs and object graph instead of regenerating it.
+		if err := fetchHistoryArchive(ctx, working, remote, "refs/heads/"+result.ArchiveRef, existing, ports); err != nil {
+			return err
+		}
+		body, err := ports.GitBytes(ctx, working, "show", "FETCH_HEAD:history.bundle")
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(bundle, body, 0o600); err != nil {
+			return err
+		}
+	} else {
+		for _, args := range [][]string{
+			{"fetch", "--no-tags", result.Worktree, result.SourceSHA + ":refs/heads/preserved-source", claim.BaseSHA + ":refs/heads/preserved-base"},
+			{"bundle", "create", bundle, "refs/heads/preserved-source", "refs/heads/preserved-base"},
+		} {
+			if _, err := ports.Git(ctx, working, args...); err != nil {
+				return fmt.Errorf("preserve source and claimed-base histories: %w", err)
+			}
+		}
+	}
+	if err := validateSourceHistory(ctx, bundle, result.SourceSHA, claim.BaseSHA, ports); err != nil {
+		return err
+	}
+	digest, err := CaptureFile(bundle, filepath.Join(working, "history.bundle"))
+	if err != nil {
+		return fmt.Errorf("capture source and claimed-base histories: %w", err)
+	}
+	hashes["history.bundle"] = digest
+	return nil
+}
+
+// Header verification alone does not check a bundle's pack payload. Import
+// into an empty object database and fsck both recovery roots before deletion
+// can be authorized, even when all objects still exist in the source clone.
+func validateSourceHistory(ctx context.Context, bundle, source, base string, ports Ports) error {
+	restored, err := os.MkdirTemp("", "wb-retirement-history-")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.RemoveAll(restored) }()
+	heads, err := ports.Git(ctx, restored, "bundle", "list-heads", bundle)
+	if err != nil {
+		return err
+	}
+	fields := strings.Fields(heads)
+	refs := map[string]string{}
+	if len(fields) == 4 {
+		refs[fields[1]], refs[fields[3]] = fields[0], fields[2]
+	}
+	if len(refs) != 2 || refs["refs/heads/preserved-source"] != source || refs["refs/heads/preserved-base"] != base {
+		return fmt.Errorf("history bundle does not advertise the exact source and claimed base")
+	}
+	for _, args := range [][]string{
+		{"init", "--bare", "--initial-branch=main"},
+		{"fetch", "--no-tags", bundle, "refs/heads/preserved-source:refs/heads/preserved-source", "refs/heads/preserved-base:refs/heads/preserved-base"},
+		{"fsck", "--full", "refs/heads/preserved-source", "refs/heads/preserved-base"},
+	} {
+		if _, err := ports.Git(ctx, restored, args...); err != nil {
+			return fmt.Errorf("restore source and claimed-base histories: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -328,7 +451,7 @@ func VerifyArchive(ctx context.Context, working, remote, ref, expectedSHA string
 }
 
 func ValidateArchiveManifest(expected, actual Manifest) ([]string, error) {
-	if actual.Version != expected.Version || actual.Repository != expected.Repository || actual.Branch != expected.Branch || ArchiveManifestPreserve(actual) != ArchiveManifestPreserve(expected) || actual.SourceSHA != expected.SourceSHA || actual.RetiredRef != expected.RetiredRef || actual.ClaimID != expected.ClaimID || len(actual.Files) != len(expected.Files) {
+	if actual.Version != expected.Version || actual.Repository != expected.Repository || actual.Branch != expected.Branch || ArchiveManifestPreserve(actual) != ArchiveManifestPreserve(expected) || actual.SourceSHA != expected.SourceSHA || actual.RetiredRef != expected.RetiredRef || actual.ClaimID != expected.ClaimID || actual.BaseSHA != expected.BaseSHA || len(actual.Files) != len(expected.Files) {
 		return nil, fmt.Errorf("private archive manifest identity mismatch")
 	}
 	paths := make([]string, 0, len(expected.Files))
