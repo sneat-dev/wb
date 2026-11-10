@@ -122,7 +122,7 @@ var valueFlags = setOf(
 	"--expected-target", "--filter", "--format",
 	"--github-dir", "--go-private", "--handover-file", "--harness", "--hold", "--include-task",
 	"--initiator", "--keep-commits", "--lane-reason", "--library", "--manifest", "--match",
-	"--max-waves", "--merge-method", "--message", "--mode", "--model", "--module-ref",
+	"--max-waves", "--merge-method", "--merge-receipt", "--message", "--mode", "--model", "--module-ref",
 	"--new-worktree", "--note", "--older-than", "--on-failure", "--org", "--original-prompt-file",
 	"--only", "--override-secret", "--parallel", "--peer-evidence", "--pid", "--poll-interval", "--preserve",
 	"--prepare-timeout", "--profile", "--projects-root", "--provider", "--reason", "--rebatch-receipt", "--rebatch-published-target-sha", "--ref", "--replacement", "--retention",
