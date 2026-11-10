@@ -173,6 +173,9 @@ func acknowledgeCleanedPostTargetFailure(ctx context.Context, options WorktreeMe
 	}
 	claimBases := make(map[string]string, len(expectations))
 	cleanupRemoteRoots := make([]string, 0, len(expectations))
+	cleanupFinalHeads := make([]string, 0, len(expectations))
+	observedSources := append([]WorktreeMergeSource(nil), receipt.Sources...)
+	advancedSource := false
 	for _, expectation := range expectations {
 		if _, statErr := os.Lstat(expectation.Worktree); statErr == nil {
 			return WorktreeMergeLandedFailureAcknowledgement{}, fmt.Errorf("receipted checkout %s still exists; cleaned recovery requires every checkout removed", expectation.Worktree)
@@ -183,13 +186,36 @@ func acknowledgeCleanedPostTargetFailure(ctx context.Context, options WorktreeMe
 		if proofErr != nil {
 			return WorktreeMergeLandedFailureAcknowledgement{}, fmt.Errorf("validate exact terminal cleanup for %s: %w", expectation.Task, proofErr)
 		}
-		if proof.Result.HeadSHA != expectation.FinalCommit || proof.Result.Repository != expectation.Repository ||
+		if proof.Result.Repository != expectation.Repository ||
 			filepath.Clean(proof.Result.WorktreeDir) != filepath.Clean(expectation.Worktree) || proof.Result.Branch != expectation.Branch ||
 			proof.Result.Base != receipt.Target || filepath.Clean(proof.Result.CanonicalDir) != filepath.Clean(canonical) {
 			return WorktreeMergeLandedFailureAcknowledgement{}, fmt.Errorf("terminal cleanup receipt does not exactly match receipted identity and head for %s", expectation.Task)
 		}
+		if proof.Result.HeadSHA != expectation.FinalCommit {
+			// Only a source may advance after the merge receipt was sealed. The
+			// candidate itself must still have exact terminal cleanup. A source's
+			// final head is accepted only as a plain descendant of its receipted
+			// head on the same clean, retired task identity.
+			if expectation.Task == receipt.Candidate.Task || len(receipt.Sources) != 1 ||
+				receipt.Sources[0].Task != expectation.Task || expectation.FinalCommit != receipt.Candidate.SHA {
+				return WorktreeMergeLandedFailureAcknowledgement{}, fmt.Errorf("terminal cleanup receipt does not exactly match receipted identity and head for %s", expectation.Task)
+			}
+			contains, ancestorErr := isMergeAncestorWithRunner(ctx, run, canonical, expectation.FinalCommit, proof.Result.HeadSHA)
+			if ancestorErr != nil || !contains {
+				return WorktreeMergeLandedFailureAcknowledgement{}, fmt.Errorf("terminal cleanup head %s is not a proven descendant of receipted source %s at %s: %v", proof.Result.HeadSHA, expectation.Task, expectation.FinalCommit, ancestorErr)
+			}
+			advancedSource = true
+		}
+		for index := range observedSources {
+			if observedSources[index].Task == expectation.Task {
+				observedSources[index].SHA = proof.Result.HeadSHA
+			}
+		}
+		cleanupFinalHeads = append(cleanupFinalHeads, proof.Result.HeadSHA)
 		cleanupRemoteRoots = append(cleanupRemoteRoots, proof.Result.RemoteTargetSHA)
-		baseSHA, baseErr := worktrees.ReadRemovedTerminalWorkLogClaimBase(options.ProjectsRoot, expectation)
+		observedExpectation := expectation
+		observedExpectation.FinalCommit = proof.Result.HeadSHA
+		baseSHA, baseErr := worktrees.ReadRemovedTerminalWorkLogClaimBase(options.ProjectsRoot, observedExpectation)
 		if baseErr != nil {
 			return WorktreeMergeLandedFailureAcknowledgement{}, fmt.Errorf("validate removed terminal Work Log for %s: %w", expectation.Task, baseErr)
 		}
@@ -219,6 +245,7 @@ func acknowledgeCleanedPostTargetFailure(ctx context.Context, options WorktreeMe
 		roots = append(roots, claimBases[expectation.Task])
 	}
 	roots = append(roots, cleanupRemoteRoots...)
+	roots = append(roots, cleanupFinalHeads...)
 	seenRoots := make(map[string]bool, len(roots))
 	for _, root := range roots {
 		if root == "" || seenRoots[root] {
@@ -244,6 +271,14 @@ func acknowledgeCleanedPostTargetFailure(ctx context.Context, options WorktreeMe
 		CandidateSHA: receipt.Candidate.SHA, ClaimBaseSHA: claimBases[receipt.Candidate.Task], CandidateWorktree: receipt.Candidate.Worktree,
 		CandidateBranch: receipt.Candidate.Branch, Sources: append([]WorktreeMergeSource(nil), receipt.Sources...),
 		Actor: strings.TrimSpace(options.Actor), Reason: strings.TrimSpace(options.Reason), RecordedAt: time.Now().UTC(),
+	}
+	if advancedSource {
+		receiptDigest, digestErr := worktreeMergeReceiptSHA256(receiptPath)
+		if digestErr != nil {
+			return WorktreeMergeLandedFailureAcknowledgement{}, digestErr
+		}
+		ack.ReceiptSHA256 = receiptDigest
+		ack.ObservedSources = observedSources
 	}
 	ack.ID = landedFailureAcknowledgementID(ack)
 	return finishLandedFailureAcknowledgement(receipt, ack, options.Apply, persist)
