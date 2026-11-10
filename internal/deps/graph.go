@@ -241,6 +241,7 @@ func graphFromNpmFleet(discovered npmFleetGraph, selected []Repository, ref stri
 	graph := Graph{SchemaVersion: 1, Ecosystem: EcosystemNPM, BaseRef: ref, Filters: GraphFilters{Dependencies: append([]string(nil), filters...)}}
 	graph.DiscoverySkips = append(graph.DiscoverySkips, discovered.discoverySkips...)
 	graph.DefaultBranchFallbacks = append(graph.DefaultBranchFallbacks, discovered.baseRefFallbacks...)
+	graph.ManifestWarnings = append(graph.ManifestWarnings, discovered.ManifestWarnings()...)
 	filterSet := map[string]bool{}
 	for _, dependency := range filters {
 		filterSet[dependency] = true
