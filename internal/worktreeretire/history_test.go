@@ -288,3 +288,32 @@ func TestArchiveManifestBindsOriginalBase(t *testing.T) {
 		t.Fatal("changed original base accepted")
 	}
 }
+
+func TestPublishArchiveStopsBeforePublicationWhenHistoryBackupFails(t *testing.T) {
+	t.Parallel()
+	home, result, ports := archiveFixture(t)
+	readClaim := ports.ReadClaim
+	ports.ReadClaim = func(home, worktree string) (Claim, error) {
+		claim, err := readClaim(home, worktree)
+		claim.BaseSHA = strings.Repeat("a", 40)
+		return claim, err
+	}
+	failure := errors.New("source history backup unavailable")
+	git := ports.Git
+	pushed := false
+	ports.Git = func(ctx context.Context, dir string, args ...string) (string, error) {
+		if args[0] == "fetch" {
+			return "", failure
+		}
+		if args[0] == "push" {
+			pushed = true
+		}
+		return git(ctx, dir, args...)
+	}
+	if err := PublishArchive(context.Background(), home, "remote", &result, ports); !errors.Is(err, failure) {
+		t.Fatalf("backup failure did not stop archive publication: %v", err)
+	}
+	if pushed || result.ArchiveSHA != "" {
+		t.Fatal("failed history backup produced a publication receipt")
+	}
+}
