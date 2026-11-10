@@ -235,6 +235,12 @@ func TestTerminalFacadeLegacyAndInvalidHomePaths(t *testing.T) {
 	if _, err := ReadRemovedTerminalWorkLogClaimBase("\x00", valid); err == nil {
 		t.Fatal("invalid projects root accepted by base reader")
 	}
+	if _, err := ReadDiscardedTerminalWorkLogClaimBase("\x00", valid); err == nil {
+		t.Fatal("invalid projects root accepted by discarded base reader")
+	}
+	if _, err := ReadDiscardedTerminalWorkLogClaimBase(t.TempDir(), TerminalWorkLogExpectation{}); err == nil {
+		t.Fatal("invalid expectation accepted by discarded base reader")
+	}
 	if matched, err := defaultPreflightSealPorts().legacy(context.Background(), "home", t.TempDir(), ListResult{
 		OpenPullRequest: &PullRequest{URL: "https://example.test/pull/1"},
 	}); err == nil || matched || !strings.Contains(err.Error(), "open pull request") {
