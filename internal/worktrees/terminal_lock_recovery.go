@@ -45,20 +45,67 @@ type terminalLockLandingReceipt struct {
 	Cleanup    bool   `json:"cleanup_requested"`
 }
 
+// These ports keep the trust checks unchanged while allowing tests to prove
+// failure handling at filesystem boundaries that cannot be induced reliably
+// with permissions or timing races.
+type terminalLockRecoveryPorts struct {
+	abs          func(string) (string, error)
+	readReceipt  func(string) ([]byte, error)
+	resolve      func(string) (wbhome.Resolution, error)
+	validateLock func(*cleanupTaskHandle) error
+	seekTask     func(*os.File) error
+	list         func(context.Context, ListOptions) (ListOutcome, error)
+	hasBacklog   func(context.Context, wbhome.Resolution, string, string, string) (bool, error)
+	fetchTarget  func(context.Context, string, string) (string, error)
+	marshalAudit func(any) ([]byte, error)
+	createAudit  func(string, string) (*os.File, error)
+	writeAudit   func(*os.File, []byte) (int, error)
+	syncAudit    func(*os.File) error
+	closeAudit   func(*os.File) error
+	releaseLock  func(*cleanupTaskHandle) error
+	removeShell  func(*cleanupTaskHandle) bool
+}
+
+func defaultTerminalLockRecoveryPorts() terminalLockRecoveryPorts {
+	return terminalLockRecoveryPorts{
+		abs: filepath.Abs, readReceipt: os.ReadFile, resolve: wbhome.Resolve,
+		validateLock: func(handle *cleanupTaskHandle) error { return handle.validateHeldLock() },
+		seekTask:     func(file *os.File) error { _, err := file.Seek(0, 0); return err },
+		list:         ListWithDiagnostics,
+		hasBacklog: func(ctx context.Context, resolution wbhome.Resolution, root, task, worktreesRoot string) (bool, error) {
+			backlog, quarantine, err := loadResumableLifecycleBacklog(ctx, resolution.Write.Home, root,
+				[]string{worktreesRoot}, map[string]bool{task: true}, "", "removed")
+			return len(backlog) != 0 || len(quarantine) != 0, err
+		},
+		fetchTarget:  fetchRemoteTargetHead,
+		marshalAudit: func(value any) ([]byte, error) { return json.MarshalIndent(value, "", "  ") },
+		createAudit:  os.CreateTemp,
+		writeAudit:   func(file *os.File, content []byte) (int, error) { return file.Write(content) },
+		syncAudit:    func(file *os.File) error { return file.Sync() },
+		closeAudit:   func(file *os.File) error { return file.Close() },
+		releaseLock:  func(handle *cleanupTaskHandle) error { return handle.lock.release() },
+		removeShell:  removeEmptyTaskDirectory,
+	}
+}
+
 // RecoverTerminalOperationLock retires only an inert, lock-only task shell.
 // Normal --resume-interrupted intentionally needs an eligible worktree; this
 // path cannot change a merge receipt's status or retire any repository ref.
 func RecoverTerminalOperationLock(ctx context.Context, options TerminalLockRecoveryOptions) (TerminalLockRecoveryOutcome, error) {
+	return recoverTerminalOperationLock(ctx, options, defaultTerminalLockRecoveryPorts())
+}
+
+func recoverTerminalOperationLock(ctx context.Context, options TerminalLockRecoveryOptions, ports terminalLockRecoveryPorts) (TerminalLockRecoveryOutcome, error) {
 	var outcome TerminalLockRecoveryOutcome
 	if !validSafeSegment(options.Task) || options.ReceiptPath == "" {
 		return outcome, fmt.Errorf("terminal lock recovery requires one safe task name and an exact merge receipt")
 	}
-	root, err := filepath.Abs(options.ProjectsRoot)
+	root, err := ports.abs(options.ProjectsRoot)
 	if err != nil {
 		return outcome, err
 	}
 	receiptsRoot := filepath.Join(root, ".wb", "reports", "worktree-merge")
-	receiptPath, err := filepath.Abs(options.ReceiptPath)
+	receiptPath, err := ports.abs(options.ReceiptPath)
 	if err != nil || filepath.Dir(receiptPath) != receiptsRoot {
 		return outcome, fmt.Errorf("merge receipt must be an exact file under %s", receiptsRoot)
 	}
@@ -66,7 +113,7 @@ func RecoverTerminalOperationLock(ctx context.Context, options TerminalLockRecov
 	if err != nil || !receiptInfo.Mode().IsRegular() {
 		return outcome, fmt.Errorf("merge receipt must be a regular file: %v", err)
 	}
-	receiptBytes, err := os.ReadFile(receiptPath)
+	receiptBytes, err := ports.readReceipt(receiptPath)
 	if err != nil {
 		return outcome, fmt.Errorf("read merge receipt: %w", err)
 	}
@@ -83,7 +130,7 @@ func RecoverTerminalOperationLock(ctx context.Context, options TerminalLockRecov
 		!validSafeSegment(receipt.Target) {
 		return outcome, fmt.Errorf("merge receipt does not prove this terminal operation's landing")
 	}
-	resolution, err := wbhome.Resolve(root)
+	resolution, err := ports.resolve(root)
 	if err != nil {
 		return outcome, err
 	}
@@ -97,30 +144,29 @@ func RecoverTerminalOperationLock(ctx context.Context, options TerminalLockRecov
 			handle.close()
 		}
 	}()
-	if err := handle.validateHeldLock(); err != nil {
+	if err := ports.validateLock(handle); err != nil {
 		return outcome, err
 	}
-	if _, err := handle.task.Seek(0, 0); err != nil {
+	if err := ports.seekTask(handle.task); err != nil {
 		return outcome, err
 	}
 	entries, err := handle.task.ReadDir(-1)
 	if err != nil || len(entries) != 1 || entries[0].Name() != ".lock" {
 		return outcome, fmt.Errorf("operation shell is not lock-only")
 	}
-	listed, err := ListWithDiagnostics(ctx, ListOptions{ProjectsRoot: root, Task: options.Task, Workers: 1})
+	listed, err := ports.list(ctx, ListOptions{ProjectsRoot: root, Task: options.Task, Workers: 1})
 	if err != nil {
 		return outcome, err
 	}
 	if len(listed.Results) != 0 || len(listed.Diagnostics) != 0 {
 		return outcome, fmt.Errorf("operation still has worktree candidates or incomplete discovery")
 	}
-	backlog, quarantine, err := loadResumableLifecycleBacklog(ctx, resolution.Write.Home, root,
-		[]string{recovery.WorktreesRoot}, map[string]bool{options.Task: true}, "", "removed")
-	if err != nil || len(backlog) != 0 || len(quarantine) != 0 {
+	hasBacklog, err := ports.hasBacklog(ctx, resolution, root, options.Task, recovery.WorktreesRoot)
+	if err != nil || hasBacklog {
 		return outcome, fmt.Errorf("operation still has cleanup backlog or uncertain records: %v", err)
 	}
 	canonical := filepath.Join(root, filepath.FromSlash(receipt.Repository))
-	targetSHA, err := fetchRemoteTargetHead(ctx, canonical, receipt.Target)
+	targetSHA, err := ports.fetchTarget(ctx, canonical, receipt.Target)
 	if err != nil {
 		return outcome, fmt.Errorf("fresh target proof: %w", err)
 	}
@@ -134,7 +180,7 @@ func RecoverTerminalOperationLock(ctx context.Context, options TerminalLockRecov
 	if !options.Apply {
 		return outcome, nil
 	}
-	if err := handle.validateHeldLock(); err != nil {
+	if err := ports.validateLock(handle); err != nil {
 		return outcome, err
 	}
 	// Durable pre-mutation evidence remains even if process death interrupts
@@ -149,31 +195,31 @@ func RecoverTerminalOperationLock(ctx context.Context, options TerminalLockRecov
 		ReceiptSHA256 string    `json:"receipt_sha256"`
 		RecordedAt    time.Time `json:"recorded_at"`
 	}{outcome, hex.EncodeToString(digest[:]), time.Now().UTC()}
-	auditBytes, err := json.MarshalIndent(audit, "", "  ")
+	auditBytes, err := ports.marshalAudit(audit)
 	if err != nil {
 		return outcome, err
 	}
-	auditFile, err := os.CreateTemp(auditRoot, options.Task+"-*.json")
+	auditFile, err := ports.createAudit(auditRoot, options.Task+"-*.json")
 	if err != nil {
 		return outcome, err
 	}
 	outcome.AuditPath = auditFile.Name()
-	if _, err := auditFile.Write(append(auditBytes, '\n')); err != nil {
+	if _, err := ports.writeAudit(auditFile, append(auditBytes, '\n')); err != nil {
 		_ = auditFile.Close()
 		return outcome, err
 	}
-	if err := auditFile.Sync(); err != nil {
+	if err := ports.syncAudit(auditFile); err != nil {
 		_ = auditFile.Close()
 		return outcome, err
 	}
-	if err := auditFile.Close(); err != nil {
+	if err := ports.closeAudit(auditFile); err != nil {
 		return outcome, err
 	}
-	if err := handle.lock.release(); err != nil {
+	if err := ports.releaseLock(handle); err != nil {
 		return outcome, err
 	}
 	purgeTerminalTaskLockDebris(handle)
-	if !removeEmptyTaskDirectory(handle) {
+	if !ports.removeShell(handle) {
 		return outcome, fmt.Errorf("lock retired but task shell was not empty; audit: %s", outcome.AuditPath)
 	}
 	// Release closes the lock descriptor. Avoid trying to preserve it again.
