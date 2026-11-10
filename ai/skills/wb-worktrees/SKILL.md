@@ -209,7 +209,8 @@ Four traps decide whether a sweep retires anything at all:
 
 `wb worktree retire` flags: `--base`, `--apply`, `--remote`, `--older-than`,
 `--parallel`, `--report-dir`, `--absorbed-by`, `--superseded-by`,
-`--allow-residue`, `--resume-interrupted`, `--recover-stages`, `--repo`,
+`--allow-residue`, `--resume-interrupted`, `--recover-stages`,
+`--recover-terminal-lock`, `--merge-receipt`, `--repo`,
 `--preserve`, `--format`, and `--verbose` (`-v`). Root flags also include
 `--filter`, `--projects-root`, `--quiet`, and `--non-interactive`. Apply writes
 durable audit evidence below `<projects-root>/.wb/reports/worktree-cleanup/`.

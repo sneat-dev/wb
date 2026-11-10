@@ -21,9 +21,10 @@ type InventoryProgress struct {
 // RetireDependencies are the transactions `wb worktree retire` drives.
 type RetireDependencies struct {
 	// Run is the cleanup transaction for landed work.
-	Run      func(context.Context, worktrees.CleanupOptions) (worktrees.CleanupOutcome, error)
-	Recover  func(context.Context, worktrees.RetiredStageRecoveryOptions) (worktrees.RetiredStageRecoveryOutcome, error)
-	Progress func(*cobra.Command, bool) InventoryProgress
+	Run                 func(context.Context, worktrees.CleanupOptions) (worktrees.CleanupOutcome, error)
+	Recover             func(context.Context, worktrees.RetiredStageRecoveryOptions) (worktrees.RetiredStageRecoveryOutcome, error)
+	RecoverTerminalLock func(context.Context, worktrees.TerminalLockRecoveryOptions) (worktrees.TerminalLockRecoveryOutcome, error)
+	Progress            func(*cobra.Command, bool) InventoryProgress
 	// Root applies its existing fatal-release-leak policy; remote engine outcomes
 	// remain authoritative and are never reconstructed by this CLI adapter.
 	Release func(*cobra.Command, string, string) bool
@@ -47,8 +48,8 @@ type PreserveDependencies struct {
 
 // NewRetire constructs `wb worktree retire`, the per-item transaction.
 func NewRetire(runtime shared.Runtime, deps RetireDependencies) *cobra.Command {
-	var base, format, reportDir, absorbedBy, supersededBy, preserve, message, repository string
-	var apply, deleteRemote, resumeInterrupted, recoverStages, verbose, jsonShortcut, allowResidue bool
+	var base, format, reportDir, absorbedBy, supersededBy, preserve, message, repository, mergeReceipt string
+	var apply, deleteRemote, resumeInterrupted, recoverStages, recoverTerminalLock, verbose, jsonShortcut, allowResidue bool
 	var peerEvidence, requireHosts []string
 	var olderThan time.Duration
 	var workers int
@@ -219,6 +220,28 @@ quarantines only the exact held inode and completes the usual terminal flow.
 				format = "json"
 			}
 			if err := shared.RequireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			if recoverTerminalLock {
+				if len(args) != 1 || mergeReceipt == "" || resumeInterrupted || recoverStages || preserve != "" || deleteRemote || repository != "" || absorbedBy != "" || supersededBy != "" {
+					return fmt.Errorf("--recover-terminal-lock requires one operation task and --merge-receipt, without other retirement modes")
+				}
+				outcome, err := deps.RecoverTerminalLock(command.Context(), worktrees.TerminalLockRecoveryOptions{
+					ProjectsRoot: runtime.Flags().ProjectsRoot, Task: args[0], ReceiptPath: mergeReceipt, Apply: apply,
+				})
+				if err != nil {
+					return err
+				}
+				if format == "json" {
+					encoder := json.NewEncoder(command.OutOrStdout())
+					encoder.SetIndent("", "  ")
+					return encoder.Encode(outcome)
+				}
+				state := "would retire"
+				if outcome.Applied {
+					state = "retired"
+				}
+				_, err = fmt.Fprintf(command.OutOrStdout(), "%s inert operation lock %s (landing %s in origin/%s at %s; audit %s)\n", state, outcome.LockPath, outcome.LandingSHA, outcome.Target, outcome.TargetSHA, outcome.AuditPath)
 				return err
 			}
 			if preserve != "" {
@@ -420,6 +443,8 @@ quarantines only the exact held inode and completes the usual terminal flow.
 	command.Flags().StringArrayVar(&peerEvidence, "peer-evidence", nil, "bare branch with --superseded-by --remote: machine-generated exact wb branch list JSON from one required host; repeat per host")
 	command.Flags().StringArrayVar(&requireHosts, "require-host", nil, "bare branch with --superseded-by --remote: host ID required in peer evidence; repeat per host")
 	command.Flags().BoolVar(&recoverStages, "recover-stages", false, "audit and privately archive non-empty retired stages for named tasks")
+	command.Flags().BoolVar(&recoverTerminalLock, "recover-terminal-lock", false, "retire a proven dead lock-only operation shell on exact landed merge receipt evidence")
+	command.Flags().StringVar(&mergeReceipt, "merge-receipt", "", "exact historical WB merge receipt for --recover-terminal-lock")
 	// --parallel is the fleet-wide name for this ceiling: six other commands
 	// already spell it that way, and "workers" reads as a second noun beside
 	// WB's own tasks. --workers/-j stays as a hidden deprecated alias so

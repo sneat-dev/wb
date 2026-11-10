@@ -20,6 +20,7 @@ func newWorktreeRetireCmd(inv *invocation) *cobra.Command {
 		Recover: func(ctx context.Context, options worktrees.RetiredStageRecoveryOptions) (worktrees.RetiredStageRecoveryOutcome, error) {
 			return recoverRetiredStages(ctx, options)
 		},
+		RecoverTerminalLock: worktrees.RecoverTerminalOperationLock,
 		Progress: func(command *cobra.Command, verbose bool) cmdworktree.InventoryProgress {
 			p := newInventoryProgress(inv, command.ErrOrStderr(), verbose)
 			return cmdworktree.InventoryProgress{Report: p.report, Finish: p.finish}
