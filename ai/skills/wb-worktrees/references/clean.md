@@ -196,7 +196,12 @@ Without `--preserve`, retirement requires landing evidence and keeps every
 guard below. `--preserve branch|tag` is the audited way to retire one task whose
 work did **not** land: it commits remaining changes with normal hooks,
 publishes the exact commit as `retired/*`, archives the Work Log in the private
-retirement repository, and only then removes the checkout. See
+retirement repository, and only then removes the checkout. A base-only ancestry
+mismatch can be preserved without changing the original claim: the archive
+includes a verified `history.bundle` with both `preserved-source` and
+`preserved-base` refs. All other identity and custody checks remain mandatory;
+missing Git objects and other mismatches still refuse. Ordinary attachment, park
+and landing checks do not accept this preservation-only exception. See
 [lifecycle.md](lifecycle.md).
 
 ## Trap 1: cleanup only sees WB-managed tasks

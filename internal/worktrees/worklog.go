@@ -2845,10 +2845,24 @@ func corroborateClaimGit(worktree, finalCommit string, projection workLogProject
 		return fmt.Errorf("live HEAD %q does not match terminal commit %q", head, finalCommit)
 	}
 	if _, err := git(context.Background(), worktree, "merge-base", "--is-ancestor", claim.BaseSHA, head); err != nil {
-		return fmt.Errorf("live HEAD is not descended from claimed base %s: %w", claim.BaseSHA, err)
+		return &claimBaseAncestryError{base: claim.BaseSHA, cause: err}
 	}
 	return nil
 }
+
+// claimBaseAncestryError lets preservation retirement distinguish this last
+// proof failure from an invalid identity, branch, path, or live HEAD. Ordinary
+// claim consumers continue to reject it.
+type claimBaseAncestryError struct {
+	base  string
+	cause error
+}
+
+func (e *claimBaseAncestryError) Error() string {
+	return fmt.Sprintf("live HEAD is not descended from claimed base %s: %v", e.base, e.cause)
+}
+
+func (e *claimBaseAncestryError) Unwrap() error { return e.cause }
 
 func removeWorkLogProjection(worktree string) error {
 	return removeWorkLogProjectionObserved(worktree, nil)

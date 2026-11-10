@@ -98,6 +98,7 @@ func retireWithEntryPorts(ctx context.Context, options RetireOptions, ports reti
 	if err != nil {
 		return RetireResult{}, err
 	}
+	inventory.Diagnostics = preservationDiagnostics(resolution.Write.Home, inventory.Diagnostics)
 	entry, resumeRemoved, err := selectRetirementEntry(inventory, options)
 	if err != nil {
 		return RetireResult{}, err
@@ -315,7 +316,7 @@ func retireReadClaimObserved(home, worktree string, observe func(string, workLog
 		return workLogClaim{}, projection, err
 	}
 	// Both admitted current and legacy projections already passed validateProjection.
-	if err := corroborateProjectionWithPrivateClaim(home, worktree, projection); err != nil {
+	if err := corroborateRetirementProjection(home, worktree, projection); err != nil {
 		return workLogClaim{}, projection, err
 	}
 	if observe != nil {
@@ -753,7 +754,7 @@ func retireTransactionOperation(options RetireOptions, projectsRoot, home string
 			CurrentHead: func(ctx context.Context) (string, error) { return git(ctx, entry.WorktreeDir, "rev-parse", "HEAD") },
 			Clean:       func(ctx context.Context) (bool, error) { return cleanWorktree(ctx, entry.WorktreeDir) },
 			SealWorkLog: func(result RetireResult) error {
-				return sealWorkLogForRecycle(home, entry.WorktreeDir, result.SourceSHA, "retired")
+				return sealRetirementWorkLog(home, entry.WorktreeDir, result.SourceSHA)
 			},
 			CheckPrivateArchive: func(ctx context.Context, result RetireResult) error {
 				return retireCheckPrivateArchive(ctx, result, options.Inspect)
@@ -875,10 +876,10 @@ func retireArchivePorts() worktreeretire.Ports {
 				return worktreeretire.Claim{}, err
 			}
 			return worktreeretire.Claim{ClaimID: claim.ClaimID, Repository: claim.Repository, Branch: claim.Branch,
-				PromptArchive: claim.PromptArchive, PromptDigest: claim.PromptDigest}, nil
+				BaseSHA: claim.BaseSHA, PromptArchive: claim.PromptArchive, PromptDigest: claim.PromptDigest}, nil
 		},
 		ReadTerminal: func(home, worktree string) (*worktreeretire.Terminal, error) {
-			record, err := readWorkLogTerminalRecordReadOnly(home, worktree)
+			record, err := readRetirementTerminal(home, worktree)
 			if err != nil || record == nil {
 				return nil, err
 			}
