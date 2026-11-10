@@ -266,6 +266,24 @@ func TestNormalizeWorktreeMergeFailureDetailTruncatedTimingIsFailClosed(t *testi
 	}
 }
 
+func TestWorktreeMergeValidationRegressionMatchesWrappedSpecScoreMissingConfigPath(t *testing.T) {
+	t.Parallel()
+	specFailure := func(detail string) quality.VerificationReport {
+		return quality.VerificationReport{Status: quality.StatusFailed, Results: []quality.VerificationEntry{{
+			Language: "specscore", Module: ".", Check: quality.CheckSpec, Command: "specscore spec lint", Status: quality.StatusFailed, Detail: detail,
+		}}}
+	}
+	baseline := specFailure("ERROR\nSpecscore.yaml is required but was not found in /private/tmp/wb-        \n  worktree-merge-target/tree or any parent directory; run `specscore init`\n  to create it.\n\nspecscore.yaml is required but was not found in /private/tmp/wb-worktree-merge-target/tree or any parent directory; run `specscore init` to create it\nexit status 3")
+	candidate := specFailure("ERROR\nSpecscore.yaml is required but was not found in /Users/alex/projects/.worktrees/merge-site-  \n  candidate/repo or any parent directory; run `specscore init`\n  to create it.\n\nspecscore.yaml is required but was not found in /Users/alex/projects/.worktrees/merge-site-candidate/repo or any parent directory; run `specscore init` to create it\nexit status 3")
+	if err := worktreeMergeValidationRegression(baseline, candidate); err != nil {
+		t.Fatalf("same missing-config failure with wrapped checkout paths must match: %v", err)
+	}
+	candidate.Results[0].Detail = strings.Replace(candidate.Results[0].Detail, "or any parent directory", "and no project configuration", 1)
+	if err := worktreeMergeValidationRegression(baseline, candidate); err == nil {
+		t.Fatal("changed missing-config diagnostic must remain a regression")
+	}
+}
+
 func TestWorktreeMergeValidationRegressionMatchesYardiusEnvironmentFailures(t *testing.T) {
 	t.Parallel()
 	nodeFailing := func(detail string) quality.VerificationEntry {

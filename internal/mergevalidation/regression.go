@@ -220,6 +220,7 @@ var (
 	worktreeMergeFailureParenthesizedPattern = regexp.MustCompile(`\(\+[0-9]+(?:\.[0-9]+)?(?:ns|us|µs|ms|s|m|h)\)`)
 	worktreeMergeFailureTruncationPattern    = regexp.MustCompile(`(?s)(… output truncated; final [0-9]+ bytes:\r?\n)([^\r\n]*)`)
 	worktreeMergeFailurePartialTimingPattern = regexp.MustCompile(`(?i)^([[:alpha:]]+)\s+in\s+[0-9]+(?:\.[0-9]+)?(?:ns|us|µs|ms|s|m|h)$`)
+	worktreeMergeSpecScoreWrappedPathPattern = regexp.MustCompile(`(?i)(Specscore\.yaml is required but was not found in )(/[^ \t\r\n]+-)[ \t]*\r?\n[ \t]+([^ \t\r\n]+)( or any parent directory)`)
 )
 
 func normalizeWorktreeMergeFailureDetail(detail string) string {
@@ -234,6 +235,10 @@ func normalizeWorktreeMergeFailureDetail(detail string) string {
 	detail = worktreeMergeFailureBuiltPattern.ReplaceAllString(detail, `${1} <duration>`)
 	detail = worktreeMergeFailureParenthesizedPattern.ReplaceAllString(detail, `(+<duration>)`)
 	detail = worktreeMergeFailureTruncationPattern.ReplaceAllStringFunc(detail, normalizeWorktreeMergeFailureTruncatedTail)
+	// SpecScore's styled missing-config error can wrap an ephemeral checkout
+	// path immediately after a hyphen. Rejoin only that diagnostic's path so
+	// the ordinary absolute-path normalization can compare exact baselines.
+	detail = worktreeMergeSpecScoreWrappedPathPattern.ReplaceAllString(detail, `${1}${2}${3}${4}`)
 	fields := strings.Fields(detail)
 	for index, field := range fields {
 		fields[index] = normalizeWorktreeMergeFailureField(field)
