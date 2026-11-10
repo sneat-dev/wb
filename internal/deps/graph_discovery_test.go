@@ -417,3 +417,46 @@ func contains(values []string, want string) bool {
 	}
 	return false
 }
+
+func TestBuildNpmGraphReportsMalformedFixtureManifest(t *testing.T) {
+	t.Parallel()
+	fixture := t.TempDir()
+	const manifest = "tools/fixtures/root-array/package.json"
+	app := seedGraphRepository(t, fixture, "app", "main", map[string]string{
+		"package.json": `{"name":"@acme/app","version":"1.0.0","dependencies":{"eslint":"10.13.0"}}`,
+		manifest:       `[]`,
+	})
+
+	graph, err := BuildGraph(context.Background(), []Repository{{Slug: "acme/app", Path: app}}, GraphOptions{
+		Ecosystem: EcosystemNPM, GitHubDir: filepath.Join(fixture, "projects"), Ref: "main",
+		Parallel: 1, Timeout: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(graph.ManifestWarnings) != 1 || graph.ManifestWarnings[0].Repository != "acme/app" ||
+		graph.ManifestWarnings[0].Manifest != manifest || !strings.Contains(graph.ManifestWarnings[0].Reason, "unparseable npm fixture") {
+		t.Fatalf("manifest warnings = %+v, want one warning for %s", graph.ManifestWarnings, manifest)
+	}
+	if len(graph.Requirements) != 1 || graph.Requirements[0].Dependency != "eslint" {
+		t.Fatalf("requirements = %+v, want the root ESLint requirement", graph.Requirements)
+	}
+}
+
+func TestBuildNpmGraphRejectsMalformedProjectManifest(t *testing.T) {
+	t.Parallel()
+	for _, manifest := range []string{"package.json", "packages/app/package.json"} {
+		t.Run(manifest, func(t *testing.T) {
+			t.Parallel()
+			fixture := t.TempDir()
+			app := seedGraphRepository(t, fixture, "app", "main", map[string]string{manifest: `[]`})
+			_, err := BuildGraph(context.Background(), []Repository{{Slug: "acme/app", Path: app}}, GraphOptions{
+				Ecosystem: EcosystemNPM, GitHubDir: filepath.Join(fixture, "projects"), Ref: "main",
+				Parallel: 1, Timeout: time.Minute,
+			})
+			if err == nil || !strings.Contains(err.Error(), "parse "+manifest) {
+				t.Fatalf("error = %v, want parse failure for %s", err, manifest)
+			}
+		})
+	}
+}

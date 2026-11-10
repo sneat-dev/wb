@@ -29,6 +29,7 @@ type npmFleetGraph struct {
 	repositoryPackages  map[string][]string
 	discoverySkips      []GraphDiscoverySkip
 	baseRefFallbacks    []GraphDefaultBranchFallback
+	manifestWarnings    []GraphManifestWarning
 }
 
 // npmFleetPackage is one published (non-private, named) package.json
@@ -54,6 +55,12 @@ type npmFleetRequirement struct {
 	Field           string
 }
 
+type npmRepositoryGraph struct {
+	packages     []npmFleetPackage
+	requirements []npmFleetRequirement
+	warnings     []GraphManifestWarning
+}
+
 type npmGraphDiscoveryPolicy struct {
 	SkipFailedNonNPM bool
 }
@@ -68,11 +75,7 @@ func discoverNpmFleetGraph(ctx context.Context, repositories []Repository, optio
 		packages: map[string]npmFleetPackage{}, packageDeclarations: map[string][]npmFleetPackage{},
 		requirements: map[string][]npmFleetRequirement{}, repositoryPackages: map[string][]string{},
 	}
-	type repositoryGraph struct {
-		packages     []npmFleetPackage
-		requirements []npmFleetRequirement
-	}
-	results := make([]repositoryGraph, len(repositories))
+	results := make([]npmRepositoryGraph, len(repositories))
 	errorsByRepository := make([]error, len(repositories))
 	skipsByRepository := make([]*GraphDiscoverySkip, len(repositories))
 	fallbacksByRepository := make([]*GraphDefaultBranchFallback, len(repositories))
@@ -147,6 +150,7 @@ func discoverNpmFleetGraph(ctx context.Context, repositories []Repository, optio
 	close(jobs)
 	group.Wait()
 	for _, result := range results {
+		graph.manifestWarnings = append(graph.manifestWarnings, result.warnings...)
 		for _, pkg := range result.packages {
 			graph.packageDeclarations[pkg.Name] = append(graph.packageDeclarations[pkg.Name], pkg)
 			if len(graph.packageDeclarations[pkg.Name]) == 1 {
@@ -264,14 +268,8 @@ func repositoryContainsLocalNpmManifest(root string) (bool, error) {
 // inspectRepositoryNpmGraph reads every package.json and pnpm-workspace.yaml
 // blob at base without checking anything out, exactly like
 // inspectRepositoryGoGraph does for go.mod.
-func inspectRepositoryNpmGraph(ctx context.Context, repository, canonical, base string, options orchestrate.Options) (struct {
-	packages     []npmFleetPackage
-	requirements []npmFleetRequirement
-}, error) {
-	result := struct {
-		packages     []npmFleetPackage
-		requirements []npmFleetRequirement
-	}{}
+func inspectRepositoryNpmGraph(ctx context.Context, repository, canonical, base string, options orchestrate.Options) (npmRepositoryGraph, error) {
+	var result npmRepositoryGraph
 	output, _, err := runCommand(ctx, options.Timeout, options.Retry, canonical, "git", "ls-tree", "-r", "--name-only", base)
 	if err != nil {
 		return result, err
@@ -288,6 +286,16 @@ func inspectRepositoryNpmGraph(ctx context.Context, repository, canonical, base 
 			}
 			pkg, requirements, err := parseNpmPackageJSONManifest(repository, name, []byte(contents))
 			if err != nil {
+				// Fixture corpora may deliberately include invalid package.json files.
+				// A malformed project or workspace manifest must still fail discovery.
+				if strings.Contains("/"+name, "/fixtures/") {
+					result.warnings = append(result.warnings, GraphManifestWarning{
+						Repository: repository,
+						Manifest:   name,
+						Reason:     fmt.Sprintf("skipped unparseable npm fixture manifest: %v", err),
+					})
+					continue
+				}
 				return result, fmt.Errorf("parse %s: %w", name, err)
 			}
 			if pkg != nil {
@@ -402,11 +410,8 @@ func (graph npmFleetGraph) BaseRefFallbacks() []GraphDefaultBranchFallback {
 	return graph.baseRefFallbacks
 }
 
-// ManifestWarnings has no npm ecosystem analogue yet: nothing in the npm
-// discovery path treats a manifest as skippable-but-warned rather than fatal
-// or fully ignored (see ignoredManifestPath). It exists so npmFleetGraph
-// satisfies bumpFleetGraph alongside goFleetGraph.
-func (graph npmFleetGraph) ManifestWarnings() []GraphManifestWarning { return nil }
+// ManifestWarnings lists malformed package.json files skipped inside fixture directories.
+func (graph npmFleetGraph) ManifestWarnings() []GraphManifestWarning { return graph.manifestWarnings }
 
 // AmbiguousModules has no npm ecosystem analogue: npm package names carry no
 // owner/repository convention to fall back on, so an ambiguous npm
