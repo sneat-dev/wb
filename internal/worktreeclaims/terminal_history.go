@@ -1,14 +1,16 @@
 package worktreeclaims
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
-	"github.com/sneat-dev/wb/internal/worktreeproof"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
+
+	"github.com/sneat-dev/wb/internal/worktreeproof"
 )
 
 type TerminalWorkLogExpectation struct {
@@ -47,7 +49,7 @@ func (p HistoryPorts) ValidateRemovedTerminalWorkLogs(home string, expectations 
 			return fmt.Errorf("duplicate terminal Work Log expectation for task %s", expectation.Task)
 		}
 		seen[key] = true
-		if _, err := p.validateRemovedTerminalWorkLog(home, expectation); err != nil {
+		if _, err := p.validateRemovedTerminalWorkLog(home, expectation, false); err != nil {
 			return err
 		}
 	}
@@ -58,7 +60,17 @@ func (p HistoryPorts) ReadRemovedTerminalWorkLogClaimBase(home string, expectati
 	if err := p.validateRemovedTerminalExpectation(expectation); err != nil {
 		return "", err
 	}
-	return p.validateRemovedTerminalWorkLog(home, expectation)
+	return p.validateRemovedTerminalWorkLog(home, expectation, false)
+}
+
+// ReadDiscardedTerminalWorkLogClaimBase authenticates a deliberately aborted
+// candidate. Callers must separately prove its exact completed discard backlog,
+// absent checkout and branch, and unpublished/untargeted commit.
+func (p HistoryPorts) ReadDiscardedTerminalWorkLogClaimBase(home string, expectation TerminalWorkLogExpectation) (string, error) {
+	if err := p.validateRemovedTerminalExpectation(expectation); err != nil {
+		return "", err
+	}
+	return p.validateRemovedTerminalWorkLog(home, expectation, true)
 }
 
 // ValidateRemovedTerminalExpectation runs before resolving WB_HOME, retaining
@@ -80,7 +92,7 @@ func (p HistoryPorts) validateRemovedTerminalExpectation(expectation TerminalWor
 	return nil
 }
 
-func (p HistoryPorts) validateRemovedTerminalWorkLog(home string, expectation TerminalWorkLogExpectation) (string, error) {
+func (p HistoryPorts) validateRemovedTerminalWorkLog(home string, expectation TerminalWorkLogExpectation, discarded bool) (string, error) {
 	homeDir, err := p.OpenHome(home, false)
 	if err != nil {
 		return "", fmt.Errorf("open terminal Work Log home: %w", err)
@@ -109,7 +121,7 @@ func (p HistoryPorts) validateRemovedTerminalWorkLog(home string, expectation Te
 		if effortName == expectation.Task {
 			taskEvidence = true
 		}
-		claimBase, err := p.validateRemovedTerminalWorkLogEffort(home, worklogs, expectation, effortName, &matches, &taskEvidence)
+		claimBase, err := p.validateRemovedTerminalWorkLogEffort(home, worklogs, expectation, effortName, &matches, &taskEvidence, discarded)
 		if err != nil {
 			return "", err
 		}
@@ -129,7 +141,7 @@ func (p HistoryPorts) validateRemovedTerminalWorkLog(home string, expectation Te
 	return baseSHA, nil
 }
 
-func (p HistoryPorts) validateRemovedTerminalWorkLogEffort(home string, worklogs *os.File, expectation TerminalWorkLogExpectation, effortName string, matches *int, taskEvidence *bool) (string, error) {
+func (p HistoryPorts) validateRemovedTerminalWorkLogEffort(home string, worklogs *os.File, expectation TerminalWorkLogExpectation, effortName string, matches *int, taskEvidence *bool, discarded bool) (string, error) {
 	effort, err := p.OpenChild(worklogs, effortName, false)
 	if err != nil {
 		return "", fmt.Errorf("open terminal Work Log effort %s: %w", effortName, err)
@@ -150,7 +162,7 @@ func (p HistoryPorts) validateRemovedTerminalWorkLogEffort(home string, worklogs
 		if !p.ValidSegment(run) {
 			return "", fmt.Errorf("unsafe terminal Work Log run %q for task %s", run, expectation.Task)
 		}
-		if claimBase, err := p.validateRemovedTerminalWorkLogRun(home, expectation, effortName, run, matches, taskEvidence); err != nil {
+		if claimBase, err := p.validateRemovedTerminalWorkLogRun(home, expectation, effortName, run, matches, taskEvidence, discarded); err != nil {
 			return "", err
 		} else if claimBase != "" {
 			baseSHA = claimBase
@@ -159,7 +171,7 @@ func (p HistoryPorts) validateRemovedTerminalWorkLogEffort(home string, worklogs
 	return baseSHA, nil
 }
 
-func (p HistoryPorts) validateRemovedTerminalWorkLogRun(home string, expectation TerminalWorkLogExpectation, effort, run string, matches *int, taskEvidence *bool) (string, error) {
+func (p HistoryPorts) validateRemovedTerminalWorkLogRun(home string, expectation TerminalWorkLogExpectation, effort, run string, matches *int, taskEvidence *bool, discarded bool) (string, error) {
 	runDir, _, err := p.OpenRun(home, effort, run, false)
 	if err != nil {
 		return "", fmt.Errorf("open terminal Work Log run %s for task %s: %w", run, expectation.Task, err)
@@ -241,10 +253,16 @@ func (p HistoryPorts) validateRemovedTerminalWorkLogRun(home string, expectation
 		}
 		expectedClaim := claim
 		expectedClaim.Lifecycle = "terminal"
+		validDisposition := cleanupSealedDisposition(terminal)
+		validCapture := terminal.DirtyCapture == nil
+		if discarded {
+			validDisposition = terminal.Disposition == "discarded" && terminal.Landed == nil && terminal.FinalizeReport == nil
+			validCapture = validDiscardedCapture(terminal.DirtyCapture)
+		}
 		if !reflect.DeepEqual(terminal.Claim, expectedClaim) || terminal.FinalCommit != expectation.FinalCommit ||
-			!cleanupSealedDisposition(terminal) || terminal.SealedAt.IsZero() || terminal.SuccessorClaimID != "" ||
+			!validDisposition || terminal.SealedAt.IsZero() || terminal.SuccessorClaimID != "" ||
 			terminal.SuccessorAgentID != "" || terminal.ExternalHandoff != nil || terminal.Orphaned != nil ||
-			terminal.DirtyCapture != nil || terminal.Supersession != nil {
+			!validCapture || terminal.Supersession != nil {
 			return "", fmt.Errorf("removed terminal Work Log does not exactly corroborate task %s", expectation.Task)
 		}
 		if err := p.validateRemovedTerminalOutbox(home, claim, terminal); err != nil {
@@ -253,6 +271,17 @@ func (p HistoryPorts) validateRemovedTerminalWorkLogRun(home string, expectation
 		baseSHA = claim.BaseSHA
 	}
 	return baseSHA, nil
+}
+
+func validDiscardedCapture(capture *worktreeproof.DirtyWorktreeEvidence) bool {
+	if capture == nil {
+		return true
+	}
+	if capture.Bytes < 0 || capture.Files < 1 || len(capture.SHA256) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(capture.SHA256)
+	return err == nil
 }
 
 func (p HistoryPorts) matchesRemovedTerminalExpectation(claim Claim, expectation TerminalWorkLogExpectation) bool {
@@ -319,7 +348,7 @@ func (p HistoryPorts) validateRemovedTerminalOutbox(home string, claim Claim, te
 		EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID, Repository: claim.Repository,
 		Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA, FinalCommit: terminal.FinalCommit,
 		Lifecycle: "terminal", Disposition: terminal.Disposition, Landed: terminal.Landed,
-		FinalizeReport: terminal.FinalizeReport}
+		FinalizeReport: terminal.FinalizeReport, DirtyCapture: terminal.DirtyCapture}
 	if !reflect.DeepEqual(event, expected) {
 		return errors.New("immutable terminal outbox does not corroborate cleanup authority")
 	}
