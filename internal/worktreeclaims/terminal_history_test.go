@@ -11,6 +11,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/worktreelayout"
+	"github.com/sneat-dev/wb/internal/worktreeproof"
 	"github.com/sneat-dev/wb/internal/worktreesecure"
 )
 
@@ -434,6 +435,90 @@ func TestRemovedTerminalHistoryAcceptsALandingOnlyWithCleanupsProof(t *testing.T
 			}
 			if !tc.accepted && (err == nil || !strings.Contains(err.Error(), "does not exactly corroborate")) {
 				t.Fatalf("a terminal cleanup did not seal proved a removal: %v", err)
+			}
+		})
+	}
+}
+
+func TestDiscardedTerminalHistoryRequiresAnExactAbortSeal(t *testing.T) {
+	t.Parallel()
+	if _, err := terminalHistoryTestPorts().ReadDiscardedTerminalWorkLogClaimBase(t.TempDir(), TerminalWorkLogExpectation{}); err == nil {
+		t.Fatal("invalid discarded terminal expectation accepted")
+	}
+	for _, tc := range []struct {
+		name        string
+		disposition string
+		landed      *LandedEvidence
+		corrupt     string
+		accepted    bool
+	}{
+		{name: "clean discarded", disposition: "discarded", accepted: true},
+		{name: "dirty discarded", disposition: "discarded", corrupt: "valid capture", accepted: true},
+		{name: "removed is not discarded", disposition: "removed"},
+		{name: "landed is not discarded", disposition: "landed", landed: landedTestEvidence()},
+		{name: "discarded with landing", disposition: "discarded", landed: landedTestEvidence()},
+		{name: "wrong final commit", disposition: "discarded", corrupt: "final commit"},
+		{name: "invalid capture", disposition: "discarded", corrupt: "invalid capture"},
+		{name: "nonhex capture", disposition: "discarded", corrupt: "nonhex capture"},
+		{name: "negative capture bytes", disposition: "discarded", corrupt: "negative capture bytes"},
+		{name: "zero capture files", disposition: "discarded", corrupt: "zero capture files"},
+		{name: "missing outbox", disposition: "discarded", corrupt: "missing outbox"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			home, expectation, claim := terminalHistoryFixture(t)
+			addSealedHistoryRun(t, home, expectation, claim, tc.disposition, tc.landed)
+			run := filepath.Join(home, "worklogs", claim.EffortID, "runs", claim.RunID)
+			terminalPath := filepath.Join(run, "terminals", claim.ClaimID+".json")
+			if tc.corrupt == "valid capture" || tc.corrupt == "invalid capture" || tc.corrupt == "nonhex capture" || tc.corrupt == "negative capture bytes" || tc.corrupt == "zero capture files" || tc.corrupt == "final commit" {
+				data, err := os.ReadFile(terminalPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var terminal TerminalRecord
+				if err := json.Unmarshal(data, &terminal); err != nil {
+					t.Fatal(err)
+				}
+				switch tc.corrupt {
+				case "valid capture":
+					terminal.DirtyCapture = &worktreeproof.DirtyWorktreeEvidence{SHA256: strings.Repeat("a", 64), Bytes: 138, Files: 1}
+				case "invalid capture":
+					terminal.DirtyCapture = &worktreeproof.DirtyWorktreeEvidence{SHA256: "not-a-digest", Bytes: 138, Files: 1}
+				case "nonhex capture":
+					terminal.DirtyCapture = &worktreeproof.DirtyWorktreeEvidence{SHA256: strings.Repeat("z", 64), Bytes: 138, Files: 1}
+				case "negative capture bytes":
+					terminal.DirtyCapture = &worktreeproof.DirtyWorktreeEvidence{SHA256: strings.Repeat("a", 64), Bytes: -1, Files: 1}
+				case "zero capture files":
+					terminal.DirtyCapture = &worktreeproof.DirtyWorktreeEvidence{SHA256: strings.Repeat("a", 64), Bytes: 0, Files: 0}
+				case "final commit":
+					terminal.FinalCommit = strings.Repeat("d", 40)
+				}
+				writeHistoryJSON(t, terminalPath, terminal)
+				if terminal.DirtyCapture != nil {
+					outboxPath := filepath.Join(home, "worklogs", claim.EffortID, "outbox", claim.RunID+"-"+claim.ClaimID+"-sealed.json")
+					data, err := os.ReadFile(outboxPath)
+					if err != nil {
+						t.Fatal(err)
+					}
+					var event PublicEvent
+					if err := json.Unmarshal(data, &event); err != nil {
+						t.Fatal(err)
+					}
+					event.DirtyCapture = terminal.DirtyCapture
+					writeHistoryJSON(t, outboxPath, event)
+				}
+			}
+			if tc.corrupt == "missing outbox" {
+				if err := os.Remove(filepath.Join(home, "worklogs", claim.EffortID, "outbox", claim.RunID+"-"+claim.ClaimID+"-sealed.json")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			base, err := terminalHistoryTestPorts().ReadDiscardedTerminalWorkLogClaimBase(home, expectation)
+			if tc.accepted && (err != nil || base != claim.BaseSHA) {
+				t.Fatalf("exact discarded terminal rejected: base=%s err=%v", base, err)
+			}
+			if !tc.accepted && err == nil {
+				t.Fatalf("invalid discarded terminal accepted: base=%s", base)
 			}
 		})
 	}

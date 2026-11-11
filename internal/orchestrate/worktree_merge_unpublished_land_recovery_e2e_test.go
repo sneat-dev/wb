@@ -177,7 +177,7 @@ func TestE2ERetiredUnpublishedLandFailureCanReleaseItsLane(t *testing.T) {
 				}
 				return nil
 			}}
-			if _, err := requireRetiredUnpublishedLandCandidate(ctx, f.githubDir, r, run, canonical); !errors.Is(err, sentinel) {
+			if _, _, err := requireRetiredUnpublishedLandCandidate(ctx, f.githubDir, r, run, canonical); !errors.Is(err, sentinel) {
 				t.Fatalf("lost observation refusal: %v", err)
 			}
 		})

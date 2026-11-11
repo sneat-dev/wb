@@ -9,8 +9,108 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/githubobserver"
+	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
+
+func TestAcknowledgeDiscardedFailedLandRequiresCompletedAbortProof(t *testing.T) {
+	fixture := newEngineFixture(t)
+	writeEngineGoModule(t, fixture.canonical, "package app\n")
+	runEngineGit(t, fixture.canonical, "add", "go.mod", "app.go")
+	runEngineGit(t, fixture.canonical, "commit", "-m", "test: add Go validation fixture")
+	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+	source := createMergeSource(t, fixture, "retained-land-source", "feature/retained-land", "candidate.go", "package app\n\nfunc Candidate() {}\n")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil || receipt.Status != WorktreeMergePrepared {
+		t.Fatalf("prepare = %+v err=%v", receipt, err)
+	}
+	receipt.Phase, receipt.Status = WorktreeMergePhaseLand, WorktreeMergeValidationFailed
+	if err := persistWorktreeMergeReceipt(receipt); err != nil {
+		t.Fatal(err)
+	}
+	receiptBytes, err := os.ReadFile(receipt.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(receipt.Candidate.Worktree, "candidate.go"), []byte("package app\n\nfunc Candidate() { /* generated build edit */ }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	aborted, err := worktrees.Abort(context.Background(), worktrees.AbortOptions{
+		ProjectsRoot: fixture.githubDir, Task: receipt.Candidate.Task, Base: receipt.Target,
+		Disposition: worktrees.AbortDiscarded, DeleteRemote: true, Apply: true,
+	})
+	if err != nil || len(aborted) != 1 || !aborted[0].Applied || aborted[0].DirtyCapture == nil || !aborted[0].WorktreeGone || !aborted[0].BranchDeleted {
+		t.Fatalf("audited dirty abort = %+v err=%v", aborted, err)
+	}
+	proof, err := worktrees.FindDiscardedLifecycleBacklogProof(context.Background(), fixture.githubDir, receipt.Repository, receipt.Target,
+		receipt.Candidate.Task, receipt.Candidate.Worktree, receipt.Candidate.Branch, receipt.Candidate.SHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, err := wbhome.Root(fixture.githubDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminalPaths, err := filepath.Glob(filepath.Join(home, "worklogs", receipt.Candidate.Task, "runs", "*", "terminals", "*.json"))
+	if err != nil || len(terminalPaths) != 1 {
+		t.Fatalf("discarded terminal: %v %v", terminalPaths, err)
+	}
+	outboxPaths, err := filepath.Glob(filepath.Join(home, "worklogs", receipt.Candidate.Task, "outbox", "*-sealed.json"))
+	if err != nil || len(outboxPaths) != 1 {
+		t.Fatalf("discarded outbox: %v %v", outboxPaths, err)
+	}
+	options := WorktreeMergeUnpublishedValidationFailureAcknowledgementOptions{ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath}
+	ctx := githubobserver.WithReader(context.Background(), githubobserver.Reader{Read: func(_ context.Context, dir string, args ...string) ([]byte, error) {
+		if dir != fixture.canonical || strings.Join(args, " ") != "pr list --repo acme/app --head "+receipt.Candidate.Branch+" --state all --json number,url,headRefName --limit 1000" {
+			t.Fatalf("unexpected publication lookup: %s %q", dir, args)
+		}
+		return []byte("[]"), nil
+	}})
+	for _, tc := range []struct{ name, path, from, to string }{
+		{"incomplete backlog", proof.Path, `"stage": "complete"`, `"stage": "worktree_removed"`},
+		{"wrong terminal head", terminalPaths[0], receipt.Candidate.SHA, strings.Repeat("f", 40)},
+		{"mismatched outbox", outboxPaths[0], `"disposition": "discarded"`, `"disposition": "removed"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			original, err := os.ReadFile(tc.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			changed := bytes.Replace(original, []byte(tc.from), []byte(tc.to), 1)
+			if bytes.Equal(changed, original) {
+				t.Fatalf("fixture lacks %q", tc.from)
+			}
+			if err := os.WriteFile(tc.path, changed, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := AcknowledgeUnpublishedValidationFailure(ctx, options); err == nil {
+				t.Fatal("corrupt aborted candidate evidence was accepted")
+			}
+			if err := os.WriteFile(tc.path, original, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	ack, err := AcknowledgeUnpublishedValidationFailure(ctx, options)
+	if err != nil || ack.CandidateCleanupBacklog != proof.Path || len(ack.PreservedSources) != 1 {
+		t.Fatalf("discarded land dry-run = %+v err=%v", ack, err)
+	}
+	options.Apply, options.Actor, options.Reason = true, "reviewer", "audited failed-land candidate was discarded"
+	ack, err = AcknowledgeUnpublishedValidationFailure(ctx, options)
+	if err != nil || ack.CandidateCleanupBacklog != proof.Path {
+		t.Fatalf("discarded land apply = %+v err=%v", ack, err)
+	}
+	current, err := os.ReadFile(receipt.ReceiptPath)
+	if err != nil || !bytes.Equal(current, receiptBytes) {
+		t.Fatalf("historical receipt changed: %v", err)
+	}
+	if _, err := os.Stat(source.WorktreeDir); err != nil {
+		t.Fatalf("preserved source was touched: %v", err)
+	}
+}
 
 func TestAcknowledgeDiscardedInterruptedPreparingFreesLane(t *testing.T) {
 	fixture := newEngineFixture(t)

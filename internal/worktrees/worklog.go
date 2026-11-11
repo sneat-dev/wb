@@ -217,6 +217,20 @@ func ReadRemovedTerminalWorkLogClaimBase(projectsRoot string, expectation Termin
 	return terminalHistoryPorts().ReadRemovedTerminalWorkLogClaimBase(home, expectation)
 }
 
+// ReadDiscardedTerminalWorkLogClaimBase authenticates the exact immutable
+// aborted candidate seal. The caller must also prove its completed discard
+// backlog and the absence of its checkout, branch, and publication.
+func ReadDiscardedTerminalWorkLogClaimBase(projectsRoot string, expectation TerminalWorkLogExpectation) (string, error) {
+	if err := terminalHistoryPorts().ValidateRemovedTerminalExpectation(expectation); err != nil {
+		return "", err
+	}
+	home, err := wbhome.Root(projectsRoot)
+	if err != nil {
+		return "", err
+	}
+	return terminalHistoryPorts().ReadDiscardedTerminalWorkLogClaimBase(home, expectation)
+}
+
 func terminalHistoryPorts() worktreeclaims.HistoryPorts {
 	return worktreeclaims.HistoryPorts{
 		OpenHome: openAbsoluteDirectoryNoFollow, OpenChild: openPrivateChild,
