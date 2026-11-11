@@ -186,11 +186,8 @@ func acknowledgeCleanedPostTargetFailure(ctx context.Context, options WorktreeMe
 		if proofErr != nil {
 			return WorktreeMergeLandedFailureAcknowledgement{}, fmt.Errorf("validate exact terminal cleanup for %s: %w", expectation.Task, proofErr)
 		}
-		if proof.Result.Repository != expectation.Repository ||
-			filepath.Clean(proof.Result.WorktreeDir) != filepath.Clean(expectation.Worktree) || proof.Result.Branch != expectation.Branch ||
-			proof.Result.Base != receipt.Target || filepath.Clean(proof.Result.CanonicalDir) != filepath.Clean(canonical) {
-			return WorktreeMergeLandedFailureAcknowledgement{}, fmt.Errorf("terminal cleanup receipt does not exactly match receipted identity and head for %s", expectation.Task)
-		}
+		// FindTerminalCleanupProof returns only an applied cleanup receipt
+		// matching the repository, task, worktree, branch, target, and canonical path.
 		if proof.Result.HeadSHA != expectation.FinalCommit {
 			// Only a source may advance after the merge receipt was sealed. The
 			// candidate itself must still have exact terminal cleanup. A source's
