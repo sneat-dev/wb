@@ -46,3 +46,11 @@ wb ci audit . --target main --strict
 
 Exit codes are `0` clean, `1` findings/runtime failure, and `2` invalid usage.
 Do not treat exit 1 as a malformed command.
+
+## Waiting for checks, not auditing policy
+
+`wb ci audit` reports policy; it never watches a check run to completion. To
+wait for GitHub checks on an exact head — including one workflow or job via
+`--workflow`/`--check` — use `wb ci wait` (alias `wb wait checks`), covered in
+`$wb-merge`'s `references/ci-polling.md`. Never hand-roll a `gh run list` /
+`gh api` polling loop.
