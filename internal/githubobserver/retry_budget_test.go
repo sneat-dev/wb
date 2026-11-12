@@ -101,7 +101,7 @@ func TestGetBoundsRetryWaitsAndUsesResetOnlyForExhaustedQuota(t *testing.T) {
 func TestGetCancellationInterruptsBudgetedProviderWaitAndReleasesLock(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 	now := time.Unix(1_788_080_400, 0).UTC()
 	calls, sleeps := 0, 0
 	observer := &Observer{
