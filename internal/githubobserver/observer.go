@@ -433,6 +433,7 @@ func (o *Observer) Read(ctx context.Context, dir string, args ...string) ([]byte
 			return nil, fmt.Errorf("gh %s: %w: %s", strings.Join(args, " "), result.Err, message)
 		}
 		delay, reason := o.retryDelay(attempt, nil)
+		delay = min(delay, max(0, o.remainingBudget(startedAt)))
 		recordRetryTelemetry(ctx, cause)
 		reportRetryProgress(reporter, repositoryArgument(args), "github_read", attempt+1, maxAttempts, cause, delay, reason)
 		if sleepErr := o.sleep(ctx, delay); sleepErr != nil {
@@ -523,6 +524,8 @@ func (o *Observer) apiGet(ctx context.Context, request GetRequest, conditional m
 		}
 		if parseErr == nil && isRetryableHTTPResponse(response) {
 			delay, reason := o.retryDelay(attempt, response.Headers)
+			// Provider backoff must not outlive this read's retry budget.
+			delay = min(delay, max(0, o.remainingBudget(startedAt)))
 			cause := fmt.Sprintf("HTTP %d", response.StatusCode)
 			if attempt+1 >= maxAttempts || elapsedExceeded {
 				return httpResponse{}, fmt.Errorf("%w: GitHub %s returned %s after %d attempts",
@@ -550,6 +553,7 @@ func (o *Observer) apiGet(ctx context.Context, request GetRequest, conditional m
 			}
 			if isTemporaryCommandFailure(ctx, timedOut, result.Err, message) {
 				delay, reason := o.retryDelay(attempt, nil)
+				delay = min(delay, max(0, o.remainingBudget(startedAt)))
 				cause := temporaryFailureCause(message, result.Err)
 				if attempt+1 >= maxAttempts || elapsedExceeded {
 					return httpResponse{}, fmt.Errorf("%w: gh api %s failed temporarily after %d attempts: %s",
@@ -891,9 +895,13 @@ func (o *Observer) retryDelay(attempt int, headers map[string]string) (time.Dura
 		delay = retryAfter
 		reason = "Retry-After"
 	}
-	if reset := parseRateLimitReset(headers["x-ratelimit-reset"], o.now()); reset > delay {
-		delay = reset
-		reason = "X-RateLimit-Reset"
+	// GitHub also sends the quota reset time on ordinary service failures.
+	// Only an exhausted quota makes that timestamp a required retry delay.
+	if strings.TrimSpace(headers["x-ratelimit-remaining"]) == "0" {
+		if reset := parseRateLimitReset(headers["x-ratelimit-reset"], o.now()); reset > delay {
+			delay = reset
+			reason = "X-RateLimit-Reset"
+		}
 	}
 	if delay <= 0 {
 		delay = o.baseBackoff()

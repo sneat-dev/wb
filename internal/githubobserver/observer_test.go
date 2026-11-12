@@ -161,7 +161,7 @@ func TestGetHonoursRateLimitResetAndJitterBackoff(t *testing.T) {
 			calls++
 			if calls == 1 {
 				reset := now.Add(3 * time.Second).Unix()
-				return commandResult{Stdout: []byte(fmt.Sprintf("HTTP/2 403 Forbidden\nRetry-After: 1\nX-RateLimit-Reset: %d\n\n{\"message\":\"secondary rate limit\"}", reset)), Err: errors.New("exit status 1"), ExitCode: 1}
+				return commandResult{Stdout: []byte(fmt.Sprintf("HTTP/2 403 Forbidden\nRetry-After: 1\nX-RateLimit-Remaining: 0\nX-RateLimit-Reset: %d\n\n{\"message\":\"rate limit exceeded\"}", reset)), Err: errors.New("exit status 1"), ExitCode: 1}
 			}
 			return commandResult{Stdout: []byte("HTTP/2 200 OK\nETag: \"etag-2\"\n\n{\"ok\":true}")}
 		},
