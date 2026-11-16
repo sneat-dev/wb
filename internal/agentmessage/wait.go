@@ -32,12 +32,22 @@ func (s Store) Receive(ctx context.Context, agent string, wait time.Duration) ([
 	if wait == 0 {
 		return s.pending(agent)
 	}
+	if err := ValidateAgent(agent); err != nil {
+		return nil, err
+	}
+	path := filepath.Join(s.Root, agent, "wait.sock")
+	if len(path) > 103 {
+		return nil, fmt.Errorf("message wait socket path is %d bytes; portable maximum is 103 bytes; shorten the projects root or agent name, or receive without --wait", len(path))
+	}
 	dir, err := s.directory(agent)
 	if err != nil {
 		return nil, err
 	}
 	_ = dir.Close()
-	path := filepath.Join(s.Root, agent, "wait.sock")
+	return s.receiveWait(ctx, agent, wait, path)
+}
+
+func (s Store) receiveWait(ctx context.Context, agent string, wait time.Duration, path string) ([]Message, error) {
 	lock := flock.New(filepath.Join(s.Root, agent, "wait.lock"))
 	locked, err := lock.TryLock()
 	if err != nil {

@@ -89,25 +89,33 @@ func (s SSH) relayBatch(ctx context.Context, store Store, agent string) error {
 			return fmt.Errorf("relay received a message for another agent")
 		}
 	}
+	var firstError error
 	for _, m := range messages {
-		receipt, err := store.Deliver(ctx, m)
-		if receipt.ID != m.ID || receipt.Digest != m.Digest() || receipt.Status != "durable" {
-			return fmt.Errorf("relay local delivery unconfirmed: %w", err)
+		if err := s.relayMessage(ctx, store, agent, m); err != nil && firstError == nil {
+			firstError = err
 		}
-		if err != nil && receipt.Wake != "ambiguous" {
-			return fmt.Errorf("relay retained remote copy after local wake failure: %w", err)
-		}
-		var ack boundedOutput
-		if err = s.relayCall(ctx, []string{"ack", m.ID, "--agent", agent}, &ack); err != nil {
-			return err
-		}
-		var result struct {
-			ID     string `json:"id"`
-			Status string `json:"status"`
-		}
-		if err = json.Unmarshal(ack.Bytes(), &result); err != nil || result.ID != m.ID || result.Status != "acknowledged" {
-			return fmt.Errorf("relay acknowledgment is unconfirmed; message may be replayed safely")
-		}
+	}
+	return firstError
+}
+
+func (s SSH) relayMessage(ctx context.Context, store Store, agent string, m Message) error {
+	receipt, err := store.Deliver(ctx, m)
+	if receipt.ID != m.ID || receipt.Digest != m.Digest() || receipt.Status != "durable" {
+		return fmt.Errorf("relay local delivery unconfirmed: %w", err)
+	}
+	if err != nil && receipt.Wake != "ambiguous" && receipt.Wake != "rejected" {
+		return fmt.Errorf("relay retained remote copy after local wake failure: %w", err)
+	}
+	var ack boundedOutput
+	if err = s.relayCall(ctx, []string{"ack", m.ID, "--agent", agent}, &ack); err != nil {
+		return err
+	}
+	var result struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}
+	if err = json.Unmarshal(ack.Bytes(), &result); err != nil || result.ID != m.ID || result.Status != "acknowledged" {
+		return fmt.Errorf("relay acknowledgment is unconfirmed; message may be replayed safely")
 	}
 	return nil
 }

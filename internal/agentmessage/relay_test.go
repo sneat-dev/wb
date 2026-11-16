@@ -62,21 +62,21 @@ func relayRunner(t *testing.T, m Message, mode string, calls *int) CommandRunner
 
 func TestRelayAcknowledgesOnlyDurableLocalCopies(t *testing.T) {
 	t.Parallel()
-	for _, mode := range []string{"ok", "ambiguous", "preflight-failed", "local-failed", "ack-error", "bad-ack", "transport-error", "malformed", "wrong-agent", "bad-message", "too-many"} {
+	for _, mode := range []string{"ok", "ambiguous", "rejected", "preflight-failed", "local-failed", "ack-error", "bad-ack", "transport-error", "malformed", "wrong-agent", "bad-message", "too-many"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
 			s := testStore(t)
 			m := sampleMessage()
 			calls := 0
 			switch mode {
-			case "ambiguous", "preflight-failed":
+			case "ambiguous", "rejected", "preflight-failed":
 				s.Notify = func(context.Context, Message) (string, error) { return mode, errors.New("wake failed") }
 			case "local-failed":
 				s.Root = "relative"
 			}
 			ssh := SSH{Config: sessionmove.SSHConfig{Host: "vm", User: "agent", WBPath: "/usr/local/bin/wb"}, Run: relayRunner(t, m, mode, &calls)}
 			e := ssh.Relay(context.Background(), s, m.To, true)
-			if mode == "ok" || mode == "ambiguous" {
+			if mode == "ok" || mode == "ambiguous" || mode == "rejected" {
 				if e != nil || calls != 2 {
 					t.Fatal(calls, e)
 				}
@@ -145,5 +145,46 @@ func TestRelayRejectsUnsafeAddressesAndCancelledNativeTransport(t *testing.T) {
 	cancel()
 	if e := ssh.Relay(ctx, s, "mac", true); e == nil {
 		t.Fatal("cancel ignored")
+	}
+}
+
+func TestRelayCopiesWholeBatchDespiteOneFailedWake(t *testing.T) {
+	t.Parallel()
+	store := testStore(t)
+	messages := []Message{sampleMessage(), sampleMessage(), sampleMessage()}
+	for i := range messages {
+		messages[i].ID = fmt.Sprintf("%032x", i+1)
+	}
+	store.Notify = func(_ context.Context, m Message) (string, error) {
+		if m.ID == messages[0].ID {
+			return "preflight-failed", errors.New("stale binding")
+		}
+		return "submitted", nil
+	}
+	var acked []string
+	ssh := SSH{Config: sessionmove.SSHConfig{Host: "vm"}, Run: func(_ context.Context, _ string, args []string, _ io.Reader, stdout, stderr io.Writer) error {
+		joined := strings.Join(args, " ")
+		if strings.Contains(joined, "message receive") {
+			return json.NewEncoder(stdout).Encode(messages)
+		}
+		id := args[len(args)-3]
+		acked = append(acked, id)
+		local, err := store.Receive(context.Background(), "mac", 0)
+		if err != nil || len(local) < 2 {
+			t.Fatalf("ack before local persistence: %v %v", local, err)
+		}
+		_, err = fmt.Fprintf(stdout, `{"id":%q,"status":"acknowledged"}`, id)
+		return err
+	}}
+	err := ssh.Relay(context.Background(), store, "mac", true)
+	if err == nil || !strings.Contains(err.Error(), "wake failure") {
+		t.Fatal(err)
+	}
+	local, err := store.Receive(context.Background(), "mac", 0)
+	if err != nil || len(local) != 3 {
+		t.Fatal(local, err)
+	}
+	if len(acked) != 2 || acked[0] != messages[1].ID || acked[1] != messages[2].ID {
+		t.Fatal(acked)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -29,19 +30,21 @@ func runCommand(ctx context.Context, name string, args []string, stdin io.Reader
 }
 
 type boundedOutput struct {
-	bytes.Buffer
-	limit int
+	buffer bytes.Buffer
+	limit  int
 }
+
+func (b *boundedOutput) Bytes() []byte { return b.buffer.Bytes() }
 
 func (b *boundedOutput) Write(p []byte) (int, error) {
 	limit := b.limit
 	if limit == 0 {
 		limit = MaxEnvelopeBytes
 	}
-	if b.Len()+len(p) > limit {
+	if b.buffer.Len()+len(p) > limit {
 		return 0, fmt.Errorf("remote response exceeds limit")
 	}
-	return b.Buffer.Write(p)
+	return b.buffer.Write(p)
 }
 
 // Send uses authenticated OpenSSH with strict host-key verification. Message
@@ -74,10 +77,36 @@ func (s SSH) Send(ctx context.Context, m Message) (Receipt, error) {
 	var receipt Receipt
 	decodeErr := json.Unmarshal(stdout.Bytes(), &receipt)
 	if decodeErr != nil || receipt.ID != m.ID || receipt.Digest != m.Digest() || receipt.Status != "durable" {
-		return Receipt{}, fmt.Errorf("remote delivery is unconfirmed; retry the same --id and message")
+		return Receipt{}, unconfirmedDelivery(deliveryCtx, err)
 	}
 	if err != nil {
+		if receipt.Wake == "rejected" {
+			return receipt, fmt.Errorf("message is durable but native wake was rejected; inspect recipient inbox and binding; this ID will not be resubmitted")
+		}
+		if receipt.Wake == "ambiguous" {
+			return receipt, fmt.Errorf("message is durable but native wake is ambiguous; inspect recipient inbox; this ID is fenced against resubmission")
+		}
 		return receipt, fmt.Errorf("message is durable but remote wake failed; retry the same --id and message to inspect its fenced outcome")
 	}
 	return receipt, nil
+}
+
+// Classify only process state. Remote stderr, stdout, and runner error text may
+// contain message bytes and must never be echoed in a transport diagnostic.
+func unconfirmedDelivery(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return fmt.Errorf("SSH delivery was cancelled or timed out; outcome is unconfirmed; inspect connectivity before retrying the same --id and exact message")
+	}
+	var exited *exec.ExitError
+	if errors.As(err, &exited) {
+		code := exited.ExitCode()
+		if code >= 0 && code != 255 {
+			return fmt.Errorf("remote WB command exited with status %d without a matching durable receipt; inspect remote setup or a conflicting message ID before retrying", code)
+		}
+		return fmt.Errorf("SSH transport exited with status %d; delivery is unconfirmed; inspect connectivity and host authentication before retrying the same --id and exact message", code)
+	}
+	if err == nil {
+		return fmt.Errorf("remote command exited successfully without a matching durable receipt; inspect remote WB protocol compatibility before retrying")
+	}
+	return fmt.Errorf("SSH delivery is unconfirmed (process status unavailable); inspect local SSH setup and connectivity before retrying the same --id and exact message")
 }

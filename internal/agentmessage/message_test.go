@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -455,6 +457,18 @@ func TestWaitRefusesBrokenLockSocketAndClosedConnection(t *testing.T) {
 				}
 				return
 			}
+			if mode == "long-path" {
+				if _, e := s.Receive(ctx, "mac", time.Second); e == nil || !strings.Contains(e.Error(), "103 bytes") {
+					t.Fatal(e)
+				}
+				if _, e := os.Stat(filepath.Join(s.Root, "mac", "wait.lock")); !errors.Is(e, os.ErrNotExist) {
+					t.Fatal("length refusal created lock")
+				}
+				if _, e := s.receiveWait(ctx, "mac", time.Second, filepath.Join(s.Root, "mac", "wait.sock")); e == nil {
+					t.Fatal("native long socket accepted")
+				}
+				return
+			}
 			if _, e := s.Receive(ctx, "mac", time.Second); e == nil {
 				t.Fatal("broken wait accepted")
 			}
@@ -472,5 +486,85 @@ func TestSSHDefaultRunnerFailsClosedWithoutAReceipt(t *testing.T) {
 	var output boundedOutput
 	if _, e := output.Write(make([]byte, MaxEnvelopeBytes+1)); e == nil {
 		t.Fatal("oversized response accepted")
+	}
+}
+
+func TestSendDiagnosesProcessPhaseWithoutLeakingRemoteContent(t *testing.T) {
+	t.Parallel()
+	for _, code := range []int{1, 2, 127, 255} {
+		t.Run(fmt.Sprint(code), func(t *testing.T) {
+			t.Parallel()
+			processErr := exec.Command("sh", "-c", fmt.Sprintf("exit %d", code)).Run()
+			var typed *exec.ExitError
+			if !errors.As(processErr, &typed) {
+				t.Fatal(processErr)
+			}
+			ssh := SSH{Config: sessionmove.SSHConfig{Host: "vm"}, Run: func(context.Context, string, []string, io.Reader, io.Writer, io.Writer) error { return processErr }}
+			_, err := ssh.Send(context.Background(), sampleMessage())
+			if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("status %d", code)) {
+				t.Fatal(err)
+			}
+			if code != 255 && strings.Contains(err.Error(), "retrying the same --id") {
+				t.Fatal("permanent rejection suggests blind retry")
+			}
+		})
+	}
+	for _, wake := range []string{"rejected", "ambiguous"} {
+		t.Run(wake, func(t *testing.T) {
+			t.Parallel()
+			m := sampleMessage()
+			ssh := SSH{Config: sessionmove.SSHConfig{Host: "vm"}, Run: func(_ context.Context, _ string, _ []string, _ io.Reader, out, diagnostic io.Writer) error {
+				_, _ = io.WriteString(diagnostic, "private message content")
+				_ = json.NewEncoder(out).Encode(Receipt{ID: m.ID, Digest: m.Digest(), Status: "durable", Wake: wake})
+				return errors.New("private message content")
+			}}
+			receipt, err := ssh.Send(context.Background(), m)
+			if err == nil || receipt.Status != "durable" || !strings.Contains(err.Error(), wake) || strings.Contains(err.Error(), "private message content") {
+				t.Fatal(receipt, err)
+			}
+		})
+	}
+}
+
+func TestLongAgentNameStillSupportsNonWaitingInbox(t *testing.T) {
+	t.Parallel()
+	store := testStore(t)
+	agent := strings.Repeat("a", 64)
+	store.Root = filepath.Join(store.Root, strings.Repeat("r", 60))
+	if _, err := store.Receive(context.Background(), agent, time.Second); err == nil || !strings.Contains(err.Error(), "103 bytes") {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(store.Root); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("path preflight mutated store")
+	}
+	if messages, err := store.Receive(context.Background(), agent, 0); err != nil || len(messages) != 0 {
+		t.Fatal(messages, err)
+	}
+}
+
+func TestReceiveWaitRejectsUnavailableStore(t *testing.T) {
+	t.Parallel()
+	if _, err := (Store{Root: "relative"}).Receive(context.Background(), "mac", time.Second); err == nil {
+		t.Fatal("invalid store accepted")
+	}
+}
+
+func TestOutputBoundCannotBeBypassedByIOOptimizations(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"string", "copy"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			var output boundedOutput
+			output.limit = 8
+			var err error
+			if mode == "string" {
+				_, err = io.WriteString(&output, "0123456789")
+			} else {
+				_, err = io.Copy(&output, struct{ io.Reader }{strings.NewReader("0123456789")})
+			}
+			if err == nil || len(output.Bytes()) > 8 {
+				t.Fatal(err, len(output.Bytes()))
+			}
+		})
 	}
 }

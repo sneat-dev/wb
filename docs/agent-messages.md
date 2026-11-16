@@ -39,6 +39,9 @@ its tool completion; it does not restart a stopped agent or itself submit a new
 turn to an idle chat. Only one waiting receiver may own an inbox. Process exit
 releases the lock; the next receiver removes an abandoned socket. Waits are
 bounded to 24h, honor cancellation, and return an empty JSON array on timeout.
+Waiting uses a Unix socket whose full path must fit the portable 103-byte limit;
+use a shorter projects root or inbox name if WB reports a path-length error.
+Non-waiting inbox reads still support the full agent-name limit.
 
 Message output is JSON; bind/unbind also support `--format text`. A send receipt with `status: durable` confirms the
 receiver persisted the message, not that the agent processed it. `wake` reports
@@ -88,6 +91,7 @@ Wake outcomes are separate from delivery:
 - `not-bound`: available in the inbox and to a waiting receiver, without native wake.
 - `submitted`: Codex accepted the notification; processing is not yet acknowledged.
 - `preflight-failed`: no notification was submitted; repair the local connection and retry the same message ID.
+- `rejected`: Codex explicitly refused the notification; WB preserves the message and never automatically resubmits that ID.
 - `ambiguous`: submission may have happened. WB keeps the inbox and refuses another automatic submission for that ID.
 - `acknowledged`: a previous delivery was explicitly acknowledged; a retry cannot wake it again.
 
@@ -141,8 +145,9 @@ The relay reconnects after each held receive and uses a cancellable two-second
 backoff on failure, reporting a bounded escaped diagnostic on stderr for each
 failed retry. Message bodies and remote stderr are never included. It runs until cancelled; `--once` receives and copies one
 batch then exits, surfacing an error for diagnostics. Each remote call has a
-two-minute bound. Keep this process running via the agent harness or your
-existing process supervisor. No inbound listener or system-service installation
+two-minute bound. SIGINT and SIGTERM cancel the local receive/relay and its SSH child. A remote
+held receive remains bounded to one minute if the connection disappears. Keep
+this process running via the agent harness or your existing process supervisor. No inbound listener or system-service installation
 is required. `--projects-root` chooses the local relay destination; the remote
 VM uses its own normal WB home. For local sends, `--local` and `--host` are
 mutually exclusive; `--user` and `--remote-wb` apply only to `--host`.

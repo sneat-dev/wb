@@ -67,5 +67,5 @@ func newBindingCommand(runtime shared.Runtime, verb, short string, agent *string
 	}
 	command.Flags().StringVar(agent, "agent", "", "local recipient inbox name")
 	command.Flags().StringVar(&format, "format", "json", "output format: json or text")
-	return command
+	return withSignals(command)
 }

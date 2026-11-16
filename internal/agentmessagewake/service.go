@@ -21,8 +21,11 @@ import (
 )
 
 const (
-	NotBound        = "not-bound"
-	Submitted       = "submitted"
+	NotBound  = "not-bound"
+	Submitted = "submitted"
+	// Rejected records an explicit server refusal. Repeating the same message
+	// preserves this terminal result; a deliberate new attempt needs a new ID.
+	Rejected        = "rejected"
 	Ambiguous       = "ambiguous"
 	PreflightFailed = "preflight-failed"
 )
@@ -132,6 +135,7 @@ func (s Service) Unbind(agent string) error {
 // Notify is suitable for agentmessage.Store.Notify. Delivery must be durable first.
 // The immutable intent is synced before turn/start. An interrupted or uncertain
 // submission is never retried automatically, even after rebinding the alias.
+// Explicit server rejections are also terminal and retain a distinct receipt.
 func (s Service) Notify(ctx context.Context, msg agentmessage.Message) (string, error) {
 	if err := msg.Validate(); err != nil {
 		return PreflightFailed, err
@@ -146,7 +150,7 @@ func (s Service) Notify(ctx context.Context, msg agentmessage.Message) (string, 
 		var old receipt
 		err = filewrite.ReadJSONAt(dir, name, &old)
 		if err == nil {
-			if old.Digest != digest || (old.Status != Submitted && old.Status != Ambiguous) {
+			if old.Digest != digest || (old.Status != Submitted && old.Status != Ambiguous && old.Status != Rejected) {
 				return Ambiguous, errors.New("wake receipt conflicts with message")
 			}
 			return old.Status, nil
@@ -185,7 +189,15 @@ func (s Service) Notify(ctx context.Context, msg agentmessage.Message) (string, 
 	params := map[string]any{"threadId": b.ThreadID, "clientUserMessageId": msg.ID, "input": []any{map[string]any{"type": "text", "text": prompt}}}
 	raw, err := conn.Call("turn/start", params)
 	if err != nil {
-		return Ambiguous, errors.New("codex wake outcome is uncertain; automatic retry is disabled")
+		var rejection *rpcRejectionError
+		if !errors.As(err, &rejection) {
+			return Ambiguous, errors.New("codex wake outcome is uncertain; automatic retry is disabled")
+		}
+		record.Status = Rejected
+		if err = s.persist(dir, msg.ID+".result.json", record, true); err != nil {
+			return Ambiguous, errors.New("codex rejected the wake but its receipt could not be persisted")
+		}
+		return Rejected, rejection
 	}
 	var result struct {
 		Turn struct {

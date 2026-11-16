@@ -3,6 +3,10 @@ package agentmessagewake
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"sync/atomic"
+
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"net"
 	"net/http"
 	"os"
@@ -117,6 +121,8 @@ func TestCodexResponseValidationRejectsAmbiguousFrames(t *testing.T) {
 		{"binary", `{"id":1,"result":{}}`, websocket.MessageBinary, 1},
 		{"wrong-id", `{"id":2,"result":{}}`, websocket.MessageText, 1},
 		{"server-error", `{"id":1,"error":{"message":"private server text"}}`, websocket.MessageText, 1},
+		{"malformed-error", `{"id":1,"error":true}`, websocket.MessageText, 1},
+		{"contradictory-response", `{"id":1,"result":{},"error":{"code":-32600,"message":"private server text"}}`, websocket.MessageText, 1},
 		{"missing-result", `{"id":1}`, websocket.MessageText, 1},
 		{"null-result", `{"id":1,"result":null}`, websocket.MessageText, 1},
 		{"notifications", `{"method":"event","params":{"private":"text"}}`, websocket.MessageText, 128},
@@ -143,6 +149,10 @@ func TestCodexResponseValidationRejectsAmbiguousFrames(t *testing.T) {
 			t.Cleanup(conn.Close)
 			if _, err = conn.Call("thread/read", map[string]string{"threadId": "thread-1"}); err == nil || strings.Contains(err.Error(), "private server text") {
 				t.Fatal("response accepted or leaked", err)
+			}
+			var rejection *rpcRejectionError
+			if errors.As(err, &rejection) {
+				t.Fatal("ambiguous response treated as explicit rejection")
 			}
 		})
 	}
@@ -198,5 +208,84 @@ func TestCodexTransportErrorsAndInvalidRequestAreBounded(t *testing.T) {
 	}
 	if _, err = conn.Call("thread/read", struct{}{}); err == nil {
 		t.Fatal("closed call")
+	}
+}
+
+func TestExplicitCodexRejectionIsPersistedWithoutRetryingSubmission(t *testing.T) {
+	t.Parallel()
+	for _, failReceipt := range []bool{false, true} {
+		name := "durable-rejection"
+		if failReceipt {
+			name = "receipt-write-failed"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var submissions atomic.Int32
+			path := unixServer(t, func(ctx context.Context, conn *websocket.Conn) {
+				for {
+					_, raw, err := conn.Read(ctx)
+					if err != nil {
+						return
+					}
+					var request struct {
+						ID     int    `json:"id"`
+						Method string `json:"method"`
+					}
+					if err = json.Unmarshal(raw, &request); err != nil {
+						t.Error(err)
+						return
+					}
+					if request.Method == "initialized" {
+						continue
+					}
+					reply := map[string]any{"id": request.ID, "result": map[string]any{}}
+					if request.Method == "thread/read" {
+						reply["result"] = map[string]any{"thread": map[string]any{"id": "thread-1", "status": map[string]any{"type": "idle"}}}
+					}
+					if request.Method == "turn/start" {
+						submissions.Add(1)
+						delete(reply, "result")
+						reply["error"] = map[string]any{"code": -32600, "message": "private rejection detail"}
+					}
+					response, _ := json.Marshal(reply)
+					if err = conn.Write(ctx, websocket.MessageText, response); err != nil {
+						return
+					}
+				}
+			})
+			service := Service{Root: filepath.Join(t.TempDir(), "wake")}
+			if err := service.Bind(context.Background(), "mac", path, "thread-1"); err != nil {
+				t.Fatal(err)
+			}
+			if failReceipt {
+				service.write = func(dir *os.File, name string, value any, idempotent bool) error {
+					if strings.HasSuffix(name, ".result.json") {
+						return errors.New("disk failure")
+					}
+					return filewrite.WriteJSONImmutableAt(dir, name, value, idempotent, nil)
+				}
+			}
+			expected := Rejected
+			if failReceipt {
+				expected = Ambiguous
+			}
+			status, err := service.Notify(context.Background(), testMessage())
+			if status != expected || err == nil {
+				t.Fatalf("state=%s error=%v, want %s rejection", status, err, expected)
+			}
+			var rejection *rpcRejectionError
+			if !failReceipt && !errors.As(err, &rejection) {
+				t.Fatalf("missing typed RPC rejection: %T", err)
+			}
+			if strings.Contains(err.Error(), "private rejection detail") {
+				t.Fatal("server error leaked")
+			}
+			if status, err = service.Notify(context.Background(), testMessage()); status != expected || err != nil {
+				t.Fatalf("replay state=%s error=%v", status, err)
+			}
+			if submissions.Load() != 1 {
+				t.Fatalf("submitted %d times", submissions.Load())
+			}
+		})
 	}
 }

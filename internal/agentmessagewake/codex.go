@@ -13,6 +13,12 @@ import (
 	"github.com/coder/websocket"
 )
 
+// rpcRejectionError identifies a matching, well-formed server rejection. It
+// deliberately retains no server-provided message or data.
+type rpcRejectionError struct{ method string }
+
+func (e *rpcRejectionError) Error() string { return fmt.Sprintf("codex rejected %s", e.method) }
+
 type connection interface {
 	Call(string, any) (json.RawMessage, error)
 	Notify(string) error
@@ -76,7 +82,14 @@ func (c *codexConnection) Call(method string, params any) (json.RawMessage, erro
 			return nil, errors.New("codex response ID did not match")
 		}
 		if len(response.Error) > 0 && string(response.Error) != "null" {
-			return nil, fmt.Errorf("codex rejected %s", method)
+			var rejection struct {
+				Code    *int    `json:"code"`
+				Message *string `json:"message"`
+			}
+			if json.Unmarshal(response.Error, &rejection) != nil || rejection.Code == nil || rejection.Message == nil || (len(response.Result) > 0 && string(response.Result) != "null") {
+				return nil, errors.New("invalid Codex rejection response")
+			}
+			return nil, &rpcRejectionError{method: method}
 		}
 		if len(response.Result) == 0 || string(response.Result) == "null" {
 			return nil, errors.New("codex response omitted its result")

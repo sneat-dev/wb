@@ -24,6 +24,9 @@ type Dependencies struct {
 func New(runtime shared.Runtime, deps Dependencies) *cobra.Command {
 	command := &cobra.Command{Use: "message", Short: "Send, receive and acknowledge messages between remote agents"}
 	command.AddCommand(newSend(runtime, deps), newDeliver(runtime, deps), newReceive(runtime, deps), newAck(runtime, deps), newRelay(runtime, deps))
+	for _, child := range command.Commands() {
+		withSignals(child)
+	}
 	return command
 }
 
@@ -140,7 +143,7 @@ func newReceive(runtime shared.Runtime, deps Dependencies) *cobra.Command {
 		return json.NewEncoder(cmd.OutOrStdout()).Encode(messages)
 	}}
 	command.Flags().StringVar(&agent, "agent", "", "Local recipient agent inbox name")
-	command.Flags().DurationVar(&wait, "wait", 0, "Wait for a message, up to 24h (run as an asynchronous harness tool)")
+	command.Flags().DurationVar(&wait, "wait", 0, "Wait for a message, up to 24h; full inbox socket path must fit 103 bytes (run as an asynchronous harness tool)")
 	return command
 }
 
