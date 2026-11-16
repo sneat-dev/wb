@@ -1,25 +1,22 @@
 package agents
 
 import (
+	"errors"
+	"slices"
 	"strings"
 	"testing"
 )
 
-func TestOpenCodeAdapterBuildsAStandaloneNonInteractiveRun(t *testing.T) {
+func TestOpenCodeAdapterBuildsANonInteractiveRun(t *testing.T) {
 	t.Parallel()
 	harness := openCodeHarness{}
 	launch, err := harness.Prepare(Launch{WorktreeDir: "/work", Model: "opencode-go/deepseek-v4.1-flash", Variant: "high", Task: "do it"})
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
-	joined := strings.Join(launch.Argv, " ")
-	for _, required := range []string{"run", "--standalone", "--auto", "--format json", "--model opencode-go/deepseek-v4.1-flash#high"} {
-		if !strings.Contains(joined, required) {
-			t.Fatalf("argv %q is missing %q", joined, required)
-		}
-	}
-	if strings.Contains(joined, "--server") {
-		t.Fatalf("argv %q must never attach to a shared server", joined)
+	want := []string{"run", "--auto", "--format", "json", "--model", "opencode-go/deepseek-v4.1-flash", "--variant", "high"}
+	if !slices.Equal(launch.Argv, want) {
+		t.Fatalf("argv = %#v, want OpenCode 1.19.5 arguments %#v", launch.Argv, want)
 	}
 	if launch.Stdin != "do it" {
 		t.Fatalf("task must travel on stdin, got %q", launch.Stdin)
@@ -81,6 +78,16 @@ func TestOpenCodeSummaryTreatsAnErrorEventAsAFailedTurn(t *testing.T) {
 	}
 	if len(summary.Diagnostics) != 1 || !strings.Contains(summary.Diagnostics[0], "provider.no-route") {
 		t.Fatalf("diagnostics = %#v", summary.Diagnostics)
+	}
+}
+
+func TestOpenCodeArgumentUsageBecomesAConciseFailureReason(t *testing.T) {
+	t.Parallel()
+	usage := "opencode run [message..]\n\nrun opencode with a message\n\nOptions:\n  --auto  auto-approve permissions\n"
+	summary := openCodeHarness{}.Summarize(strings.NewReader(usage))
+	const want = "opencode rejected its arguments: unknown option"
+	if got := failureMessage(summary, errors.New("exit status 1")); got != want {
+		t.Fatalf("failure = %q, want %q", got, want)
 	}
 }
 

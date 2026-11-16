@@ -75,7 +75,7 @@ agents:
     opencode-flash:
       harness: opencode                       # codex | opencode | dsh | antigravity
       model: opencode-go/deepseek-v4.1-flash  # harness-native id, passed through
-      variant: medium                         # opencode only; appended as #variant in argv
+      variant: medium                         # opencode only; passed as --variant in argv
       effort_variants: { low: cheap, high: heavy }   # opencode effort mapping
       timeout: 45m
     dsh-flash:
@@ -156,7 +156,7 @@ with requested and effective values.
 
 #### REQ:effort-capability
 Effort is translated by harness capability: Codex passes
-`model_reasoning_effort`; OpenCode appends the profile's mapped `#variant`;
+`model_reasoning_effort`; OpenCode passes the profile's mapped variant as `--variant`;
 `dsh` has no seam. An **explicit** `--effort` a harness cannot honour is a usage
 error naming the harness. An **inherited** effort that cannot be honoured is
 recorded `effective: null` with a reason and a warning, and does not fail the
@@ -190,13 +190,13 @@ Verified CLI facts (2026-10-24, this machine):
 | | Codex | OpenCode | `dsh` |
 |---|---|---|---|
 | Executable | `codex` | `opencode` | `dsh` |
-| Model flag | `-m <model>` | `--model <provider/model[#variant]>` | none; `--patch` overlay sets `agent-default-model` |
+| Model flag | `-m <model>` | `--model <provider/model>` plus `--variant <variant>` | none; `--patch` overlay sets `agent-default-model` |
 | Task delivery | stdin (`-`) | stdin | one argv element |
 | Events | `--json` JSONL | `--format json` JSONL | none (final message only) |
 | Usage | `turn.completed.usage` | summed `step_finish.tokens` | unavailable |
 | Cost | unavailable | `step_finish.cost`, harness-estimated USD | unavailable |
-| Effort | `model_reasoning_effort` | `#variant` via `effort_variants` | unsupported |
-| Non-interactive | `approval_policy=never` | `--auto --standalone` | headless profile |
+| Effort | `model_reasoning_effort` | `--variant` via `effort_variants` | unsupported |
+| Non-interactive | `approval_policy=never` | `--auto` | headless profile |
 | Credential | WB-injected env var | harness auth store | harness auth store |
 | Error signal | non-zero exit / `turn.failed` | non-zero exit **or** `error` event | non-zero exit |
 
@@ -227,10 +227,14 @@ A run is `completed` only when the harness produced its documented terminal
 success evidence and no error event. OpenCode requires a terminal `step_finish`,
 no `error` event, and no malformed event lines; Codex keeps its existing rule.
 
-#### REQ:opencode-standalone
-OpenCode is always launched with `--standalone` and never `--server`, so its
-private server lives inside the worker's process group and inside WB's
-allowlisted environment. No shared background service is used.
+#### REQ:opencode-supported-arguments
+OpenCode is launched with `--auto`, `--format json`, and `--model`. OpenCode
+1.19.5 rejects `--standalone`; `--pure` is not a substitute because it disables
+external plugins rather than changing server lifecycle. WB never passes
+`--attach`, so it does not attach to a shared background service: observed on
+1.19.5, such a run is one process inside the worker's process group and starts
+nothing outside it, so the group signal WB sends on timeout or cancellation
+stops the whole run. The variant is passed with `--variant`.
 
 #### REQ:dsh-argv-delivery
 `dsh` cannot read the task from stdin and its launcher consumes `--`, so the task
@@ -501,9 +505,9 @@ documented where the operator will see them.
 validation by the documented precedence, records the source of each value, and
 creates nothing.
 
-### AC: three-harness-adapters (verifies REQ:harness-contract, REQ:capability-aware-translation, REQ:harness-error-normalization, REQ:opencode-standalone, REQ:dsh-argv-delivery, REQ:effort-capability)
-Each adapter builds its documented non-interactive argv with `--standalone` for
-OpenCode and one argv element (≤64 KiB, leading newline when needed) for `dsh`,
+### AC: three-harness-adapters (verifies REQ:harness-contract, REQ:capability-aware-translation, REQ:harness-error-normalization, REQ:opencode-supported-arguments, REQ:dsh-argv-delivery, REQ:effort-capability)
+Each adapter builds its documented non-interactive argv without `--standalone` for
+OpenCode 1.19.5 and one argv element (≤64 KiB, leading newline when needed) for `dsh`,
 normalizes events into one summary, and refuses an explicit effort it cannot
 honour while recording an inherited one as not applied.
 

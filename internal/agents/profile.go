@@ -78,7 +78,7 @@ type Profile struct {
 	Harness  string `yaml:"harness" json:"harness"`
 	Provider string `yaml:"provider,omitempty" json:"provider,omitempty"`
 	Model    string `yaml:"model" json:"model"`
-	// Variant is an OpenCode model variant, appended as "#variant" when the
+	// Variant is an OpenCode model variant, passed as --variant when the
 	// argv is built. It is a separate field because "#" is not a legal
 	// execution identifier and because a variant name is model-specific.
 	Variant string `yaml:"variant,omitempty" json:"variant,omitempty"`

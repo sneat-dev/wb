@@ -28,7 +28,7 @@ agents:
   For `opencode` it is derived from the `provider/model` prefix and, if written,
   must match it. For `dsh` it is `deepseek-official`.
   For `antigravity`, omit it: `agy` manages model routing and credentials.
-- `variant` is OpenCode only and is appended as `#variant` when the command is
+- `variant` is OpenCode only and is passed as `--variant` when the command is
   built. Keep it out of `model`: `model` must stay a legal execution
   identifier.
 - `effort` (or the legacy `reasoning`) is the profile's default effort. Naming

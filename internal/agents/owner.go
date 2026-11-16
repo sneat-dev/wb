@@ -531,6 +531,11 @@ func finalMessage(summary HarnessSummary, lastMessagePath string) string {
 }
 
 func failureMessage(summary HarnessSummary, waitErr error) string {
+	for _, diagnostic := range summary.Diagnostics {
+		if diagnostic == openCodeArgumentFailure {
+			return diagnostic
+		}
+	}
 	if summary.TurnFailed {
 		return "harness reported a failed turn"
 	}
