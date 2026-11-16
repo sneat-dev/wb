@@ -283,3 +283,7 @@ root that still exists; it preserves checkout Git identity and writes one audit.
 `integration adopt-legacy --prepared --to <target>` explicitly selects separately typed prepared/CI-deferred provenance; completed-direct mode remains the default. This metadata does not approve code or waive required CI.
 
 `worktree retire --preserve branch|tag` can archive a worktree whose recorded base is not an ancestor of its live head. All other claim and custody proofs remain mandatory. Its private archive includes `history.bundle` with `preserved-source` and `preserved-base` refs; the original claim is retained unchanged. Normal attachment, park, landing, and deletion without preservation still reject the mismatch.
+
+| `message send` (`--projects-root` only with `--local`) | yes | rejected | rejected | yes |
+| `message deliver`, `message receive`, `message ack`, `message relay` | yes | rejected | rejected | yes |
+| `message bind`, `message unbind` | yes | rejected | rejected | yes |

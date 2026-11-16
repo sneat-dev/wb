@@ -10,6 +10,7 @@ require (
 	connectrpc.com/connect v1.20.0
 	github.com/BurntSushi/toml v1.6.0
 	github.com/charmbracelet/x/ansi v0.11.7
+	github.com/coder/websocket v1.8.15
 	github.com/dal-go/dalgo v0.95.2
 	github.com/dal-go/dalgo2openvaultdb v0.3.1
 	github.com/dal-go/record v0.1.5
