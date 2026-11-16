@@ -5609,13 +5609,13 @@
               "kind": "integration"
             },
             {
-              "path": "internal/locallink/tracked_gowork_test.go",
-              "name": "TestUndoWithoutARecordLeavesACommittedGoWorkUntouched",
+              "path": "internal/locallink/tracked_gowork_e2e_test.go",
+              "name": "TestContractUndoWithoutARecordLeavesACommittedGoWorkUntouched",
               "kind": "integration"
             },
             {
-              "path": "internal/locallink/tracked_gowork_test.go",
-              "name": "TestUndoRestoresATrackedGoWorkALinkOverwrote",
+              "path": "internal/locallink/tracked_gowork_e2e_test.go",
+              "name": "TestContractUndoRestoresATrackedGoWorkALinkOverwrote",
               "kind": "integration"
             },
             {
@@ -6027,9 +6027,9 @@
               "kind": "unit"
             },
             {
-              "path": "internal/dependencycache/cache_test.go",
-              "name": "TestArchivePolicyFilesystemAndInheritedLeaseRegressions",
-              "kind": "unit"
+              "path": "internal/dependencycache/cache_e2e_test.go",
+              "name": "TestContractArchivePolicyFilesystemAndInheritedLeaseRegressions",
+              "kind": "integration"
             }
           ],
           "limitation": null
@@ -17554,8 +17554,8 @@
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/worktree_merge_legacy_landed_test.go",
-              "name": "TestLegacyLandedValidationPreservesAdvancedCheckoutAndReleasesOnlyHistoricalLane",
+              "path": "internal/orchestrate/worktree_merge_legacy_landed_e2e_test.go",
+              "name": "TestE2ELegacyLandedValidationPreservesAdvancedCheckoutAndReleasesOnlyHistoricalLane",
               "kind": "integration"
             },
             {
@@ -18011,8 +18011,8 @@
           "status": "Full",
           "references": [
             {
-              "path": "internal/orchestrate/worktree_merge_unpublished_validation_failure_test.go",
-              "name": "TestAcknowledgeUnpublishedValidationFailureFreesLane",
+              "path": "internal/orchestrate/worktree_merge_unpublished_validation_failure_e2e_test.go",
+              "name": "TestE2EAcknowledgeUnpublishedValidationFailureFreesLane",
               "kind": "integration"
             }
           ],
