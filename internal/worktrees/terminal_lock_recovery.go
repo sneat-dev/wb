@@ -56,6 +56,7 @@ type terminalLockRecoveryPorts struct {
 	seekTask     func(*os.File) error
 	list         func(context.Context, ListOptions) (ListOutcome, error)
 	hasBacklog   func(context.Context, wbhome.Resolution, string, string, string) (bool, error)
+	canonical    func(string, string) (string, error)
 	fetchTarget  func(context.Context, string, string) (string, error)
 	marshalAudit func(any) ([]byte, error)
 	createAudit  func(string, string) (*os.File, error)
@@ -77,6 +78,7 @@ func defaultTerminalLockRecoveryPorts() terminalLockRecoveryPorts {
 				[]string{worktreesRoot}, map[string]bool{task: true}, "", "removed")
 			return len(backlog) != 0 || len(quarantine) != 0, err
 		},
+		canonical:    CanonicalRepositoryPath,
 		fetchTarget:  fetchRemoteTargetHead,
 		marshalAudit: func(value any) ([]byte, error) { return json.MarshalIndent(value, "", "  ") },
 		createAudit:  os.CreateTemp,
@@ -165,7 +167,10 @@ func recoverTerminalOperationLock(ctx context.Context, options TerminalLockRecov
 	if err != nil || hasBacklog {
 		return outcome, fmt.Errorf("operation still has cleanup backlog or uncertain records: %v", err)
 	}
-	canonical := filepath.Join(root, filepath.FromSlash(receipt.Repository))
+	canonical, err := ports.canonical(root, receipt.Repository)
+	if err != nil {
+		return outcome, fmt.Errorf("resolve canonical clone: %w", err)
+	}
 	targetSHA, err := ports.fetchTarget(ctx, canonical, receipt.Target)
 	if err != nil {
 		return outcome, fmt.Errorf("fresh target proof: %w", err)
