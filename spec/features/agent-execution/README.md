@@ -75,7 +75,7 @@ agents:
     opencode-flash:
       harness: opencode                       # codex | opencode | dsh | antigravity
       model: opencode-go/deepseek-v4.1-flash  # harness-native id, passed through
-      variant: medium                         # opencode only; appended as #variant in argv
+      variant: medium                         # opencode only; passed as --variant in argv
       effort_variants: { low: cheap, high: heavy }   # opencode effort mapping
       timeout: 45m
     dsh-flash:
@@ -156,7 +156,7 @@ with requested and effective values.
 
 #### REQ:effort-capability
 Effort is translated by harness capability: Codex passes
-`model_reasoning_effort`; OpenCode appends the profile's mapped `#variant`;
+`model_reasoning_effort`; OpenCode passes the profile's mapped variant as `--variant`;
 `dsh` has no seam. An **explicit** `--effort` a harness cannot honour is a usage
 error naming the harness. An **inherited** effort that cannot be honoured is
 recorded `effective: null` with a reason and a warning, and does not fail the
@@ -190,12 +190,12 @@ Verified CLI facts (2026-10-24, this machine):
 | | Codex | OpenCode | `dsh` |
 |---|---|---|---|
 | Executable | `codex` | `opencode` | `dsh` |
-| Model flag | `-m <model>` | `--model <provider/model[#variant]>` | none; `--patch` overlay sets `agent-default-model` |
+| Model flag | `-m <model>` | `--model <provider/model>` plus `--variant <variant>` | none; `--patch` overlay sets `agent-default-model` |
 | Task delivery | stdin (`-`) | stdin | one argv element |
 | Events | `--json` JSONL | `--format json` JSONL | none (final message only) |
 | Usage | `turn.completed.usage` | summed `step_finish.tokens` | unavailable |
 | Cost | unavailable | `step_finish.cost`, harness-estimated USD | unavailable |
-| Effort | `model_reasoning_effort` | `#variant` via `effort_variants` | unsupported |
+| Effort | `model_reasoning_effort` | `--variant` via `effort_variants` | unsupported |
 | Non-interactive | `approval_policy=never` | `--auto` | headless profile |
 | Credential | WB-injected env var | harness auth store | harness auth store |
 | Error signal | non-zero exit / `turn.failed` | non-zero exit **or** `error` event | non-zero exit |

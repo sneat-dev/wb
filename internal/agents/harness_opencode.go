@@ -43,12 +43,14 @@ func (openCodeHarness) Prepare(launch Launch) (HarnessLaunch, error) {
 	if strings.Contains(model, "#") {
 		return HarnessLaunch{}, fmt.Errorf("opencode model %q must not contain a variant; configure the profile's variant separately", model)
 	}
-	if variant := strings.TrimSpace(launch.Variant); variant != "" {
-		model += "#" + variant
-	}
 	argv := []string{
 		"run", "--auto", "--format", "json",
 		"--model", model,
+	}
+	// OpenCode 1.19.5 takes the variant in its own option; a "#variant" suffix
+	// is read as part of the model name and the model is then not found.
+	if variant := strings.TrimSpace(launch.Variant); variant != "" {
+		argv = append(argv, "--variant", variant)
 	}
 	return HarnessLaunch{Argv: argv, Stdin: launch.Task}, nil
 }

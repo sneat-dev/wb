@@ -14,7 +14,7 @@ func TestOpenCodeAdapterBuildsANonInteractiveRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
-	want := []string{"run", "--auto", "--format", "json", "--model", "opencode-go/deepseek-v4.1-flash#high"}
+	want := []string{"run", "--auto", "--format", "json", "--model", "opencode-go/deepseek-v4.1-flash", "--variant", "high"}
 	if !slices.Equal(launch.Argv, want) {
 		t.Fatalf("argv = %#v, want OpenCode 1.19.5 arguments %#v", launch.Argv, want)
 	}
