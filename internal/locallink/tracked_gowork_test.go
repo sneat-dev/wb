@@ -3,22 +3,13 @@ package locallink
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/streams"
 )
-
-// committedWorkspace is a repository's own multi-module workspace — the shape
-// sneat-co/commitius commits at its root.
-const committedWorkspace = "go 1.27\n\nuse ./backend\n"
-
-type fakeLiveLinkStore struct{ links []streams.StreamLink }
-
-func (store fakeLiveLinkStore) LiveLinksForWorktree(string) ([]streams.StreamLink, error) {
-	return store.links, nil
-}
 
 func TestClassifyGoWorkReportsProvenanceAndGitFailures(t *testing.T) {
 	t.Parallel()
@@ -104,4 +95,129 @@ func TestHeadGitCommandIgnoresInheritedRepositoryOverrides(t *testing.T) {
 	if strings.Join(command.Args, " ") != "git -C /worktree status" {
 		t.Fatalf("args = %v", command.Args)
 	}
+}
+
+func TestRestoreLinkArtefactsNeverDeletesTrackedContent(t *testing.T) {
+	t.Parallel()
+	failed := errors.New("git is gone")
+	yes := func(string, string) (bool, error) { return true, nil }
+	no := func(string, string) (bool, error) { return false, nil }
+	broken := func(string, string) (bool, error) { return false, failed }
+
+	t.Run("untracked artefacts are removed, absent ones ignored", func(t *testing.T) {
+		t.Parallel()
+		worktree := t.TempDir()
+		writeGuardTestFile(t, worktree, goWorkFile, "go 1.27\n")
+		notes, err := headFiles{exists: no}.restoreLinkArtefacts(worktree, []string{goWorkFile, goWorkSum})
+		if err != nil || len(notes) != 0 || fileExists(filepath.Join(worktree, goWorkFile)) {
+			t.Fatalf("notes = %v, err = %v; want the untracked workspace removed silently", notes, err)
+		}
+	})
+
+	t.Run("an unchanged tracked artefact is left alone", func(t *testing.T) {
+		t.Parallel()
+		restored := false
+		files := headFiles{exists: yes, unchanged: yes, restore: func(string, string) error { restored = true; return nil }}
+		notes, err := files.restoreLinkArtefacts(t.TempDir(), []string{goWorkSum})
+		if err != nil || restored || len(notes) != 1 || !strings.Contains(notes[0], "unchanged from HEAD") {
+			t.Fatalf("notes = %v, err = %v, restored = %v", notes, err, restored)
+		}
+	})
+
+	t.Run("a committed linked go.work is refused, not cleared", func(t *testing.T) {
+		t.Parallel()
+		worktree := t.TempDir()
+		writeGuardTestFile(t, worktree, goWorkFile, "linked\n")
+		_, err := headFiles{exists: yes, unchanged: yes}.restoreLinkArtefacts(worktree, []string{goWorkFile})
+		if err == nil || !strings.Contains(err.Error(), "revert that commit") || !fileExists(filepath.Join(worktree, goWorkFile)) {
+			t.Fatalf("err = %v; want the committed link refused and the file kept", err)
+		}
+	})
+
+	t.Run("a modified tracked artefact is restored, not removed", func(t *testing.T) {
+		t.Parallel()
+		worktree := t.TempDir()
+		writeGuardTestFile(t, worktree, goWorkFile, "linked\n")
+		var restoredPath string
+		files := headFiles{exists: yes, unchanged: no, restore: func(_, path string) error { restoredPath = path; return nil }}
+		notes, err := files.restoreLinkArtefacts(worktree, []string{goWorkFile})
+		if err != nil || restoredPath != goWorkFile || !fileExists(filepath.Join(worktree, goWorkFile)) {
+			t.Fatalf("notes = %v, err = %v, restored %q", notes, err, restoredPath)
+		}
+	})
+
+	t.Run("a recorded path outside the worktree is refused", func(t *testing.T) {
+		t.Parallel()
+		_, err := headFiles{exists: no}.restoreLinkArtefacts(t.TempDir(), []string{"../go.work"})
+		if err == nil || !strings.Contains(err.Error(), "outside the consumer worktree") {
+			t.Fatalf("err = %v, want the escaping path refused", err)
+		}
+	})
+
+	for _, tc := range []struct {
+		name  string
+		files headFiles
+	}{
+		{"presence unknown", headFiles{exists: broken}},
+		{"difference unknown", headFiles{exists: yes, unchanged: broken}},
+		{"restore failed", headFiles{exists: yes, unchanged: no, restore: func(string, string) error { return failed }}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := tc.files.restoreLinkArtefacts(t.TempDir(), []string{goWorkFile}); !errors.Is(err, failed) {
+				t.Fatalf("err = %v, want the Git failure", err)
+			}
+		})
+	}
+
+	t.Run("an untracked artefact that cannot be removed is reported", func(t *testing.T) {
+		t.Parallel()
+		worktree := t.TempDir()
+		writeGuardTestFile(t, worktree, filepath.Join(goWorkSum, "keep.txt"), "keep\n")
+		if _, err := (headFiles{exists: no}).restoreLinkArtefacts(worktree, []string{goWorkSum}); err == nil ||
+			!strings.Contains(err.Error(), "remove "+goWorkSum) {
+			t.Fatalf("err = %v, want the failed removal reported", err)
+		}
+	})
+
+	t.Run("a record without artefacts falls back to the Go workspace pair", func(t *testing.T) {
+		t.Parallel()
+		if got := goWorkArtefacts(streams.Link{}); strings.Join(got, ",") != goWorkFile+","+goWorkSum {
+			t.Fatalf("artefacts = %v", got)
+		}
+	})
+}
+
+func TestRetirementGoWorkSignalHandlesMissingUnreadableAndUnknownProvenance(t *testing.T) {
+	t.Parallel()
+
+	t.Run("no go.work", func(t *testing.T) {
+		t.Parallel()
+		signal, err := RetirementGoWorkSignal(t.TempDir(), false)
+		if err != nil || signal != nil {
+			t.Fatalf("signal = %#v, err = %v, want none", signal, err)
+		}
+	})
+
+	t.Run("unreadable go.work", func(t *testing.T) {
+		t.Parallel()
+		worktree := t.TempDir()
+		if err := os.Mkdir(filepath.Join(worktree, goWorkFile), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := RetirementGoWorkSignal(worktree, false); err == nil {
+			t.Fatal("a go.work directory reported no error")
+		}
+	})
+
+	t.Run("provenance unknown", func(t *testing.T) {
+		t.Parallel()
+		worktree := t.TempDir()
+		writeGuardTestFile(t, worktree, goWorkFile, "go 1.27\n\nuse /elsewhere/library\n")
+		failed := errors.New("git is gone")
+		_, err := retirementGoWorkSignalWith(worktree, false, headFiles{exists: func(string, string) (bool, error) { return false, failed }})
+		if !errors.Is(err, failed) {
+			t.Fatalf("err = %v, want the provenance failure", err)
+		}
+	})
 }

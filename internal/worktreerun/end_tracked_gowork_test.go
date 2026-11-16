@@ -9,8 +9,6 @@ import (
 	"github.com/sneat-dev/wb/internal/streams"
 )
 
-const committedWorkspace = "go 1.27\n\nuse ./backend\n"
-
 // A go.work a recorded link wrote is cleared by the recorded link's undo.
 func TestWorktreeEndNamesUndoForARecordedGoWorkLink(t *testing.T) {
 	t.Parallel()

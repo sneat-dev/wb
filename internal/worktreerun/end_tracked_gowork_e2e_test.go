@@ -11,6 +11,8 @@ import (
 	"github.com/sneat-dev/wb/internal/streams"
 )
 
+const committedWorkspace = "go 1.27\n\nuse ./backend\n"
+
 // committedWorkspaceRepository is a checkout of a repository that commits its
 // own go.work at the root, as sneat-co/commitius does.
 func committedWorkspaceRepository(t *testing.T) string {

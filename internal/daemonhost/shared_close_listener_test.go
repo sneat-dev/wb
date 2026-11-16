@@ -47,7 +47,7 @@ func TestSharedListenerCloseWaitsForHTTPShutdownToReleaseDescriptor(t *testing.T
 	}()
 	waitListenerEvent(t, held, "RawConn.Control held the descriptor")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	shutdownDone := make(chan error, 1)
 	go func() { shutdownDone <- server.Shutdown(ctx) }()
 	waitListenerEvent(t, observed.acceptClosed, "Accept observed the closing state")
