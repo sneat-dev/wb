@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"os/exec"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/runner"
@@ -123,6 +125,18 @@ func (s SSH) Send(ctx context.Context, m Message) (Receipt, error) {
 func unconfirmedDelivery(ctx context.Context, err error) error {
 	if ctx.Err() != nil {
 		return fmt.Errorf("SSH delivery was cancelled or timed out; outcome is unconfirmed; inspect connectivity before retrying the same --id and exact message")
+	}
+	if errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("local SSH executable is unavailable; delivery is unconfirmed; check SSH installation and the agent's PATH before retrying the same --id and exact message")
+	}
+	if errors.Is(err, exec.ErrDot) {
+		return fmt.Errorf("local SSH executable resolves through the current directory and was refused; delivery is unconfirmed; configure a trusted SSH executable on PATH before retrying the same --id and exact message")
+	}
+	if errors.Is(err, os.ErrPermission) {
+		return fmt.Errorf("local SSH execution was denied; delivery is unconfirmed; inspect the agent's existing execution permissions before retrying the same --id and exact message")
+	}
+	if errors.Is(err, runner.ErrOutputTooLarge) {
+		return fmt.Errorf("SSH response exceeded the output limit; delivery is unconfirmed; inspect remote protocol compatibility before retrying the same --id and exact message")
 	}
 	var exited interface{ ExitCode() int }
 	if errors.As(err, &exited) {

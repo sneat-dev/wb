@@ -55,6 +55,14 @@ unacknowledged messages in unspecified order, including messages delivered
 while offline. Reading does not acknowledge; acknowledge only after processing.
 Retries after acknowledgment do not resurrect a message or wake an agent again.
 
+Failure diagnostics distinguish an unavailable SSH executable, unsafe current-directory
+lookup, denied execution, oversized response, SSH transport exit and remote-command
+exit. They never print raw SSH stderr, executable paths or runner error text. A local
+failure in an agent can differ from a successful parent-shell send because the agent
+inherits its own PATH, SSH-agent availability and execution restrictions; compare
+those within the existing permissions. An unconfirmed outcome is not permission to
+resend under a fresh ID.
+
 State lives in `<projects-root>/.wb/messages` according to WB's normal home
 resolution (which can migrate legacy layouts). Message directories are private
 mode 0700 and immutable messages/acknowledgments mode 0600. Native wake

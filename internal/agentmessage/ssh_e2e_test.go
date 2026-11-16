@@ -93,3 +93,18 @@ func TestContractSSHProcessExitDiagnostics(t *testing.T) {
 		})
 	}
 }
+
+func TestContractMissingSSHExecutableProducesActionablePrivateDiagnostic(t *testing.T) {
+	t.Parallel()
+	// The absolute missing executable cannot resolve via the test's PATH.
+	missing := filepath.Join(t.TempDir(), "private-ssh-executable")
+	var stdout, stderr bytes.Buffer
+	err := runCommand(context.Background(), missing, nil, strings.NewReader(""), &stdout, &stderr)
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing executable error lost: %v", err)
+	}
+	diagnostic := unconfirmedDelivery(context.Background(), err).Error()
+	if !strings.Contains(diagnostic, "local SSH executable is unavailable") || strings.Contains(diagnostic, missing) {
+		t.Fatal("missing executable diagnostic lost its category or leaked its path", diagnostic)
+	}
+}

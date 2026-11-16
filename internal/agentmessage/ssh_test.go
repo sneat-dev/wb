@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -118,6 +120,29 @@ func TestSSHRunnerPreservesRelayBatchOutputLimit(t *testing.T) {
 			}
 			if got != response {
 				t.Fatal("relay output truncated")
+			}
+		})
+	}
+}
+
+func TestUnconfirmedDeliveryClassifiesLocalFailuresWithoutPrivateErrorText(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		cause    error
+		category string
+	}{
+		"missing from PATH":        {&exec.Error{Name: "private-executable", Err: exec.ErrNotFound}, "local SSH executable is unavailable"},
+		"missing executable path":  {&os.PathError{Op: "fork/exec", Path: "private-path", Err: os.ErrNotExist}, "local SSH executable is unavailable"},
+		"current directory lookup": {&exec.Error{Name: "private-executable", Err: exec.ErrDot}, "resolves through the current directory and was refused"},
+		"execution denied":         {&os.PathError{Op: "fork/exec", Path: "private-path", Err: os.ErrPermission}, "local SSH execution was denied"},
+		"oversized response":       {runner.ErrOutputTooLarge, "SSH response exceeded the output limit"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			// The wrapper itself is private too: neither it nor a path/name may leak.
+			err := unconfirmedDelivery(context.Background(), errors.Join(errors.New("private-wrapper"), tc.cause))
+			if !strings.Contains(err.Error(), tc.category) || !strings.Contains(err.Error(), "delivery is unconfirmed") || strings.Contains(err.Error(), "private-") {
+				t.Fatal("unsafe or unhelpful diagnostic", err)
 			}
 		})
 	}
