@@ -14,6 +14,8 @@ import (
 // turn event that may never arrive.
 type openCodeHarness struct{}
 
+const openCodeArgumentFailure = "opencode rejected its arguments: unknown option"
+
 func (openCodeHarness) Name() string { return HarnessOpenCode }
 
 func (openCodeHarness) Capabilities() HarnessCapabilities {
@@ -26,9 +28,8 @@ func (openCodeHarness) Capabilities() HarnessCapabilities {
 
 // Prepare builds the non-interactive OpenCode invocation.
 //
-// `--standalone` is mandatory: without it the harness attaches to a long-lived
-// background server that lives outside the worker's process group, so timeout,
-// cancellation and process-tree cleanup would silently stop applying.
+// OpenCode 1.19.5 has no `--standalone` option. `--pure` is not a substitute:
+// it disables external plugins rather than changing server lifecycle.
 // `--auto` answers the harness's own permission prompts, because a detached
 // worker has no terminal to answer them on.
 func (openCodeHarness) Prepare(launch Launch) (HarnessLaunch, error) {
@@ -46,7 +47,7 @@ func (openCodeHarness) Prepare(launch Launch) (HarnessLaunch, error) {
 		model += "#" + variant
 	}
 	argv := []string{
-		"run", "--standalone", "--auto", "--format", "json",
+		"run", "--auto", "--format", "json",
 		"--model", model,
 	}
 	return HarnessLaunch{Argv: argv, Stdin: launch.Task}, nil
@@ -128,6 +129,13 @@ func summarizeOpenCode(reader io.Reader) openCodeSummary {
 	scanner.Buffer(make([]byte, 0, 64*1024), harnessLogLimit)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
+		// OpenCode 1.19.5 reports an unknown option as usage text and exit 1,
+		// without printing the option itself. The owner turns this diagnostic
+		// into the failure reason only when the process exited non-zero.
+		if line == "opencode run [message..]" {
+			summary.Diagnostics = append(summary.Diagnostics, openCodeArgumentFailure)
+			continue
+		}
 		if line == "" || !strings.HasPrefix(line, "{") {
 			continue
 		}

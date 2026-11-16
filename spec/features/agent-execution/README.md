@@ -196,7 +196,7 @@ Verified CLI facts (2026-10-24, this machine):
 | Usage | `turn.completed.usage` | summed `step_finish.tokens` | unavailable |
 | Cost | unavailable | `step_finish.cost`, harness-estimated USD | unavailable |
 | Effort | `model_reasoning_effort` | `#variant` via `effort_variants` | unsupported |
-| Non-interactive | `approval_policy=never` | `--auto --standalone` | headless profile |
+| Non-interactive | `approval_policy=never` | `--auto` | headless profile |
 | Credential | WB-injected env var | harness auth store | harness auth store |
 | Error signal | non-zero exit / `turn.failed` | non-zero exit **or** `error` event | non-zero exit |
 
@@ -227,10 +227,11 @@ A run is `completed` only when the harness produced its documented terminal
 success evidence and no error event. OpenCode requires a terminal `step_finish`,
 no `error` event, and no malformed event lines; Codex keeps its existing rule.
 
-#### REQ:opencode-standalone
-OpenCode is always launched with `--standalone` and never `--server`, so its
-private server lives inside the worker's process group and inside WB's
-allowlisted environment. No shared background service is used.
+#### REQ:opencode-supported-arguments
+OpenCode is launched with `--auto`, `--format json`, and `--model`. OpenCode
+1.19.5 rejects `--standalone`; `--pure` is not a substitute because it disables
+external plugins rather than changing server lifecycle. WB never passes
+`--attach`, so it does not deliberately attach to a shared background service.
 
 #### REQ:dsh-argv-delivery
 `dsh` cannot read the task from stdin and its launcher consumes `--`, so the task
@@ -501,9 +502,9 @@ documented where the operator will see them.
 validation by the documented precedence, records the source of each value, and
 creates nothing.
 
-### AC: three-harness-adapters (verifies REQ:harness-contract, REQ:capability-aware-translation, REQ:harness-error-normalization, REQ:opencode-standalone, REQ:dsh-argv-delivery, REQ:effort-capability)
-Each adapter builds its documented non-interactive argv with `--standalone` for
-OpenCode and one argv element (≤64 KiB, leading newline when needed) for `dsh`,
+### AC: three-harness-adapters (verifies REQ:harness-contract, REQ:capability-aware-translation, REQ:harness-error-normalization, REQ:opencode-supported-arguments, REQ:dsh-argv-delivery, REQ:effort-capability)
+Each adapter builds its documented non-interactive argv without `--standalone` for
+OpenCode 1.19.5 and one argv element (≤64 KiB, leading newline when needed) for `dsh`,
 normalizes events into one summary, and refuses an explicit effort it cannot
 honour while recording an inherited one as not applied.
 
