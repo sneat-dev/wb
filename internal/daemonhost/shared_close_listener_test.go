@@ -54,7 +54,7 @@ func listenRebindFixtureTCP(pool, candidates int) (*net.TCPListener, error) {
 
 func TestSharedListenerCloseWaitsForHTTPShutdownToReleaseDescriptor(t *testing.T) {
 	t.Parallel()
-	tcp, err := listenRebindFixtureTCP(sharedCloseRebindPortPool, 1)
+	tcp, err := listenRebindFixtureTCP(sharedCloseRebindPortPool, 32)
 	if err != nil {
 		t.Fatal(err)
 	}
