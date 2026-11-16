@@ -231,7 +231,10 @@ no `error` event, and no malformed event lines; Codex keeps its existing rule.
 OpenCode is launched with `--auto`, `--format json`, and `--model`. OpenCode
 1.19.5 rejects `--standalone`; `--pure` is not a substitute because it disables
 external plugins rather than changing server lifecycle. WB never passes
-`--attach`, so it does not deliberately attach to a shared background service.
+`--attach`, so it does not attach to a shared background service: observed on
+1.19.5, such a run is one process inside the worker's process group and starts
+nothing outside it, so the group signal WB sends on timeout or cancellation
+stops the whole run. The variant is passed with `--variant`.
 
 #### REQ:dsh-argv-delivery
 `dsh` cannot read the task from stdin and its launcher consumes `--`, so the task

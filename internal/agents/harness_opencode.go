@@ -30,6 +30,9 @@ func (openCodeHarness) Capabilities() HarnessCapabilities {
 //
 // OpenCode 1.19.5 has no `--standalone` option. `--pure` is not a substitute:
 // it disables external plugins rather than changing server lifecycle.
+// Observed on 1.19.5 (2026-11-16): `opencode run` without `--attach` is one
+// process in the worker's process group and starts nothing outside it, so a
+// signal to the group stops the whole run; timeout and cancellation apply.
 // `--auto` answers the harness's own permission prompts, because a detached
 // worker has no terminal to answer them on.
 func (openCodeHarness) Prepare(launch Launch) (HarnessLaunch, error) {
