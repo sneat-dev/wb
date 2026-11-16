@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/agentmessage"
@@ -604,5 +605,60 @@ func TestInvalidAgentDirectoryCannotAcquireWakeState(t *testing.T) {
 	}
 	if _, err := s.directory("mac"); err == nil {
 		t.Fatal("symlinked agent directory accepted")
+	}
+}
+
+func TestExistingAncestorToleratesOnlyUnsupportedOrReadOnlySync(t *testing.T) {
+	t.Parallel()
+	for _, syncErr := range []error{syscall.EINVAL, syscall.ENOTSUP, syscall.EROFS, syscall.EIO} {
+		t.Run(syncErr.Error(), func(t *testing.T) {
+			t.Parallel()
+			path := t.TempDir()
+			dir, err := os.Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = dir.Close() })
+			if err = os.Mkdir(filepath.Join(path, "existing"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			opener := privateOpener{sync: func(int) error { return syncErr }}
+			err = opener.Mkdir(int(dir.Fd()), "existing")
+			if errors.Is(syncErr, syscall.EIO) {
+				if !errors.Is(err, syncErr) {
+					t.Fatalf("existing directory I/O error lost: %v", err)
+				}
+			} else if !errors.Is(err, os.ErrExist) {
+				t.Fatalf("existing ancestor should preserve EEXIST: %v", err)
+			}
+			if err = opener.Mkdir(int(dir.Fd()), "new"); !errors.Is(err, syncErr) {
+				t.Fatalf("new directory sync failure lost: %v", err)
+			}
+		})
+	}
+}
+
+func TestUnsupportedFenceSyncStillFailsClosed(t *testing.T) {
+	t.Parallel()
+	for _, syncErr := range []error{syscall.EINVAL, syscall.ENOTSUP, syscall.EROFS} {
+		t.Run(syncErr.Error(), func(t *testing.T) {
+			t.Parallel()
+			s, c := testService(t)
+			bindFixture(t, s)
+			if status, err := s.Notify(context.Background(), testMessage()); status != Submitted || err != nil {
+				t.Fatal(status, err)
+			}
+			before := len(c.calls)
+			s.syncDirectory = func(*os.File) error { return syncErr }
+			if status, err := s.Notify(context.Background(), testMessage()); status != Ambiguous || err == nil {
+				t.Fatal("fence sync failure ignored", status, err)
+			}
+			if len(c.calls) != before {
+				t.Fatal("fence replay resubmitted")
+			}
+			if err := s.Bind(context.Background(), "mac", "/tmp/codex.sock", "thread-1"); err == nil {
+				t.Fatal("binding replay sync failure ignored")
+			}
+		})
 	}
 }

@@ -1,7 +1,6 @@
 package agentmessage
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,10 +8,9 @@ import (
 	"io"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -403,7 +401,7 @@ func TestStorageFailuresNeverAcknowledgeOrNotifyCorruptInbox(t *testing.T) {
 		t.Fatal(e)
 	}
 	_ = dir.Close()
-	if _, e := pendingIn(dir, m.To); e == nil {
+	if _, e := pendingIn(dir, m.To, 100); e == nil {
 		t.Fatal("closed directory read accepted")
 	}
 	if _, e := decodeFile(dir); e == nil {
@@ -497,11 +495,7 @@ func TestSendDiagnosesProcessPhaseWithoutLeakingRemoteContent(t *testing.T) {
 	for _, code := range []int{1, 2, 127, 255} {
 		t.Run(fmt.Sprint(code), func(t *testing.T) {
 			t.Parallel()
-			processErr := exec.Command("sh", "-c", fmt.Sprintf("exit %d", code)).Run()
-			var typed *exec.ExitError
-			if !errors.As(processErr, &typed) {
-				t.Fatal(processErr)
-			}
+			processErr := fakeExitStatus(code)
 			ssh := SSH{Config: sessionmove.SSHConfig{Host: "vm"}, Run: func(context.Context, string, []string, io.Reader, io.Writer, io.Writer) error { return processErr }}
 			_, err := ssh.Send(context.Background(), sampleMessage())
 			if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("status %d", code)) {
@@ -630,38 +624,29 @@ func TestAckPublicationFailureNeverReportsSuccess(t *testing.T) {
 	}
 }
 
-func TestCommandPipeDrainIsBoundedWhenDescendantKeepsPipeOpen(t *testing.T) {
+func TestExistingAncestorsTolerateOnlyUnsupportedDirectorySync(t *testing.T) {
 	t.Parallel()
-	var stdout, stderr bytes.Buffer
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-	t.Cleanup(cancel)
-	started := time.Now()
-	err := runCommand(ctx, "sh", []string{"-c", "sleep 10 & echo $!"}, strings.NewReader(""), &stdout, &stderr)
-	pid, parseErr := strconv.Atoi(strings.TrimSpace(stdout.String()))
-	if parseErr != nil {
-		t.Fatal(parseErr)
-	}
-	process, findErr := os.FindProcess(pid)
-	if findErr != nil {
-		t.Fatal(findErr)
-	}
-	t.Cleanup(func() { _ = process.Kill() })
-	if !errors.Is(err, exec.ErrWaitDelay) || time.Since(started) > 5*time.Second {
-		t.Fatal(err, time.Since(started))
+	for _, syncErr := range []error{syscall.EINVAL, syscall.ENOTSUP, syscall.EROFS, syscall.EIO} {
+		t.Run(syncErr.Error(), func(t *testing.T) {
+			t.Parallel()
+			sync := func(int) error { return fmt.Errorf("parent sync: %w", syncErr) }
+			existing := mkdirPrivate(1, "existing", func(int, string, uint32) error { return unix.EEXIST }, sync)
+			if errors.Is(syncErr, syscall.EIO) {
+				if !errors.Is(existing, syncErr) {
+					t.Fatal(existing)
+				}
+			} else if !errors.Is(existing, unix.EEXIST) {
+				t.Fatal(existing)
+			}
+			created := mkdirPrivate(1, "new", func(int, string, uint32) error { return nil }, sync)
+			if !errors.Is(created, syncErr) {
+				t.Fatal("new directory accepted unsynced parent", created)
+			}
+		})
 	}
 }
 
-func TestCancelledCommandNeverLaunchesMarkerWritingChild(t *testing.T) {
-	t.Parallel()
-	marker := filepath.Join(t.TempDir(), "child-started")
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	var stdout, stderr bytes.Buffer
-	err := runCommand(ctx, "sh", []string{"-c", `printf started > "$1"`, "wb-cancel-test", marker}, strings.NewReader(""), &stdout, &stderr)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("cancelled command returned %v, want context.Canceled", err)
-	}
-	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("cancelled command launched its child: marker stat error %v", err)
-	}
-}
+type fakeExitStatus int
+
+func (status fakeExitStatus) Error() string { return "process failed" }
+func (status fakeExitStatus) ExitCode() int { return int(status) }

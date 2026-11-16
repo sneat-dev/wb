@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/secureopen"
@@ -36,6 +37,9 @@ func mkdirPrivate(fd int, name string, mkdir func(int, string, uint32) error, sy
 	// Sync even EEXIST: a previous mkdir may have been interrupted before its
 	// parent's publication reached disk.
 	if syncErr := sync(fd); syncErr != nil {
+		if errors.Is(err, unix.EEXIST) && (errors.Is(syncErr, syscall.EINVAL) || errors.Is(syncErr, syscall.ENOTSUP) || errors.Is(syncErr, syscall.EROFS)) {
+			return err
+		}
 		return syncErr
 	}
 	return err
@@ -145,15 +149,19 @@ func decodeFile(file *os.File) (Message, error) {
 }
 
 func (s Store) pending(agent string) ([]Message, error) {
+	return s.pendingLimit(agent, 100)
+}
+
+func (s Store) pendingLimit(agent string, limit int) ([]Message, error) {
 	dir, err := s.directory(agent)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = dir.Close() }()
-	return pendingIn(dir, agent)
+	return pendingIn(dir, agent, limit)
 }
 
-func pendingIn(dir *os.File, agent string) ([]Message, error) {
+func pendingIn(dir *os.File, agent string, limit int) ([]Message, error) {
 	entries, err := dir.ReadDir(-1)
 	if err != nil {
 		return nil, err
@@ -185,7 +193,7 @@ func pendingIn(dir *os.File, agent string) ([]Message, error) {
 			return nil, ackErr
 		}
 		messages = append(messages, message)
-		if len(messages) == 100 {
+		if limit > 0 && len(messages) == limit {
 			break
 		}
 	}

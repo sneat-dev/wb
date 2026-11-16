@@ -138,9 +138,11 @@ processing completed. Replies use ordinary `send --host vm --to vm`.
 If the SSH transfer or acknowledgment is lost, the next receive safely replays
 the same immutable ID. Every durable local copy completes remote transfer, even
 when native preflight fails. At the start of each relay cycle, WB retries delivery
-of up to 100 locally pending messages before holding the next remote receive;
+of locally pending messages before holding the next remote receive;
 this resyncs local copies and retries unfenced wakes without retransmitting their
-bodies. Already submitted, rejected or ambiguous wakes stay fenced. Inspect an
+bodies. Wake retries stop at the first unavailable native binding, and the rest
+of a remote batch is copied without repeatedly probing that binding. Already
+submitted, rejected or ambiguous wakes stay fenced. Inspect an
 ambiguous outcome instead of resubmitting a possibly accepted turn. An idle
 remote receive can delay an offline wake retry by up to one minute; new remote
 messages end that wait immediately. A stale binding cannot block later remote

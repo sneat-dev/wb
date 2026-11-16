@@ -7,9 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os/exec"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/sessionmove"
 )
 
@@ -21,13 +21,39 @@ type SSH struct {
 	ReportRetry func(error)
 }
 
-func runCommand(ctx context.Context, name string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.WaitDelay = 3 * time.Second
-	cmd.Stdin = stdin
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-	return cmd.Run()
+func runCommand(ctx context.Context, name string, args []string, stdin io.Reader, stdout, _ io.Writer) error {
+	return runCommandWithRunner(ctx, runner.New(), name, args, stdin, stdout)
+}
+
+func runCommandWithRunner(ctx context.Context, processRunner runner.Runner, name string, args []string, stdin io.Reader, stdout io.Writer) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	input, err := io.ReadAll(io.LimitReader(stdin, MaxEnvelopeBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(input) > MaxEnvelopeBytes {
+		return errors.New("command input exceeds message limit")
+	}
+	outputLimit := 100*MaxEnvelopeBytes + 4096
+	if bounded, ok := stdout.(*boundedOutput); ok {
+		outputLimit = MaxEnvelopeBytes
+		if bounded.limit > 0 {
+			outputLimit = bounded.limit
+		}
+	}
+	result, runErr := processRunner.RunOpts(ctx, "", runner.RunOptions{
+		Stdin: input, WaitDelay: 3 * time.Second, StdoutLimit: outputLimit, DiscardStderr: true,
+	}, name, args...)
+	count, writeErr := io.WriteString(stdout, result.Stdout)
+	if writeErr != nil {
+		return writeErr
+	}
+	if count != len(result.Stdout) {
+		return io.ErrShortWrite
+	}
+	return runErr
 }
 
 type boundedOutput struct {
@@ -98,7 +124,7 @@ func unconfirmedDelivery(ctx context.Context, err error) error {
 	if ctx.Err() != nil {
 		return fmt.Errorf("SSH delivery was cancelled or timed out; outcome is unconfirmed; inspect connectivity before retrying the same --id and exact message")
 	}
-	var exited *exec.ExitError
+	var exited interface{ ExitCode() int }
 	if errors.As(err, &exited) {
 		code := exited.ExitCode()
 		if code >= 0 && code != 255 {

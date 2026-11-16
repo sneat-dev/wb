@@ -97,17 +97,21 @@ func (s SSH) relayBatch(ctx context.Context, store Store, agent string) error {
 	}
 	var firstError error
 	for _, m := range messages {
-		if err := s.relayMessage(ctx, store, agent, m); err != nil && firstError == nil {
+		wake, err := s.relayMessage(ctx, store, agent, m)
+		if err != nil && firstError == nil {
 			firstError = err
+		}
+		if wake == "preflight-failed" {
+			store.Notify = nil
 		}
 	}
 	return firstError
 }
 
-func (s SSH) relayMessage(ctx context.Context, store Store, agent string, m Message) error {
+func (s SSH) relayMessage(ctx context.Context, store Store, agent string, m Message) (string, error) {
 	receipt, err := store.Deliver(ctx, m)
 	if receipt.ID != m.ID || receipt.Digest != m.Digest() || receipt.Status != "durable" {
-		return fmt.Errorf("relay local delivery unconfirmed: %w", err)
+		return receipt.Wake, fmt.Errorf("relay local delivery unconfirmed: %w", err)
 	}
 	wakeErr := err
 	if receipt.Wake == "ambiguous" || receipt.Wake == "rejected" {
@@ -115,16 +119,16 @@ func (s SSH) relayMessage(ctx context.Context, store Store, agent string, m Mess
 	}
 	var ack boundedOutput
 	if err = s.relayCall(ctx, []string{"ack", m.ID, "--agent", agent}, &ack); err != nil {
-		return err
+		return receipt.Wake, err
 	}
 	var result struct {
 		ID     string `json:"id"`
 		Status string `json:"status"`
 	}
 	if err = json.Unmarshal(ack.Bytes(), &result); err != nil || result.ID != m.ID || result.Status != "acknowledged" {
-		return fmt.Errorf("relay acknowledgment is unconfirmed; message may be replayed safely")
+		return receipt.Wake, fmt.Errorf("relay acknowledgment is unconfirmed; message may be replayed safely")
 	}
-	return wakeErr
+	return receipt.Wake, wakeErr
 }
 
 // retryWake uses the local durable inbox, so a stale native binding never
@@ -133,7 +137,7 @@ func (s Store) retryWake(ctx context.Context, agent string) error {
 	if s.Notify == nil {
 		return nil
 	}
-	messages, err := s.pending(agent)
+	messages, err := s.pendingLimit(agent, 0)
 	if err != nil {
 		return err
 	}
@@ -145,6 +149,9 @@ func (s Store) retryWake(ctx context.Context, agent string) error {
 		receipt, err := s.Deliver(ctx, m)
 		if err != nil && receipt.Wake != "ambiguous" && receipt.Wake != "rejected" && firstError == nil {
 			firstError = err
+		}
+		if receipt.Wake == "preflight-failed" {
+			return firstError
 		}
 	}
 	return firstError

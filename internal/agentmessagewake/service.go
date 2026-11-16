@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/agentmessage"
@@ -79,6 +80,11 @@ func (opener privateOpener) Mkdir(fd int, name string) error {
 		sync = unix.Fsync
 	}
 	if syncErr := sync(fd); syncErr != nil {
+		// Existing external ancestors may be read-only or unable to sync
+		// directories. Never apply this exception to a newly published child.
+		if errors.Is(err, unix.EEXIST) && (errors.Is(syncErr, syscall.EINVAL) || errors.Is(syncErr, syscall.ENOTSUP) || errors.Is(syncErr, syscall.EROFS)) {
+			return err
+		}
 		return syncErr
 	}
 	return err

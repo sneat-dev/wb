@@ -204,7 +204,11 @@ func TestRelayTransfersBeyondFirstHundredDespiteStaleBinding(t *testing.T) {
 		m.ID = NewID()
 		mustDeliver(t, remote, m)
 	}
-	local.Notify = func(context.Context, Message) (string, error) { return "preflight-failed", errors.New("stale binding") }
+	notifyCalls := 0
+	local.Notify = func(context.Context, Message) (string, error) {
+		notifyCalls++
+		return "preflight-failed", errors.New("stale binding")
+	}
 	batches := 0
 	acked := 0
 	ssh := SSH{Config: sessionmove.SSHConfig{Host: "vm"}, Run: func(_ context.Context, _ string, args []string, _ io.Reader, out, _ io.Writer) error {
@@ -245,6 +249,9 @@ func TestRelayTransfersBeyondFirstHundredDespiteStaleBinding(t *testing.T) {
 	}
 	if copies != 101 {
 		t.Fatal(copies)
+	}
+	if notifyCalls != 3 {
+		t.Fatalf("got %d wake probes: want one per remote batch and one for the local retry stage", notifyCalls)
 	}
 }
 
@@ -324,5 +331,49 @@ func TestLocalWakeRetryReestablishesDurabilityBeforeNotification(t *testing.T) {
 	store.syncDirectory = func(*os.File) error { return errors.New("sync failed") }
 	if err := store.retryWake(context.Background(), m.To); err == nil {
 		t.Fatal("failed local durability ignored")
+	}
+}
+
+func TestWakeRetryReachesBeyondHundredUnacknowledgedFencedMessages(t *testing.T) {
+	t.Parallel()
+	store := testStore(t)
+	for range 101 {
+		m := sampleMessage()
+		m.ID = NewID()
+		mustDeliver(t, store, m)
+	}
+	firstBatch, err := store.Receive(context.Background(), "mac", 0)
+	if err != nil || len(firstBatch) != 100 {
+		t.Fatal(len(firstBatch), err)
+	}
+	fenced := make(map[string]bool, 101)
+	for _, m := range firstBatch {
+		fenced[m.ID] = true
+	}
+	calls := 0
+	submissions := 0
+	store.Notify = func(_ context.Context, m Message) (string, error) {
+		calls++
+		if !fenced[m.ID] {
+			submissions++
+			fenced[m.ID] = true
+		}
+		return "submitted", nil
+	}
+	if err = store.retryWake(context.Background(), "mac"); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 101 || submissions != 1 || len(fenced) != 101 {
+		t.Fatalf("calls=%d submissions=%d fenced=%d", calls, submissions, len(fenced))
+	}
+	if err = store.retryWake(context.Background(), "mac"); err != nil {
+		t.Fatal(err)
+	}
+	if submissions != 1 {
+		t.Fatalf("fenced message resubmitted: %d", submissions)
+	}
+	visible, err := store.Receive(context.Background(), "mac", 0)
+	if err != nil || len(visible) != 100 {
+		t.Fatal("receive lost its batch limit", len(visible), err)
 	}
 }
