@@ -4,6 +4,7 @@ package locallink
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -221,6 +222,18 @@ func TestContractHasLiveLinkNamesAHonestRemedyForAnUnrecordedGoWork(t *testing.T
 			t.Fatalf("go.work link = %#v, want the recorded link's undo", links[1])
 		}
 	})
+}
+
+// The preliminary workspace probe invokes real Git before using the injected classifier.
+func TestContractHasLiveLinkReportsAGoWorkWhoseProvenanceCannotBeRead(t *testing.T) {
+	t.Parallel()
+	worktree := t.TempDir()
+	writeGuardTestFile(t, worktree, goWorkFile, "go 1.27\n\nuse /elsewhere/library\n")
+	failed := errors.New("git is gone")
+	_, err := hasLiveLinkWith(nil, worktree, headFiles{exists: func(string, string) (bool, error) { return false, failed }})
+	if !errors.Is(err, failed) {
+		t.Fatalf("err = %v, want the provenance failure", err)
+	}
 }
 
 // The exported entry point reads real Git: a plain directory has no HEAD.

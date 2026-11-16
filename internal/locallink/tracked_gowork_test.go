@@ -40,17 +40,6 @@ func TestClassifyGoWorkReportsProvenanceAndGitFailures(t *testing.T) {
 	}
 }
 
-func TestHasLiveLinkReportsAGoWorkWhoseProvenanceCannotBeRead(t *testing.T) {
-	t.Parallel()
-	worktree := t.TempDir()
-	writeGuardTestFile(t, worktree, goWorkFile, "go 1.27\n\nuse /elsewhere/library\n")
-	failed := errors.New("git is gone")
-	_, err := hasLiveLinkWith(nil, worktree, headFiles{exists: func(string, string) (bool, error) { return false, failed }})
-	if !errors.Is(err, failed) {
-		t.Fatalf("err = %v, want the provenance failure", err)
-	}
-}
-
 func TestUndoReportsAGoWorkItCouldNotRestore(t *testing.T) {
 	t.Parallel()
 	worktree := t.TempDir()
