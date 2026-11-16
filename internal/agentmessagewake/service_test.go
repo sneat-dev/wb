@@ -365,3 +365,50 @@ func TestMalformedTurnReceiptRemainsAmbiguous(t *testing.T) {
 		t.Fatal(state, err)
 	}
 }
+
+func TestBindFirstCreatesPrivateMessageAncestorsUsableByInbox(t *testing.T) {
+	t.Parallel()
+	projects := filepath.Join(t.TempDir(), "projects")
+	if err := os.Mkdir(projects, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(projects, 0755); err != nil {
+		t.Fatal(err)
+	}
+	messageRoot := filepath.Join(projects, ".wb", "messages")
+	s, _ := testService(t)
+	s.Root = filepath.Join(messageRoot, "wake")
+	s.ProjectsRoot = projects
+	bindFixture(t, s)
+	for _, path := range []string{filepath.Join(projects, ".wb"), messageRoot, s.Root, filepath.Join(s.Root, "mac")} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0700 {
+			t.Errorf("new message directory %s mode = %04o, want 0700", path, got)
+		}
+	}
+	info, err := os.Stat(projects)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0755 {
+		t.Errorf("existing projects mode changed to %04o", got)
+	}
+	inbox := agentmessage.Store{Root: messageRoot, Notify: s.Notify}
+	receipt, err := inbox.Deliver(context.Background(), testMessage())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Status != "durable" || receipt.Wake != Submitted {
+		t.Fatalf("unexpected receipt: %+v", receipt)
+	}
+	messages, err := inbox.Receive(context.Background(), "mac", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 1 || messages[0] != testMessage() {
+		t.Fatalf("unexpected inbox: %+v", messages)
+	}
+}

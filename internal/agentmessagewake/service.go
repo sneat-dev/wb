@@ -15,6 +15,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/agentmessage"
 	"github.com/sneat-dev/wb/internal/filewrite"
+	"github.com/sneat-dev/wb/internal/secureopen"
 	unix "github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/worktreesecure"
 )
@@ -56,11 +57,17 @@ func (b binding) validate() error {
 	return nil
 }
 
+// privateOpener creates newly missing ancestors with the inbox's privacy mode.
+// Existing ancestors are opened without changing their permissions.
+type privateOpener struct{ secureopen.Real }
+
+func (privateOpener) Mkdir(fd int, name string) error { return unix.Mkdirat(fd, name, 0700) }
+
 func (s Service) directory(agent string) (*os.File, error) {
 	if err := agentmessage.ValidateAgent(agent); err != nil {
 		return nil, err
 	}
-	root, err := worktreesecure.OpenAbsoluteDirectoryNoFollow(s.Root, true)
+	root, err := worktreesecure.OpenAbsoluteDirectoryNoFollowWith(privateOpener{}, s.Root, true)
 	if err != nil {
 		return nil, err
 	}
