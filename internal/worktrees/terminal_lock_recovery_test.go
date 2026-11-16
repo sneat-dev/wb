@@ -114,6 +114,41 @@ func TestTerminalLockRecoveryRequiresFreshContainedLandingAndRetiresOnlyLock(t *
 	}
 }
 
+//nolint:paralleltest // The real Git fixture scopes WB configuration through t.Setenv.
+func TestTerminalLockRecoveryFindsHostQualifiedCanonicalClone(t *testing.T) {
+	options, lockPath, receipt := terminalLockRecoveryFixture(t)
+	legacy := filepath.Join(options.ProjectsRoot, "acme", "app")
+	canonical := filepath.Join(options.ProjectsRoot, "github.com", "acme", "app")
+	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(legacy, canonical); err != nil {
+		t.Fatal(err)
+	}
+	ports := defaultTerminalLockRecoveryPorts()
+	fetchTarget := ports.fetchTarget
+	ports.fetchTarget = func(ctx context.Context, directory, target string) (string, error) {
+		if directory != canonical {
+			t.Fatalf("fresh target proof uses %q, want existing clone %q", directory, canonical)
+		}
+		return fetchTarget(ctx, directory, target)
+	}
+	options.Apply = true
+	outcome, err := recoverTerminalOperationLock(context.Background(), options, ports)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.Applied || outcome.TargetSHA != outcome.LandingSHA {
+		t.Fatalf("recovery did not prove the host-qualified clone: %#v", outcome)
+	}
+	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
+		t.Fatalf("proved terminal lock remains: %v", err)
+	}
+	if actual, err := os.ReadFile(options.ReceiptPath); err != nil || string(actual) != string(receipt) {
+		t.Fatalf("historical receipt changed: %v", err)
+	}
+}
+
 //nolint:paralleltest // Every case creates a real Git fixture that calls t.Setenv.
 func TestTerminalLockRecoveryRefusesUnprovenOrLiveOperations(t *testing.T) {
 	tests := []struct {
@@ -221,6 +256,9 @@ func TestTerminalLockRecoveryPreservesEvidenceOnBoundaryFailures(t *testing.T) {
 		{"load cleanup backlog", func(ports *terminalLockRecoveryPorts) {
 			ports.hasBacklog = func(context.Context, wbhome.Resolution, string, string, string) (bool, error) { return false, sentinel }
 		}},
+		{"resolve canonical clone", func(ports *terminalLockRecoveryPorts) {
+			ports.canonical = func(string, string) (string, error) { return "", sentinel }
+		}},
 		{"fetch current target", func(ports *terminalLockRecoveryPorts) {
 			ports.fetchTarget = func(context.Context, string, string) (string, error) { return "", sentinel }
 		}},
@@ -259,8 +297,18 @@ func TestTerminalLockRecoveryPreservesEvidenceOnBoundaryFailures(t *testing.T) {
 			options.Apply = true
 			ports := defaultTerminalLockRecoveryPorts()
 			test.inject(&ports)
-			if _, err := recoverTerminalOperationLock(context.Background(), options, ports); err == nil || !strings.Contains(err.Error(), sentinel.Error()) {
+			fetchTarget := ports.fetchTarget
+			fetched := false
+			ports.fetchTarget = func(ctx context.Context, directory, target string) (string, error) {
+				fetched = true
+				return fetchTarget(ctx, directory, target)
+			}
+			_, recoveryErr := recoverTerminalOperationLock(context.Background(), options, ports)
+			if err := recoveryErr; err == nil || !strings.Contains(err.Error(), sentinel.Error()) {
 				t.Fatalf("boundary error = %v, want sentinel", err)
+			}
+			if test.name == "resolve canonical clone" && (fetched || !errors.Is(recoveryErr, sentinel)) {
+				t.Fatalf("canonical resolution failure must be wrapped before fetching: fetched=%v, err=%v", fetched, recoveryErr)
 			}
 			if _, err := os.Stat(lock); err != nil {
 				t.Fatalf("boundary failure changed operation lock: %v", err)
