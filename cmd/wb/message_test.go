@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/agentmessage"
@@ -44,7 +46,7 @@ func TestMessageCommandRoundTripUsesOneLocalInboxAndExplicitAcknowledgment(t *te
 	}
 }
 
-func TestMessageCommandCancelledTransportsNeverRequireNetwork(t *testing.T) {
+func TestMessageCommandPassesCancellationIntoTransports(t *testing.T) {
 	t.Parallel()
 	for _, args := range [][]string{
 		{"send", "--host", "unreachable.invalid", "--from", "vm", "--to", "mac", "--message", "cancelled"},
@@ -61,8 +63,15 @@ func TestMessageCommandCancelledTransportsNeverRequireNetwork(t *testing.T) {
 			command.SetErr(&bytes.Buffer{})
 			command.SilenceErrors = true
 			command.SilenceUsage = true
-			if err := command.Execute(); err == nil {
+			err := command.Execute()
+			if err == nil {
 				t.Fatal("cancelled transport succeeded")
+			}
+			if args[0] == "relay" && !errors.Is(err, context.Canceled) {
+				t.Fatalf("relay lost cancellation: %v", err)
+			}
+			if args[0] == "send" && !strings.Contains(err.Error(), "cancelled or timed out") {
+				t.Fatalf("send lost cancellation classification: %v", err)
 			}
 		})
 	}

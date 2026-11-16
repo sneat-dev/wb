@@ -13,7 +13,7 @@ import (
 
 func messageWakeService(projectsRoot string) (agentmessagewake.Service, error) {
 	root, err := wbhome.Root(projectsRoot)
-	return agentmessagewake.Service{Root: filepath.Join(root, "messages", "wake"), ProjectsRoot: filepath.Dir(root)}, err
+	return agentmessagewake.Service{Root: filepath.Join(root, "messages", ".wake"), ProjectsRoot: filepath.Dir(root)}, err
 }
 
 func newMessageNotifier(inv *invocation) func(context.Context, agentmessage.Message) (string, error) {

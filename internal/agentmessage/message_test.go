@@ -1,6 +1,7 @@
 package agentmessage
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,12 +11,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/gofrs/flock"
 	"github.com/sneat-dev/wb/internal/sessionmove"
+	unix "github.com/sneat-dev/wb/internal/unixcompat"
 )
 
 func sampleMessage() Message {
@@ -566,5 +569,99 @@ func TestOutputBoundCannotBeBypassedByIOOptimizations(t *testing.T) {
 				t.Fatal(err, len(output.Bytes()))
 			}
 		})
+	}
+}
+
+func TestDurableReceiptAndAckRequireDirectorySyncOnEveryRetry(t *testing.T) {
+	t.Parallel()
+	store := testStore(t)
+	m := sampleMessage()
+	mustDeliver(t, store, m)
+	calls := 0
+	store.syncDirectory = func(*os.File) error { calls++; return errors.New("directory sync failed") }
+	receipt, err := store.Deliver(context.Background(), m)
+	if err == nil || receipt.Status == "durable" || calls != 1 {
+		t.Fatal(receipt, err, calls)
+	}
+	if err = store.Ack(m.To, m.ID); err == nil || calls != 2 {
+		t.Fatal(err, calls)
+	}
+	if err = store.Ack(m.To, m.ID); err == nil || calls != 3 {
+		t.Fatal("idempotent ack omitted sync", err, calls)
+	}
+	store.syncDirectory = nil
+	if err = store.Ack(m.To, m.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPrivateDirectoryCreationRepairsParentDurabilityOnRetry(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	dir, err := os.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dir.Close() })
+	syncs := 0
+	syncErr := errors.New("parent sync failed")
+	sync := func(int) error { syncs++; return syncErr }
+	if err = mkdirPrivate(int(dir.Fd()), "child", unix.Mkdirat, sync); !errors.Is(err, syncErr) {
+		t.Fatal(err)
+	}
+	if err = mkdirPrivate(int(dir.Fd()), "child", unix.Mkdirat, sync); !errors.Is(err, syncErr) || syncs != 2 {
+		t.Fatal(err, syncs)
+	}
+	if err = mkdirPrivate(-1, "child", unix.Mkdirat, sync); err == nil || syncs != 2 {
+		t.Fatal(err, syncs)
+	}
+}
+
+func TestAckPublicationFailureNeverReportsSuccess(t *testing.T) {
+	t.Parallel()
+	store := testStore(t)
+	m := sampleMessage()
+	mustDeliver(t, store, m)
+	if err := os.Mkdir(filepath.Join(store.Root, m.To, m.ID+".ack"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Ack(m.To, m.ID); err == nil {
+		t.Fatal("ack directory collision accepted")
+	}
+}
+
+func TestCommandPipeDrainIsBoundedWhenDescendantKeepsPipeOpen(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	t.Cleanup(cancel)
+	started := time.Now()
+	err := runCommand(ctx, "sh", []string{"-c", "sleep 10 & echo $!"}, strings.NewReader(""), &stdout, &stderr)
+	pid, parseErr := strconv.Atoi(strings.TrimSpace(stdout.String()))
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+	process, findErr := os.FindProcess(pid)
+	if findErr != nil {
+		t.Fatal(findErr)
+	}
+	t.Cleanup(func() { _ = process.Kill() })
+	if !errors.Is(err, exec.ErrWaitDelay) || time.Since(started) > 5*time.Second {
+		t.Fatal(err, time.Since(started))
+	}
+}
+
+func TestCancelledCommandNeverLaunchesMarkerWritingChild(t *testing.T) {
+	t.Parallel()
+	marker := filepath.Join(t.TempDir(), "child-started")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var stdout, stderr bytes.Buffer
+	err := runCommand(ctx, "sh", []string{"-c", `printf started > "$1"`, "wb-cancel-test", marker}, strings.NewReader(""), &stdout, &stderr)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled command returned %v, want context.Canceled", err)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cancelled command launched its child: marker stat error %v", err)
 	}
 }

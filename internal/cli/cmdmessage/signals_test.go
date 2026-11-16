@@ -3,7 +3,9 @@ package cmdmessage
 import (
 	"context"
 	"errors"
+	"io"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -34,6 +36,54 @@ func TestMessageSignalScopePreservesParentContextWhenCommandIsReused(t *testing.
 	}
 	if !errors.Is(first.Err(), context.Canceled) {
 		t.Fatal("signal scope leaked after completion")
+	}
+}
+
+func TestMessageInputCancellationUnblocksStalledPipeWithoutWaitingForEOF(t *testing.T) {
+	t.Parallel()
+	for _, args := range [][]string{
+		{"send", "--local", "--from", "vm", "--to", "mac", "--message-file", "-"},
+		{"deliver"},
+	} {
+		t.Run(args[0], func(t *testing.T) {
+			t.Parallel()
+			reader, writer := io.Pipe()
+			defer func() { _ = reader.Close() }()
+			defer func() { _ = writer.Close() }()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			command := New(bindingRuntime(), Dependencies{})
+			command.SetContext(ctx)
+			command.SetIn(reader)
+			command.SetArgs(args)
+			command.SilenceErrors = true
+			command.SilenceUsage = true
+			done := make(chan error, 1)
+			go func() { done <- command.Execute() }()
+			// An unclosed producer contributes input before cancellation, proving
+			// the command has entered its bounded reader rather than an early guard.
+			if _, err := writer.Write([]byte("{")); err != nil {
+				t.Fatal(err)
+			}
+			cancel()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("cancellation lost: %v", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("command remained blocked on stdin")
+			}
+		})
+	}
+}
+
+func TestMessageInputDoesNotReadWhenCallerIsAlreadyCancelled(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := readInput(ctx, nil, 1); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled caller: %v", err)
 	}
 }
 

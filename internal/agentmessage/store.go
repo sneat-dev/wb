@@ -17,13 +17,36 @@ import (
 // Store uses an owner-only directory on the receiving machine. Notify is an
 // optional harness adapter: it must independently fence ambiguous submissions.
 type Store struct {
-	Root   string
-	Notify func(context.Context, Message) (string, error)
+	Root          string
+	Notify        func(context.Context, Message) (string, error)
+	syncDirectory func(*os.File) error
 }
 
 type privateOpener struct{ secureopen.Real }
 
-func (privateOpener) Mkdir(fd int, name string) error { return unix.Mkdirat(fd, name, 0700) }
+func (privateOpener) Mkdir(fd int, name string) error {
+	return mkdirPrivate(fd, name, unix.Mkdirat, unix.Fsync)
+}
+
+func mkdirPrivate(fd int, name string, mkdir func(int, string, uint32) error, sync func(int) error) error {
+	err := mkdir(fd, name, 0700)
+	if err != nil && !errors.Is(err, unix.EEXIST) {
+		return err
+	}
+	// Sync even EEXIST: a previous mkdir may have been interrupted before its
+	// parent's publication reached disk.
+	if syncErr := sync(fd); syncErr != nil {
+		return syncErr
+	}
+	return err
+}
+
+func (s Store) sync(dir *os.File) error {
+	if s.syncDirectory != nil {
+		return s.syncDirectory(dir)
+	}
+	return filewrite.SyncDir(dir, nil)
+}
 
 func privateDirectory(path string) (*os.File, error) {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
@@ -76,6 +99,9 @@ func (s Store) Deliver(ctx context.Context, m Message) (Receipt, error) {
 	}
 	defer func() { _ = dir.Close() }()
 	if err = filewrite.WriteJSONImmutableAt(dir, m.ID+".json", m, true, nil); err != nil {
+		return Receipt{}, err
+	}
+	if err = s.sync(dir); err != nil {
 		return Receipt{}, err
 	}
 	result := Receipt{ID: m.ID, Digest: m.Digest(), Status: "durable", Wake: "not-bound"}
@@ -184,5 +210,8 @@ func (s Store) Ack(agent, id string) error {
 	if message.ID != id || message.To != agent {
 		return fmt.Errorf("message identity does not match inbox")
 	}
-	return filewrite.WriteBytesImmutableAt(dir, id+".ack", []byte(message.Digest()), 0600, true, nil)
+	if err = filewrite.WriteBytesImmutableAt(dir, id+".ack", []byte(message.Digest()), 0600, true, nil); err != nil {
+		return err
+	}
+	return s.sync(dir)
 }

@@ -2,10 +2,10 @@
 package cmdmessage
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"time"
 
@@ -57,7 +57,7 @@ func newSend(runtime shared.Runtime, deps Dependencies) *cobra.Command {
 				defer func() { _ = file.Close() }()
 				reader = file
 			}
-			raw, err := io.ReadAll(io.LimitReader(reader, agentmessage.MaxBodyBytes+1))
+			raw, err := readInput(cmd.Context(), reader, agentmessage.MaxBodyBytes+1)
 			if err != nil {
 				return err
 			}
@@ -109,7 +109,11 @@ func newSend(runtime shared.Runtime, deps Dependencies) *cobra.Command {
 
 func newDeliver(runtime shared.Runtime, deps Dependencies) *cobra.Command {
 	return &cobra.Command{Use: "deliver", Short: "Receive one bounded message envelope on stdin (SSH endpoint)", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
-		message, err := agentmessage.Decode(cmd.InOrStdin())
+		raw, err := readInput(cmd.Context(), cmd.InOrStdin(), agentmessage.MaxEnvelopeBytes+1)
+		if err != nil {
+			return err
+		}
+		message, err := agentmessage.Decode(bytes.NewReader(raw))
 		if err != nil {
 			return runtime.ExitError(shared.ExitUsage, err.Error())
 		}

@@ -277,8 +277,12 @@ func TestPersistenceFailuresNeverRepeatPossibleSubmissions(t *testing.T) {
 				}
 				return filewrite.WriteJSONImmutableAt(dir, name, value, idempotent, nil)
 			}
+			expected := PreflightFailed
+			if failResult {
+				expected = Ambiguous
+			}
 			state, err := s.Notify(context.Background(), testMessage())
-			if state != Ambiguous || err == nil {
+			if state != expected || err == nil {
 				t.Fatal(state, err)
 			}
 			count := 0
@@ -410,5 +414,195 @@ func TestBindFirstCreatesPrivateMessageAncestorsUsableByInbox(t *testing.T) {
 	}
 	if len(messages) != 1 || messages[0] != testMessage() {
 		t.Fatalf("unexpected inbox: %+v", messages)
+	}
+}
+
+func TestMissingIntentAfterFailedWriteAllowsSafeRetry(t *testing.T) {
+	t.Parallel()
+	s, c := testService(t)
+	bindFixture(t, s)
+	s.write = func(*os.File, string, any, bool) error { return errors.New("write refused before publication") }
+	if status, err := s.Notify(context.Background(), testMessage()); status != PreflightFailed || err == nil {
+		t.Fatal(status, err)
+	}
+	for _, call := range c.calls {
+		if call == "turn/start" {
+			t.Fatal("input submitted without a recorded intent")
+		}
+	}
+	s.write = nil
+	if status, err := s.Notify(context.Background(), testMessage()); status != Submitted || err != nil {
+		t.Fatal(status, err)
+	}
+	count := 0
+	for _, call := range c.calls {
+		if call == "turn/start" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatal("wrong submission count", count)
+	}
+}
+
+func TestFailedIntentWriteWithCompetingOrUnreadableEntryNeverSubmits(t *testing.T) {
+	t.Parallel()
+	for _, unreadable := range []bool{false, true} {
+		name := "competing-intent"
+		if unreadable {
+			name = "unreadable-intent"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			s, c := testService(t)
+			bindFixture(t, s)
+			s.write = func(dir *os.File, name string, value any, _ bool) error {
+				if unreadable {
+					if err := os.Symlink("missing", filepath.Join(s.Root, "mac", name)); err != nil {
+						return err
+					}
+				} else if err := filewrite.WriteJSONImmutableAt(dir, name, value, false, nil); err != nil {
+					return err
+				}
+				return errors.New("publication outcome uncertain")
+			}
+			if status, err := s.Notify(context.Background(), testMessage()); status != Ambiguous || err == nil {
+				t.Fatal(status, err)
+			}
+			s.write = nil
+			if status, _ := s.Notify(context.Background(), testMessage()); status != Ambiguous {
+				t.Fatal(status)
+			}
+			for _, call := range c.calls {
+				if call == "turn/start" {
+					t.Fatal("competing or unreadable intent caused submission")
+				}
+			}
+		})
+	}
+}
+
+func TestBindingReplayMustSyncDirectoryBeforeReportingSuccess(t *testing.T) {
+	t.Parallel()
+	s, _ := testService(t)
+	bindFixture(t, s)
+	synced := 0
+	s.syncDirectory = func(*os.File) error { synced++; return errors.New("sync refused") }
+	if err := s.Bind(context.Background(), "mac", "/tmp/codex.sock", "thread-1"); err == nil {
+		t.Fatal("unsynced binding replay succeeded")
+	}
+	if synced != 1 {
+		t.Fatal("binding replay did not sync")
+	}
+	s.syncDirectory = nil
+	bindFixture(t, s)
+}
+
+func TestWakeFenceSyncFailuresRemainAmbiguousWithoutAdditionalSubmission(t *testing.T) {
+	t.Parallel()
+	for _, failResult := range []bool{false, true} {
+		name := "intent-sync"
+		if failResult {
+			name = "result-sync"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			s, c := testService(t)
+			bindFixture(t, s)
+			syncs := 0
+			s.syncDirectory = func(dir *os.File) error {
+				syncs++
+				if !failResult || syncs >= 2 {
+					return errors.New("sync failed")
+				}
+				return dir.Sync()
+			}
+			if status, err := s.Notify(context.Background(), testMessage()); status != Ambiguous || err == nil {
+				t.Fatal(status, err)
+			}
+			before := len(c.calls)
+			if status, err := s.Notify(context.Background(), testMessage()); status != Ambiguous || err == nil {
+				t.Fatal("unsynced replay", status, err)
+			}
+			if len(c.calls) != before {
+				t.Fatal("replay contacted Codex")
+			}
+			s.syncDirectory = nil
+			expected := Ambiguous
+			if failResult {
+				expected = Submitted
+			}
+			if status, err := s.Notify(context.Background(), testMessage()); status != expected || err != nil {
+				t.Fatal("synced replay", status, err)
+			}
+			count := 0
+			for _, call := range c.calls {
+				if call == "turn/start" {
+					count++
+				}
+			}
+			expectedCount := 0
+			if failResult {
+				expectedCount = 1
+			}
+			if count != expectedCount {
+				t.Fatal("wrong submission count", count)
+			}
+		})
+	}
+}
+
+func TestPrivateDirectoryCreationAndReplaySyncTheirParent(t *testing.T) {
+	t.Parallel()
+	dir, err := os.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dir.Close() })
+	syncs := 0
+	opener := privateOpener{sync: func(int) error { syncs++; return nil }}
+	if err = opener.Mkdir(int(dir.Fd()), "new"); err != nil {
+		t.Fatal(err)
+	}
+	if err = opener.Mkdir(int(dir.Fd()), "new"); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("replay must preserve EEXIST: %v", err)
+	}
+	if syncs != 2 {
+		t.Fatal("parent was not synced on creation and replay", syncs)
+	}
+	opener.sync = func(int) error { return errors.New("parent sync failed") }
+	if err = opener.Mkdir(int(dir.Fd()), "new"); err == nil || errors.Is(err, os.ErrExist) {
+		t.Fatal("parent sync failure not surfaced", err)
+	}
+	if err = opener.Mkdir(-1, "new"); err == nil {
+		t.Fatal("invalid directory descriptor accepted")
+	}
+}
+
+func TestChildPublicationSyncFailureStopsBeforeCodex(t *testing.T) {
+	t.Parallel()
+	s, c := testService(t)
+	s.syncParent = func(*os.File) error { return errors.New("parent sync failed") }
+	if err := s.Bind(context.Background(), "mac", "/tmp/codex.sock", "thread-1"); err == nil {
+		t.Fatal("binding accepted before child directory publication durable")
+	}
+	if len(c.calls) != 0 {
+		t.Fatal("contacted Codex with undurable directory")
+	}
+	s.syncParent = nil
+	bindFixture(t, s)
+}
+
+func TestInvalidAgentDirectoryCannotAcquireWakeState(t *testing.T) {
+	t.Parallel()
+	s, _ := testService(t)
+	if err := os.MkdirAll(s.Root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(s.Root, "mac")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.directory("mac"); err == nil {
+		t.Fatal("symlinked agent directory accepted")
 	}
 }

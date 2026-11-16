@@ -14,7 +14,7 @@ func TestMessageWakeWiringUsesSelectedProjectsRootAndRejectsUnavailableTargets(t
 	t.Parallel()
 	root := t.TempDir()
 	service, err := messageWakeService(root)
-	if err != nil || service.Root != filepath.Join(root, ".wb", "messages", "wake") || service.ProjectsRoot != root {
+	if err != nil || service.Root != filepath.Join(root, ".wb", "messages", ".wake") || service.ProjectsRoot != root {
 		t.Fatalf("wrong local wake store: %+v, %v", service, err)
 	}
 	message := agentmessage.Message{Version: 1, ID: agentmessage.NewID(), From: "vm", To: "mac", Body: "test"}

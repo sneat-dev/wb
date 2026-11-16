@@ -57,7 +57,8 @@ Retries after acknowledgment do not resurrect a message or wake an agent again.
 
 State lives in `<projects-root>/.wb/messages` according to WB's normal home
 resolution (which can migrate legacy layouts). Message directories are private
-mode 0700 and immutable messages/acknowledgments mode 0600. Messages and replay
+mode 0700 and immutable messages/acknowledgments mode 0600. Native wake
+state uses the reserved internal `.wake` directory, which cannot be an agent name. Messages and replay
 records are retained; there is currently no automatic expiration or deletion.
 Each body is bounded to 64 KiB of valid UTF-8. The receiving machine uses its
 normal configured projects root; `--projects-root` selects local receive,
@@ -135,17 +136,22 @@ processing. The relay acknowledgment is a transfer receipt, not a claim that
 processing completed. Replies use ordinary `send --host vm --to vm`.
 
 If the SSH transfer or acknowledgment is lost, the next receive safely replays
-the same immutable ID. Native preflight failures retain the remote copy for a
-later retry. An ambiguous native submission is fenced locally and may complete
-the remote transfer; inspect the local wake outcome instead of resubmitting a
-possibly accepted turn. A missing native binding still permits durable local
+the same immutable ID. Every durable local copy completes remote transfer, even
+when native preflight fails. At the start of each relay cycle, WB retries delivery
+of up to 100 locally pending messages before holding the next remote receive;
+this resyncs local copies and retries unfenced wakes without retransmitting their
+bodies. Already submitted, rejected or ambiguous wakes stay fenced. Inspect an
+ambiguous outcome instead of resubmitting a possibly accepted turn. An idle
+remote receive can delay an offline wake retry by up to one minute; new remote
+messages end that wait immediately. A stale binding cannot block later remote
+batches from reaching the local inbox. A missing native binding still permits durable local
 inbox delivery for an agent using `receive --wait`.
 
 The relay reconnects after each held receive and uses a cancellable two-second
 backoff on failure, reporting a bounded escaped diagnostic on stderr for each
 failed retry. Message bodies and remote stderr are never included. It runs until cancelled; `--once` receives and copies one
 batch then exits, surfacing an error for diagnostics. Each remote call has a
-two-minute bound. SIGINT and SIGTERM cancel the local receive/relay and its SSH child. A remote
+two-minute execution bound plus at most three seconds to drain inherited pipes. SIGINT and SIGTERM cancel the local receive/relay and its SSH child. A remote
 held receive remains bounded to one minute if the connection disappears. Keep
 this process running via the agent harness or your existing process supervisor. No inbound listener or system-service installation
 is required. `--projects-root` chooses the local relay destination; the remote

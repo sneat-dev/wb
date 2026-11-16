@@ -20,7 +20,13 @@ func (s SSH) Relay(ctx context.Context, store Store, agent string, once bool) er
 		return err
 	}
 	for {
-		err := s.relayBatch(ctx, store, agent)
+		err := store.retryWake(ctx, agent)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if batchErr := s.relayBatch(ctx, store, agent); err == nil {
+			err = batchErr
+		}
 		if once {
 			return err
 		}
@@ -103,8 +109,9 @@ func (s SSH) relayMessage(ctx context.Context, store Store, agent string, m Mess
 	if receipt.ID != m.ID || receipt.Digest != m.Digest() || receipt.Status != "durable" {
 		return fmt.Errorf("relay local delivery unconfirmed: %w", err)
 	}
-	if err != nil && receipt.Wake != "ambiguous" && receipt.Wake != "rejected" {
-		return fmt.Errorf("relay retained remote copy after local wake failure: %w", err)
+	wakeErr := err
+	if receipt.Wake == "ambiguous" || receipt.Wake == "rejected" {
+		wakeErr = nil
 	}
 	var ack boundedOutput
 	if err = s.relayCall(ctx, []string{"ack", m.ID, "--agent", agent}, &ack); err != nil {
@@ -117,5 +124,28 @@ func (s SSH) relayMessage(ctx context.Context, store Store, agent string, m Mess
 	if err = json.Unmarshal(ack.Bytes(), &result); err != nil || result.ID != m.ID || result.Status != "acknowledged" {
 		return fmt.Errorf("relay acknowledgment is unconfirmed; message may be replayed safely")
 	}
-	return nil
+	return wakeErr
+}
+
+// retryWake uses the local durable inbox, so a stale native binding never
+// reserves remote receive slots or requires retransferring message bodies.
+func (s Store) retryWake(ctx context.Context, agent string) error {
+	if s.Notify == nil {
+		return nil
+	}
+	messages, err := s.pending(agent)
+	if err != nil {
+		return err
+	}
+	var firstError error
+	for _, m := range messages {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		receipt, err := s.Deliver(ctx, m)
+		if err != nil && receipt.Wake != "ambiguous" && receipt.Wake != "rejected" && firstError == nil {
+			firstError = err
+		}
+	}
+	return firstError
 }

@@ -33,11 +33,13 @@ const (
 // Service stores receiver-local opt-in bindings and durable wake fences beneath Root.
 // Root must be an absolute private directory; no remote message chooses a socket or thread.
 type Service struct {
-	Root         string
-	ProjectsRoot string
-	dial         func(context.Context, string) (connection, error)
-	chmod        func(*os.File, os.FileMode) error
-	write        func(*os.File, string, any, bool) error
+	Root          string
+	ProjectsRoot  string
+	dial          func(context.Context, string) (connection, error)
+	chmod         func(*os.File, os.FileMode) error
+	write         func(*os.File, string, any, bool) error
+	syncDirectory func(*os.File) error
+	syncParent    func(*os.File) error
 }
 
 type binding struct {
@@ -62,9 +64,25 @@ func (b binding) validate() error {
 
 // privateOpener creates newly missing ancestors with the inbox's privacy mode.
 // Existing ancestors are opened without changing their permissions.
-type privateOpener struct{ secureopen.Real }
+type privateOpener struct {
+	secureopen.Real
+	sync func(int) error
+}
 
-func (privateOpener) Mkdir(fd int, name string) error { return unix.Mkdirat(fd, name, 0700) }
+func (opener privateOpener) Mkdir(fd int, name string) error {
+	err := unix.Mkdirat(fd, name, 0700)
+	if err != nil && !errors.Is(err, unix.EEXIST) {
+		return err
+	}
+	sync := opener.sync
+	if sync == nil {
+		sync = unix.Fsync
+	}
+	if syncErr := sync(fd); syncErr != nil {
+		return syncErr
+	}
+	return err
+}
 
 func (s Service) directory(agent string) (*os.File, error) {
 	if err := agentmessage.ValidateAgent(agent); err != nil {
@@ -82,14 +100,41 @@ func (s Service) directory(agent string) (*os.File, error) {
 	if err = chmod(root, 0700); err != nil {
 		return nil, err
 	}
-	return worktreesecure.OpenPrivateChild(root, agent, true, func(name string) bool { return agentmessage.ValidateAgent(name) == nil })
+	child, err := worktreesecure.OpenPrivateChildWith(privateOpener{}, root, agent, true, func(name string) bool { return agentmessage.ValidateAgent(name) == nil })
+	if err != nil {
+		return nil, err
+	}
+	syncParent := s.syncParent
+	if syncParent == nil {
+		syncParent = (*os.File).Sync
+	}
+	if err = syncParent(root); err != nil {
+		_ = child.Close()
+		return nil, err
+	}
+	return child, nil
+}
+
+func (s Service) sync(dir *os.File) error {
+	if s.syncDirectory != nil {
+		return s.syncDirectory(dir)
+	}
+	return dir.Sync()
 }
 
 func (s Service) persist(dir *os.File, name string, value any, idempotent bool) error {
+	var err error
 	if s.write != nil {
-		return s.write(dir, name, value, idempotent)
+		err = s.write(dir, name, value, idempotent)
+	} else {
+		err = filewrite.WriteJSONImmutableAt(dir, name, value, idempotent, nil)
 	}
-	return filewrite.WriteJSONImmutableAt(dir, name, value, idempotent, nil)
+	if err != nil {
+		return err
+	}
+	// The immutable writer's identical-content fast path does not sync the
+	// directory. Re-establish durability for both new writes and replays.
+	return s.sync(dir)
 }
 
 // Bind verifies an existing exact thread through metadata-only reads before opting
@@ -129,7 +174,7 @@ func (s Service) Unbind(agent string) error {
 	if err != nil {
 		return err
 	}
-	return dir.Sync()
+	return s.sync(dir)
 }
 
 // Notify is suitable for agentmessage.Store.Notify. Delivery must be durable first.
@@ -152,6 +197,9 @@ func (s Service) Notify(ctx context.Context, msg agentmessage.Message) (string, 
 		if err == nil {
 			if old.Digest != digest || (old.Status != Submitted && old.Status != Ambiguous && old.Status != Rejected) {
 				return Ambiguous, errors.New("wake receipt conflicts with message")
+			}
+			if err = s.sync(dir); err != nil {
+				return Ambiguous, errors.New("wake receipt directory could not be synced; no new submission attempted")
 			}
 			return old.Status, nil
 		}
@@ -178,7 +226,12 @@ func (s Service) Notify(ctx context.Context, msg agentmessage.Message) (string, 
 	defer conn.Close()
 	record := receipt{Digest: digest, Binding: b, Status: Ambiguous}
 	if err = s.persist(dir, msg.ID+".intent.json", record, false); err != nil {
-		// A competing submitter or uncertain durable write must never trigger a send.
+		// A definite absence proves this attempt did not publish its fence and
+		// cannot have submitted input. A competitor or unreadable entry remains
+		// ambiguous; neither case is permission to send.
+		if _, readErr := filewrite.ReadAt(dir, msg.ID+".intent.json"); errors.Is(readErr, os.ErrNotExist) {
+			return PreflightFailed, errors.New("wake intent was not recorded; no submission attempted")
+		}
 		return Ambiguous, errors.New("wake intent could not be exclusively recorded; no new submission attempted")
 	}
 	command := "wb"
