@@ -13,6 +13,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/runner/runnertest"
+	"github.com/sneat-dev/wb/internal/sessionmove"
 )
 
 func TestSSHRunnerCarriesBoundedInputOutputAndPipeDrainPolicy(t *testing.T) {
@@ -125,7 +126,7 @@ func TestSSHRunnerPreservesRelayBatchOutputLimit(t *testing.T) {
 	}
 }
 
-func TestUnconfirmedDeliveryClassifiesLocalFailuresWithoutPrivateErrorText(t *testing.T) {
+func TestSendClassifiesLocalFailuresWithoutPrivateErrorText(t *testing.T) {
 	t.Parallel()
 	for name, tc := range map[string]struct {
 		cause    error
@@ -139,10 +140,33 @@ func TestUnconfirmedDeliveryClassifiesLocalFailuresWithoutPrivateErrorText(t *te
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			// The wrapper itself is private too: neither it nor a path/name may leak.
-			err := unconfirmedDelivery(context.Background(), errors.Join(errors.New("private-wrapper"), tc.cause))
-			if !strings.Contains(err.Error(), tc.category) || !strings.Contains(err.Error(), "delivery is unconfirmed") || strings.Contains(err.Error(), "private-") {
-				t.Fatal("unsafe or unhelpful diagnostic", err)
+			for _, cancelled := range []bool{false, true} {
+				ctx, cancel := context.WithCancel(context.Background())
+				called := false
+				transport := SSH{Config: sessionmove.SSHConfig{Host: "not-contacted"}, Run: func(_ context.Context, _ string, _ []string, _ io.Reader, stdout, stderr io.Writer) error {
+					called = true
+					_, _ = io.WriteString(stdout, "private-stdout")
+					_, _ = io.WriteString(stderr, "private-stderr")
+					if cancelled {
+						cancel()
+					}
+					return errors.Join(errors.New("private-wrapper"), tc.cause)
+				}}
+				receipt, err := transport.Send(ctx, sampleMessage())
+				cancel()
+				if !called || receipt != (Receipt{}) || err == nil {
+					t.Fatalf("failure was not routed through Send: called=%v receipt=%+v error=%v", called, receipt, err)
+				}
+				category := tc.category
+				if cancelled {
+					category = "SSH delivery was cancelled or timed out"
+					if strings.Contains(err.Error(), tc.category) {
+						t.Fatal("local failure overrode cancellation", err)
+					}
+				}
+				if !strings.Contains(err.Error(), category) || !strings.Contains(err.Error(), "unconfirmed") || strings.Contains(err.Error(), "private-") {
+					t.Fatal("unsafe or unhelpful Send diagnostic", err)
+				}
 			}
 		})
 	}

@@ -55,7 +55,7 @@ unacknowledged messages in unspecified order, including messages delivered
 while offline. Reading does not acknowledge; acknowledge only after processing.
 Retries after acknowledgment do not resurrect a message or wake an agent again.
 
-Failure diagnostics distinguish an unavailable SSH executable, unsafe current-directory
+Send failure diagnostics distinguish an unavailable SSH executable, unsafe current-directory
 lookup, denied execution, oversized response, SSH transport exit and remote-command
 exit. They never print raw SSH stderr, executable paths or runner error text. A local
 failure in an agent can differ from a successful parent-shell send because the agent

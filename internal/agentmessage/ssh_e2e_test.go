@@ -104,7 +104,7 @@ func TestContractMissingSSHExecutableProducesActionablePrivateDiagnostic(t *test
 		t.Fatalf("missing executable error lost: %v", err)
 	}
 	diagnostic := unconfirmedDelivery(context.Background(), err).Error()
-	if !strings.Contains(diagnostic, "local SSH executable is unavailable") || strings.Contains(diagnostic, missing) {
+	if !strings.Contains(diagnostic, "local SSH executable is unavailable") || strings.Contains(diagnostic, filepath.Base(missing)) || strings.Contains(diagnostic, filepath.Dir(missing)) {
 		t.Fatal("missing executable diagnostic lost its category or leaked its path", diagnostic)
 	}
 }

@@ -146,6 +146,38 @@ func TestReceiveWakesImmediatelyAndRecoversStaleSocket(t *testing.T) {
 	}
 }
 
+// Keep the listener open independently of Receive: a receiver can otherwise
+// observe the durable file and exit before Deliver sends its wake datagram.
+func TestDeliverSignalsAnOpenWaitSocketAfterPersistingMessage(t *testing.T) {
+	t.Parallel()
+	store := testStore(t)
+	message := sampleMessage()
+	dir, err := store.directory(message.To)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = dir.Close()
+	path := filepath.Join(store.Root, message.To, "wait.sock")
+	listener, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: path, Net: "unixgram"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	mustDeliver(t, store, message)
+	if err = listener.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var signal [2]byte
+	n, _, err := listener.ReadFromUnix(signal[:])
+	if err != nil || n != 1 || signal[0] != 1 {
+		t.Fatalf("delivery wake datagram: n=%d signal=%v error=%v", n, signal, err)
+	}
+	pending, err := store.Receive(context.Background(), message.To, 0)
+	if err != nil || len(pending) != 1 || pending[0] != message {
+		t.Fatalf("signalled delivery was not durable: pending=%+v error=%v", pending, err)
+	}
+}
+
 func TestReceiveTimeoutCancellationAndCompetingWaiter(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
