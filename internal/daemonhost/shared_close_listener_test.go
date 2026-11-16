@@ -12,6 +12,7 @@ import (
 )
 
 func TestSharedListenerCloseWaitsForHTTPShutdownToReleaseDescriptor(t *testing.T) {
+	t.Parallel()
 	tcp, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
 		t.Fatal(err)
@@ -46,7 +47,7 @@ func TestSharedListenerCloseWaitsForHTTPShutdownToReleaseDescriptor(t *testing.T
 	}()
 	waitListenerEvent(t, held, "RawConn.Control held the descriptor")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	shutdownDone := make(chan error, 1)
 	go func() { shutdownDone <- server.Shutdown(ctx) }()
 	waitListenerEvent(t, observed.acceptClosed, "Accept observed the closing state")
@@ -94,6 +95,7 @@ func TestSharedListenerCloseWaitsForHTTPShutdownToReleaseDescriptor(t *testing.T
 }
 
 func TestSharedListenerCloseRetainsTheOriginalCloseError(t *testing.T) {
+	t.Parallel()
 	want := errors.New("original close failure")
 	original := &closeErrorListener{err: want}
 	listener := shareListenerClose(original)
