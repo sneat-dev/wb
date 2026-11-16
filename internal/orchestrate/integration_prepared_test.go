@@ -2,12 +2,13 @@ package orchestrate
 
 import (
 	"context"
-	"github.com/sneat-dev/wb/internal/githubobserver"
-	"github.com/sneat-dev/wb/internal/landinglane"
-	"github.com/sneat-dev/wb/internal/quality"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/githubobserver"
+	"github.com/sneat-dev/wb/internal/landinglane"
+	"github.com/sneat-dev/wb/internal/quality"
 )
 
 func preparedTestRecord() LegacyProvenance {
@@ -41,6 +42,7 @@ func TestPreparedProvenanceSeparatesCIdeferralFromCompletedValidation(t *testing
 	}
 	for _, fault := range []string{"status", "version", "published", "PR", "source", "parent", "route", "time", "missing policy", "unknown policy", "passed", "validation", "wb", "identity"} {
 		t.Run(fault, func(t *testing.T) {
+			t.Parallel()
 			x := preparedTestRecord()
 			switch fault {
 			case "status":
@@ -95,6 +97,7 @@ func TestPreparedPortableInventoryKeepsUnreviewedMergeAndPublishedDescendant(t *
 	}
 	for _, fault := range []string{"missing published head", "published before merge", "tampered", "duplicate", "trailer"} {
 		t.Run(fault, func(t *testing.T) {
+			t.Parallel()
 			w := append([]integrationCommit(nil), walk...)
 			bindings := []LegacyBinding{binding}
 			st := *store
@@ -143,6 +146,7 @@ func TestPreparedReceiptRejectsCompletedDirtyForeignAndUnboundEvidence(t *testin
 	}
 	for _, fault := range []string{"status", "phase", "missing historical owner", "invalid historical owner", "dirty", "missing check", "passed check", "source", "candidate", "repository", "target", "worktree", "deferral", "reason", "rebase", "direct route", "unknown route"} {
 		t.Run(fault, func(t *testing.T) {
+			t.Parallel()
 			r, o, a := preparedTestReceipt()
 			switch fault {
 			case "status":

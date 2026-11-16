@@ -5,14 +5,16 @@ package orchestrate
 import (
 	"context"
 	"errors"
-	"github.com/sneat-dev/wb/internal/runner"
-	"github.com/sneat-dev/wb/internal/worktrees"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/testenv"
+	"github.com/sneat-dev/wb/internal/worktrees"
 
 	"github.com/sneat-dev/wb/internal/githubchecks"
 )
@@ -232,11 +234,11 @@ func TestE2ELegacyRemovedPRAcknowledgementPreservesFailedReceiptAndRefusesRecrea
 		//nolint:paralleltest // Cases replace and restore this fixture's private gh shim.
 		t.Run(body, func(t *testing.T) {
 			t.Cleanup(func() {
-				if err := os.WriteFile(gh, originalGH, 0700); err != nil {
+				if err := testenv.WriteExecutableFile(gh, originalGH, 0o700); err != nil {
 					t.Fatal(err)
 				}
 			})
-			if err := os.WriteFile(gh, []byte(body), 0700); err != nil {
+			if err := testenv.WriteExecutableFile(gh, []byte(body), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := acknowledgeLegacyRemovedPRFailure(t.Context(), o, r, r.ReceiptPath, defaultRunner, readWorktreeMergeReceipt, persistLandedFailureAcknowledgement); err == nil {
