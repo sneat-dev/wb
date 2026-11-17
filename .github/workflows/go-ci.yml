@@ -197,6 +197,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Check validation receipt reuse
+        run: sh .github/scripts/test-ci-validation-reuse.sh
       - name: Check strict coverage profile gate
         run: python3 .github/scripts/test-coverage-strict.py
       - name: go vet
@@ -485,6 +487,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: Write exact validation receipt
         env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
           PULL_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}

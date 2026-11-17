@@ -17,7 +17,7 @@ assert_output() {
 valid_receipt=$temp/valid.json
 (
   cd "$root"
-  GITHUB_REPOSITORY=sneat-dev/wb PULL_NUMBER=17 HEAD_SHA=head-sha HEAD_REPOSITORY=sneat-dev/wb RUN_ID=44 \
+  GITHUB_REPOSITORY=sneat-dev/wb PULL_NUMBER=17 HEAD_SHA=head-sha HEAD_REPOSITORY=sneat-dev/wb RUN_ID=44 BASE_REF=main \
     sh .github/scripts/ci-reuse-receipt.sh "$valid_receipt"
 )
 
@@ -29,6 +29,63 @@ valid_output=$temp/valid.output
 )
 assert_output "$valid_output" 'reuse=true'
 assert_output "$valid_output" 'reason=exact-trusted-receipt'
+
+# A successful run against a stacked branch is not main validation, even
+# when every other identity, tree, and policy field matches the main verifier.
+stack_receipt=$temp/stack.json
+(
+  cd "$root"
+  GITHUB_REPOSITORY=sneat-dev/wb PULL_NUMBER=17 HEAD_SHA=head-sha HEAD_REPOSITORY=sneat-dev/wb RUN_ID=44 BASE_REF=integration/stack \
+    sh .github/scripts/ci-reuse-receipt.sh "$stack_receipt"
+)
+stack_output=$temp/stack.output
+(
+  cd "$root"
+  GITHUB_REPOSITORY=sneat-dev/wb CI_REUSE_RUN_ID=44 CI_REUSE_PULL_NUMBER=17 CI_REUSE_HEAD_SHA=head-sha \
+    sh .github/scripts/ci-reuse-verify.sh "$stack_output" "$stack_receipt"
+)
+assert_output "$stack_output" 'reuse=false'
+assert_output "$stack_output" 'reason=receipt-mismatch'
+jq -e '.base_ref == "integration/stack"' "$stack_receipt" >/dev/null
+
+# Missing and explicitly empty context fail independently, before creating
+# or overwriting a receipt. Each case has its own output and diagnostic file.
+for base_state in missing empty; do
+  invalid_receipt=$temp/invalid-base-$base_state.json
+  for output_state in absent existing; do
+    if [ "$output_state" = existing ]; then
+      printf '%s\n' 'preserve-existing-receipt' > "$invalid_receipt"
+    fi
+    if (
+      cd "$root"
+      export GITHUB_REPOSITORY=sneat-dev/wb PULL_NUMBER=17 HEAD_SHA=head-sha HEAD_REPOSITORY=sneat-dev/wb RUN_ID=44
+      unset BASE_REF
+      if [ "$base_state" = empty ]; then export BASE_REF=; fi
+      sh .github/scripts/ci-reuse-receipt.sh "$invalid_receipt"
+    ) > "$temp/$base_state-$output_state.log" 2>&1; then
+      printf 'receipt generator accepted %s base\n' "$base_state" >&2
+      exit 1
+    fi
+    grep -Fq 'BASE_REF is required' "$temp/$base_state-$output_state.log"
+    if [ "$output_state" = absent ]; then
+      test ! -e "$invalid_receipt"
+    else
+      assert_output "$invalid_receipt" 'preserve-existing-receipt'
+    fi
+  done
+done
+
+# The real receipt-producing step must supply the event base, rather than a
+# constant or an unrelated job's BASE_REF setting.
+if ! awk '
+  /- name: Write exact validation receipt/ { in_step=1; next }
+  in_step && /- name:/ { exit }
+  in_step && $0 == "          BASE_REF: ${{ github.event.pull_request.base.ref }}" { found=1 }
+  END { exit !found }
+' "$root/.github/workflows/go-ci.yml"; then
+  printf 'receipt producer must receive the actual pull-request base\n' >&2
+  exit 1
+fi
 
 unavailable_output=$temp/unavailable.output
 (
