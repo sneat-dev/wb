@@ -110,7 +110,7 @@ func (s SSH) relayBatch(ctx context.Context, store Store, agent string) error {
 
 func (s SSH) relayMessage(ctx context.Context, store Store, agent string, m Message) (string, error) {
 	receipt, err := store.Deliver(ctx, m)
-	if receipt.ID != m.ID || receipt.Digest != m.Digest() || receipt.Status != "durable" {
+	if !receipt.validFor(m) {
 		return receipt.Wake, fmt.Errorf("relay local delivery unconfirmed: %w", err)
 	}
 	wakeErr := err
@@ -137,22 +137,24 @@ func (s Store) retryWake(ctx context.Context, agent string) error {
 	if s.Notify == nil {
 		return nil
 	}
-	messages, err := s.pendingLimit(agent, 0)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	dir, err := s.directory(agent)
 	if err != nil {
 		return err
 	}
+	defer func() { _ = dir.Close() }()
 	var firstError error
-	for _, m := range messages {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
+	err = walkPending(ctx, dir, agent, dir.ReadDir, func(m Message) (bool, error) {
 		receipt, err := s.Deliver(ctx, m)
 		if err != nil && receipt.Wake != "ambiguous" && receipt.Wake != "rejected" && firstError == nil {
 			firstError = err
 		}
-		if receipt.Wake == "preflight-failed" {
-			return firstError
-		}
+		return receipt.Wake != "preflight-failed", nil
+	})
+	if err != nil {
+		return err
 	}
 	return firstError
 }

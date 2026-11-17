@@ -155,11 +155,21 @@ Wake outcomes are separate from delivery:
 - `ambiguous`: submission may have happened. WB keeps the inbox and refuses another automatic submission for that ID.
 - `acknowledged`: a previous delivery was explicitly acknowledged; a retry cannot wake it again.
 
+These six outcomes form the receipt protocol. Missing or unknown wake outcomes
+are rejected even when the remote process exits successfully; forwarding leaves
+the local message queued rather than acknowledging an unrecognized receipt.
+
 WB durably records submission intent before calling Codex. A crash or lost
 response after that point never causes an automatic duplicate submission.
 This favors avoiding duplicate agent actions over guaranteed wake-up: inspect
 the inbox manually when the outcome is ambiguous. A message received before
-binding remains in the inbox; retry its original send ID to request wake-up.
+binding remains pending in the recipient inbox. The recipient can use `receive`
+and acknowledge it after processing. After binding, an active recipient relay
+also retries pending, unfenced wakes from that local inbox. If an operator
+needs to redeliver directly, it must use the identical envelope and original ID
+at that recipient; an already acknowledged recipient message cannot wake again.
+Repeating an ordinary local send does not restart forwarding once that outbox
+copy has a transfer ACK, including a prior remote `not-bound` receipt.
 
 Disable future automatic wake-up with:
 
@@ -199,7 +209,11 @@ transfers them.
 If the SSH transfer or acknowledgment is lost, the next receive safely replays
 the same immutable ID. Every durable local copy completes remote transfer, even
 when native preflight fails. At the start of each relay cycle, WB retries delivery
-of locally pending messages before holding the next remote receive;
+of locally pending messages before holding the next remote receive. Recovery
+reads directory entries in pages of at most 100 and decodes one body at a time,
+checking cancellation between entries; it traverses beyond the first 100
+pending messages. This preserves the unspecified receive order and its
+100-message response limit;
 this resyncs local copies and retries unfenced wakes without retransmitting their
 bodies. Wake retries stop at the first unavailable native binding, and the rest
 of a remote batch is copied without repeatedly probing that binding. Already

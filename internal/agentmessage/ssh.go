@@ -105,7 +105,7 @@ func (s SSH) Send(ctx context.Context, m Message) (Receipt, error) {
 	err := run(deliveryCtx, "ssh", args, bytes.NewReader(raw), &stdout, &stderr)
 	var receipt Receipt
 	decodeErr := json.Unmarshal(stdout.Bytes(), &receipt)
-	if decodeErr != nil || receipt.ID != m.ID || receipt.Digest != m.Digest() || receipt.Status != "durable" {
+	if decodeErr != nil || !receipt.validFor(m) {
 		return Receipt{}, unconfirmedDelivery(deliveryCtx, err)
 	}
 	if err != nil {

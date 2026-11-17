@@ -44,7 +44,7 @@ func queueForward(t *testing.T, store Store, m Message) {
 
 func TestForwardAcknowledgesOnlyConfirmedDurabilityAndTerminalWake(t *testing.T) {
 	t.Parallel()
-	for _, mode := range []string{"submitted", "not-bound", "acknowledged", "ambiguous", "rejected", "preflight-failed", "preflight-zero-exit", "other-wake-failure", "no-receipt", "wrong-id", "wrong-digest", "wrong-status"} {
+	for _, mode := range []string{"submitted", "not-bound", "acknowledged", "ambiguous", "rejected", "preflight-failed", "preflight-zero-exit", "other-wake-failure", "submitted-error", "unknown-zero-exit", "", "no-receipt", "wrong-id", "wrong-digest", "wrong-status"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
 			local := testStore(t)
@@ -61,11 +61,17 @@ func TestForwardAcknowledgesOnlyConfirmedDurabilityAndTerminalWake(t *testing.T)
 				case "no-receipt":
 					return Receipt{}, errors.New(m.Body)
 				case "wrong-id":
+					r.Wake = "submitted"
 					r.ID = NewID()
 				case "wrong-digest":
+					r.Wake = "submitted"
 					r.Digest = "wrong"
 				case "wrong-status":
+					r.Wake = "submitted"
 					r.Status = "received"
+				case "submitted-error":
+					r.Wake = "submitted"
+					return r, errors.New(m.Body)
 				case "preflight-zero-exit":
 					r.Wake = "preflight-failed"
 				case "ambiguous", "rejected", "preflight-failed", "other-wake-failure":
@@ -197,7 +203,7 @@ func TestForwardRejectsUnsafeRouteAndHonorsCancellation(t *testing.T) {
 	t.Cleanup(cancel)
 	transport = forwardTransport(t, func(m Message) (Receipt, error) {
 		cancel()
-		return Receipt{ID: m.ID, Digest: m.Digest(), Status: "durable"}, nil
+		return Receipt{ID: m.ID, Digest: m.Digest(), Status: "durable", Wake: "submitted"}, nil
 	})
 	if err := transport.Forward(ctx, store, m.From, m.To, true); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
@@ -341,7 +347,7 @@ func TestForwardIdleEnqueueWakesAndExcludesCompetingWaiter(t *testing.T) {
 	done := make(chan error, 1)
 	transport := forwardTransport(t, func(got Message) (Receipt, error) {
 		sent <- got
-		return Receipt{ID: got.ID, Digest: got.Digest(), Status: "durable"}, nil
+		return Receipt{ID: got.ID, Digest: got.Digest(), Status: "durable", Wake: "submitted"}, nil
 	})
 	go func() { done <- transport.Forward(ctx, store, m.From, m.To, false) }()
 	path := filepath.Join(store.Root, m.To, "wait.sock")

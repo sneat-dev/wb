@@ -174,12 +174,11 @@ func (s Service) Unbind(agent string) error {
 	}
 	defer func() { _ = dir.Close() }()
 	err = unix.Unlinkat(int(dir.Fd()), "binding.json", 0)
-	if errors.Is(err, unix.ENOENT) {
-		return nil
-	}
-	if err != nil {
+	if err != nil && !errors.Is(err, unix.ENOENT) {
 		return err
 	}
+	// An absent binding may follow an interrupted unlink whose directory sync
+	// never completed. Confirm that absence durably on every successful retry.
 	return s.sync(dir)
 }
 

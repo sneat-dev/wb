@@ -377,3 +377,89 @@ func TestWakeRetryReachesBeyondHundredUnacknowledgedFencedMessages(t *testing.T)
 		t.Fatal("receive lost its batch limit", len(visible), err)
 	}
 }
+
+func TestWakeRetryStopsBeforeReadingLaterBodiesWhenBindingFails(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	for range 3 {
+		m := sampleMessage()
+		m.ID = NewID()
+		mustDeliver(t, s, m)
+	}
+	dir, err := s.directory("mac")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := dir.ReadDir(-1)
+	_ = dir.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The last directory entry is deliberately unreadable as an envelope.
+	// A stopped wake pass must never decode it after the first preflight failure.
+	if err := os.WriteFile(filepath.Join(s.Root, "mac", entries[len(entries)-1].Name()), []byte("not an envelope"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	failure := errors.New("binding unavailable")
+	calls := 0
+	s.Notify = func(context.Context, Message) (string, error) { calls++; return "preflight-failed", failure }
+	if err := s.retryWake(context.Background(), "mac"); !errors.Is(err, failure) || calls != 1 {
+		t.Fatalf("wake recovery eagerly read later bodies: calls=%d err=%v", calls, err)
+	}
+}
+
+func TestCancelledWakeRetryDoesNotDecodePendingBodies(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	m := sampleMessage()
+	mustDeliver(t, s, m)
+	if err := os.WriteFile(filepath.Join(s.Root, m.To, m.ID+".json"), []byte("invalid envelope"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s.Notify = func(context.Context, Message) (string, error) { t.Fatal("cancelled recovery notified"); return "", nil }
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := s.retryWake(ctx, m.To); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled recovery decoded storage first: %v", err)
+	}
+}
+
+func TestWakeRecoveryReportsCorruptPendingEnvelope(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	m := sampleMessage()
+	mustDeliver(t, s, m)
+	if err := os.WriteFile(filepath.Join(s.Root, m.To, m.ID+".json"), []byte("invalid"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s.Notify = func(context.Context, Message) (string, error) {
+		t.Fatal("corrupt envelope notified")
+		return "submitted", nil
+	}
+	if err := s.retryWake(context.Background(), m.To); err == nil {
+		t.Fatal("corrupt inbox accepted")
+	}
+}
+
+func TestRelayDoesNotAcknowledgeUnrecognizedLocalWakeReceipt(t *testing.T) {
+	t.Parallel()
+	for _, wake := range []string{"", "private-unknown-outcome"} {
+		t.Run(wake, func(t *testing.T) {
+			t.Parallel()
+			s := testStore(t)
+			m := sampleMessage()
+			s.Notify = func(context.Context, Message) (string, error) { return wake, nil }
+			transport := SSH{Config: sessionmove.SSHConfig{Host: "vm"}, Run: func(context.Context, string, []string, io.Reader, io.Writer, io.Writer) error {
+				t.Fatal("invalid receipt acknowledged")
+				return nil
+			}}
+			if _, err := transport.relayMessage(context.Background(), s, m.To, m); err == nil || strings.Contains(err.Error(), "private") {
+				t.Fatal("receipt accepted or leaked", err)
+			}
+			messages, err := s.Receive(context.Background(), m.To, 0)
+			if err != nil || len(messages) != 1 {
+				t.Fatal("local durable copy lost", messages, err)
+			}
+		})
+	}
+}
