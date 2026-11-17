@@ -91,8 +91,9 @@ wb message forward --host vm --from mac-reviewer --to vm --once
 Memory is bounded, but I/O grows with retained inbox files; it is not limited
 to the first 100 pending messages. Failed entries do not prevent later entries
 from being considered. A continuous forwarder acquires the local inbox wait
-socket before its first scan. After a successful pass it waits for local delivery
-to signal another scan; it does not poll an idle queue. Failed passes retry
+socket before its first scan. After a successful pass, a local delivery signal
+wakes it immediately. It also rescans once a minute to recover a message whose
+sender stopped after storing it but before signalling. Failed passes retry
 after a cancellable two-second backoff. Network work and recovery can add
 latency; this is not an instant cross-machine wake guarantee. The full socket
 path must fit 103 bytes, and another waiting receiver or forwarder cannot share

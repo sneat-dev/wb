@@ -14,6 +14,15 @@ import (
 	"github.com/sneat-dev/wb/internal/filewrite"
 )
 
+// Notifications are only hints: recover a durable enqueue even if its sender
+// exits before sending the datagram. Healthy delivery still wakes immediately.
+const forwardRescanInterval = time.Minute
+
+type forwardWaiter interface {
+	SetReadDeadline(time.Time) error
+	ReadFromUnix([]byte) (int, *net.UnixAddr, error)
+}
+
 // Forward transfers a local recipient inbox through an operator-configured SSH
 // endpoint. Both envelope identities must match the fixed route. Local ACK means
 // confirmed remote durability, not remote agent processing. Rejected/ambiguous
@@ -23,7 +32,8 @@ import (
 // bounded, but I/O is proportional to retained inbox files. A failed entry does
 // not restart the cursor or prevent later entries from being considered. A
 // continuous forwarder listens before scanning and wakes on local delivery;
-// failed passes retry after two seconds. Restarts replay the same immutable IDs.
+// idle waits rescan after one minute if a notification was lost. Failed passes
+// retry after two seconds. Restarts replay the same immutable IDs.
 func (s SSH) Forward(ctx context.Context, store Store, from, to string, once bool) error {
 	if err := s.Config.Validate(); err != nil {
 		return err
@@ -63,10 +73,10 @@ func (s SSH) Forward(ctx context.Context, store Store, from, to string, once boo
 	defer release()
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
-	return s.forwardListen(ctx, store, from, to, conn)
+	return s.forwardListen(ctx, store, from, to, conn, forwardRescanInterval)
 }
 
-func (s SSH) forwardListen(ctx context.Context, store Store, from, to string, conn *net.UnixConn) error {
+func (s SSH) forwardListen(ctx context.Context, store Store, from, to string, conn forwardWaiter, rescanInterval time.Duration) error {
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -77,11 +87,17 @@ func (s SSH) forwardListen(ctx context.Context, store Store, from, to string, co
 		}
 		if err == nil {
 			var signal [1]byte
-			if _, _, readErr := conn.ReadFromUnix(signal[:]); readErr != nil {
+			readErr := conn.SetReadDeadline(time.Now().Add(rescanInterval))
+			if readErr == nil {
+				_, _, readErr = conn.ReadFromUnix(signal[:])
+			}
+			if readErr != nil {
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
-				return fmt.Errorf("forward inbox wake listener failed")
+				if !errors.Is(readErr, os.ErrDeadlineExceeded) {
+					return fmt.Errorf("forward inbox wake listener failed")
+				}
 			}
 			continue
 		}

@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/sessionmove"
 )
 
@@ -412,12 +414,12 @@ func TestForwardListenerErrorsAndFailureBackoff(t *testing.T) {
 	}
 	t.Cleanup(release)
 	_ = conn.Close()
-	if err := transport.forwardListen(context.Background(), store, "vm", "mac", conn); err == nil {
+	if err := transport.forwardListen(context.Background(), store, "vm", "mac", conn, forwardRescanInterval); err == nil {
 		t.Fatal("closed wake listener ignored")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := transport.forwardListen(ctx, store, "vm", "mac", conn); !errors.Is(err, context.Canceled) {
+	if err := transport.forwardListen(ctx, store, "vm", "mac", conn, forwardRescanInterval); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
 	release()
@@ -449,6 +451,102 @@ func TestForwardEmptyInboxCancellationReleasesListener(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(store.Root, "mac", "wait.sock")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("cancelled idle listener retained its socket", err)
+	}
+}
+
+type forwardTestWaiter struct {
+	deadline func(time.Time) error
+	read     func([]byte) (int, *net.UnixAddr, error)
+}
+
+func (w forwardTestWaiter) SetReadDeadline(deadline time.Time) error { return w.deadline(deadline) }
+func (w forwardTestWaiter) ReadFromUnix(p []byte) (int, *net.UnixAddr, error) {
+	return w.read(p)
+}
+
+func TestForwardRecoversDurableEnqueueWithoutNotification(t *testing.T) {
+	t.Parallel()
+	local, remote := testStore(t), testStore(t)
+	m := sampleMessage()
+	dir, err := local.directory(m.To)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dir.Close() })
+	conn, release, err := local.openWaitSocket(m.To, filepath.Join(local.Root, m.To, "wait.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(release)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	t.Cleanup(cancel)
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	t.Cleanup(func() { stop() })
+	calls, waits := 0, 0
+	transport := forwardTransport(t, func(got Message) (Receipt, error) {
+		calls++
+		if got != m {
+			t.Fatal("fallback changed immutable envelope")
+		}
+		return remote.Deliver(ctx, got)
+	})
+	transport.ReportRetry = func(error) { t.Error("idle rescan reported a transport failure") }
+	waiter := forwardTestWaiter{
+		deadline: func(deadline time.Time) error {
+			waits++
+			if waits == 1 {
+				// The initial empty scan has finished. Reproduce publication
+				// followed by a sender crash before notifyWaiter: use the same
+				// durable file primitive as Deliver, but deliberately send no hint.
+				if err := filewrite.WriteJSONImmutableAt(dir, m.ID+".json", m, true, nil); err != nil {
+					t.Fatal(err)
+				}
+				if err := local.sync(dir); err != nil {
+					t.Fatal(err)
+				}
+			}
+			return conn.SetReadDeadline(deadline)
+		},
+		read: func(p []byte) (int, *net.UnixAddr, error) {
+			if waits == 3 {
+				// Two genuine socket timeouts have caused recovery followed by
+				// another scan of the ACKed message. Neither required a signal.
+				cancel()
+				_ = conn.Close()
+			}
+			return conn.ReadFromUnix(p)
+		},
+	}
+	if err := transport.forwardListen(ctx, local, m.From, m.To, waiter, time.Millisecond); !errors.Is(err, context.Canceled) {
+		t.Fatal("missed notification was not recovered before test deadline", err)
+	}
+	if calls != 1 || waits != 3 {
+		t.Fatal("fallback duplicated delivery or did not rescan", calls, waits)
+	}
+	pending, err := local.Receive(context.Background(), m.To, 0)
+	if err != nil || len(pending) != 0 {
+		t.Fatal("durable transfer not acknowledged locally", len(pending), err)
+	}
+	pending, err = remote.Receive(context.Background(), m.To, 0)
+	if err != nil || len(pending) != 1 || pending[0] != m {
+		t.Fatal("remote processing receipt conflated with transfer", len(pending), err)
+	}
+}
+
+func TestForwardReadFailureRemainsAnErrorWithRecoveryDeadline(t *testing.T) {
+	t.Parallel()
+	store := testStore(t)
+	readCalled := false
+	waiter := forwardTestWaiter{
+		deadline: func(time.Time) error { return nil },
+		read: func([]byte) (int, *net.UnixAddr, error) {
+			readCalled = true
+			return 0, nil, errors.New("private socket diagnostic")
+		},
+	}
+	err := (SSH{}).forwardListen(context.Background(), store, "vm", "mac", waiter, time.Minute)
+	if !readCalled || err == nil || strings.Contains(err.Error(), "private socket diagnostic") {
+		t.Fatal("non-timeout failure was hidden or disclosed", readCalled, err)
 	}
 }
 

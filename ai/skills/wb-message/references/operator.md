@@ -21,9 +21,10 @@ wb message relay --host <mailbox-host> --agent <self>
 ```
 
 Continuous forwarding listens for local delivery before scanning, then waits
-on that inbox socket after each successful pass; failed passes retry after two
-seconds. `--once` scans the complete directory in bounded pages, not only the
-first 100 pending messages. The full socket path must fit 103 bytes, and the
+on that inbox socket after each successful pass, with a once-per-minute rescan
+to recover a durable message whose notification was lost. Failed passes retry
+after two seconds. `--once` scans the complete directory in bounded pages,
+not only the first 100 pending messages. The full socket path must fit 103 bytes, and the
 continuous forwarder cannot share its inbox with another waiting receiver.
 These local wake mechanics do not guarantee instant cross-machine delivery.
 
