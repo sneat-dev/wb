@@ -8837,6 +8837,77 @@
       "notes": "Delivery does not assert processing. SSH authenticates the remote account; sender labels are advisory. Native wake is opt-in; held receive wakes through asynchronous tool completion."
     },
     {
+      "id": "wb.message.forward",
+      "feature_refs": [
+        "docs/agent-messages.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb message forward",
+              "flags": [
+                "--from",
+                "--host",
+                "--once",
+                "--remote-wb",
+                "--to",
+                "--user"
+              ],
+              "modes": [
+                "Forward immutable locally queued messages on an operator-configured route; acknowledge transfer only after matching remote durability."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb message forward --help",
+              "contains": [
+                "--from",
+                "--host",
+                "--once",
+                "--remote-wb",
+                "--to",
+                "--user"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-message/references/operator.md",
+              "marker": "## Direction and transport",
+              "examples": [
+                "wb message forward --host <mailbox-host> --from <self> --to <peer>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/cli/cmdmessage/forward_test.go",
+              "name": "TestForwardDispatchPreservesRouteAndReportsOnlyBoundedDiagnostics",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Agents enqueue locally without transport arguments. Only the separately configured operator process connects remotely. Sender labels are advisory; a transfer ACK does not mean agent processing. Native wake outcomes remain distinct."
+    },
+    {
       "id": "wb.message.receive",
       "feature_refs": [
         "docs/agent-messages.md"
@@ -8992,7 +9063,7 @@
                 "--user"
               ],
               "modes": [
-                "Durable bidirectional inbox delivery over authenticated SSH, with explicit acknowledgment and separate wake status."
+                "Default local durable enqueue for WB-managed transport; explicit operator --host override retains direct delivery."
               ]
             }
           ],
@@ -9022,10 +9093,10 @@
           "status": "Full",
           "skills": [
             {
-              "path": "ai/skills/wb-worktrees/references/ownership.md",
-              "marker": "## Bidirectional remote agent messages",
+              "path": "ai/skills/wb-message/SKILL.md",
+              "marker": "## Send",
               "examples": [
-                "wb message send"
+                "wb message send --from <self> --to <peer> --message-file -"
               ]
             }
           ],
@@ -9037,6 +9108,11 @@
             {
               "path": "internal/cli/cmdmessage/command_test.go",
               "name": "TestCLIProvidesBidirectionalSendReceiveAndExplicitAck",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/cli/cmdmessage/forward_test.go",
+              "name": "TestSendDefaultsToLocalDurabilityWithoutNetworkDispatch",
               "kind": "integration"
             }
           ],

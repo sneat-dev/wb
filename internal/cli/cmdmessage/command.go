@@ -16,14 +16,15 @@ import (
 )
 
 type Dependencies struct {
-	Relay func(context.Context, sessionmove.SSHConfig, agentmessage.Store, string, bool, func(error)) error
-	Store func(string) (agentmessage.Store, error)
-	Send  func(context.Context, sessionmove.SSHConfig, agentmessage.Message) (agentmessage.Receipt, error)
+	Forward func(context.Context, sessionmove.SSHConfig, agentmessage.Store, string, string, bool, func(error)) error
+	Relay   func(context.Context, sessionmove.SSHConfig, agentmessage.Store, string, bool, func(error)) error
+	Store   func(string) (agentmessage.Store, error)
+	Send    func(context.Context, sessionmove.SSHConfig, agentmessage.Message) (agentmessage.Receipt, error)
 }
 
 func New(runtime shared.Runtime, deps Dependencies) *cobra.Command {
 	command := &cobra.Command{Use: "message", Short: "Send, receive and acknowledge messages between remote agents"}
-	command.AddCommand(newSend(runtime, deps), newDeliver(runtime, deps), newReceive(runtime, deps), newAck(runtime, deps), newRelay(runtime, deps))
+	command.AddCommand(newSend(runtime, deps), newDeliver(runtime, deps), newReceive(runtime, deps), newAck(runtime, deps), newRelay(runtime, deps), newForward(runtime, deps))
 	for _, child := range command.Commands() {
 		withSignals(child)
 	}
@@ -42,11 +43,12 @@ func outputReceipt(cmd *cobra.Command, receipt agentmessage.Receipt, err error) 
 func newSend(runtime shared.Runtime, deps Dependencies) *cobra.Command {
 	var host, user, remoteWB, from, to, body, path, id string
 	var local bool
-	command := &cobra.Command{Use: "send", Short: "Send a durable message over authenticated SSH (JSON receipt)", Args: cobra.NoArgs}
+	command := &cobra.Command{Use: "send", Short: "Queue a durable message for another agent (JSON receipt)", Args: cobra.NoArgs}
 	command.RunE = func(cmd *cobra.Command, _ []string) error {
-		if (host == "") == !local || from == "" || to == "" || cmd.Flags().Changed("message") == cmd.Flags().Changed("message-file") {
-			return runtime.ExitError(shared.ExitUsage, "send requires exactly one of --host or --local, --from, --to and exactly one of --message or --message-file")
+		if (host != "" && local) || from == "" || to == "" || cmd.Flags().Changed("message") == cmd.Flags().Changed("message-file") {
+			return runtime.ExitError(shared.ExitUsage, "send requires --from, --to and exactly one of --message or --message-file; --host and --local are mutually exclusive")
 		}
+		local = host == ""
 		if path != "" {
 			reader := cmd.InOrStdin()
 			if path != "-" {
@@ -75,7 +77,7 @@ func newSend(runtime shared.Runtime, deps Dependencies) *cobra.Command {
 			return runtime.ExitError(shared.ExitUsage, "--user and --remote-wb require --host")
 		}
 		if !local && cmd.Flags().Changed("projects-root") {
-			return runtime.ExitError(shared.ExitUsage, "--projects-root applies only to --local sends")
+			return runtime.ExitError(shared.ExitUsage, "--projects-root applies only to local sends (omit --host)")
 		}
 		if !local {
 			if err := config.Validate(); err != nil {
@@ -95,8 +97,8 @@ func newSend(runtime shared.Runtime, deps Dependencies) *cobra.Command {
 		return outputReceipt(cmd, receipt, err)
 	}
 	f := command.Flags()
-	f.BoolVar(&local, "local", false, "Deliver into the local mailbox (for an outbound remote relay)")
-	f.StringVar(&host, "host", "", "Configured SSH host alias of the receiving machine")
+	f.BoolVar(&local, "local", false, "Deliver into the local mailbox (the default; WB services handle remote transport)")
+	f.StringVar(&host, "host", "", "Operator override: deliver directly to a configured SSH host")
 	f.StringVar(&user, "user", "", "SSH user (defaults to SSH configuration)")
 	f.StringVar(&remoteWB, "remote-wb", "", "Absolute path to remote wb executable (default: wb on PATH)")
 	f.StringVar(&from, "from", "", "Sender agent name (an advisory label, not an authenticated identity)")

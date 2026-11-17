@@ -1,0 +1,4 @@
+interface:
+  display_name: "WB Agent Messages"
+  short_description: "Send and receive durable messages with peer agents"
+  default_prompt: "Use $wb-message to read my inbox or send a message to a peer agent."

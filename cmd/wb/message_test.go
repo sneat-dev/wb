@@ -27,7 +27,7 @@ func TestMessageCommandRoundTripUsesOneLocalInboxAndExplicitAcknowledgment(t *te
 		return out.Bytes()
 	}
 	var receipt agentmessage.Receipt
-	if err := json.Unmarshal(run("send", "--local", "--from", "vm", "--to", "mac", "--message", "round trip"), &receipt); err != nil {
+	if err := json.Unmarshal(run("send", "--from", "vm", "--to", "mac", "--message", "round trip"), &receipt); err != nil {
 		t.Fatal(err)
 	}
 	if receipt.Status != "durable" || receipt.Wake != "not-bound" {
@@ -51,6 +51,7 @@ func TestMessageCommandPassesCancellationIntoTransports(t *testing.T) {
 	for _, args := range [][]string{
 		{"send", "--host", "unreachable.invalid", "--from", "vm", "--to", "mac", "--message", "cancelled"},
 		{"relay", "--host", "unreachable.invalid", "--agent", "mac", "--once"},
+		{"forward", "--host", "unreachable.invalid", "--from", "mac", "--to", "vm", "--once"},
 	} {
 		t.Run(args[0], func(t *testing.T) {
 			t.Parallel()
@@ -67,7 +68,7 @@ func TestMessageCommandPassesCancellationIntoTransports(t *testing.T) {
 			if err == nil {
 				t.Fatal("cancelled transport succeeded")
 			}
-			if args[0] == "relay" && !errors.Is(err, context.Canceled) {
+			if args[0] != "send" && !errors.Is(err, context.Canceled) {
 				t.Fatalf("relay lost cancellation: %v", err)
 			}
 			if args[0] == "send" && !strings.Contains(err.Error(), "cancelled or timed out") {
