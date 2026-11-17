@@ -172,12 +172,12 @@ func (s SSH) forwardEntry(ctx context.Context, store Store, from, to string, dir
 	if !errors.Is(ackErr, os.ErrNotExist) {
 		return fmt.Errorf("forward local acknowledgment could not be read")
 	}
-	// Send validates receipt ID, digest and durable status before returning it.
+	// Send validates identity, durability and the closed wake outcome protocol.
 	receipt, sendErr := s.Send(ctx, m)
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	if receipt.Status != "durable" {
+	if !receipt.validFor(m) {
 		return sendErr
 	}
 	if receipt.Wake == "preflight-failed" {

@@ -662,3 +662,25 @@ func TestUnsupportedFenceSyncStillFailsClosed(t *testing.T) {
 		})
 	}
 }
+
+func TestUnbindRetrySyncsPreviouslyRemovedBindingBeforeSuccess(t *testing.T) {
+	t.Parallel()
+	s, _ := testService(t)
+	bindFixture(t, s)
+	failure := errors.New("directory sync failed")
+	syncs := 0
+	s.syncDirectory = func(*os.File) error { syncs++; return failure }
+	if err := s.Unbind("mac"); !errors.Is(err, failure) {
+		t.Fatalf("first removal did not report failed durability: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(s.Root, "mac", "binding.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("binding was not removed before failed sync: %v", err)
+	}
+	if err := s.Unbind("mac"); !errors.Is(err, failure) || syncs != 2 {
+		t.Fatalf("absent binding retry skipped durability: syncs=%d err=%v", syncs, err)
+	}
+	s.syncDirectory = func(dir *os.File) error { syncs++; return dir.Sync() }
+	if err := s.Unbind("mac"); err != nil || syncs != 3 {
+		t.Fatalf("durable retry failed: syncs=%d err=%v", syncs, err)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -169,5 +170,31 @@ func TestSendClassifiesLocalFailuresWithoutPrivateErrorText(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSendRejectsUnknownOrMissingWakeReceiptWithoutExposingRemoteValue(t *testing.T) {
+	t.Parallel()
+	for _, wake := range []string{"", "private-unknown-outcome"} {
+		for _, failed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/%t", wake, failed), func(t *testing.T) {
+				t.Parallel()
+				m := sampleMessage()
+				transport := forwardTransport(t, func(Message) (Receipt, error) {
+					r := Receipt{ID: m.ID, Digest: m.Digest(), Status: "durable", Wake: wake}
+					if failed {
+						return r, errors.New("private remote failure")
+					}
+					return r, nil
+				})
+				r, err := transport.Send(context.Background(), m)
+				if err == nil || r != (Receipt{}) {
+					t.Fatalf("unrecognized receipt accepted: %+v %v", r, err)
+				}
+				if strings.Contains(err.Error(), "private") {
+					t.Fatal("remote value leaked", err)
+				}
+			})
+		}
 	}
 }

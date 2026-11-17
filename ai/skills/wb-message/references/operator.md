@@ -40,7 +40,9 @@ flags. Do not bypass host verification or copy credentials into messages.
 
 Transport acknowledgement confirms a durable copy at the next location;
 the receiving agent's local ACK separately records processing. Keep those
-receipts distinct. Retries preserve the original ID and complete envelope.
+receipts distinct. Retries preserve the original ID and complete envelope. Missing or
+unknown wake outcomes are invalid receipts even after a successful SSH exit;
+forwarding retains those local messages for diagnosis and retry.
 
 ## Optional native Codex wake
 
@@ -54,7 +56,12 @@ wb message unbind --agent <self>
 Binding verifies the local target and opts it into wake-up; it does not start
 Codex or grant the sender authority to choose a thread. Unbinding preserves
 the inbox. Other harnesses can use the same CLI inbox without assuming a
-native wake adapter exists for them.
+native wake adapter exists for them. A prior `not-bound` delivery remains in
+the recipient inbox; binding alone does not revisit it. The recipient can
+receive and process it, or an active recipient relay retries unfenced pending
+wakes on its next cycle. An operator can also redeliver the exact retained
+envelope directly to that recipient. Repeating a local send after its forward
+transfer ACK does not resend it; recipient-acknowledged IDs never wake again.
 
 Keep wake text to `New message from <from>.` and the recipient's exact
 `wb message receive --agent <self>` command. A static skill cannot infer the

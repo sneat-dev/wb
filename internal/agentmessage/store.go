@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -162,42 +163,76 @@ func (s Store) pendingLimit(agent string, limit int) ([]Message, error) {
 }
 
 func pendingIn(dir *os.File, agent string, limit int) ([]Message, error) {
-	entries, err := dir.ReadDir(-1)
+	messages := make([]Message, 0)
+	err := walkPending(context.Background(), dir, agent, dir.ReadDir, func(message Message) (bool, error) {
+		messages = append(messages, message)
+		return limit <= 0 || len(messages) < limit, nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	messages := make([]Message, 0)
-	for _, entry := range entries {
-		if !strings.HasSuffix(entry.Name(), ".json") {
-			continue
+	return messages, nil
+}
+
+// walkPending keeps at most one page of names and one decoded body in memory.
+// Callbacks may stop the complete pass; receive uses its existing 100-message
+// cap, while wake recovery continues beyond acknowledged or fenced entries.
+func walkPending(ctx context.Context, dir *os.File, agent string, readPage func(int) ([]os.DirEntry, error), visit func(Message) (bool, error)) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		id := strings.TrimSuffix(entry.Name(), ".json")
-		if err = ValidateID(id); err != nil {
-			return nil, err
+		entries, err := readPage(100)
+		if err != nil && !errors.Is(err, io.EOF) {
+			return err
 		}
-		message, readErr := readMessage(dir, entry.Name())
-		if readErr != nil {
-			return nil, readErr
-		}
-		if message.ID != id || message.To != agent {
-			return nil, fmt.Errorf("message identity does not match inbox")
-		}
-		ack, ackErr := filewrite.ReadAt(dir, id+".ack")
-		if ackErr == nil {
-			if string(ack) != message.Digest() {
-				return nil, fmt.Errorf("acknowledgment digest does not match message")
+		for _, entry := range entries {
+			if err := ctx.Err(); err != nil {
+				return err
 			}
-			continue
+			message, pending, err := pendingMessage(dir, agent, entry.Name())
+			if err != nil {
+				return err
+			}
+			if pending {
+				more, err := visit(message)
+				if err != nil || !more {
+					return err
+				}
+			}
 		}
-		if !errors.Is(ackErr, os.ErrNotExist) {
-			return nil, ackErr
-		}
-		messages = append(messages, message)
-		if limit > 0 && len(messages) == limit {
-			break
+		if errors.Is(err, io.EOF) {
+			return nil
 		}
 	}
-	return messages, nil
+}
+
+func pendingMessage(dir *os.File, agent, name string) (Message, bool, error) {
+	if !strings.HasSuffix(name, ".json") {
+		return Message{}, false, nil
+	}
+	id := strings.TrimSuffix(name, ".json")
+	if err := ValidateID(id); err != nil {
+		return Message{}, false, err
+	}
+	message, err := readMessage(dir, name)
+	if err != nil {
+		return Message{}, false, err
+	}
+	if message.ID != id || message.To != agent {
+		return Message{}, false, fmt.Errorf("message identity does not match inbox")
+	}
+	ack, err := filewrite.ReadAt(dir, id+".ack")
+	if err == nil {
+		if string(ack) != message.Digest() {
+			return Message{}, false, fmt.Errorf("acknowledgment digest does not match message")
+		}
+		return Message{}, false, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return Message{}, false, err
+	}
+	return message, true, nil
 }
 
 // Ack records consumption without deleting the immutable message. Repeating a

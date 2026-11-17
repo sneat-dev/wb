@@ -21,7 +21,10 @@ The operator's configured transport handles delivery to the peer.
 
 Keep the returned message ID. For an interrupted or uncertain send, retry with
 `--id <same-id>` and exactly the same sender, recipient and body. Do not invent
-a new ID to retry the same message. A changed message needs a new ID.
+a new ID to retry the same message. A changed message needs a new ID. A repeated
+local send does not restart a transfer already acknowledged by the transport.
+If a message arrived before wake binding, recover it from the recipient inbox
+with `receive`; ask the operator about wake recovery when needed.
 
 `durable` confirms storage at the enqueue location, not remote receipt, wake-up
 or processing. Inspect the receipt and any error separately; a wake failure can

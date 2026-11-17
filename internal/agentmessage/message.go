@@ -35,6 +35,17 @@ type Receipt struct {
 	Wake   string `json:"wake"`
 }
 
+// validFor treats delivery and wake status as one closed receipt protocol.
+// Unknown or absent outcomes cannot authorize a transport acknowledgment.
+func (r Receipt) validFor(m Message) bool {
+	switch r.Wake {
+	case "not-bound", "submitted", "acknowledged", "preflight-failed", "rejected", "ambiguous":
+		return r.ID == m.ID && r.Digest == m.Digest() && r.Status == "durable"
+	default:
+		return false
+	}
+}
+
 func ValidateAgent(name string) error {
 	if !namePattern.MatchString(name) {
 		return fmt.Errorf("agent name must be 1-64 ASCII letters, digits, underscores or hyphens, starting with a letter or digit")
