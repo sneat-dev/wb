@@ -8,6 +8,7 @@ receipt=${1:?usage: ci-reuse-receipt.sh RECEIPT_PATH}
 : "${HEAD_SHA:?HEAD_SHA is required}"
 : "${HEAD_REPOSITORY:?HEAD_REPOSITORY is required}"
 : "${RUN_ID:?RUN_ID is required}"
+: "${BASE_REF:?BASE_REF is required}"
 
 tree=$(git rev-parse HEAD^{tree})
 policy=$(for path in .github/workflows/go-ci.yml .github/scripts/release-eligible.sh; do sha256sum "$path" | awk '{print $1}'; done | sha256sum | awk '{print $1}')
@@ -17,6 +18,7 @@ jq -n \
   --arg head_sha "$HEAD_SHA" \
   --arg head_repository "$HEAD_REPOSITORY" \
   --arg run_id "$RUN_ID" \
+  --arg base_ref "$BASE_REF" \
   --arg tested_tree "$tree" \
   --arg policy_sha256 "$policy" \
-  '{schema_version: 1, event: "pull_request", repository: $repository, workflow: ".github/workflows/go-ci.yml", base_ref: "main", pull_number: $pull_number, head_sha: $head_sha, head_repository: $head_repository, run_id: $run_id, tested_tree: $tested_tree, policy_sha256: $policy_sha256}' > "$receipt"
+  '{schema_version: 1, event: "pull_request", repository: $repository, workflow: ".github/workflows/go-ci.yml", base_ref: $base_ref, pull_number: $pull_number, head_sha: $head_sha, head_repository: $head_repository, run_id: $run_id, tested_tree: $tested_tree, policy_sha256: $policy_sha256}' > "$receipt"
