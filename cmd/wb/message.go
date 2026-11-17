@@ -13,6 +13,9 @@ import (
 
 func newMessageCmd(inv *invocation) *cobra.Command {
 	command := cmdmessage.New(newCLIRuntime(inv), cmdmessage.Dependencies{
+		Forward: func(ctx context.Context, config sessionmove.SSHConfig, store agentmessage.Store, from, to string, once bool, report func(error)) error {
+			return (agentmessage.SSH{Config: config, ReportRetry: report}).Forward(ctx, store, from, to, once)
+		},
 		Store: func(root string) (agentmessage.Store, error) {
 			home, err := wbhome.Root(root)
 			return agentmessage.Store{Root: filepath.Join(home, "messages"), Notify: newMessageNotifier(inv)}, err

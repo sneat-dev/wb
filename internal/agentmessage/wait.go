@@ -48,24 +48,35 @@ func (s Store) Receive(ctx context.Context, agent string, wait time.Duration) ([
 }
 
 func (s Store) receiveWait(ctx context.Context, agent string, wait time.Duration, path string) ([]Message, error) {
+	conn, release, err := s.openWaitSocket(agent, path)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	return s.waitOn(ctx, agent, wait, conn)
+}
+
+// openWaitSocket shares exclusive inbox waiter ownership between receiving and
+// forwarding. Callers install the listener before scanning for pending work.
+func (s Store) openWaitSocket(agent, path string) (*net.UnixConn, func(), error) {
 	lock := flock.New(filepath.Join(s.Root, agent, "wait.lock"))
 	locked, err := lock.TryLock()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if !locked {
-		return nil, fmt.Errorf("another receiver is already waiting for agent %s", agent)
+		return nil, nil, fmt.Errorf("another receiver is already waiting for agent %s", agent)
 	}
-	defer func() { _ = lock.Unlock() }()
 	if err = os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, err
+		_ = lock.Unlock()
+		return nil, nil, err
 	}
 	conn, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: path, Net: "unixgram"})
 	if err != nil {
-		return nil, err
+		_ = lock.Unlock()
+		return nil, nil, err
 	}
-	defer func() { _ = conn.Close(); _ = os.Remove(path) }()
-	return s.waitOn(ctx, agent, wait, conn)
+	return conn, func() { _ = conn.Close(); _ = os.Remove(path); _ = lock.Unlock() }, nil
 }
 
 func (s Store) waitOn(ctx context.Context, agent string, wait time.Duration, conn *net.UnixConn) ([]Message, error) {

@@ -108,8 +108,8 @@ func TestAcceptedWakeIsDurablyFencedAndContainsOnlyInboxPointer(t *testing.T) {
 	if strings.Contains(string(raw), "private message") || !strings.Contains(string(raw), "wb message receive --agent mac") {
 		t.Fatalf("unexpected prompt: %s", raw)
 	}
-	if !strings.Contains(string(raw), "wb message ack --agent mac "+testMessage().ID) || strings.Contains(string(raw), "--id") {
-		t.Fatalf("incorrect acknowledgement command: %s", raw)
+	if strings.Contains(string(raw), "message ack") || strings.Contains(string(raw), "owner approval") {
+		t.Fatalf("wake repeats standing skill instructions: %s", raw)
 	}
 	params := c.params.(map[string]any)
 	if len(params) != 3 || params["threadId"] != "thread-1" {

@@ -312,7 +312,7 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"session register": true, "session list": true, "session prune": true, "session move": true, "session receive": true, "session receive-park": true, "session park": true, "session resume": true,
 		"agent dispatch": true, "agent status": true, "agent await": true, "agent list": true, "agent logs": true, "agent stop": true,
 		"session send": true, "session recall": true, "session receive-message": true,
-		"message send": true, "message relay": true, "message deliver": true, "message receive": true, "message ack": true, "message bind": true, "message unbind": true,
+		"message send": true, "message relay": true, "message forward": true, "message deliver": true, "message receive": true, "message ack": true, "message bind": true, "message unbind": true,
 		"task offload": true, "task park": true, "task pickup": true,
 		"branch list": true, "branch count": true, "branch quarantine": true,
 		"worktree log init": true, "worktree log steer": true, "worktree log show": true,

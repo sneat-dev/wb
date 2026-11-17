@@ -76,7 +76,7 @@
       "wb-fleet"
     ],
     "message": [
-      "wb-worktrees"
+      "wb-message"
     ],
     "migrate": [
       "wb-migrate"
