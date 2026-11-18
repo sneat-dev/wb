@@ -27,6 +27,180 @@ func exactWaitFixture() (PullRequestWaitOptions, commitChecksWaitOps) {
 	return options, ops
 }
 
+func TestFilteredSelectionFailureFollowsTheOwningRun(t *testing.T) {
+	t.Parallel()
+	passing := []RemoteCheck{{Name: "check-run:build", Bucket: "pass", WorkflowName: "Go CI", WorkflowID: 1, WorkflowRunConclusion: "success"}}
+	if failed, pending, reason := filteredSelectionFailure(passing, nil); failed || pending || reason == "" {
+		t.Fatalf("passing selection = failed %t pending %t reason %q", failed, pending, reason)
+	}
+	inconclusive := []RemoteCheck{{Name: "check-run:release", Bucket: "skipping", WorkflowID: 2, WorkflowRunConclusion: ""}}
+	if failed, pending, _ := filteredSelectionFailure(inconclusive, nil); failed || !pending {
+		t.Fatalf("unconcluded skip = failed %t pending %t", failed, pending)
+	}
+	runFailed := []RemoteCheck{{Name: "check-run:release", Bucket: "skipping", WorkflowID: 2, WorkflowRunConclusion: "failure"}}
+	if failed, pending, reason := filteredSelectionFailure(runFailed, nil); !failed || pending || !strings.Contains(reason, "failed or were cancelled") {
+		t.Fatalf("failed-run skip = failed %t pending %t reason %q", failed, pending, reason)
+	}
+	allSkipped := []RemoteCheck{{Name: "check-run:release", Bucket: "skipping", WorkflowID: 2, WorkflowRunConclusion: "success"}}
+	if failed, pending, reason := filteredSelectionFailure(allSkipped, nil); !failed || pending || reason != "every selected check was skipped" {
+		t.Fatalf("wholly skipped selection = failed %t pending %t reason %q", failed, pending, reason)
+	}
+	waived := []RemoteCheck{{Name: "check-run:lint", Bucket: "fail"}, {Name: "check-run:build", Bucket: "cancel"}}
+	if failed, pending, _ := filteredSelectionFailure(waived, []string{"lint", "build"}); failed || pending {
+		t.Fatalf("waived failures = failed %t pending %t", failed, pending)
+	}
+	stillRunning := []RemoteCheck{{Name: "check-run:build", Bucket: "pending"}}
+	if failed, pending, _ := filteredSelectionFailure(stillRunning, nil); failed || !pending {
+		t.Fatalf("pending selection = failed %t pending %t", failed, pending)
+	}
+	if failed, pending, _ := filteredSelectionFailure(nil, nil); failed || pending {
+		t.Fatalf("empty selection = failed %t pending %t", failed, pending)
+	}
+}
+
+func TestWorkflowFilterPassesWithoutTheOtherWorkflowsRequiredCheck(t *testing.T) {
+	t.Parallel()
+	options, ops := exactWaitFixture()
+	options.Workflow = []string{"Go CI"}
+	ops.checks = func(context.Context, PullRequestWaitOptions) ([]RemoteCheck, bool, string) {
+		return []RemoteCheck{
+			{Name: "check-run:build", Bucket: "pass", WorkflowName: "Go CI", WorkflowID: 1, WorkflowEvent: "push", WorkflowRunConclusion: "success"},
+			{Name: "check-run:deploy", Bucket: "pending", WorkflowName: "Deploy", WorkflowID: 2, WorkflowEvent: "push"},
+		}, true, ""
+	}
+	ops.required = func(context.Context, PullRequestWaitOptions, *requiredChecksCache) ([]RequiredRemoteCheck, string, string, string, string) {
+		return []RequiredRemoteCheck{{Name: "build"}, {Name: "deploy"}}, "ruleset", "strict", "", ""
+	}
+	result, err := waitForCommitChecksWith(context.Background(), options, ops)
+	if err != nil || result.Status != PullRequestWaitPassed {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if result.Filter == nil || result.Filter.MatchedChecks != 1 || result.Filter.RequiredChecks != 1 || len(result.Checks) != 1 || result.Checks[0].Name != "check-run:build" {
+		t.Fatalf("filter receipt = %+v checks=%+v", result.Filter, result.Checks)
+	}
+	if len(result.RequiredChecks) != 1 || result.RequiredChecks[0].Name != "build" {
+		t.Fatalf("required checks = %+v", result.RequiredChecks)
+	}
+}
+
+func TestCheckFilterStaysPendingUntilASkippedJobOwningRunConcludes(t *testing.T) {
+	t.Parallel()
+	options, ops := exactWaitFixture()
+	options.Check = []string{"release"}
+	options.Slice = 30 * time.Millisecond
+	ops.checks = func(context.Context, PullRequestWaitOptions) ([]RemoteCheck, bool, string) {
+		return []RemoteCheck{{Name: "check-run:release", Bucket: "skipping", WorkflowName: "Release", WorkflowID: 2, WorkflowEvent: "workflow_run", WorkflowRunConclusion: ""}}, false, ""
+	}
+	result, err := waitForCommitChecksWith(context.Background(), options, ops)
+	if err != nil || result.Status != PullRequestWaitPending || !strings.Contains(result.Reason, "still pending") {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if result.Filter == nil || result.Filter.MatchedChecks != 1 {
+		t.Fatalf("filter = %+v", result.Filter)
+	}
+}
+
+func TestWorkflowFilterFailsWhenEverySelectedCheckWasSkipped(t *testing.T) {
+	t.Parallel()
+	options, ops := exactWaitFixture()
+	options.Workflow = []string{"Release"}
+	ops.checks = func(context.Context, PullRequestWaitOptions) ([]RemoteCheck, bool, string) {
+		return []RemoteCheck{{Name: "check-run:release", Bucket: "skipping", WorkflowName: "Release", WorkflowID: 2, WorkflowEvent: "workflow_run", WorkflowRunConclusion: "success"}}, false, ""
+	}
+	ops.failureDetails = func(context.Context, string, []RemoteCheck) []CIFailureDetail {
+		return []CIFailureDetail{{Check: "check-run:release"}}
+	}
+	result, err := waitForCommitChecksWith(context.Background(), options, ops)
+	if err != nil || result.Status != PullRequestWaitFailed || result.Reason != "every selected check was skipped" || len(result.FailureDetails) != 1 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
+func TestFilterAndExpectedContractFailASelectedJobTheContractStillSees(t *testing.T) {
+	t.Parallel()
+	options, ops := exactWaitFixture()
+	options.Workflow = []string{"Go CI"}
+	options.ExpectedActionChecks = &ExpectedActionChecks{WorkflowID: 1, Event: "pull_request", PullRequestNumber: 7, PullRequestBase: "main", Names: []string{"build"}}
+	ops.checks = func(context.Context, PullRequestWaitOptions) ([]RemoteCheck, bool, string) {
+		run := RemoteCheck{WorkflowName: "Go CI", WorkflowID: 1, WorkflowEvent: "pull_request", WorkflowRunID: 15, PullRequestNumber: 7, PullRequestBase: "main", WorkflowRunConclusion: "failure"}
+		build := run
+		build.Name, build.Bucket, build.Conclusion = "check-run:build", "pass", "success"
+		lint := run
+		lint.Name, lint.Bucket, lint.Conclusion = "check-run:lint", "fail", "failure"
+		return []RemoteCheck{build, lint}, false, ""
+	}
+	result, err := waitForCommitChecksWith(context.Background(), options, ops)
+	if err != nil || result.Status != PullRequestWaitFailed || !strings.Contains(result.Reason, "expected GitHub checks failed") {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
+func TestFilterThatMatchesNothingNamesANearbyCheckAndThenClearsThatReason(t *testing.T) {
+	t.Parallel()
+	options, ops := exactWaitFixture()
+	options.Check = []string{"build"}
+	ops.required = func(context.Context, PullRequestWaitOptions, *requiredChecksCache) ([]RequiredRemoteCheck, string, string, string, string) {
+		return []RequiredRemoteCheck{{Name: "deploy"}}, "ruleset", "strict", "", ""
+	}
+	calls := 0
+	ops.checks = func(context.Context, PullRequestWaitOptions) ([]RemoteCheck, bool, string) {
+		calls++
+		if calls == 1 {
+			return []RemoteCheck{{Name: "check-run:build (ubuntu)", Bucket: "pass", WorkflowName: "Go CI", WorkflowID: 1, WorkflowEvent: "push", WorkflowRunConclusion: "success"}}, false, ""
+		}
+		return []RemoteCheck{{Name: "check-run:build", Bucket: "pass", WorkflowName: "Go CI", WorkflowID: 1, WorkflowEvent: "push", WorkflowRunConclusion: "success"}}, false, ""
+	}
+	var reasons []string
+	options.Progress = func(progress PullRequestWaitProgress) {
+		reasons = append(reasons, progress.Result.Reason)
+	}
+	result, err := waitForCommitChecksWith(context.Background(), options, ops)
+	if err != nil || result.Status != PullRequestWaitPassed {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	joined := strings.Join(reasons, "\n")
+	if !strings.Contains(joined, "no check matching the filter has registered yet") || !strings.Contains(joined, "build (ubuntu)") {
+		t.Fatalf("progress reasons = %#v", reasons)
+	}
+}
+
+func TestFilterStaysPendingUntilEveryNamedWorkflowAndExactCheckHasMatched(t *testing.T) {
+	t.Parallel()
+	options, ops := exactWaitFixture()
+	options.Slice = 25 * time.Millisecond
+	options.Workflow = []string{"Go CI", "Release"}
+	options.Check = []string{"build", "release"}
+	ops.checks = func(context.Context, PullRequestWaitOptions) ([]RemoteCheck, bool, string) {
+		return []RemoteCheck{{Name: "check-run:build", Bucket: "pass", WorkflowName: "Go CI", WorkflowID: 1, WorkflowEvent: "push", WorkflowRunConclusion: "success"}}, false, ""
+	}
+	result, err := waitForCommitChecksWith(context.Background(), options, ops)
+	if err != nil || result.Status != PullRequestWaitPending || !strings.Contains(result.Reason, "not every --workflow name") {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	options.Workflow = nil
+	result, err = waitForCommitChecksWith(context.Background(), options, ops)
+	if err != nil || result.Status != PullRequestWaitPending || !strings.Contains(result.Reason, "not every --check pattern") {
+		t.Fatalf("exact-pattern result=%+v err=%v", result, err)
+	}
+}
+
+func TestJoblessRunHintNamesTheWorkflowStillRegistering(t *testing.T) {
+	t.Parallel()
+	options, ops := exactWaitFixture()
+	options.Slice = 25 * time.Millisecond
+	options.Check = []string{"build*"}
+	ops.checks = func(context.Context, PullRequestWaitOptions) ([]RemoteCheck, bool, string) {
+		return []RemoteCheck{
+			{Name: "check-run:build", Bucket: "pass", WorkflowName: "Go CI", WorkflowID: 1, WorkflowEvent: "push", WorkflowRunConclusion: "success"},
+			{Name: "workflow-run:2:push", Bucket: "pending", WorkflowName: "Deploy", WorkflowID: 2, WorkflowEvent: "push"},
+		}, true, ""
+	}
+	result, err := waitForCommitChecksWith(context.Background(), options, ops)
+	if err != nil || result.Status != PullRequestWaitPending || !strings.Contains(result.Reason, `run "Deploy" (push) has not registered a job yet`) {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
 func TestExactCommitWaitRejectsInvalidObservationWindow(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

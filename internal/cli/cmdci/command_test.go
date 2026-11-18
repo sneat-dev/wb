@@ -279,6 +279,40 @@ func TestPendingResumeKeepsExactIdentityAndFactoryError(t *testing.T) {
 		t.Fatalf("out=%s error=%v", out, err)
 	}
 }
+func TestWaitFilterFlagsReachTheOperationAndResumeCommand(t *testing.T) {
+	t.Parallel()
+	deps := dependencies()
+	deps.WaitChecks = func(_ context.Context, o githubchecks.PullRequestWaitOptions) (githubchecks.PullRequestWaitResult, error) {
+		if !reflect.DeepEqual(o.Workflow, []string{"Go CI", "Release"}) || !reflect.DeepEqual(o.Check, []string{"build", "Release / *"}) {
+			t.Fatalf("filter options = workflow %v check %v", o.Workflow, o.Check)
+		}
+		return githubchecks.PullRequestWaitResult{Status: githubchecks.PullRequestWaitPending, Repository: "acme/app", Target: "main", Head: testHead, Reason: "still running"}, nil
+	}
+	out, _, err := execute(newWaitCmd(runtime(func() string { return "root" }), deps), append(waitArgs(), "--workflow", "Go CI", "--workflow", "Release", "--check", "build", "--check", "Release / *", "--json")...)
+	if err == nil || !strings.Contains(out, `"--workflow"`) || !strings.Contains(out, `"Go CI"`) || !strings.Contains(out, `"--check"`) || !strings.Contains(out, `"Release / *"`) {
+		t.Fatalf("out=%s err=%v", out, err)
+	}
+}
+
+func TestWaitRejectsEmptyWorkflowAndCheckFilters(t *testing.T) {
+	t.Parallel()
+	for _, args := range [][]string{
+		append(waitArgs(), "--workflow", " "),
+		append(waitArgs(), "--check", ""),
+	} {
+		deps := dependencies()
+		calls := 0
+		deps.WaitChecks = func(context.Context, githubchecks.PullRequestWaitOptions) (githubchecks.PullRequestWaitResult, error) {
+			calls++
+			return githubchecks.PullRequestWaitResult{}, nil
+		}
+		_, _, err := execute(newWaitCmd(runtime(func() string { return "root" }), deps), args...)
+		if err == nil || calls != 0 || (!strings.Contains(err.Error(), "--workflow must not be empty") && !strings.Contains(err.Error(), "--check must not be empty")) {
+			t.Fatalf("args=%v calls=%d err=%v", args, calls, err)
+		}
+	}
+}
+
 func TestAuditRejectsExtraArgumentsWithoutOperations(t *testing.T) {
 	t.Parallel()
 	deps := dependencies()
