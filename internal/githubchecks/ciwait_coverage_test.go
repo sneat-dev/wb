@@ -499,3 +499,15 @@ func TestOrchCovPendingWorkflowRunHintNamesTheFirstStillRegisteringRun(t *testin
 		t.Fatalf("pendingWorkflowRunHint with no name/event = %q, want %q", got, want)
 	}
 }
+
+func TestUnfilteredWaitCarriesNoFilterReceiptAndKeepsEveryRequiredCheck(t *testing.T) {
+	t.Parallel()
+	if got := checkWaitFilterBlock(PullRequestWaitOptions{}, []RemoteCheck{{Name: "check-run:build"}}, nil); got != nil {
+		t.Fatalf("checkWaitFilterBlock without a filter = %#v, want nil", got)
+	}
+	required := []RequiredRemoteCheck{{Name: "build"}, {Name: "lint"}}
+	got := filterSelectedRequiredChecks(required, nil, nil, nil)
+	if len(got) != 2 || got[0].Name != "build" || got[1].Name != "lint" {
+		t.Fatalf("filterSelectedRequiredChecks without a filter = %#v, want both required checks in order", got)
+	}
+}

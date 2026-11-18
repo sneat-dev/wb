@@ -1141,25 +1141,19 @@ func simpleGlobMatch(pattern, value string) bool {
 	if len(segments) == 1 {
 		return pattern == value
 	}
-	rest := value
-	for index, segment := range segments {
-		switch {
-		case index == 0:
-			if !strings.HasPrefix(rest, segment) {
-				return false
-			}
-			rest = rest[len(segment):]
-		case index == len(segments)-1:
-			return strings.HasSuffix(rest, segment)
-		default:
-			position := strings.Index(rest, segment)
-			if position < 0 {
-				return false
-			}
-			rest = rest[position+len(segment):]
-		}
+	first, last := segments[0], segments[len(segments)-1]
+	if !strings.HasPrefix(value, first) {
+		return false
 	}
-	return true
+	rest := value[len(first):]
+	for _, segment := range segments[1 : len(segments)-1] {
+		position := strings.Index(rest, segment)
+		if position < 0 {
+			return false
+		}
+		rest = rest[position+len(segment):]
+	}
+	return strings.HasSuffix(rest, last)
 }
 
 // missingRequiredChecks reports every required check absent from checks,
