@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -2859,9 +2860,39 @@ func corroborateClaimGit(worktree, finalCommit string, projection workLogProject
 		return fmt.Errorf("live HEAD %q does not match terminal commit %q", head, finalCommit)
 	}
 	if _, err := git(context.Background(), worktree, "merge-base", "--is-ancestor", claim.BaseSHA, head); err != nil {
+		if squashLandedClaimBase(worktree, claim.BaseSHA, head) {
+			return nil
+		}
 		return &claimBaseAncestryError{base: claim.BaseSHA, cause: err}
 	}
 	return nil
+}
+
+// squashLandedClaimBase reports whether the claimed base was squash-landed
+// under the work. A stacked worktree whose base branch was squash-merged, and
+// which was then moved onto that merge, loses the base commit from its
+// ancestry but not the base content: the squash commit carries the identical
+// tree. The proof requires both that tree identity and landing: the matching
+// commit must lie in the history HEAD shares with the remote default branch,
+// so the base content survives on the shared target. An equal-tree commit
+// that never landed, or a base whose content is absent, still fails.
+func squashLandedClaimBase(worktree, base, head string) bool {
+	ctx := context.Background()
+	branch, err := remoteDefaultBranch(ctx, worktree)
+	var landed, baseTree, trees string
+	if err == nil {
+		landed, err = git(ctx, worktree, "merge-base", head, "refs/remotes/origin/"+branch)
+	}
+	if err == nil {
+		baseTree, err = git(ctx, worktree, "rev-parse", "--verify", "--quiet", base+"^{tree}")
+	}
+	if err == nil {
+		trees, err = git(ctx, worktree, "log", "--format=%T", landed, "--not", base)
+	}
+	if err != nil {
+		return false
+	}
+	return slices.Contains(strings.Split(trees, "\n"), baseTree)
 }
 
 // claimBaseAncestryError lets preservation retirement distinguish this last
