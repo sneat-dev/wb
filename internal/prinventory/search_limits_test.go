@@ -380,3 +380,13 @@ func TestSharedGatePausesAnotherWorkerUntilTheReset(t *testing.T) {
 		t.Fatalf("owner c searched before waiting out the shared pause: %v", runner.events)
 	}
 }
+
+func TestRateLimitWaitWithoutANotifierStillWaits(t *testing.T) {
+	t.Parallel()
+	clock := &clockRecorder{now: limitsNow}
+	report := Inventory(context.Background(), Options{Owners: []Owner{{Login: "acme", Qualifier: "org"}},
+		Runner: rateLimitRunner(1, rateInfo(0, limitsNow.Add(4*time.Second))), Now: clock.Now, Sleep: clock.Sleep})
+	if !report.Complete || len(clock.sleeps) != 1 {
+		t.Fatalf("report = %+v sleeps = %v", report, clock.sleeps)
+	}
+}
