@@ -41,7 +41,7 @@ wb fleet prs --org sneat-dev --exclude-archived --report-dir reports`,
 			report := deps.Inventory(cmd.Context(), prinventory.Options{Owners: owners,
 				ExcludeArchived: options.excludeArchived, CreatedBefore: options.createdBefore,
 				Parallel: options.parallel,
-				Notify:   func(message string) { fmt.Fprintln(cmd.ErrOrStderr(), message) }})
+				Notify:   func(message string) { _, _ = fmt.Fprintln(cmd.ErrOrStderr(), message) }})
 			report.Diagnostics = append(report.Diagnostics, diagnostics...)
 			if len(diagnostics) > 0 {
 				report.Complete = false
