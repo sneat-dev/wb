@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -2859,9 +2860,31 @@ func corroborateClaimGit(worktree, finalCommit string, projection workLogProject
 		return fmt.Errorf("live HEAD %q does not match terminal commit %q", head, finalCommit)
 	}
 	if _, err := git(context.Background(), worktree, "merge-base", "--is-ancestor", claim.BaseSHA, head); err != nil {
+		if squashLandedClaimBase(worktree, claim.BaseSHA, head) {
+			return nil
+		}
 		return &claimBaseAncestryError{base: claim.BaseSHA, cause: err}
 	}
 	return nil
+}
+
+// squashLandedClaimBase reports whether HEAD's history holds a commit whose
+// tree is exactly the claimed base's tree. A stacked worktree whose base
+// branch was squash-merged, and which was then moved onto that merge, loses
+// the base commit from its ancestry but not the base content: the squash
+// commit carries the identical tree. Tree identity is content proof, so it
+// corroborates the claim without trusting any branch name; a base whose
+// content is absent from HEAD's history still fails.
+func squashLandedClaimBase(worktree, base, head string) bool {
+	baseTree, err := git(context.Background(), worktree, "rev-parse", "--verify", "--quiet", base+"^{tree}")
+	var trees string
+	if err == nil {
+		trees, err = git(context.Background(), worktree, "log", "--format=%T", head, "--not", base)
+	}
+	if err != nil {
+		return false
+	}
+	return slices.Contains(strings.Split(trees, "\n"), baseTree)
 }
 
 // claimBaseAncestryError lets preservation retirement distinguish this last
