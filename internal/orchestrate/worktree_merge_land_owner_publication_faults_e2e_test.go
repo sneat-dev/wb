@@ -98,6 +98,127 @@ func TestE2ELandOwnerNativePublicationRefusalsKeepOriginalRemoteHeads(t *testing
 	}
 }
 
+//nolint:paralleltest // scripted gh and native Git hook are scoped to this test process
+func TestE2EUnpublishedPrePushConflictRerunsHookOnResume(t *testing.T) {
+	fixture, receipt := landOwnerNativeFixture(t)
+	installWorktreeMergePublishOnlyPRGH(t)
+	t.Setenv("WB_TEST_CANDIDATE_SHA", receipt.Candidate.SHA)
+	t.Setenv("WB_TEST_GH_LOG", filepath.Join(t.TempDir(), "gh.log"))
+	t.Setenv("WB_TEST_REMOTE", fixture.repository.CloneURL)
+	hooks := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "hook-runs")
+	writeHook := func(exitCode string) {
+		t.Helper()
+		body := "#!/bin/sh\necho run >> '" + marker + "'\nexit " + exitCode + "\n"
+		if err := testenv.WriteExecutableFile(filepath.Join(hooks, "pre-push"), []byte(body), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeHook("1")
+	runEngineGit(t, receipt.Candidate.Worktree, "config", "core.hooksPath", hooks)
+	options := WorktreeMergeLandOptions{ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRoutePullRequest, StopBeforeMerge: true, Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond}
+	first, err := LandWorktreeMerge(t.Context(), options)
+	if err == nil || first.Status != WorktreeMergeConflict || !strings.Contains(err.Error(), "managed pre-push gate failed") {
+		t.Fatalf("first hook refusal: status=%s err=%v", first.Status, err)
+	}
+	if first.PullRequest != "" || first.PublishedCandidateSHA != "" {
+		t.Fatalf("refused candidate was published: %+v", first)
+	}
+	writeHook("0")
+	second, err := LandWorktreeMerge(t.Context(), options)
+	if err != nil || second.PullRequest == "" || second.PublishedCandidateSHA != receipt.Candidate.SHA {
+		t.Fatalf("resume did not publish after hook replay: status=%s err=%v", second.Status, err)
+	}
+	runs, err := os.ReadFile(marker)
+	if err != nil || string(runs) != "run\nrun\n" {
+		t.Fatalf("pre-push hook was not re-run: runs=%q err=%v", runs, err)
+	}
+}
+
+//nolint:paralleltest // scripted gh and native Git remote are private to this test
+func TestE2EUnpublishedPrePushRetryRejectsRefAppearingBeforeGate(t *testing.T) {
+	fixture, receipt := landOwnerNativeFixture(t)
+	installWorktreeMergePublishOnlyPRGH(t)
+	t.Setenv("WB_TEST_CANDIDATE_SHA", receipt.Candidate.SHA)
+	t.Setenv("WB_TEST_GH_LOG", filepath.Join(t.TempDir(), "gh.log"))
+	t.Setenv("WB_TEST_REMOTE", fixture.repository.CloneURL)
+	hooks := t.TempDir()
+	if err := testenv.WriteExecutableFile(filepath.Join(hooks, "pre-push"), []byte("#!/bin/sh\nexit 1\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	runEngineGit(t, receipt.Candidate.Worktree, "config", "core.hooksPath", hooks)
+	options := WorktreeMergeLandOptions{ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRoutePullRequest, StopBeforeMerge: true, Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond}
+	first, err := LandWorktreeMerge(t.Context(), options)
+	if err == nil || first.Status != WorktreeMergeConflict || !strings.Contains(err.Error(), "managed pre-push gate failed") {
+		t.Fatalf("first hook refusal: status=%s err=%v", first.Status, err)
+	}
+	if err := testenv.WriteExecutableFile(filepath.Join(hooks, "pre-push"), []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	appeared := false
+	options.Progress = func(e progress.Event) {
+		if e.Phase == "pre_push_gate" && e.State == progress.Started {
+			appeared = true
+			runEngineGit(t, receipt.Candidate.Worktree, "push", "origin", receipt.Candidate.SHA+":refs/heads/"+receipt.Candidate.Branch)
+		}
+	}
+	second, err := LandWorktreeMerge(t.Context(), options)
+	if !appeared || err == nil || !strings.Contains(err.Error(), "appeared before push") || second.PullRequest != "" || second.PublishedCandidateSHA != "" {
+		t.Fatalf("late remote candidate was adopted: appeared=%v status=%s err=%v", appeared, second.Status, err)
+	}
+}
+
+//nolint:paralleltest // scripted gh and native Git remote are private to this test
+func TestE2EUnpublishedPrePushRetryLeaseRejectsRefAppearingAfterGate(t *testing.T) {
+	fixture, receipt := landOwnerNativeFixture(t)
+	installWorktreeMergePublishOnlyPRGH(t)
+	t.Setenv("WB_TEST_CANDIDATE_SHA", receipt.Candidate.SHA)
+	t.Setenv("WB_TEST_GH_LOG", filepath.Join(t.TempDir(), "gh.log"))
+	t.Setenv("WB_TEST_REMOTE", fixture.repository.CloneURL)
+	hooks := t.TempDir()
+	if err := testenv.WriteExecutableFile(filepath.Join(hooks, "pre-push"), []byte("#!/bin/sh\nexit 1\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	runEngineGit(t, receipt.Candidate.Worktree, "config", "core.hooksPath", hooks)
+	options := WorktreeMergeLandOptions{ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRoutePullRequest, StopBeforeMerge: true, Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond}
+	first, err := LandWorktreeMerge(t.Context(), options)
+	if err == nil || first.Status != WorktreeMergeConflict || !strings.Contains(err.Error(), "managed pre-push gate failed") {
+		t.Fatalf("first hook refusal: status=%s err=%v", first.Status, err)
+	}
+	if err := testenv.WriteExecutableFile(filepath.Join(hooks, "pre-push"), []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	appeared := false
+	second, err := landWorktreeMerge(t.Context(), options, func(r WorktreeMergeReceipt) error {
+		if !appeared && r.PushGate != nil && r.PushGate.Status == "passed" {
+			appeared = true
+			runEngineGit(t, receipt.Candidate.Worktree, "push", "origin", receipt.Candidate.SHA+":refs/heads/"+receipt.Candidate.Branch)
+		}
+		return persistWorktreeMergeReceipt(r)
+	})
+	if !appeared || err == nil || !strings.Contains(err.Error(), "candidate create-only push failed") || second.PullRequest != "" || second.PublishedCandidateSHA != "" {
+		t.Fatalf("late remote candidate was adopted: appeared=%v status=%s err=%v", appeared, second.Status, err)
+	}
+	if remote := strings.TrimSpace(runEngineGit(t, fixture.repository.CloneURL, "rev-parse", "refs/heads/"+receipt.Candidate.Branch)); remote != receipt.Candidate.SHA {
+		t.Fatalf("external candidate ref changed: %s", remote)
+	}
+}
+
+func TestE2ECreateOnlyLeaseRejectsExternalAncestorRef(t *testing.T) {
+	fixture, receipt := landOwnerNativeFixture(t)
+	remoteRef := "refs/heads/" + receipt.Candidate.Branch
+	if _, err := runWorktreeMergePrePushGate(t.Context(), receipt.Candidate.Worktree, receipt.Candidate.SHA, remoteRef, 5*time.Second, 0); err != nil {
+		t.Fatal(err)
+	}
+	runEngineGit(t, receipt.Candidate.Worktree, "push", "origin", receipt.TargetSHA+":"+remoteRef)
+	if err := pushWorktreeMergeRefWithExpectedAbsent(t.Context(), receipt.Candidate.Worktree, receipt.Candidate.SHA, remoteRef, true, true, 5*time.Second, 0); err == nil {
+		t.Fatal("create-only lease accepted an externally published ancestor ref")
+	}
+	if remote := strings.TrimSpace(runEngineGit(t, fixture.repository.CloneURL, "rev-parse", remoteRef)); remote != receipt.TargetSHA {
+		t.Fatalf("create-only lease moved external ref from %s to %s", receipt.TargetSHA, remote)
+	}
+}
+
 //nolint:paralleltest // controlled provider subprocess errors use original PATH/XDG fixtures, real Git publication remains native
 func TestE2ELandOwnerFreshPullRequestPublicationRefusalsRetainNativeCandidate(t *testing.T) {
 	for _, stage := range []string{"published record save", "open discovery", "create observation", "created PR save", "handoff verification", "handoff save"} {
