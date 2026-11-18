@@ -42,12 +42,22 @@ func (o Owner) String() string { return o.Qualifier + ":" + o.Login }
 
 // Options controls one immutable snapshot.
 type Options struct {
+	now    func() time.Time
+	sleep  func(context.Context, time.Duration) error
+	notify func(string)
+	gate   *searchGate
+
 	Owners          []Owner
 	ExcludeArchived bool
 	CreatedBefore   string
 	Runner          Runner
 	Now             func() time.Time
 	Parallel        int
+	// Sleep waits out a search rate limit. Nil means never wait (the limit is
+	// reported as an error); production passes RealSleep.
+	Sleep func(context.Context, time.Duration) error
+	// Notify reports a wait to the operator (stderr in the CLI).
+	Notify func(string)
 }
 
 // Filters is recorded in every report so an operator can see the scope that
@@ -173,6 +183,11 @@ func Inventory(ctx context.Context, options Options) Report {
 	if options.Parallel <= 0 {
 		options.Parallel = 8
 	}
+	options.now, options.sleep, options.notify = now, options.Sleep, options.Notify
+	if options.notify == nil {
+		options.notify = func(string) {}
+	}
+	options.gate = &searchGate{}
 	jobs := make(chan int)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -277,7 +292,7 @@ func inventoryOwner(ctx context.Context, options Options, owner Owner) (OwnerRes
 	// this fleet. Plain --paginate concatenates one JSON object per page, which
 	// parsePages reads with a streaming decoder on every client.
 	args := []string{"api", "--method", "GET", "--paginate", "/search/issues", "-f", "q=" + query, "-f", "per_page=100"}
-	out, err := options.Runner.Run(ctx, args...)
+	out, err := searchOwner(ctx, options, owner, args)
 	if err != nil {
 		d := Diagnostic{Owner: owner.Login, Severity: "error", Message: "GitHub owner query failed: " + err.Error()}
 		return result, nil, []Diagnostic{d}
