@@ -29,13 +29,31 @@ func squashLandedBaseFixture(t *testing.T) (*gitFixture, CreateResult, string) {
 	return f, c, base
 }
 
+// equalTreeCommit makes a commit outside the base's history whose tree is the
+// base's tree, as a squash merge of the base branch would.
+func equalTreeCommit(t *testing.T, dir, base string) string {
+	t.Helper()
+	return gitTestOutput(t, dir, "commit-tree", base+"^{tree}", "-m", "squash-merge the base branch")
+}
+
 //nolint:paralleltest // The Git fixture configures process-local identity and paths.
 func TestActiveClaimAcceptsBaseSquashLandedUnderTheWork(t *testing.T) {
 	f, c, base := squashLandedBaseFixture(t)
-	squash := gitTestOutput(t, c.WorktreeDir, "commit-tree", base+"^{tree}", "-m", "squash-merge the base branch")
+	squash := equalTreeCommit(t, c.WorktreeDir, base)
+	gitTest(t, c.WorktreeDir, "push", "--force", "origin", squash+":refs/heads/main")
+	gitTest(t, c.WorktreeDir, "fetch", "origin", "main")
 	gitTest(t, c.WorktreeDir, "rebase", "--onto", squash, base)
 	if _, _, _, err := activeWorkLogClaim(f.home, c.WorktreeDir); err != nil {
 		t.Fatalf("claim on a squash-landed base was refused: %v", err)
+	}
+}
+
+//nolint:paralleltest // The Git fixture configures process-local identity and paths.
+func TestActiveClaimRefusesEqualTreeBaseThatNeverLanded(t *testing.T) {
+	f, c, base := squashLandedBaseFixture(t)
+	gitTest(t, c.WorktreeDir, "rebase", "--onto", equalTreeCommit(t, c.WorktreeDir, base), base)
+	if _, _, _, err := activeWorkLogClaim(f.home, c.WorktreeDir); err == nil {
+		t.Fatal("claim was accepted on an equal-tree base that is not on the default branch")
 	}
 }
 

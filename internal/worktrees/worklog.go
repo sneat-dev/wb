@@ -2868,18 +2868,26 @@ func corroborateClaimGit(worktree, finalCommit string, projection workLogProject
 	return nil
 }
 
-// squashLandedClaimBase reports whether HEAD's history holds a commit whose
-// tree is exactly the claimed base's tree. A stacked worktree whose base
-// branch was squash-merged, and which was then moved onto that merge, loses
-// the base commit from its ancestry but not the base content: the squash
-// commit carries the identical tree. Tree identity is content proof, so it
-// corroborates the claim without trusting any branch name; a base whose
-// content is absent from HEAD's history still fails.
+// squashLandedClaimBase reports whether the claimed base was squash-landed
+// under the work. A stacked worktree whose base branch was squash-merged, and
+// which was then moved onto that merge, loses the base commit from its
+// ancestry but not the base content: the squash commit carries the identical
+// tree. The proof requires both that tree identity and landing: the matching
+// commit must lie in the history HEAD shares with the remote default branch,
+// so the base content survives on the shared target. An equal-tree commit
+// that never landed, or a base whose content is absent, still fails.
 func squashLandedClaimBase(worktree, base, head string) bool {
-	baseTree, err := git(context.Background(), worktree, "rev-parse", "--verify", "--quiet", base+"^{tree}")
-	var trees string
+	ctx := context.Background()
+	branch, err := remoteDefaultBranch(ctx, worktree)
+	var landed, baseTree, trees string
 	if err == nil {
-		trees, err = git(context.Background(), worktree, "log", "--format=%T", head, "--not", base)
+		landed, err = git(ctx, worktree, "merge-base", head, "refs/remotes/origin/"+branch)
+	}
+	if err == nil {
+		baseTree, err = git(ctx, worktree, "rev-parse", "--verify", "--quiet", base+"^{tree}")
+	}
+	if err == nil {
+		trees, err = git(ctx, worktree, "log", "--format=%T", landed, "--not", base)
 	}
 	if err != nil {
 		return false
