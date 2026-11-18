@@ -53,7 +53,8 @@ type Options struct {
 	Runner          Runner
 	Now             func() time.Time
 	Parallel        int
-	// Sleep waits between search rate-limit retries; tests inject a fake clock.
+	// Sleep waits out a search rate limit. Nil means never wait (the limit is
+	// reported as an error); production passes RealSleep.
 	Sleep func(context.Context, time.Duration) error
 	// Notify reports a wait to the operator (stderr in the CLI).
 	Notify func(string)
@@ -183,9 +184,6 @@ func Inventory(ctx context.Context, options Options) Report {
 		options.Parallel = 8
 	}
 	options.now, options.sleep, options.notify = now, options.Sleep, options.Notify
-	if options.sleep == nil {
-		options.sleep = defaultSleep
-	}
 	if options.notify == nil {
 		options.notify = func(string) {}
 	}

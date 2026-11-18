@@ -10,8 +10,7 @@ import (
 )
 
 // searchRateLimitWaits bounds how many reset waits one owner query may take.
-// GitHub's search window is one minute, so each wait is at most about a minute
-// and an owner query never stalls for longer than searchRateLimitWaits minutes.
+// Each wait is capped by maxSearchWait.
 const searchRateLimitWaits = 5
 
 // searchGate holds every worker while GitHub's search quota is exhausted, so
@@ -40,7 +39,10 @@ func (g *searchGate) wait(ctx context.Context, now func() time.Time, sleep func(
 	return nil
 }
 
-func defaultSleep(ctx context.Context, d time.Duration) error {
+// RealSleep is the production sleeper. It is deliberately not a default inside
+// Inventory: a caller that supplies no Sleep never waits, so a test cannot reach
+// a real timer by accident.
+func RealSleep(ctx context.Context, d time.Duration) error {
 	if d <= 0 {
 		return ctx.Err()
 	}
@@ -54,9 +56,14 @@ func defaultSleep(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// searchOwner runs the owner search. A search rate-limit response waits for
-// the reset GitHub reports and retries; an HTTP 422 is accepted as "no results"
-// only when the owner is proven to exist and to have no repositories.
+// maxSearchWait caps one wait, so a local clock that is behind GitHub's cannot
+// produce an arbitrarily long pause. A search window is one minute.
+const maxSearchWait = 90 * time.Second
+
+// searchOwner runs the owner search. A failed search that GitHub's own quota
+// shows to be rate limited waits for the reset and retries; an HTTP 422 is
+// accepted as "no results" only when the owner is proven to exist and to have
+// no repositories. Neither decision reads the error text beyond the status.
 func searchOwner(ctx context.Context, options Options, owner Owner, args []string) ([]byte, error) {
 	for waits := 0; ; waits++ {
 		if err := options.gate.wait(ctx, options.now, options.sleep); err != nil {
@@ -66,30 +73,33 @@ func searchOwner(ctx context.Context, options Options, owner Owner, args []strin
 		if err == nil {
 			return out, nil
 		}
-		message := strings.ToLower(err.Error())
-		switch {
-		case strings.Contains(message, "rate limit"):
-			if waits >= searchRateLimitWaits {
-				return nil, err
-			}
-			delay := searchResetDelay(ctx, options)
-			options.gate.holdUntil(options.now().Add(delay))
-			options.notify(fmt.Sprintf("GitHub search rate limit reached; waiting %s for the reset before querying %s (wait %d/%d)", delay, owner, waits+1, searchRateLimitWaits))
-		case strings.Contains(message, "http 422") && ownerHasNoRepositories(ctx, options.Runner, owner):
+		if strings.Contains(strings.ToLower(err.Error()), "(http 422)") && ownerHasNoRepositories(ctx, options.Runner, owner) {
 			return []byte(`[{"total_count":0,"items":[]}]`), nil
-		default:
+		}
+		if options.sleep == nil || waits >= searchRateLimitWaits {
 			return nil, err
 		}
+		delay, limited := searchLimitDelay(ctx, options)
+		if !limited {
+			return nil, err
+		}
+		note := ""
+		if delay > maxSearchWait {
+			delay, note = maxSearchWait, fmt.Sprintf(" (capped at %s)", maxSearchWait)
+		}
+		options.gate.holdUntil(options.now().Add(delay))
+		options.notify(fmt.Sprintf("GitHub search rate limit reached; waiting %s%s for the reset before querying %s (wait %d/%d)", delay, note, owner, waits+1, searchRateLimitWaits))
 	}
 }
 
-// searchResetDelay reads the search quota reset from the core-API rate_limit
-// endpoint (which does not consume search quota). Without a usable reset, or
-// when quota remains (a secondary limit), it waits one full search window.
-func searchResetDelay(ctx context.Context, options Options) time.Duration {
+// searchLimitDelay asks the core-API rate_limit endpoint, which does not use
+// search quota, whether the search quota is exhausted and when it resets. The
+// error text of the failed search is never consulted: the production reader
+// appends stdout to it, which can carry arbitrary pull-request titles.
+func searchLimitDelay(ctx context.Context, options Options) (time.Duration, bool) {
 	out, err := options.Runner.Run(ctx, "api", "rate_limit")
 	if err != nil {
-		return time.Minute
+		return 0, false
 	}
 	var info struct {
 		Resources struct {
@@ -100,12 +110,12 @@ func searchResetDelay(ctx context.Context, options Options) time.Duration {
 		} `json:"resources"`
 	}
 	if json.Unmarshal(out, &info) != nil || info.Resources.Search.Remaining > 0 {
-		return time.Minute
+		return 0, false
 	}
 	if wait := time.Unix(info.Resources.Search.Reset, 0).Sub(options.now()); wait > 0 {
-		return wait + time.Second
+		return wait + time.Second, true
 	}
-	return time.Second
+	return time.Second, true
 }
 
 // ownerHasNoRepositories confirms by evidence that a 422 from the search API

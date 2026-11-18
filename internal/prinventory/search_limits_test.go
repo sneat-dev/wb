@@ -117,13 +117,16 @@ func TestUserWithPrivateRepositoryCountStaysAnError(t *testing.T) {
 func TestOtherSearchFailuresDoNotTriggerEmptinessLookup(t *testing.T) {
 	t.Parallel()
 	runner := &fakeRunner{fn: func(args []string) ([]byte, error) {
+		if strings.Contains(args[1], "orgs/") {
+			t.Fatalf("unexpected emptiness lookup %v", args)
+		}
 		if !isSearch(args) {
-			t.Fatalf("unexpected lookup %v", args)
+			return rateInfo(30, limitsNow.Add(time.Minute))()
 		}
 		return nil, errors.New("gh: Server Error (HTTP 500)")
 	}}
 	report := runWith(&clockRecorder{now: limitsNow}, runner, Owner{Login: "acme", Qualifier: "org"})
-	if report.Complete || len(runner.calls) != 1 {
+	if report.Complete || len(runner.calls) != 2 {
 		t.Fatalf("report = %+v calls = %v", report, runner.calls)
 	}
 }
@@ -134,7 +137,7 @@ func rateLimitRunner(failures int, info func() ([]byte, error)) *fakeRunner {
 		if isSearch(args) {
 			searches++
 			if searches <= failures {
-				return nil, errors.New("gh: API rate limit exceeded for user ID 1. (HTTP 403)")
+				return nil, errors.New("boom")
 			}
 			return []byte(emptySearch), nil
 		}
@@ -167,26 +170,54 @@ func TestSearchRateLimitWaitsUntilReportedResetThenRetries(t *testing.T) {
 	}
 }
 
-func TestSearchRateLimitWaitFallbacks(t *testing.T) {
+func TestSearchRateLimitWaitEdgesAndNonLimitFailures(t *testing.T) {
 	t.Parallel()
 	cases := map[string]struct {
-		info func() ([]byte, error)
-		want time.Duration
+		info      func() ([]byte, error)
+		wantSleep []time.Duration
 	}{
-		"reset already passed":            {rateInfo(0, limitsNow.Add(-5*time.Second)), time.Second},
-		"secondary limit keeps remaining": {rateInfo(10, limitsNow.Add(5*time.Second)), time.Minute},
-		"rate limit query fails":          {func() ([]byte, error) { return nil, errors.New("boom") }, time.Minute},
-		"rate limit response is not JSON": {func() ([]byte, error) { return []byte("x"), nil }, time.Minute},
+		"reset already passed":          {rateInfo(0, limitsNow.Add(-5*time.Second)), []time.Duration{time.Second}},
+		"clock behind GitHub is capped": {rateInfo(0, limitsNow.Add(time.Hour)), []time.Duration{maxSearchWait}},
+		"quota remains (not a limit)":   {rateInfo(10, limitsNow.Add(5*time.Second)), nil},
+		"rate limit query fails":        {func() ([]byte, error) { return nil, errors.New("boom") }, nil},
+		"rate limit response not JSON":  {func() ([]byte, error) { return []byte("x"), nil }, nil},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			clock := &clockRecorder{now: limitsNow}
 			report := runWith(clock, rateLimitRunner(1, tc.info), Owner{Login: "acme", Qualifier: "org"})
-			if !report.Complete || len(clock.sleeps) != 1 || clock.sleeps[0] != tc.want {
-				t.Fatalf("report complete=%v sleeps=%v want %v", report.Complete, clock.sleeps, tc.want)
+			if report.Complete != (tc.wantSleep != nil) || fmt.Sprint(clock.sleeps) != fmt.Sprint(tc.wantSleep) {
+				t.Fatalf("complete=%v sleeps=%v want %v", report.Complete, clock.sleeps, tc.wantSleep)
+			}
+			if name == "clock behind GitHub is capped" && !strings.Contains(clock.notes[0], "capped at 1m30s") {
+				t.Fatalf("notes = %q", clock.notes)
 			}
 		})
+	}
+}
+
+func TestPullRequestTitleMentioningRateLimitIsNotARateLimit(t *testing.T) {
+	t.Parallel()
+	clock := &clockRecorder{now: limitsNow}
+	runner := &fakeRunner{fn: func(args []string) ([]byte, error) {
+		if isSearch(args) {
+			return nil, errors.New(`gh api: exit status 1: HTTP 500 {"items":[{"title":"fix API rate limit exceeded handling (HTTP 422)"}]}`)
+		}
+		return rateInfo(25, limitsNow.Add(30*time.Second))()
+	}}
+	report := runWith(clock, runner, Owner{Login: "acme", Qualifier: "org"})
+	if report.Complete || len(clock.sleeps) != 0 || len(clock.notes) != 0 {
+		t.Fatalf("report = %+v sleeps = %v", report, clock.sleeps)
+	}
+}
+
+func TestWithoutASleeperARateLimitIsAnErrorAndNeverWaits(t *testing.T) {
+	t.Parallel()
+	runner := rateLimitRunner(1, rateInfo(0, limitsNow.Add(5*time.Second)))
+	report := Inventory(context.Background(), Options{Owners: []Owner{{Login: "acme", Qualifier: "org"}}, Runner: runner, Now: func() time.Time { return limitsNow }})
+	if report.Complete || len(runner.calls) != 1 {
+		t.Fatalf("report = %+v calls = %v", report, runner.calls)
 	}
 }
 
@@ -222,7 +253,7 @@ func TestSearchRateLimitPausesLaterOwnersUntilReset(t *testing.T) {
 			order = append(order, args[len(args)-3])
 			if !failedOnce {
 				failedOnce = true
-				return nil, errors.New("API rate limit exceeded")
+				return nil, errors.New("boom")
 			}
 			return []byte(emptySearch), nil
 		}
@@ -256,17 +287,96 @@ func TestGateHoldsEveryWorkerUntilResetPasses(t *testing.T) {
 	}
 }
 
-func TestDefaultSleep(t *testing.T) {
+func TestRealSleep(t *testing.T) {
 	t.Parallel()
-	if err := defaultSleep(context.Background(), 0); err != nil {
+	if err := RealSleep(context.Background(), 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := defaultSleep(context.Background(), time.Nanosecond); err != nil {
+	if err := RealSleep(context.Background(), time.Nanosecond); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := defaultSleep(ctx, time.Hour); !errors.Is(err, context.Canceled) {
+	if err := RealSleep(ctx, time.Hour); !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+type concurrentRunner struct {
+	mu     sync.Mutex
+	events []string
+	held   chan struct{}
+	failed bool
+}
+
+func (r *concurrentRunner) log(e string) { r.mu.Lock(); r.events = append(r.events, e); r.mu.Unlock() }
+
+func (r *concurrentRunner) Run(_ context.Context, args ...string) ([]byte, error) {
+	if !isSearch(args) {
+		return rateInfo(0, limitsNow.Add(10*time.Second))()
+	}
+	owner := args[len(args)-3] // q=is:pr is:open org:<login>
+	owner = owner[strings.LastIndex(owner, ":")+1:]
+	if owner == "b" {
+		<-r.held // b only searches once a's rate limit has been recorded
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, "search "+owner)
+	if owner == "a" && !r.failed {
+		r.failed = true
+		return nil, errors.New("boom")
+	}
+	return []byte(emptySearch), nil
+}
+
+func TestSharedGatePausesAnotherWorkerUntilTheReset(t *testing.T) {
+	t.Parallel()
+	runner := &concurrentRunner{held: make(chan struct{})}
+	secondSleep := make(chan struct{})
+	release := make(chan struct{})
+	var mu sync.Mutex
+	now, sleeps := limitsNow, 0
+	options := Options{
+		Owners: []Owner{{Login: "a", Qualifier: "org"}, {Login: "b", Qualifier: "org"}, {Login: "c", Qualifier: "org"}},
+		Runner: runner, Parallel: 2,
+		Now:    func() time.Time { mu.Lock(); defer mu.Unlock(); return now },
+		Notify: func(string) { close(runner.held) },
+		Sleep: func(_ context.Context, d time.Duration) error {
+			mu.Lock()
+			sleeps++
+			n := sleeps
+			mu.Unlock()
+			runner.log(fmt.Sprintf("sleep %d", n))
+			if n == 1 {
+				<-release // the worker that hit the limit stays asleep
+			} else {
+				close(secondSleep) // another worker was held by the shared gate
+			}
+			mu.Lock()
+			now = now.Add(d)
+			mu.Unlock()
+			return nil
+		},
+	}
+	done := make(chan Report)
+	go func() { done <- Inventory(context.Background(), options) }()
+	<-secondSleep
+	close(release)
+	report := <-done
+	if !report.Complete || sleeps != 2 {
+		t.Fatalf("report = %+v sleeps = %d events = %v", report, sleeps, runner.events)
+	}
+	cSearch, cSleep := -1, -1
+	for i, e := range runner.events {
+		if e == "search c" {
+			cSearch = i
+		}
+		if e == "sleep 2" {
+			cSleep = i
+		}
+	}
+	if cSleep < 0 || cSearch < cSleep {
+		t.Fatalf("owner c searched before waiting out the shared pause: %v", runner.events)
 	}
 }
