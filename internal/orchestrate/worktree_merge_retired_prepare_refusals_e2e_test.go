@@ -213,6 +213,13 @@ func exerciseRetiredPrepareRefusals(t *testing.T, opts WorktreeMergeTargetAbsorb
 			return reader(ctx, dir, args...)
 		}, c.want)
 	}
+	check(opts, defaultRunner, func(ctx context.Context, dir string, args ...string) (string, error) {
+		value, err := reader(ctx, dir, args...)
+		if len(args) > 1 && args[1] == "view" {
+			value = strings.ReplaceAll(value, receipt.Sources[0].Branch, "wrong-head-branch")
+		}
+		return value, err
+	}, "pull request differs")
 	// Change terminal evidence between the first inspection and the final collection.
 	for _, i := range []struct {
 		when    int

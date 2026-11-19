@@ -19,16 +19,19 @@ import (
 )
 
 // RetiredPrepareTreeProof distinguishes exact content integration from commit ancestry.
-// Each cleanup digest follows receipt order: candidate first, then the two sources.
+// Each cleanup digest follows receipt order: candidate first, then the original sources.
 type RetiredPrepareTreeProof struct {
-	ReceiptSHA256  string   `json:"receipt_sha256"`
-	Candidate      string   `json:"candidate"`
-	Tree           string   `json:"tree"`
-	Landing        string   `json:"landing"`
-	CleanupDigests []string `json:"cleanup_digests"`
-	SourcePRs      []int    `json:"source_prs"`
-	SourceHeads    []string `json:"source_heads"`
-	SourceLandings []string `json:"source_landings"`
+	// DiscardedSourceHead records the final, separately absorbed source in the
+	// one-source variant. The candidate's clean merge was explicitly discarded.
+	DiscardedSourceHead string   `json:"discarded_source_head,omitempty"`
+	ReceiptSHA256       string   `json:"receipt_sha256"`
+	Candidate           string   `json:"candidate"`
+	Tree                string   `json:"tree"`
+	Landing             string   `json:"landing"`
+	CleanupDigests      []string `json:"cleanup_digests"`
+	SourcePRs           []int    `json:"source_prs"`
+	SourceHeads         []string `json:"source_heads"`
+	SourceLandings      []string `json:"source_landings"`
 }
 
 func applicableRetiredPrepare(r WorktreeMergeReceipt) bool {
@@ -36,10 +39,13 @@ func applicableRetiredPrepare(r WorktreeMergeReceipt) bool {
 	if r.Phase != WorktreeMergePhasePrepare || r.Status != WorktreeMergePrepared || r.PullRequest != "" || r.LandingSHA != "" || r.PublishedCandidateSHA != "" || r.ValidationDeferral != nil || len(r.SourceRefreshes) != 0 {
 		return false
 	}
-	if len(r.Sources) != 2 || !r.Sources[0].Merged || !r.Sources[1].Merged || r.Sources[0].SHA == r.Sources[1].SHA || r.Sources[0].Branch == r.Sources[1].Branch {
+	if len(r.Sources) != 1 && len(r.Sources) != 2 || !r.Sources[0].Merged {
 		return false
 	}
-	for _, sha := range []string{r.TargetSHA, r.Candidate.SHA, r.Sources[0].SHA, r.Sources[1].SHA} {
+	if len(r.Sources) == 2 && (!r.Sources[1].Merged || r.Sources[0].SHA == r.Sources[1].SHA || r.Sources[0].Branch == r.Sources[1].Branch) {
+		return false
+	}
+	for _, sha := range append(sourceSHAs(r.Sources), r.TargetSHA, r.Candidate.SHA) {
 		if !fullSHAPattern.MatchString(sha) {
 			return false
 		}
@@ -48,7 +54,14 @@ func applicableRetiredPrepare(r WorktreeMergeReceipt) bool {
 		id != nil && id.CandidateSHA == r.Candidate.SHA && id.TargetSHA == r.TargetSHA && slices.Equal(id.SourceSHAs, sourceSHAs(r.Sources))
 }
 func (p *RetiredPrepareTreeProof) matches(r WorktreeMergeReceipt) bool {
-	if !applicableRetiredPrepare(r) || p.Candidate != r.Candidate.SHA || !fullSHAPattern.MatchString(p.Tree) || !fullSHAPattern.MatchString(p.Landing) || len(p.CleanupDigests) != 3 || len(p.SourcePRs) != 2 || p.SourcePRs[0] < 1 || p.SourcePRs[1] < 1 || p.SourcePRs[0] == p.SourcePRs[1] || len(p.SourceHeads) != 2 || len(p.SourceLandings) != 2 {
+	if !applicableRetiredPrepare(r) || p.Candidate != r.Candidate.SHA || !fullSHAPattern.MatchString(p.Tree) || !fullSHAPattern.MatchString(p.Landing) || len(p.CleanupDigests) != len(r.Sources)+1 || len(p.SourcePRs) != len(r.Sources) || p.SourcePRs[0] < 1 || len(p.SourceHeads) != len(r.Sources) || len(p.SourceLandings) != len(r.Sources) {
+		return false
+	}
+	if len(r.Sources) == 1 {
+		if !fullSHAPattern.MatchString(p.DiscardedSourceHead) || p.Landing != p.SourceLandings[0] {
+			return false
+		}
+	} else if p.DiscardedSourceHead != "" || p.SourcePRs[1] < 1 || p.SourcePRs[0] == p.SourcePRs[1] {
 		return false
 	}
 	for _, s := range append(slices.Clone(p.CleanupDigests), p.ReceiptSHA256) {
@@ -65,12 +78,20 @@ func (p *RetiredPrepareTreeProof) matches(r WorktreeMergeReceipt) bool {
 	return true
 }
 
+func retiredPrepareParents(r WorktreeMergeReceipt) (string, string) {
+	if len(r.Sources) == 1 {
+		return r.TargetSHA, r.Sources[0].SHA
+	}
+	return r.Sources[0].SHA, r.Sources[1].SHA
+}
+
 // The native object hash is checked before these headers are trusted.
 func originalPrepareTree(raw []byte, r WorktreeMergeReceipt) (string, error) {
+	left, right := retiredPrepareParents(r)
 	header, _, ok := strings.Cut(string(raw), "\n\n")
 	lines := strings.Split(header, "\n")
-	if !ok || len(lines) != 5 || !strings.HasPrefix(lines[0], "tree ") || !strings.HasPrefix(lines[3], "author ") || !strings.HasPrefix(lines[4], "committer ") || lines[1] != "parent "+r.Sources[0].SHA || lines[2] != "parent "+r.Sources[1].SHA {
-		return "", errors.New("candidate is not the original ordered two-source merge")
+	if !ok || len(lines) != 5 || !strings.HasPrefix(lines[0], "tree ") || !strings.HasPrefix(lines[3], "author ") || !strings.HasPrefix(lines[4], "committer ") || lines[1] != "parent "+left || lines[2] != "parent "+right {
+		return "", errors.New("candidate is not the original ordered prepare merge")
 	}
 	tree := strings.TrimPrefix(lines[0], "tree ")
 	if !fullSHAPattern.MatchString(tree) {
@@ -102,7 +123,7 @@ func acknowledgeRetiredPrepareTree(ctx context.Context, run runner.Runner, o Wor
 		return result, err
 	}
 	if r.Lane != lane || worktreeMergeOperationID(lane, r.Sources) != r.ID || r.Candidate.Task != r.ID || r.ReceiptPath != path || !applicableRetiredPrepare(r) {
-		return result, errors.New("requires one validated unpublished, unrefreshed two-source prepare")
+		return result, errors.New("requires one validated unpublished, unrefreshed one- or two-source prepare")
 	}
 	raw, err := readSecureBoundedRegularFile(o.CandidateCommitFile, 65536)
 	if err != nil {
@@ -184,6 +205,30 @@ func collectRetiredPrepareProof(ctx context.Context, run runner.Runner, root, ca
 		if err := requireAbsorbedConflictBranchAbsentWithRunner(ctx, run, canonical, m.Branch); err != nil {
 			return nil, err
 		}
+		if i == 0 && len(r.Sources) == 1 {
+			if err := requireCandidateWithoutPullRequest(ctx, canonical, r, readPR); err != nil {
+				return nil, err
+			}
+			discard, err := worktrees.FindDiscardedLifecycleBacklogProof(ctx, root, r.Repository, r.Target, m.Task, m.Worktree, m.Branch, m.SHA)
+			if err != nil {
+				return nil, err
+			}
+			base, err := worktrees.ReadDiscardedTerminalWorkLogClaimBase(root, worktrees.TerminalWorkLogExpectation{
+				Task: m.Task, Worktree: m.Worktree, Branch: m.Branch, Base: r.Target, Repository: r.Repository, FinalCommit: m.SHA,
+			})
+			if err != nil || base != r.TargetSHA {
+				return nil, errors.New("candidate lacks its original sealed work log at the recorded target")
+			}
+			common, _, err := runCommand(ctx, run, 0, 0, objects, "git", "--no-replace-objects", "merge-base", r.Candidate.SHA, target)
+			if err != nil {
+				return nil, err
+			}
+			if strings.TrimSpace(common) == r.Candidate.SHA {
+				return nil, errors.New("candidate already reached target; use ordinary target absorption")
+			}
+			proof.CleanupDigests = append(proof.CleanupDigests, discard.FileSHA256)
+			continue
+		}
 		cleanup, err := worktrees.FindTerminalCleanupProof(root, r.Repository, r.Target, m.Task, m.Worktree, m.Branch)
 		if err != nil {
 			return nil, err
@@ -208,7 +253,7 @@ func collectRetiredPrepareProof(ctx context.Context, run runner.Runner, root, ca
 			continue
 		}
 		pr := c.MergedPullRequest
-		if pr == nil || pr.State != "MERGED" || pr.Number < 1 || pr.Merged == nil || pr.Repository != r.Repository || pr.Base != r.Target || pr.HeadSHA != c.HeadSHA || !fullSHAPattern.MatchString(pr.MergeSHA) || !fullSHAPattern.MatchString(pr.HeadSHA) {
+		if pr == nil || pr.State != "MERGED" || pr.Number < 1 || pr.Merged == nil || pr.Repository != r.Repository || pr.Base != r.Target || !fullSHAPattern.MatchString(pr.MergeSHA) || !fullSHAPattern.MatchString(pr.HeadSHA) {
 			return nil, errors.New("source cleanup lacks original merged pull request")
 		}
 		wire, err := readPR(ctx, canonical, "pr", "view", strconv.Itoa(pr.Number), "--repo", r.Repository, "--json", "state,mergedAt,headRefOid,baseRefName,mergeCommit,headRefName")
@@ -222,7 +267,24 @@ func collectRetiredPrepareProof(ctx context.Context, run runner.Runner, root, ca
 		if err := json.Unmarshal([]byte(wire), &live); err != nil {
 			return nil, err
 		}
-		if live.State != "MERGED" || live.MergedAt == "" || live.BaseRefName != r.Target || live.HeadRefName != m.Branch || live.HeadRefOID != pr.HeadSHA || live.MergeCommit.OID != pr.MergeSHA {
+		if live.State != "MERGED" || live.MergedAt == "" || live.BaseRefName != r.Target || live.HeadRefOID != pr.HeadSHA || live.MergeCommit.OID != pr.MergeSHA {
+			return nil, errors.New("remote pull request differs from terminal cleanup")
+		}
+		if len(r.Sources) == 1 {
+			if !c.AbsorbedAtOrigin || c.AbsorbedBySHA != pr.MergeSHA || c.RemoteTargetSHA != pr.MergeSHA || !fullSHAPattern.MatchString(c.HeadSHA) {
+				return nil, errors.New("source cleanup does not identify the original absorbed head and landing")
+			}
+			for _, pair := range [][2]string{{m.SHA, c.HeadSHA}, {c.HeadSHA, pr.HeadSHA}} {
+				if err := requireRetiredPrepareAncestor(ctx, run, objects, pair[0], pair[1]); err != nil {
+					return nil, err
+				}
+			}
+			if err := verifyRetiredBatchLanding(ctx, run, objects, pr.MergeSHA, pr.HeadSHA, r.TargetSHA); err != nil {
+				return nil, err
+			}
+			proof.DiscardedSourceHead = c.HeadSHA
+			proof.Landing = pr.MergeSHA
+		} else if live.HeadRefName != m.Branch || pr.HeadSHA != c.HeadSHA {
 			return nil, errors.New("remote pull request differs from terminal cleanup")
 		}
 		proof.SourcePRs = append(proof.SourcePRs, pr.Number)
@@ -234,8 +296,10 @@ func collectRetiredPrepareProof(ctx context.Context, run runner.Runner, root, ca
 		proof.SourceHeads = append(proof.SourceHeads, pr.HeadSHA)
 		proof.SourceLandings = append(proof.SourceLandings, pr.MergeSHA)
 	}
-	if err := requireRetiredPrepareAncestor(ctx, run, objects, r.TargetSHA, r.Sources[0].SHA); err != nil {
-		return nil, err
+	if len(r.Sources) == 2 {
+		if err := requireRetiredPrepareAncestor(ctx, run, objects, r.TargetSHA, r.Sources[0].SHA); err != nil {
+			return nil, err
+		}
 	}
 	if err := requireRetiredPrepareAncestor(ctx, run, objects, proof.Landing, target); err != nil {
 		return nil, err

@@ -17,6 +17,9 @@ func absorptionEvidenceCommits(r WorktreeMergeReceipt, proof *RetiredPrepareTree
 	commits := append(sourceSHAs(r.Sources), r.TargetSHA, proof.Landing)
 	commits = append(commits, proof.SourceHeads...)
 	commits = append(commits, proof.SourceLandings...)
+	if proof.DiscardedSourceHead != "" {
+		commits = append(commits, proof.DiscardedSourceHead)
+	}
 	slices.Sort(commits)
 	return slices.Compact(commits)
 }
@@ -31,19 +34,44 @@ func verifyRetiredPrepareMergeTree(ctx context.Context, run runner.Runner, canon
 	if _, _, err := runCommand(ctx, run, 0, 0, canonical, "git", "clone", "--bare", "--shared", "--", canonical, objects); err != nil {
 		return err
 	}
-	hash, err := run.RunWithInput(ctx, objects, raw, "git", "--no-replace-objects", "hash-object", "-t", "commit", "--stdin")
+	hash, err := run.RunWithInput(ctx, objects, raw, "git", "--no-replace-objects", "hash-object", "-w", "-t", "commit", "--stdin")
 	if err != nil {
 		return err
 	}
 	if strings.TrimSpace(hash.Stdout) != r.Candidate.SHA {
 		return errors.New("commit body does not match original candidate SHA")
 	}
-	tree, _, err := runCommand(ctx, run, 0, 0, objects, "git", "--no-replace-objects", "merge-tree", "--write-tree", r.Sources[0].SHA, r.Sources[1].SHA)
+	left, right := retiredPrepareParents(r)
+	tree, _, err := runCommand(ctx, run, 0, 0, objects, "git", "--no-replace-objects", "merge-tree", "--write-tree", left, right)
 	if err != nil {
 		return err
 	}
 	if strings.TrimSpace(tree) != expected {
 		return errors.New("candidate is not the clean merge of the original source trees")
+	}
+	return nil
+}
+
+// A batch PR may have a different name and further reviewed changes. Require
+// its actual two-parent landing to include the complete clean merge, too.
+func verifyRetiredBatchLanding(ctx context.Context, run runner.Runner, objects, landing, head, originalTarget string) error {
+	line, _, err := runCommand(ctx, run, 0, 0, objects, "git", "--no-replace-objects", "show", "-s", "--format=%T %P", landing)
+	if err != nil {
+		return err
+	}
+	fields := strings.Fields(line)
+	if len(fields) != 3 || fields[2] != head || !fullSHAPattern.MatchString(fields[1]) {
+		return errors.New("batch landing is not a two-parent merge of the verified pull request head")
+	}
+	if err := requireRetiredPrepareAncestor(ctx, run, objects, originalTarget, fields[1]); err != nil {
+		return err
+	}
+	tree, _, err := runCommand(ctx, run, 0, 0, objects, "git", "--no-replace-objects", "merge-tree", "--write-tree", fields[1], head)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(tree) != fields[0] {
+		return errors.New("batch landing differs from clean merge of target and pull request head")
 	}
 	return nil
 }

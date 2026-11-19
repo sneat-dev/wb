@@ -29,6 +29,9 @@ preparing and landed_post_target_ci_failed receipts are never released.
 For one retired two-source unpublished prepare, --candidate-commit-file accepts
 the original raw Git commit body. WB authenticates its object ID and proves its
 complete tree at a landed revision using the terminal WB cleanup evidence.
+For a discarded one-source prepare it instead verifies the clean merge of the
+original target and source, the sealed discard, and a separately merged pull
+request retaining both parents and the final retired source head.
 Dry-run is the default; --apply requires --actor and --reason.`,
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := shared.RequireOutputFormat(format, "text", "json"); err != nil {
@@ -75,7 +78,7 @@ Dry-run is the default; --apply requires --actor and --reason.`,
 			return err
 		},
 	}
-	command.Flags().StringVar(&candidateCommit, "candidate-commit-file", "", "original raw Git commit body for a retired two-source prepare")
+	command.Flags().StringVar(&candidateCommit, "candidate-commit-file", "", "original raw Git commit body for a retired one- or two-source prepare")
 	command.Flags().BoolVar(&apply, "apply", false, "write the separate audited target-absorbed acknowledgements")
 	command.Flags().StringVar(&actor, "actor", "", "required with --apply: trusted operator or agent identity")
 	command.Flags().StringVar(&reason, "reason", "", "required with --apply: bounded audited release reason")
