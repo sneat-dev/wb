@@ -85,10 +85,20 @@ wb worktree merge revert <landing-receipt>
 wb worktree merge seal-validation-failed <validation-failed-receipt>
   [--apply --actor <identity> --reason <reason>]
 wb worktree merge supersede-validation-failed <validation-failed-receipt>
-  <replacement-worktree> [--apply --actor <identity> --reason <reason>]
+  <replacement-worktree> [--reviewed-source <branch=full-sha> ...]
+  [--apply --actor <identity> --reason <reason>]
 wb worktree merge adopt-published-candidate <unlanded-receipt> <pull-request>
   [--apply --actor <identity> --reason <reason>]
 ```
+
+When multiple original source branches advanced after an unpublished failed
+validation, repeat `--reviewed-source` for every receipted branch using its
+independently reviewed full head. One reviewed source must incorporate every
+original and advanced commit. The remote target must still equal the failed
+receipt's target. The append-only acknowledgement records the original sources
+and reviewed heads in matching order. Follow it with ordinary
+`wb worktree merge prepare --validate-locally` on the repaired sources before
+landing. A supersession records no passing validation.
 
 Bare `wb worktree merge` composes prepare and land. `prepare` is the deliberate
 pause that unblocks dependent agents. `land` and `resume` consume the persisted

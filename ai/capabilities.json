@@ -18763,7 +18763,8 @@
                 "--format",
                 "--initiator",
                 "--mode",
-                "--reason"
+                "--reason",
+                "--reviewed-source"
               ],
               "modes": [
                 "Proves one exact clean replacement candidate contains the failed candidate claim base, receipt target, freshly fetched current target, and every exact clean receipted source",

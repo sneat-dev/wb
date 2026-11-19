@@ -9,6 +9,7 @@ import (
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -239,6 +240,27 @@ func supersedeValidationFailedWorktreeMergeWithRunner(ctx context.Context, run r
 	if err != nil {
 		return WorktreeMergeValidationFailureSupersession{}, err
 	}
+	var reviewed []string
+	if len(options.ReviewedSources) > 0 {
+		if err := validateReviewedSourceEvidence(receipt, replacement, currentTarget, currentSourceHeads); err != nil {
+			return WorktreeMergeValidationFailureSupersession{}, err
+		}
+		if len(options.ReviewedSources) != len(receipt.Sources) {
+			return WorktreeMergeValidationFailureSupersession{}, errors.New("pin every receipted branch and its reviewed head exactly once")
+		}
+		for i, source := range receipt.Sources {
+			if !slices.Contains(options.ReviewedSources, source.Branch+"="+currentSourceHeads[i]) {
+				return WorktreeMergeValidationFailureSupersession{}, fmt.Errorf("no exact reviewed head for %s", source.Branch)
+			}
+		}
+		if included, proofErr := isMergeAncestorWithRunner(ctx, run, replacement.Worktree, receipt.Candidate.SHA, currentTarget); proofErr != nil || included {
+			return WorktreeMergeValidationFailureSupersession{}, fmt.Errorf("failed candidate must remain outside the current target: contained=%t err=%v", included, proofErr)
+		}
+		if err := requireAbsorbedConflictCandidateUnpublishedWithRunner(ctx, run, replacement.Worktree, receipt); err != nil {
+			return WorktreeMergeValidationFailureSupersession{}, err
+		}
+		reviewed = currentSourceHeads
+	}
 	targetTree, err := mergeTreeRevision(ctx, run, replacement.Worktree, currentTarget)
 	if err != nil {
 		return WorktreeMergeValidationFailureSupersession{}, fmt.Errorf("read current target tree: %w", err)
@@ -256,7 +278,7 @@ func supersedeValidationFailedWorktreeMergeWithRunner(ctx context.Context, run r
 			if treeErr != nil {
 				return WorktreeMergeValidationFailureSupersession{}, fmt.Errorf("read advanced receipted source tree: %w", treeErr)
 			}
-			if sourceTree != targetTree {
+			if sourceTree != targetTree && reviewed == nil {
 				return WorktreeMergeValidationFailureSupersession{}, fmt.Errorf("advanced receipted source %s tree %s differs from landed target tree %s", source.Worktree, sourceTree, targetTree)
 			}
 			observedSourceDescendants = append(observedSourceDescendants, sourceHead)
@@ -289,8 +311,9 @@ func supersedeValidationFailedWorktreeMergeWithRunner(ctx context.Context, run r
 	}
 	ackPath := validationFailureSupersessionPath(receiptPath)
 	ack := WorktreeMergeValidationFailureSupersession{
-		SchemaVersion: worktreeMergeValidationFailureSupersessionSchemaVersion,
-		Status:        "validation_failure_superseded", ReceiptPath: receiptPath, AcknowledgementPath: ackPath,
+		SchemaVersion:       worktreeMergeValidationFailureSupersessionSchemaVersion,
+		ReviewedSourceHeads: reviewed,
+		Status:              "validation_failure_superseded", ReceiptPath: receiptPath, AcknowledgementPath: ackPath,
 		ReceiptID: receipt.ID, ReceiptSHA256: receiptHash, ReceiptStatus: receipt.Status, Lane: receipt.Lane,
 		Repository: receipt.Repository, Target: receipt.Target, ReceiptTargetSHA: receipt.TargetSHA, CurrentTargetSHA: currentTarget,
 		OriginalCandidate: receipt.Candidate, ObservedCandidateDescendantSHA: observedCandidateDescendantSHA, OriginalClaimBaseSHA: originalClaim.BaseSHA,
@@ -299,7 +322,7 @@ func supersedeValidationFailedWorktreeMergeWithRunner(ctx context.Context, run r
 	}
 	ack.ID = validationFailureSupersessionID(ack)
 	if existing, readErr := readValidationFailureSupersession(ackPath, receipt); readErr == nil {
-		if existing.CurrentTargetSHA != currentTarget || existing.Replacement != replacement || existing.ObservedCandidateDescendantSHA != observedCandidateDescendantSHA {
+		if existing.CurrentTargetSHA != currentTarget || existing.Replacement != replacement || existing.ObservedCandidateDescendantSHA != observedCandidateDescendantSHA || !slices.Equal(existing.ReviewedSourceHeads, reviewed) {
 			return WorktreeMergeValidationFailureSupersession{}, fmt.Errorf("supersession %s binds different target or replacement evidence", ackPath)
 		}
 		return existing, nil
@@ -308,6 +331,24 @@ func supersedeValidationFailedWorktreeMergeWithRunner(ctx context.Context, run r
 	}
 	if !options.Apply {
 		return ack, nil
+	}
+	if reviewed != nil {
+		for i, source := range receipt.Sources {
+			head, base, proofErr := validateValidationFailedSupersessionSourceWithRunner(ctx, run, options.ProjectsRoot, receipt, source)
+			if proofErr != nil {
+				return WorktreeMergeValidationFailureSupersession{}, proofErr
+			}
+			if head != reviewed[i] || base != currentSourceClaimBases[i] {
+				return WorktreeMergeValidationFailureSupersession{}, fmt.Errorf("reviewed source %s changed during proof", source.Branch)
+			}
+		}
+		target, err := fetchExactMergeTargetWithRunner(ctx, run, replacement.Worktree, receipt.Target)
+		if err != nil {
+			return WorktreeMergeValidationFailureSupersession{}, err
+		}
+		if target != currentTarget {
+			return WorktreeMergeValidationFailureSupersession{}, errors.New("reviewed repair target changed during proof")
+		}
 	}
 	if legacyIdentityNeedsPersist {
 		if err := persistLegacyValidationFailureIdentity(legacyIdentity.AcknowledgementPath, *legacyIdentity); err != nil {
