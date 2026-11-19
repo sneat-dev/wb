@@ -128,7 +128,7 @@ var valueFlags = setOf(
 	"--prepare-timeout", "--profile", "--projects-root", "--provider", "--reason", "--rebatch-receipt", "--rebatch-published-target-sha", "--ref", "--replacement", "--retention",
 	"--refresh-after", "--regex", "--release-poll", "--remaining", "--repo", "--report-dir",
 	"--require-host", "--residue-depth", "--retry", "--review-comment",
-	"--review-comment-file", "--role", "--route", "--run", "--runtime", "--scope",
+	"--review-comment-file", "--reviewed-source", "--role", "--route", "--run", "--runtime", "--scope",
 	"--session-freshness", "--sha", "--shard-attempt-timeout", "--stale", "--subject", "--successor",
 	"--summary", "--superseded-by", "--target", "--task", "--task-file", "--timeout", "--title",
 	"--to", "--ttl", "--undo", "--use-worktree", "--validation", "--version", "--via",

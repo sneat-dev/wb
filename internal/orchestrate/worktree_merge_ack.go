@@ -219,6 +219,7 @@ type WorktreeMergeLandedFailureAcknowledgementOptions struct {
 // immutable failed receipt to one clean replacement candidate without changing
 // either candidate's Work Log or the historical receipt.
 type WorktreeMergeValidationFailureSupersession struct {
+	ReviewedSourceHeads            []string               `json:"reviewed_source_heads,omitempty"`
 	SchemaVersion                  int                    `json:"schema_version"`
 	ID                             string                 `json:"id"`
 	Status                         string                 `json:"status"`
@@ -244,6 +245,7 @@ type WorktreeMergeValidationFailureSupersession struct {
 }
 
 type WorktreeMergeValidationFailureSupersessionOptions struct {
+	ReviewedSources     []string
 	ProjectsRoot        string
 	Receipt             string
 	ReplacementWorktree string
@@ -1090,6 +1092,9 @@ func validationFailureSupersessionID(ack WorktreeMergeValidationFailureSupersess
 			_, _ = hash.Write([]byte{0})
 		}
 	}
+	for _, head := range ack.ReviewedSourceHeads {
+		_, _ = hash.Write([]byte("reviewed_source_head\x00" + head + "\x00"))
+	}
 	return hex.EncodeToString(hash.Sum(nil))
 }
 
@@ -1389,6 +1394,11 @@ func readValidationFailureSupersession(path string, receipt WorktreeMergeReceipt
 	receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
 	if err != nil {
 		return WorktreeMergeValidationFailureSupersession{}, err
+	}
+	if len(ack.ReviewedSourceHeads) > 0 {
+		if err := validateReviewedSourceEvidence(receipt, ack.Replacement, ack.CurrentTargetSHA, ack.ReviewedSourceHeads); err != nil {
+			return WorktreeMergeValidationFailureSupersession{}, err
+		}
 	}
 	if ack.SchemaVersion != worktreeMergeValidationFailureSupersessionSchemaVersion || ack.Status != "validation_failure_superseded" || ack.AcknowledgementPath != path ||
 		ack.ReceiptPath != receipt.ReceiptPath || ack.ReceiptID != receipt.ID || ack.ReceiptSHA256 != receiptHash || ack.ReceiptStatus != receipt.Status ||
