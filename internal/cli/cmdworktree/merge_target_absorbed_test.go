@@ -117,4 +117,7 @@ func TestAcknowledgeTargetAbsorbedPassesOnlyTheExplicitWitness(t *testing.T) {
 	if err != nil || got.CandidateCommitFile != "original.commit" || len(got.Receipts) != 1 || got.Receipts[0] != "receipt.json" || got.Apply {
 		t.Fatalf("witness flag: %+v, %v", got, err)
 	}
+	if _, err := runTargetAbsorbed(inv, "receipt.json"); err != nil || got.CandidateCommitFile != "" {
+		t.Fatalf("ordinary acknowledgement inherited a witness: %+v, %v", got, err)
+	}
 }

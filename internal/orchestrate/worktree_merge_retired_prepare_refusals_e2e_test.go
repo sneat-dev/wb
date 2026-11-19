@@ -7,15 +7,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/sneat-dev/wb/internal/worktrees"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 type retiredProofReader = func(context.Context, string, ...string) (string, error)
@@ -63,7 +64,7 @@ func exerciseRetiredPrepareRefusals(t *testing.T, opts WorktreeMergeTargetAbsorb
 	}
 	ackPath := worktreeMergeTargetAbsorbedAcknowledgementPath(receipt.ReceiptPath, proof.ReceiptSHA256)
 	writeEngineFile(t, ackPath, "{}")
-	rejected("")
+	rejected("does not prove receipt")
 	if err := os.Remove(ackPath); err != nil {
 		t.Fatal(err)
 	}
@@ -104,10 +105,10 @@ func exerciseRetiredPrepareRefusals(t *testing.T, opts WorktreeMergeTargetAbsorb
 	}
 	check(applied, &retiredWitnessGit{Runner: defaultRunner, changeTip: true}, reader, "target moved")
 	check(opts, &retiredWitnessGit{Runner: defaultRunner, failHash: true}, reader, "native hash unavailable")
-	optsWithoutScratch := os.TempDir()
+	originalTempDir := os.TempDir()
 	t.Setenv("TMPDIR", opts.CandidateCommitFile)
 	rejected("not a directory")
-	t.Setenv("TMPDIR", optsWithoutScratch)
+	t.Setenv("TMPDIR", originalTempDir)
 	if err := verifyRetiredPrepareMergeTree(t.Context(), defaultRunner, canonical, filepath.Join(t.TempDir(), "objects.git"), []byte(raw), receipt, strings.Repeat("c", 40)); err == nil || !strings.Contains(err.Error(), "not the clean merge") {
 		t.Fatalf("unproved candidate tree: %v", err)
 	}
@@ -140,13 +141,13 @@ func exerciseRetiredPrepareRefusals(t *testing.T, opts WorktreeMergeTargetAbsorb
 	if err := os.Symlink(saved, receipt.ReceiptPath); err != nil {
 		t.Fatal(err)
 	}
-	rejected("")
+	rejected(syscall.ELOOP.Error())
 	if err := os.Rename(saved, receipt.ReceiptPath); err != nil {
 		t.Fatal(err)
 	}
 	absent := opts
 	absent.CandidateCommitFile = filepath.Join(t.TempDir(), "absent")
-	check(absent, defaultRunner, reader, "")
+	check(absent, defaultRunner, reader, syscall.ENOENT.Error())
 	writeEngineFile(t, opts.CandidateCommitFile, "invalid")
 	rejected("ordered")
 	writeEngineFile(t, opts.CandidateCommitFile, raw)
@@ -155,9 +156,11 @@ func exerciseRetiredPrepareRefusals(t *testing.T, opts WorktreeMergeTargetAbsorb
 	wrong.Lane = worktreeMergeLaneID(wrong.Repository, wrong.Target)
 	wrong.ID = worktreeMergeOperationID(wrong.Lane, wrong.Sources)
 	wrong.Candidate.Task = wrong.ID
-	checkReceipt(wrong, "")
+	checkReceipt(wrong, "safe path segments")
 	unavailable := errors.New("proof input unavailable")
-	// Both the public preview and the final reread must fail closed on native Git errors.
+	// Six ancestry checks cover the two PRs. The seventh verifies the received base
+	// and the eighth verifies the historical landing against the present target.
+	// The second fetch fences the target immediately before acknowledgement.
 	for _, c := range []struct {
 		args []string
 		nth  int
@@ -215,7 +218,7 @@ func exerciseRetiredPrepareRefusals(t *testing.T, opts WorktreeMergeTargetAbsorb
 		when    int
 		corrupt bool
 		want    string
-	}{{1, true, ""}, {1, false, "changed during proof"}, {2, false, "changed while"}} {
+	}{{1, true, "no terminal cleanup receipt"}, {1, false, "changed during proof"}, {2, false, "changed while"}} {
 		calls := 0
 		b := original(cleanup[0])
 		applied := opts
@@ -239,7 +242,6 @@ func exerciseRetiredPrepareRefusals(t *testing.T, opts WorktreeMergeTargetAbsorb
 		writeEngineFile(t, cleanup[0], string(b))
 		writeEngineFile(t, receipt.ReceiptPath, string(orig))
 	}
-
 }
 
 type retiredWitnessGit struct {

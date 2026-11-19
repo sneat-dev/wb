@@ -18,8 +18,8 @@ import (
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
+//nolint:paralleltest // The unavailable scratch-directory case temporarily changes TMPDIR with t.Setenv.
 func TestE2ERetiredPrepareTreeProvesTwoIndependentLandings(t *testing.T) {
-
 	f := newExplicitRootEngineFixture(t)
 	git := func(args ...string) string { return strings.TrimSpace(runEngineGit(t, f.canonical, args...)) }
 	writeEngineGoModule(t, f.canonical, "package app\n")
