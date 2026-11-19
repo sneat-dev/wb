@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -76,6 +77,7 @@ type lifecycleBacklogRecord struct {
 // Callers must still prove that its branch was never published and its commit
 // did not reach the target before retiring any higher-level operation receipt.
 type DiscardedLifecycleBacklogProof struct {
+	FileSHA256 string
 	Path       string
 	Task       string
 	Repository string
@@ -113,16 +115,19 @@ func findDiscardedLifecycleBacklogProofWithRead(ctx context.Context, projectsRoo
 	if err != nil {
 		return nil, fmt.Errorf("read discarded cleanup backlog: %w", err)
 	}
-	var matches []struct {
+	type discardedMatch struct {
+		digest string
 		path   string
 		record lifecycleBacklogRecord
 	}
+	var matches []discardedMatch
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
 		var record lifecycleBacklogRecord
-		if err := readJSONAt(directory, entry.Name(), &record); err != nil {
+		body, err := readBytesAt(directory, entry.Name())
+		if err != nil || json.Unmarshal(body, &record) != nil {
 			continue
 		}
 		if entry.Name() != record.ID+".json" || record.Task != task || record.Repository != repository ||
@@ -133,10 +138,7 @@ func findDiscardedLifecycleBacklogProofWithRead(ctx context.Context, projectsRoo
 		if err := validateLifecycleBacklog(record); err != nil {
 			return nil, fmt.Errorf("validate discarded cleanup backlog %s: %w", entry.Name(), err)
 		}
-		matches = append(matches, struct {
-			path   string
-			record lifecycleBacklogRecord
-		}{path: filepath.Join(lifecycleBacklogDirectory(resolution.Write.Home), entry.Name()), record: record})
+		matches = append(matches, discardedMatch{digest: fmt.Sprintf("%x", sha256.Sum256(body)), path: filepath.Join(lifecycleBacklogDirectory(resolution.Write.Home), entry.Name()), record: record})
 	}
 	if len(matches) != 1 {
 		return nil, fmt.Errorf("expected one discarded cleanup backlog for %s, found %d", worktree, len(matches))
@@ -162,7 +164,7 @@ func findDiscardedLifecycleBacklogProofWithRead(ctx context.Context, projectsRoo
 		return nil, fmt.Errorf("discarded candidate branch %s still exists locally", branch)
 	}
 	return &DiscardedLifecycleBacklogProof{
-		Path: match.path, Task: task, Repository: repository, Worktree: worktree,
+		FileSHA256: match.digest, Path: match.path, Task: task, Repository: repository, Worktree: worktree,
 		Branch: branch, Target: target, HeadSHA: head,
 	}, nil
 }

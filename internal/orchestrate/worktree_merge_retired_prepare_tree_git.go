@@ -17,6 +17,9 @@ func absorptionEvidenceCommits(r WorktreeMergeReceipt, proof *RetiredPrepareTree
 	commits := append(sourceSHAs(r.Sources), r.TargetSHA, proof.Landing)
 	commits = append(commits, proof.SourceHeads...)
 	commits = append(commits, proof.SourceLandings...)
+	if proof.DiscardedSourceHead != "" {
+		commits = append(commits, proof.DiscardedSourceHead)
+	}
 	slices.Sort(commits)
 	return slices.Compact(commits)
 }
@@ -38,7 +41,8 @@ func verifyRetiredPrepareMergeTree(ctx context.Context, run runner.Runner, canon
 	if strings.TrimSpace(hash.Stdout) != r.Candidate.SHA {
 		return errors.New("commit body does not match original candidate SHA")
 	}
-	tree, _, err := runCommand(ctx, run, 0, 0, objects, "git", "--no-replace-objects", "merge-tree", "--write-tree", r.Sources[0].SHA, r.Sources[1].SHA)
+	left, right := retiredPrepareParents(r)
+	tree, _, err := runCommand(ctx, run, 0, 0, objects, "git", "--no-replace-objects", "merge-tree", "--write-tree", left, right)
 	if err != nil {
 		return err
 	}
