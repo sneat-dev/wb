@@ -11,7 +11,7 @@ import (
 
 func newWorktreeMergeAcknowledgeTargetAbsorbedCmd(inv *mergeInvocation) *cobra.Command {
 	var apply bool
-	var actor, reason, format string
+	var actor, reason, format, candidateCommit string
 	command := &cobra.Command{
 		Use:   "acknowledge-target-absorbed [merge-receipt...]",
 		Short: "Release merger lanes held by receipts whose work already reached the target",
@@ -26,6 +26,9 @@ verb only clears lanes ahead of their next lander. Live candidate branch
 heads must be on the target too; a landed receipt also needs passed
 post-target CI for its exact landing and 15 minutes without updates.
 preparing and landed_post_target_ci_failed receipts are never released.
+For one retired two-source unpublished prepare, --candidate-commit-file accepts
+the original raw Git commit body. WB authenticates its object ID and proves its
+complete tree at a landed revision using the terminal WB cleanup evidence.
 Dry-run is the default; --apply requires --actor and --reason.`,
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := shared.RequireOutputFormat(format, "text", "json"); err != nil {
@@ -37,7 +40,7 @@ Dry-run is the default; --apply requires --actor and --reason.`,
 			}
 			defer releaseAdmission()
 			sweep, err := inv.operations.SweepTargetAbsorbedWorktreeMergeReceipts(command.Context(), orchestrate.WorktreeMergeTargetAbsorbedSweepOptions{
-				ProjectsRoot: inv.runtime.Flags().ProjectsRoot, Receipts: args, Apply: apply, Actor: actor, Reason: reason,
+				CandidateCommitFile: candidateCommit, ProjectsRoot: inv.runtime.Flags().ProjectsRoot, Receipts: args, Apply: apply, Actor: actor, Reason: reason,
 			})
 			if err != nil {
 				return err
@@ -72,6 +75,7 @@ Dry-run is the default; --apply requires --actor and --reason.`,
 			return err
 		},
 	}
+	command.Flags().StringVar(&candidateCommit, "candidate-commit-file", "", "original raw Git commit body for a retired two-source prepare")
 	command.Flags().BoolVar(&apply, "apply", false, "write the separate audited target-absorbed acknowledgements")
 	command.Flags().StringVar(&actor, "actor", "", "required with --apply: trusted operator or agent identity")
 	command.Flags().StringVar(&reason, "reason", "", "required with --apply: bounded audited release reason")

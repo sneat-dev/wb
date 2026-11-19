@@ -17790,6 +17790,7 @@
               "flags": [
                 "--actor",
                 "--apply",
+                "--candidate-commit-file",
                 "--format",
                 "--initiator",
                 "--mode",

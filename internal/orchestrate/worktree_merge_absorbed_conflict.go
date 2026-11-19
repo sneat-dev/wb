@@ -384,7 +384,11 @@ func requireAbsorbedConflictBranchAbsentWithRunner(ctx context.Context, run runn
 }
 
 func requireZeroDeltaCandidateWithoutPullRequest(ctx context.Context, gitRoot string, receipt WorktreeMergeReceipt) error {
-	output, err := githubRead(ctx, gitRoot, "pr", "list", "--repo", receipt.Repository,
+	return requireCandidateWithoutPullRequest(ctx, gitRoot, receipt, githubRead)
+}
+
+func requireCandidateWithoutPullRequest(ctx context.Context, gitRoot string, receipt WorktreeMergeReceipt, readPR func(context.Context, string, ...string) (string, error)) error {
+	output, err := readPR(ctx, gitRoot, "pr", "list", "--repo", receipt.Repository,
 		"--head", receipt.Candidate.Branch, "--state", "all", "--json", "number,url,headRefName", "--limit", "1000")
 	if err != nil {
 		return fmt.Errorf("inspect all-state pull requests for candidate branch %s: %w", receipt.Candidate.Branch, err)
