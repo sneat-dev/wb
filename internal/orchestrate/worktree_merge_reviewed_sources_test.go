@@ -2,10 +2,15 @@ package orchestrate
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/runner"
 )
 
 func TestReviewedRepairRetainsEveryAdvanceAndRerunsValidation(t *testing.T) {
@@ -63,12 +68,24 @@ func TestReviewedRepairRetainsEveryAdvanceAndRerunsValidation(t *testing.T) {
 		t.Fatal("dry run wrote an acknowledgement")
 	}
 	opt.Apply = true
+	checkReviewedPinRaces(t, opt, receipt, a.WorktreeDir, advanceA, replacement)
 	ack, err := SupersedeValidationFailedWorktreeMerge(t.Context(), opt)
 	if err != nil || ack.ID != preview.ID {
 		t.Fatalf("apply: %v %s %s", err, ack.ID, preview.ID)
 	}
 	if replay, err := SupersedeValidationFailedWorktreeMerge(t.Context(), opt); err != nil || replay.ID != ack.ID {
 		t.Fatalf("replay: %v", err)
+	}
+	damaged := ack
+	damaged.ReviewedSourceHeads = []string{"bad"}
+	wire, err := json.Marshal(damaged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalid := filepath.Join(t.TempDir(), "invalid.json")
+	writeEngineFile(t, invalid, string(wire))
+	if _, err := readValidationFailureSupersession(invalid, receipt); err == nil {
+		t.Fatal("invalid pinned acknowledgement was accepted")
 	}
 	after, err := os.ReadFile(receipt.ReceiptPath)
 	if err != nil || !bytes.Equal(after, before) {
@@ -97,6 +114,51 @@ func TestReviewedSourceEvidenceRejectsMalformedAndForeignIdentities(t *testing.T
 		modify(&other)
 		if err := validateReviewedSourceEvidence(other, replacement, old, []string{a, b}); err == nil {
 			t.Error("accepted wrong failure or target")
+		}
+	}
+}
+
+// These simulated Git observations isolate races between the initial observations
+// and the final claim/target reread inside the same actual repair operation.
+type reviewedRefObservation struct {
+	runner.Runner
+	directory, command, response string
+	fault                        error
+	afterHash, hashed            bool
+}
+
+func (r *reviewedRefObservation) RunOpts(ctx context.Context, dir string, opts runner.RunOptions, name string, args ...string) (runner.Result, error) {
+	if dir == r.directory && name == "git" && r.command == strings.Join(args, " ") && r.afterHash == r.hashed {
+		return runner.Result{Stdout: r.response}, r.fault
+	}
+	return r.Runner.RunOpts(ctx, dir, opts, name, args...)
+}
+func checkReviewedPinRaces(t *testing.T, opt WorktreeMergeValidationFailureSupersessionOptions, receipt WorktreeMergeReceipt, source, advance, replacement string) {
+	t.Helper()
+	targetRef := "rev-parse --verify refs/remotes/origin/" + receipt.Target + "^{commit}"
+	fetch := "fetch --no-tags origin +refs/heads/" + receipt.Target + ":refs/remotes/origin/" + receipt.Target
+	failure := errors.New("observation unavailable")
+	for _, tc := range []struct {
+		dir, command, response, want string
+		after                        bool
+		err                          error
+	}{
+		{opt.ReplacementWorktree, targetRef, advance, "original remote target", false, nil},
+		{opt.ReplacementWorktree, "merge-base " + receipt.Candidate.SHA + " " + receipt.TargetSHA, receipt.Candidate.SHA, "must remain outside", false, nil},
+		{opt.ReplacementWorktree, "ls-remote origin refs/heads/" + receipt.Candidate.Branch, receipt.Candidate.SHA, "published", false, nil},
+		{source, "rev-parse --verify HEAD^{commit}", "", "read receipted source", true, failure},
+		{source, "rev-parse --verify HEAD^{commit}", replacement, "changed during proof", true, nil},
+		{opt.ReplacementWorktree, fetch, "", "fetch exact remote target", true, failure},
+		{opt.ReplacementWorktree, targetRef, advance, "target changed during proof", true, nil},
+	} {
+		r := &reviewedRefObservation{Runner: defaultRunner, directory: tc.dir, command: tc.command, response: tc.response, fault: tc.err, afterHash: tc.after}
+		hash := func(path string) (string, error) { r.hashed = true; return worktreeMergeReceiptSHA256(path) }
+		_, err := supersedeValidationFailedWorktreeMergeWithRunner(t.Context(), r, readWorktreeMergeReceipt, hash, opt)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("wanted %q during %s, got %v", tc.want, tc.command, err)
+		}
+		if _, err := os.Stat(validationFailureSupersessionPath(receipt.ReceiptPath)); !os.IsNotExist(err) {
+			t.Fatalf("refusal created acknowledgement: %v", err)
 		}
 	}
 }
