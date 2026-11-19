@@ -57,6 +57,20 @@ func TestE2EDiscardedSinglePrepareRetainsBothParentsAndActualRetiredSource(t *te
 	git("switch", "main")
 	git("merge", "--no-ff", "batch", "-m", "separate protected merge")
 	landing := git("rev-parse", "HEAD")
+	// A same-parent merge can include no feature content at all.
+	fake := git("commit-tree", r.TargetSHA+"^{tree}", "-p", r.TargetSHA, "-p", batch, "-m", "phony ancestry-only merge")
+	if err := verifyRetiredBatchLanding(t.Context(), defaultRunner, f.canonical, fake, batch, r.TargetSHA); err == nil {
+		t.Fatal("ancestry-only landing passed")
+	}
+	for _, wrong := range [][3]string{
+		{strings.Repeat("2", 40), batch, r.TargetSHA},
+		{final, batch, r.TargetSHA},
+		{landing, batch, final},
+	} {
+		if err := verifyRetiredBatchLanding(t.Context(), defaultRunner, f.canonical, wrong[0], wrong[1], wrong[2]); err == nil {
+			t.Fatal("unproved landing accepted", wrong)
+		}
+	}
 	git("push", "origin", "main")
 	git("worktree", "remove", source.WorktreeDir)
 	git("branch", "-D", source.Branch)

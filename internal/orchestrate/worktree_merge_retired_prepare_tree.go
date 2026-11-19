@@ -261,10 +261,13 @@ func collectRetiredPrepareProof(ctx context.Context, run runner.Runner, root, ca
 			if !c.AbsorbedAtOrigin || c.AbsorbedBySHA != pr.MergeSHA || c.RemoteTargetSHA != pr.MergeSHA || !fullSHAPattern.MatchString(c.HeadSHA) {
 				return nil, errors.New("source cleanup does not identify the original absorbed head and landing")
 			}
-			for _, pair := range [][2]string{{m.SHA, c.HeadSHA}, {c.HeadSHA, pr.HeadSHA}, {r.TargetSHA, pr.MergeSHA}} {
+			for _, pair := range [][2]string{{m.SHA, c.HeadSHA}, {c.HeadSHA, pr.HeadSHA}} {
 				if err := requireRetiredPrepareAncestor(ctx, run, objects, pair[0], pair[1]); err != nil {
 					return nil, err
 				}
+			}
+			if err := verifyRetiredBatchLanding(ctx, run, objects, pr.MergeSHA, pr.HeadSHA, r.TargetSHA); err != nil {
+				return nil, err
 			}
 			proof.DiscardedSourceHead = c.HeadSHA
 			proof.Landing = pr.MergeSHA

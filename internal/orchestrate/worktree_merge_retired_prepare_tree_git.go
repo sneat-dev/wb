@@ -51,3 +51,27 @@ func verifyRetiredPrepareMergeTree(ctx context.Context, run runner.Runner, canon
 	}
 	return nil
 }
+
+// A batch PR may have a different name and further reviewed changes. Require
+// its actual two-parent landing to include the complete clean merge, too.
+func verifyRetiredBatchLanding(ctx context.Context, run runner.Runner, objects, landing, head, originalTarget string) error {
+	line, _, err := runCommand(ctx, run, 0, 0, objects, "git", "--no-replace-objects", "show", "-s", "--format=%T %P", landing)
+	if err != nil {
+		return err
+	}
+	fields := strings.Fields(line)
+	if len(fields) != 3 || fields[2] != head || !fullSHAPattern.MatchString(fields[1]) {
+		return errors.New("batch landing is not a two-parent merge of the verified pull request head")
+	}
+	if err := requireRetiredPrepareAncestor(ctx, run, objects, originalTarget, fields[1]); err != nil {
+		return err
+	}
+	tree, _, err := runCommand(ctx, run, 0, 0, objects, "git", "--no-replace-objects", "merge-tree", "--write-tree", fields[1], head)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(tree) != fields[0] {
+		return errors.New("batch landing differs from clean merge of target and pull request head")
+	}
+	return nil
+}
