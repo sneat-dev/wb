@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -71,6 +72,11 @@ func TestE2EDiscardedSinglePrepareRetainsBothParentsAndActualRetiredSource(t *te
 			t.Fatal("unproved landing accepted", wrong)
 		}
 	}
+	unavailable := errors.New("native merge-tree failed")
+	fault := &alreadyLandedFaultRunner{Runner: defaultRunner, err: unavailable, refuse: func(_, _ string, args []string) bool { return slices.Contains(args, "merge-tree") }}
+	if err := verifyRetiredBatchLanding(t.Context(), fault, f.canonical, landing, batch, r.TargetSHA); err == nil || !strings.Contains(err.Error(), unavailable.Error()) {
+		t.Fatal("failed native replay did not block acknowledgement", err)
+	}
 	git("push", "origin", "main")
 	git("worktree", "remove", source.WorktreeDir)
 	git("branch", "-D", source.Branch)
@@ -90,14 +96,15 @@ func TestE2EDiscardedSinglePrepareRetainsBothParentsAndActualRetiredSource(t *te
 		writeEngineFile(t, report, string(data))
 	}
 	writeRow()
+	remoteHead, remoteBase, remoteLanding, candidatePRs := batch, "main", landing, "[]"
 	ctx := githubobserver.WithReader(t.Context(), githubobserver.Reader{Read: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 		if args[0] == "api" {
 			return []byte(landing), nil
 		}
 		if args[1] == "list" {
-			return []byte("[]"), nil
+			return []byte(candidatePRs), nil
 		}
-		return fmt.Appendf(nil, `{"state":"MERGED","mergedAt":"2026-01-01T00:00:00Z","baseRefName":"main","headRefName":"batch","headRefOid":%q,"mergeCommit":{"oid":%q}}`, batch, landing), nil
+		return fmt.Appendf(nil, `{"state":"MERGED","mergedAt":"2026-01-01T00:00:00Z","baseRefName":%q,"headRefName":"batch","headRefOid":%q,"mergeCommit":{"oid":%q}}`, remoteBase, remoteHead, remoteLanding), nil
 	}})
 	opt := WorktreeMergeTargetAbsorbedSweepOptions{ProjectsRoot: f.githubDir, Receipts: []string{r.ReceiptPath}, CandidateCommitFile: witness, Actor: "test", Reason: "audited cleanup"}
 	expectError := func() {
@@ -106,6 +113,46 @@ func TestE2EDiscardedSinglePrepareRetainsBothParentsAndActualRetiredSource(t *te
 			t.Fatal("accepted missing or contradictory evidence")
 		}
 	}
+	candidatePRs = `[{"number":9,"headRefName":"candidate"}]`
+	expectError()
+	candidatePRs = "[]"
+	remoteBase = "other"
+	expectError()
+	remoteBase = "main"
+	pr := row["merged_pull_request"].(map[string]any)
+	pr["head_sha"], remoteHead = r.TargetSHA, r.TargetSHA
+	writeRow()
+	expectError()
+	pr["head_sha"], remoteHead = batch, batch
+	// Substitute the ancestry-only landing observed by the PR and cleanup.
+	pr["merge_sha"], row["remote_target_sha"], row["absorbed_by_sha"], remoteLanding = fake, fake, fake, fake
+	writeRow()
+	expectError()
+	pr["merge_sha"], row["remote_target_sha"], row["absorbed_by_sha"], remoteLanding = landing, landing, landing, landing
+	writeRow()
+	// Exercise the actual disposition checks before any purported acknowledgement.
+	for _, target := range []string{r.Candidate.SHA, strings.Repeat("7", 40)} {
+		_, err := collectRetiredPrepareProof(ctx, defaultRunner, f.githubDir, f.canonical, f.canonical, r, "", "", target, githubRead)
+		if err == nil || (target == r.Candidate.SHA && !strings.Contains(err.Error(), "already reached target")) {
+			t.Fatalf("unexpected candidate ancestry disposition: %v", err)
+		}
+	}
+	missing := func(pattern string) {
+		t.Helper()
+		names, e := filepath.Glob(pattern)
+		if e != nil || len(names) != 1 {
+			t.Fatalf("fixture paths %v: %v", names, e)
+		}
+		body, e := os.ReadFile(names[0])
+		if e != nil {
+			t.Fatal(e)
+		}
+		writeEngineFile(t, names[0], "{}")
+		expectError()
+		writeEngineFile(t, names[0], string(body))
+	}
+	missing(filepath.Join(home, "reports", "worktree-cleanup", "backlog", "*.json"))
+	missing(filepath.Join(home, "worklogs", r.Candidate.Task, "runs", "*", "terminals", "*.json"))
 	row["absorbed_at_origin"] = false
 	writeRow()
 	expectError()
@@ -129,6 +176,18 @@ func TestE2EDiscardedSinglePrepareRetainsBothParentsAndActualRetiredSource(t *te
 	ack, _, err := readWorktreeMergeTargetAbsorbedAcknowledgement(r)
 	if err != nil || ack.RetiredPrepare.DiscardedSourceHead != final || slices.Contains(ack.ProvedCommits, r.Candidate.SHA) || !slices.Contains(ack.ProvedCommits, r.TargetSHA) {
 		t.Fatalf("proof: %+v %v", ack, err)
+	}
+	altered := *ack.RetiredPrepare
+	altered.DiscardedSourceHead = ""
+	if altered.matches(r) {
+		t.Fatal("missing final retired source head accepted")
+	}
+	for _, sources := range [][]WorktreeMergeSource{nil, {r.Sources[0], r.Sources[0]}} {
+		bad := r
+		bad.Sources = sources
+		if applicableRetiredPrepare(bad) {
+			t.Fatal("invalid source count or repeated source accepted")
+		}
 	}
 	after, err := os.ReadFile(r.ReceiptPath)
 	if err != nil || !bytes.Equal(after, original) {
