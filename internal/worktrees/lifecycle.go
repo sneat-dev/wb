@@ -695,6 +695,7 @@ type CleanupOutcome struct {
 type InterruptedLockRecovery = worktreeclaims.InterruptedLockRecovery
 
 type cleanupReport struct {
+	fileSHA256   string                   // digest of the exact decoded report, never serialized
 	GeneratedAt  time.Time                `json:"generated_at"`
 	Phase        string                   `json:"phase"`
 	Task         string                   `json:"task,omitempty"`

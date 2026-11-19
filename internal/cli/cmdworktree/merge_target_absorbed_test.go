@@ -108,3 +108,16 @@ func TestAcknowledgeTargetAbsorbedReturnsAReceiptLineWriteFailure(t *testing.T) 
 		t.Fatalf("receipt line write failure = %v", err)
 	}
 }
+
+func TestAcknowledgeTargetAbsorbedPassesOnlyTheExplicitWitness(t *testing.T) {
+	t.Parallel()
+	var got orchestrate.WorktreeMergeTargetAbsorbedSweepOptions
+	inv := targetAbsorbedInvocation(nil, nil, nil, &got)
+	_, err := runTargetAbsorbed(inv, "receipt.json", "--candidate-commit-file", "original.commit")
+	if err != nil || got.CandidateCommitFile != "original.commit" || len(got.Receipts) != 1 || got.Receipts[0] != "receipt.json" || got.Apply {
+		t.Fatalf("witness flag: %+v, %v", got, err)
+	}
+	if _, err := runTargetAbsorbed(inv, "receipt.json"); err != nil || got.CandidateCommitFile != "" {
+		t.Fatalf("ordinary acknowledgement inherited a witness: %+v, %v", got, err)
+	}
+}

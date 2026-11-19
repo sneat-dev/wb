@@ -47,20 +47,21 @@ const WorktreeMergeTargetAbsorbedScanActor = "wb merger-lane scan"
 // commit a receipt recorded is an ancestor of its freshly fetched remote
 // target, so the receipt has nothing left to land and no longer owns its lane.
 type WorktreeMergeTargetAbsorbedAcknowledgement struct {
-	SchemaVersion int                 `json:"schema_version"`
-	ID            string              `json:"id"`
-	ReceiptPath   string              `json:"receipt_path"`
-	ReceiptSHA256 string              `json:"receipt_sha256"`
-	ReceiptID     string              `json:"receipt_id"`
-	ReceiptStatus WorktreeMergeStatus `json:"receipt_status"`
-	Lane          string              `json:"lane"`
-	Repository    string              `json:"repository"`
-	Target        string              `json:"target"`
-	TargetSHA     string              `json:"target_sha"`
-	ProvedCommits []string            `json:"proved_commits"`
-	Actor         string              `json:"actor"`
-	Reason        string              `json:"reason"`
-	RecordedAt    time.Time           `json:"recorded_at"`
+	RetiredPrepare *RetiredPrepareTreeProof `json:"retired_prepare,omitempty"`
+	SchemaVersion  int                      `json:"schema_version"`
+	ID             string                   `json:"id"`
+	ReceiptPath    string                   `json:"receipt_path"`
+	ReceiptSHA256  string                   `json:"receipt_sha256"`
+	ReceiptID      string                   `json:"receipt_id"`
+	ReceiptStatus  WorktreeMergeStatus      `json:"receipt_status"`
+	Lane           string                   `json:"lane"`
+	Repository     string                   `json:"repository"`
+	Target         string                   `json:"target"`
+	TargetSHA      string                   `json:"target_sha"`
+	ProvedCommits  []string                 `json:"proved_commits"`
+	Actor          string                   `json:"actor"`
+	Reason         string                   `json:"reason"`
+	RecordedAt     time.Time                `json:"recorded_at"`
 }
 
 // worktreeMergeTargetAbsorptionEligible lists the statuses a proved
@@ -148,6 +149,12 @@ func worktreeMergeTargetAbsorbedAcknowledgementID(ack WorktreeMergeTargetAbsorbe
 		_, _ = hash.Write([]byte(commit))
 		_, _ = hash.Write([]byte{0})
 	}
+	if ack.RetiredPrepare != nil {
+		// The evidence contains only JSON scalar values and ordered slices.
+		data, _ := json.Marshal(ack.RetiredPrepare)
+		_, _ = hash.Write([]byte("retired-prepare-tree-v1\x00"))
+		_, _ = hash.Write(data)
+	}
 	return hex.EncodeToString(hash.Sum(nil))
 }
 
@@ -171,7 +178,10 @@ func readWorktreeMergeTargetAbsorbedAcknowledgement(receipt WorktreeMergeReceipt
 	if err := decoder.Decode(&ack); err != nil {
 		return WorktreeMergeTargetAbsorbedAcknowledgement{}, path, fmt.Errorf("read target-absorbed acknowledgement %s: %w", path, err)
 	}
-	commits, _ := worktreeMergeTargetAbsorptionCommits(receipt)
+	commits := absorptionEvidenceCommits(receipt, ack.RetiredPrepare)
+	if ack.RetiredPrepare != nil && (ack.RetiredPrepare.ReceiptSHA256 != receiptSHA256 || !ack.RetiredPrepare.matches(receipt)) {
+		return ack, path, errors.New("invalid retired prepare tree proof")
+	}
 	if ack.SchemaVersion != worktreeMergeTargetAbsorbedSchemaVersion || ack.ReceiptPath != receipt.ReceiptPath ||
 		ack.ReceiptSHA256 != receiptSHA256 || ack.ReceiptID != receipt.ID || ack.ReceiptStatus != receipt.Status ||
 		ack.Lane != receipt.Lane || ack.Repository != receipt.Repository || ack.Target != receipt.Target ||
@@ -239,6 +249,10 @@ func proveWorktreeMergeTargetAbsorbed(ctx context.Context, run runner.Runner, pr
 // evidence about a different revision; a concurrent writer that published
 // first wins when its acknowledgement proves this exact revision too.
 func recordWorktreeMergeTargetAbsorbed(proved WorktreeMergeReceipt, targetSHA string, commits []string, actor, reason string, now time.Time) (WorktreeMergeTargetAbsorbedAcknowledgement, string, error) {
+	return recordWorktreeMergeAbsorptionEvidence(proved, targetSHA, commits, actor, reason, now, nil)
+}
+
+func recordWorktreeMergeAbsorptionEvidence(proved WorktreeMergeReceipt, targetSHA string, commits []string, actor, reason string, now time.Time, evidence *RetiredPrepareTreeProof) (WorktreeMergeTargetAbsorbedAcknowledgement, string, error) {
 	receiptSHA256, err := worktreeMergeReceiptSHA256(proved.ReceiptPath)
 	if err != nil {
 		return WorktreeMergeTargetAbsorbedAcknowledgement{}, "", err
@@ -251,13 +265,13 @@ func recordWorktreeMergeTargetAbsorbed(proved WorktreeMergeReceipt, targetSHA st
 	// did not change while they were checked against the proof. A receipt
 	// that vanished meanwhile hashes empty and so counts as changed.
 	settledSHA256, _ := worktreeMergeReceiptSHA256(proved.ReceiptPath)
-	currentCommits, _ := worktreeMergeTargetAbsorptionCommits(current)
-	if settledSHA256 != receiptSHA256 || current.Status != proved.Status || current.ID != proved.ID || !slices.Equal(currentCommits, commits) {
+	currentCommits := absorptionEvidenceCommits(current, evidence)
+	if (evidence != nil && evidence.ReceiptSHA256 != receiptSHA256) || settledSHA256 != receiptSHA256 || current.Status != proved.Status || current.ID != proved.ID || !slices.Equal(currentCommits, commits) {
 		return WorktreeMergeTargetAbsorbedAcknowledgement{}, "", fmt.Errorf("receipt %s changed while its target absorption was proved", proved.ReceiptPath)
 	}
 	ack := WorktreeMergeTargetAbsorbedAcknowledgement{
-		SchemaVersion: worktreeMergeTargetAbsorbedSchemaVersion,
-		ReceiptPath:   current.ReceiptPath, ReceiptSHA256: receiptSHA256, ReceiptID: current.ID, ReceiptStatus: current.Status,
+		RetiredPrepare: evidence, SchemaVersion: worktreeMergeTargetAbsorbedSchemaVersion,
+		ReceiptPath: current.ReceiptPath, ReceiptSHA256: receiptSHA256, ReceiptID: current.ID, ReceiptStatus: current.Status,
 		Lane: current.Lane, Repository: current.Repository, Target: current.Target,
 		TargetSHA: targetSHA, ProvedCommits: commits,
 		Actor: actor, Reason: reason, RecordedAt: now.UTC(),
@@ -314,9 +328,10 @@ const (
 // SweepTargetAbsorbedWorktreeMergeReceipts. Empty Receipts sweeps every
 // receipt in the reports directory.
 type WorktreeMergeTargetAbsorbedSweepOptions struct {
-	ProjectsRoot string
-	Receipts     []string
-	Apply        bool
+	CandidateCommitFile string
+	ProjectsRoot        string
+	Receipts            []string
+	Apply               bool
 	// Actor and Reason are required with Apply and recorded on every
 	// acknowledgement the sweep writes.
 	Actor  string
@@ -325,13 +340,14 @@ type WorktreeMergeTargetAbsorbedSweepOptions struct {
 
 // WorktreeMergeTargetAbsorbedSweepResult is one receipt's sweep outcome.
 type WorktreeMergeTargetAbsorbedSweepResult struct {
-	Receipt             string `json:"receipt"`
-	Lane                string `json:"lane"`
-	Status              string `json:"status"`
-	Outcome             string `json:"outcome"`
-	TargetSHA           string `json:"target_sha,omitempty"`
-	AcknowledgementPath string `json:"acknowledgement_path,omitempty"`
-	Detail              string `json:"detail,omitempty"`
+	RetiredPrepare      *RetiredPrepareTreeProof `json:"retired_prepare,omitempty"`
+	Receipt             string                   `json:"receipt"`
+	Lane                string                   `json:"lane"`
+	Status              string                   `json:"status"`
+	Outcome             string                   `json:"outcome"`
+	TargetSHA           string                   `json:"target_sha,omitempty"`
+	AcknowledgementPath string                   `json:"acknowledgement_path,omitempty"`
+	Detail              string                   `json:"detail,omitempty"`
 }
 
 // WorktreeMergeTargetAbsorbedSweep is one sweep's per-receipt outcomes.
@@ -356,6 +372,16 @@ func sweepTargetAbsorbedWorktreeMergeReceipts(ctx context.Context, run runner.Ru
 		return nil, errors.New("--actor and --reason are required with --apply")
 	}
 	options.ProjectsRoot, _ = filepath.Abs(strings.TrimSpace(options.ProjectsRoot))
+	if options.CandidateCommitFile != "" {
+		if len(options.Receipts) != 1 {
+			return nil, errors.New("--candidate-commit-file requires one explicit prepare receipt")
+		}
+		result, err := acknowledgeRetiredPrepareTree(ctx, run, options, now(), githubRead)
+		if err != nil {
+			return nil, err
+		}
+		return []WorktreeMergeTargetAbsorbedSweepResult{result}, nil
+	}
 	paths, err := targetAbsorbedSweepReceiptPaths(options, wbhome.Root)
 	if err != nil {
 		return nil, err
