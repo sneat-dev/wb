@@ -19,7 +19,7 @@ import (
 )
 
 func TestE2ERetiredPrepareTreeProvesTwoIndependentLandings(t *testing.T) {
-	t.Parallel()
+
 	f := newExplicitRootEngineFixture(t)
 	git := func(args ...string) string { return strings.TrimSpace(runEngineGit(t, f.canonical, args...)) }
 	writeEngineGoModule(t, f.canonical, "package app\n")
@@ -127,6 +127,7 @@ func TestE2ERetiredPrepareTreeProvesTwoIndependentLandings(t *testing.T) {
 	writeEngineFile(t, cleanupPaths[0], strings.ReplaceAll(string(clean), landing, first))
 	check("candidate tree differs")
 	writeEngineFile(t, cleanupPaths[0], string(clean))
+	exerciseRetiredPrepareRefusals(t, opt, receipt, fixturePR, raw, cleanupPaths)
 	plain := opt
 	plain.CandidateCommitFile = ""
 	result, err := SweepTargetAbsorbedWorktreeMergeReceipts(t.Context(), plain)
