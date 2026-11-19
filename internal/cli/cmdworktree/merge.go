@@ -1027,6 +1027,7 @@ receipt digest exists. This is a dry-run by default; --apply also requires
 
 func newWorktreeMergeSupersedeValidationFailedCmd(inv *mergeInvocation) *cobra.Command {
 	var apply bool
+	var reviewed []string
 	var actor, reason, format string
 	command := &cobra.Command{
 		Use:   "supersede-validation-failed <merge-receipt> <replacement-worktree>",
@@ -1036,7 +1037,11 @@ one exact clean replacement candidate contains the immutable failed-candidate
 claim base, receipt target, freshly fetched current remote target, and every
 exact clean receipted source. A receipted source may itself be the replacement
 after an ordinary clean strict-descendant repair; the replacement identity then
-binds its observed head while preserving the original source SHA. The failed candidate itself need not be an
+binds its observed head while preserving the original source SHA. For an unpublished
+failed validation with multiple advanced sources, pin every reviewed branch and
+full head with --reviewed-source branch=sha. The target must still match the
+receipt and the replacement must be a pinned descendant containing all heads.
+Run a fresh merge prepare with --validate-locally before landing. The failed candidate itself need not be an
 ancestor. When an unpublished conflict candidate has advanced to a clean strict
 descendant, the acknowledgement also binds that observed commit and the
 replacement must contain both candidate revisions. For the legacy unpublished
@@ -1060,7 +1065,7 @@ refuses closed.`,
 			}
 			defer releaseAdmission()
 			ack, err := inv.operations.SupersedeValidationFailedWorktreeMerge(command.Context(), orchestrate.WorktreeMergeValidationFailureSupersessionOptions{
-				ProjectsRoot: inv.runtime.Flags().ProjectsRoot, Receipt: args[0], ReplacementWorktree: args[1], Apply: apply, Actor: actor, Reason: reason,
+				ProjectsRoot: inv.runtime.Flags().ProjectsRoot, Receipt: args[0], ReplacementWorktree: args[1], ReviewedSources: reviewed, Apply: apply, Actor: actor, Reason: reason,
 			})
 			if err != nil {
 				return err
@@ -1078,6 +1083,7 @@ refuses closed.`,
 			return err
 		},
 	}
+	command.Flags().StringArrayVar(&reviewed, "reviewed-source", nil, "pin every reviewed source as branch=full-SHA for an unpublished multi-source validation repair (repeatable)")
 	command.Flags().BoolVar(&apply, "apply", false, "write the separate audited supersession acknowledgement artifact")
 	command.Flags().StringVar(&actor, "actor", "", "required with --apply: trusted operator or agent identity")
 	command.Flags().StringVar(&reason, "reason", "", "required with --apply: bounded audited supersession reason")
