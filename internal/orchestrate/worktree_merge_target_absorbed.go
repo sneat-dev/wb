@@ -150,7 +150,7 @@ func worktreeMergeTargetAbsorbedAcknowledgementID(ack WorktreeMergeTargetAbsorbe
 		_, _ = hash.Write([]byte{0})
 	}
 	if ack.RetiredPrepare != nil {
-		// This struct consists only of strings and slices of strings.
+		// The evidence contains only JSON scalar values and ordered slices.
 		data, _ := json.Marshal(ack.RetiredPrepare)
 		_, _ = hash.Write([]byte("retired-prepare-tree-v1\x00"))
 		_, _ = hash.Write(data)
@@ -178,7 +178,7 @@ func readWorktreeMergeTargetAbsorbedAcknowledgement(receipt WorktreeMergeReceipt
 	if err := decoder.Decode(&ack); err != nil {
 		return WorktreeMergeTargetAbsorbedAcknowledgement{}, path, fmt.Errorf("read target-absorbed acknowledgement %s: %w", path, err)
 	}
-	commits, _ := worktreeMergeTargetAbsorptionCommits(receipt)
+	commits := absorptionEvidenceCommits(receipt, ack.RetiredPrepare)
 	if ack.RetiredPrepare != nil && (ack.RetiredPrepare.ReceiptSHA256 != receiptSHA256 || !ack.RetiredPrepare.matches(receipt)) {
 		return ack, path, errors.New("invalid retired prepare tree proof")
 	}
@@ -265,7 +265,7 @@ func recordWorktreeMergeAbsorptionEvidence(proved WorktreeMergeReceipt, targetSH
 	// did not change while they were checked against the proof. A receipt
 	// that vanished meanwhile hashes empty and so counts as changed.
 	settledSHA256, _ := worktreeMergeReceiptSHA256(proved.ReceiptPath)
-	currentCommits, _ := worktreeMergeTargetAbsorptionCommits(current)
+	currentCommits := absorptionEvidenceCommits(current, evidence)
 	if (evidence != nil && evidence.ReceiptSHA256 != receiptSHA256) || settledSHA256 != receiptSHA256 || current.Status != proved.Status || current.ID != proved.ID || !slices.Equal(currentCommits, commits) {
 		return WorktreeMergeTargetAbsorbedAcknowledgement{}, "", fmt.Errorf("receipt %s changed while its target absorption was proved", proved.ReceiptPath)
 	}

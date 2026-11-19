@@ -2,12 +2,10 @@ package orchestrate
 
 import (
 	"context"
-	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -67,15 +65,8 @@ func (p *RetiredPrepareTreeProof) matches(r WorktreeMergeReceipt) bool {
 	return true
 }
 
-// Git's commit object ID includes the object header and the exact raw body.
-// This check never writes the reconstructed object to any repository.
-func authenticatedPrepareTree(raw []byte, r WorktreeMergeReceipt) (string, error) {
-	h := sha1.New()
-	_, _ = fmt.Fprintf(h, "commit %d%c", len(raw), 0)
-	_, _ = h.Write(raw)
-	if hex.EncodeToString(h.Sum(nil)) != r.Candidate.SHA {
-		return "", errors.New("commit body does not match original candidate SHA")
-	}
+// The native object hash is checked before these headers are trusted.
+func originalPrepareTree(raw []byte, r WorktreeMergeReceipt) (string, error) {
 	header, _, ok := strings.Cut(string(raw), "\n\n")
 	lines := strings.Split(header, "\n")
 	if !ok || len(lines) != 5 || !strings.HasPrefix(lines[0], "tree ") || !strings.HasPrefix(lines[3], "author ") || !strings.HasPrefix(lines[4], "committer ") || lines[1] != "parent "+r.Sources[0].SHA || lines[2] != "parent "+r.Sources[1].SHA {
@@ -117,7 +108,7 @@ func acknowledgeRetiredPrepareTree(ctx context.Context, run runner.Runner, o Wor
 	if err != nil {
 		return result, err
 	}
-	tree, err := authenticatedPrepareTree(raw, r)
+	tree, err := originalPrepareTree(raw, r)
 	if err != nil {
 		return result, err
 	}
@@ -129,10 +120,16 @@ func acknowledgeRetiredPrepareTree(ctx context.Context, run runner.Runner, o Wor
 	if err != nil {
 		return result, err
 	}
-	if err := verifyRetiredPrepareMergeTree(ctx, run, canonical, r.Sources, tree); err != nil {
+	scratch, err := os.MkdirTemp("", "wb-retired-prepare-")
+	if err != nil {
 		return result, err
 	}
-	proof, err := collectRetiredPrepareProof(ctx, run, o.ProjectsRoot, canonical, r, digest, tree, target, readPR)
+	defer func() { _ = os.RemoveAll(scratch) }()
+	objects := filepath.Join(scratch, "objects.git")
+	if err := verifyRetiredPrepareMergeTree(ctx, run, canonical, objects, raw, r, tree); err != nil {
+		return result, err
+	}
+	proof, err := collectRetiredPrepareProof(ctx, run, o.ProjectsRoot, canonical, objects, r, digest, tree, target, readPR)
 	if err != nil {
 		return result, err
 	}
@@ -150,28 +147,34 @@ func acknowledgeRetiredPrepareTree(ctx context.Context, run runner.Runner, o Wor
 	if !o.Apply {
 		return result, nil
 	}
-	current, err := fetchExactMergeTargetWithRunner(ctx, run, canonical, r.Target)
-	if err != nil || current != target {
-		return result, fmt.Errorf("target moved during historical proof: %v", err)
-	}
-	final, err := collectRetiredPrepareProof(ctx, run, o.ProjectsRoot, canonical, r, digest, tree, current, readPR)
+	final, err := collectRetiredPrepareProof(ctx, run, o.ProjectsRoot, canonical, objects, r, digest, tree, target, readPR)
 	if err != nil {
 		return result, err
 	}
 	if !reflect.DeepEqual(final, proof) {
 		return result, errors.New("terminal evidence changed during proof")
 	}
-	commits, _ := worktreeMergeTargetAbsorptionCommits(r)
-	_, ackPath, err := recordWorktreeMergeAbsorptionEvidence(r, target, commits, o.Actor, o.Reason, now, proof)
+	current, err := fetchExactMergeTargetWithRunner(ctx, run, canonical, r.Target)
 	if err != nil {
 		return result, err
+	}
+	if current != target {
+		return result, errors.New("target moved during historical proof")
+	}
+	commits := absorptionEvidenceCommits(r, proof)
+	recorded, ackPath, err := recordWorktreeMergeAbsorptionEvidence(r, target, commits, o.Actor, o.Reason, now, proof)
+	if err != nil {
+		return result, err
+	}
+	if !reflect.DeepEqual(recorded.RetiredPrepare, proof) {
+		return result, errors.New("different historical absorption already recorded")
 	}
 	result.Outcome = WorktreeMergeTargetAbsorbedReleased
 	result.AcknowledgementPath = ackPath
 	return result, nil
 }
 
-func collectRetiredPrepareProof(ctx context.Context, run runner.Runner, root, canonical string, r WorktreeMergeReceipt, digest, tree, target string, readPR func(context.Context, string, ...string) (string, error)) (*RetiredPrepareTreeProof, error) {
+func collectRetiredPrepareProof(ctx context.Context, run runner.Runner, root, canonical, objects string, r WorktreeMergeReceipt, digest, tree, target string, readPR func(context.Context, string, ...string) (string, error)) (*RetiredPrepareTreeProof, error) {
 	proof := &RetiredPrepareTreeProof{ReceiptSHA256: digest, Candidate: r.Candidate.SHA, Tree: tree}
 	members := append([]WorktreeMergeSource{{Task: r.Candidate.Task, Branch: r.Candidate.Branch, Worktree: r.Candidate.Worktree, SHA: r.Candidate.SHA}}, r.Sources...)
 	for i, m := range members {
@@ -185,11 +188,7 @@ func collectRetiredPrepareProof(ctx context.Context, run runner.Runner, root, ca
 		if err != nil {
 			return nil, err
 		}
-		digest, err := worktreeMergeReceiptSHA256(cleanup.ReportPath)
-		if err != nil {
-			return nil, err
-		}
-		proof.CleanupDigests = append(proof.CleanupDigests, digest)
+		proof.CleanupDigests = append(proof.CleanupDigests, cleanup.ReportSHA256)
 		c := cleanup.Result
 		if i == 0 {
 			if err := requireCandidateWithoutPullRequest(ctx, canonical, r, readPR); err != nil {
@@ -199,9 +198,12 @@ func collectRetiredPrepareProof(ctx context.Context, run runner.Runner, root, ca
 				return nil, errors.New("candidate cleanup does not identify an exact absorbed landing")
 			}
 			proof.Landing = c.AbsorbedBySHA
-			landedTree, err := mergeTreeRevision(ctx, run, canonical, proof.Landing)
-			if err != nil || landedTree != tree {
-				return nil, fmt.Errorf("candidate tree differs from observed landing: %v", err)
+			landedTree, _, err := runCommand(ctx, run, 0, 0, objects, "git", "--no-replace-objects", "rev-parse", "--verify", proof.Landing+"^{tree}")
+			if err != nil {
+				return nil, err
+			}
+			if strings.TrimSpace(landedTree) != tree {
+				return nil, errors.New("candidate tree differs from observed landing")
 			}
 			continue
 		}
@@ -225,40 +227,28 @@ func collectRetiredPrepareProof(ctx context.Context, run runner.Runner, root, ca
 		}
 		proof.SourcePRs = append(proof.SourcePRs, pr.Number)
 		for _, pair := range [][2]string{{m.SHA, pr.HeadSHA}, {pr.HeadSHA, pr.MergeSHA}, {pr.MergeSHA, proof.Landing}} {
-			if err := requireGitAncestor(ctx, run, canonical, pair[0], pair[1]); err != nil {
+			if err := requireRetiredPrepareAncestor(ctx, run, objects, pair[0], pair[1]); err != nil {
 				return nil, err
 			}
 		}
 		proof.SourceHeads = append(proof.SourceHeads, pr.HeadSHA)
 		proof.SourceLandings = append(proof.SourceLandings, pr.MergeSHA)
 	}
-	if err := requireGitAncestor(ctx, run, canonical, r.TargetSHA, r.Sources[0].SHA); err != nil {
+	if err := requireRetiredPrepareAncestor(ctx, run, objects, r.TargetSHA, r.Sources[0].SHA); err != nil {
 		return nil, err
 	}
-	if err := requireGitAncestor(ctx, run, canonical, proof.Landing, target); err != nil {
+	if err := requireRetiredPrepareAncestor(ctx, run, objects, proof.Landing, target); err != nil {
 		return nil, err
+	}
+	tip, err := readPR(ctx, canonical, "api", "repos/"+r.Repository+"/git/ref/heads/"+r.Target, "--jq", ".object.sha")
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(tip) != target {
+		return nil, errors.New("repository target differs from fetched origin")
 	}
 	if !proof.matches(r) {
 		return nil, errors.New("incomplete retired prepare proof")
 	}
 	return proof, nil
-}
-
-// merge-tree may materialize tree or conflict objects. Use a disposable
-// local clone so even a refused proof cannot write them into the canonical repository.
-func verifyRetiredPrepareMergeTree(ctx context.Context, run runner.Runner, canonical string, sources []WorktreeMergeSource, expected string) error {
-	scratch, err := os.MkdirTemp("", "wb-retired-prepare-")
-	if err != nil {
-		return err
-	}
-	defer func() { _ = os.RemoveAll(scratch) }()
-	repo := filepath.Join(scratch, "objects.git")
-	if _, _, err := runCommand(ctx, run, 0, 0, scratch, "git", "clone", "--bare", "--shared", "--", canonical, repo); err != nil {
-		return err
-	}
-	tree, _, err := runCommand(ctx, run, 0, 0, repo, "git", "--no-replace-objects", "merge-tree", "--write-tree", sources[0].SHA, sources[1].SHA)
-	if err != nil || strings.TrimSpace(tree) != expected {
-		return fmt.Errorf("candidate is not the clean merge of the original source trees: %v", err)
-	}
-	return nil
 }

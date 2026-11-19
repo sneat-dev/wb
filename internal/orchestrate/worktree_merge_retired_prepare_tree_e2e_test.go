@@ -9,10 +9,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -78,7 +80,11 @@ func TestE2ERetiredPrepareTreeProvesTwoIndependentLandings(t *testing.T) {
 		cleanupPaths = append(cleanupPaths, path)
 	}
 	opt := WorktreeMergeTargetAbsorbedSweepOptions{ProjectsRoot: f.githubDir, Receipts: []string{receipt.ReceiptPath}, CandidateCommitFile: file, Actor: "fixture", Reason: "reviewed independent landings"}
+	remoteTip := landing
 	fixturePR := func(_ context.Context, _ string, args ...string) (string, error) {
+		if args[0] == "api" {
+			return remoteTip, nil
+		}
 		if args[1] == "list" {
 			return "[]", nil
 		}
@@ -90,12 +96,12 @@ func TestE2ERetiredPrepareTreeProvesTwoIndependentLandings(t *testing.T) {
 		}
 		return fmt.Sprintf(`{"state":"MERGED","mergedAt":"2026-01-01T00:00:00Z","baseRefName":"main","headRefName":%q,"headRefOid":%q,"mergeCommit":{"oid":%q}}`, receipt.Sources[idx].Branch, head, merged), nil
 	}
+	ctx := githubobserver.WithReader(t.Context(), githubobserver.Reader{Read: func(ctx context.Context, dir string, args ...string) ([]byte, error) {
+		output, err := fixturePR(ctx, dir, args...)
+		return []byte(output), err
+	}})
 	sweep := func(o WorktreeMergeTargetAbsorbedSweepOptions) (WorktreeMergeTargetAbsorbedSweep, error) {
-		if o.CandidateCommitFile == "" {
-			return SweepTargetAbsorbedWorktreeMergeReceipts(t.Context(), o)
-		}
-		result, err := acknowledgeRetiredPrepareTree(t.Context(), defaultRunner, o, time.Now(), fixturePR)
-		return WorktreeMergeTargetAbsorbedSweep{Results: []WorktreeMergeTargetAbsorbedSweepResult{result}}, err
+		return SweepTargetAbsorbedWorktreeMergeReceipts(ctx, o)
 	}
 	check := func(refusal string) {
 		t.Helper()
@@ -104,6 +110,9 @@ func TestE2ERetiredPrepareTreeProvesTwoIndependentLandings(t *testing.T) {
 			t.Fatalf("want %q; got %v", refusal, e)
 		}
 	}
+	remoteTip = first
+	check("repository target differs")
+	remoteTip = landing
 	writeEngineFile(t, file, raw+"extra")
 	check("commit body")
 	writeEngineFile(t, file, raw)
@@ -135,6 +144,10 @@ func TestE2ERetiredPrepareTreeProvesTwoIndependentLandings(t *testing.T) {
 	result, err = sweep(opt)
 	if err != nil || result.Results[0].Outcome != WorktreeMergeTargetAbsorbedReleased {
 		t.Fatalf("apply: %+v %v", result, err)
+	}
+	ack, _, err := readWorktreeMergeTargetAbsorbedAcknowledgement(receipt)
+	if err != nil || slices.Contains(ack.ProvedCommits, receipt.Candidate.SHA) || !slices.Contains(ack.ProvedCommits, landing) || ack.RetiredPrepare.Candidate != receipt.Candidate.SHA {
+		t.Fatalf("wrong recorded ancestry: %+v, %v", ack, err)
 	}
 	result, err = sweep(opt)
 	if err != nil || result.Results[0].Outcome != WorktreeMergeTargetAbsorbedAlreadyReleased {

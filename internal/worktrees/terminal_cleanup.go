@@ -2,6 +2,7 @@ package worktrees
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,6 +38,7 @@ func readCleanupReportFile(path string) (cleanupReport, error) {
 	if err := requireJSONEOF(decoder); err != nil {
 		return cleanupReport{}, fmt.Errorf("decode terminal cleanup report %s: %w", path, err)
 	}
+	report.fileSHA256 = fmt.Sprintf("%x", sha256.Sum256(contents))
 	return report, nil
 }
 
@@ -45,9 +47,10 @@ func readCleanupReportFile(path string) (cleanupReport, error) {
 // current remote target; this proves only the local identity and terminal WB
 // lifecycle transition recorded before the checkout disappeared.
 type TerminalCleanupProof struct {
-	ReportPath  string
-	GeneratedAt time.Time
-	Result      CleanupResult
+	ReportPath   string
+	ReportSHA256 string
+	GeneratedAt  time.Time
+	Result       CleanupResult
 }
 
 // FindTerminalCleanupProof searches WB's recognized private report layouts for
@@ -132,7 +135,7 @@ func findTerminalCleanupProofWithReadDir(projectsRoot, repository, target, task,
 			if result.Base != target || result.HeadSHA == "" || filepath.Clean(result.CanonicalDir) != filepath.Clean(canonical) {
 				continue
 			}
-			matches = append(matches, TerminalCleanupProof{ReportPath: path, GeneratedAt: report.GeneratedAt, Result: result})
+			matches = append(matches, TerminalCleanupProof{ReportPath: path, ReportSHA256: report.fileSHA256, GeneratedAt: report.GeneratedAt, Result: result})
 		}
 	}
 	if len(matches) == 0 {

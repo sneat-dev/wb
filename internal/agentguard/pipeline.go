@@ -112,9 +112,8 @@ func MaskedPipelineVerbPaths() [][]string {
 // cmd/wb walks the real command tree and fails when a watched verb has a
 // value-taking flag that is missing here.
 var valueFlags = setOf(
-	"--candidate-commit-file",
 	"--absorbed-by", "--actor", "--add", "--agent", "--agent-id", "--agent-runtime", "--approved-by",
-	"--base", "--body", "--body-file", "--branch", "--branch-prefix", "--changed", "--check-interval",
+	"--base", "--body", "--body-file", "--branch", "--branch-prefix", "--candidate-commit-file", "--changed", "--check-interval",
 	"--check-timeout", "--checks", "--claim", "--closed-pr", "--cli", "--closes", "--config", "--context-file",
 	"--defer-direct-ci-pr", "--derived-path", "--description", "--disposition", "--effort", "--exclude",
 	"--expected-candidate", "--expected-current-source", "--expected-current-target",

@@ -76,7 +76,19 @@ its retired PR head and landing. The landings must be reachable from the
 candidate's cleanup landing and the freshly fetched target. WB checks the
 terminal cleanup records and absence of all three worktrees and branches.
 A dry run reports the proof. Applying it records an immutable acknowledgement
-for the original receipt and preserves the recorded source and landing IDs.
+for the original receipt. Its `proved_commits` list contains the verified
+ancestors. The separate `retired_prepare` field records the authenticated
+candidate, its tree, the exact cleanup report digests and the merged PRs.
+
+This recovery accepts unsigned Git merge commits with exactly the two recorded
+parents and ordinary author and committer headers. Both PRs must retain their
+original commits. Squashed or rebased histories that lost those commits cannot
+qualify. The terminal candidate cleanup must attest content absorption at its
+then-current target tip. A different landing tree, an irreproducible clean merge
+or a target that moves during application requires a new proof. Local cleanup
+reports and acknowledgement files have the same filesystem trust boundary as
+other WB receipts. Git's object checks and GitHub's branch and PR reads
+independently verify the history.
 
 ### Command surface
 
