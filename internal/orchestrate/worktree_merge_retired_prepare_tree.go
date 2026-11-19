@@ -213,6 +213,19 @@ func collectRetiredPrepareProof(ctx context.Context, run runner.Runner, root, ca
 			if err != nil {
 				return nil, err
 			}
+			base, err := worktrees.ReadDiscardedTerminalWorkLogClaimBase(root, worktrees.TerminalWorkLogExpectation{
+				Task: m.Task, Worktree: m.Worktree, Branch: m.Branch, Base: r.Target, Repository: r.Repository, FinalCommit: m.SHA,
+			})
+			if err != nil || base != r.TargetSHA {
+				return nil, errors.New("candidate lacks its original sealed work log at the recorded target")
+			}
+			common, _, err := runCommand(ctx, run, 0, 0, objects, "git", "--no-replace-objects", "merge-base", r.Candidate.SHA, target)
+			if err != nil {
+				return nil, err
+			}
+			if strings.TrimSpace(common) == r.Candidate.SHA {
+				return nil, errors.New("candidate already reached target; use ordinary target absorption")
+			}
 			proof.CleanupDigests = append(proof.CleanupDigests, discard.FileSHA256)
 			continue
 		}

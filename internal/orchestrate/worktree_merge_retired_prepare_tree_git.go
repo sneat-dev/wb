@@ -34,7 +34,7 @@ func verifyRetiredPrepareMergeTree(ctx context.Context, run runner.Runner, canon
 	if _, _, err := runCommand(ctx, run, 0, 0, canonical, "git", "clone", "--bare", "--shared", "--", canonical, objects); err != nil {
 		return err
 	}
-	hash, err := run.RunWithInput(ctx, objects, raw, "git", "--no-replace-objects", "hash-object", "-t", "commit", "--stdin")
+	hash, err := run.RunWithInput(ctx, objects, raw, "git", "--no-replace-objects", "hash-object", "-w", "-t", "commit", "--stdin")
 	if err != nil {
 		return err
 	}
