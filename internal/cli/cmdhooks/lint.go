@@ -9,7 +9,7 @@ import (
 // templates exec at pre-commit and pre-push. Like push-tier it is a hidden,
 // git-hook-adjacent helper whose exit code is the hook's verdict.
 func (family commands) newHooksLintCmd() *cobra.Command {
-	var hook, language string
+	var hook, language, indexFile string
 	cmd := &cobra.Command{
 		Use:    "lint",
 		Short:  "Run the built-in profile's lint for one Git hook",
@@ -20,6 +20,7 @@ func (family commands) newHooksLintCmd() *cobra.Command {
 				Hook: hook, Language: language,
 				ProjectsRoot: family.runtime.Flags().ProjectsRoot,
 				WBExecutable: family.git.Executable(),
+				IndexFile:    indexFile,
 				Stdin:        cmd.InOrStdin(), Stdout: cmd.OutOrStdout(), Stderr: cmd.ErrOrStderr(),
 			}))
 			return nil
@@ -27,5 +28,9 @@ func (family commands) newHooksLintCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&hook, "hook", "", "the Git hook being run: pre-commit or pre-push")
 	cmd.Flags().StringVar(&language, "language", "", "the profile to lint: go or node")
+	// An explicit flag rather than WB_GIT_INDEX_FILE from the environment: a
+	// `wb hooks lint` started inside another repository's hook (a test suite,
+	// a custom block) must never read that outer commit's index. (wb#993)
+	cmd.Flags().StringVar(&indexFile, "index-file", "", "pre-commit: the index the commit is staged in (the hook's WB_GIT_INDEX_FILE); empty reads the default index")
 	return cmd
 }

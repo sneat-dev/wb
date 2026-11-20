@@ -93,7 +93,9 @@ func TestBuiltInCommitHooksAreScopedAndRunNoTests(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s has no built-in template", name)
 		}
-		if !strings.Contains(template, "git diff --cached --name-only") {
+		// wb_staged_diff is `git diff --cached` against the commit's own index
+		// (stagedDiffShell, wb#993).
+		if !strings.Contains(template, stagedDiffShell) || !strings.Contains(template, "wb_staged_diff --name-only") {
 			t.Errorf("%s is not scoped to the files changed in this commit:\n%s", name, template)
 		}
 		for _, forbidden := range []string{"go test", "run test", "npm test", "pnpm test", "yarn test"} {

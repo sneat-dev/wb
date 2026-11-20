@@ -27,11 +27,12 @@ func actAsWBForHookTemplates(args []string) (int, bool) {
 		flags.SetOutput(io.Discard)
 		hook := flags.String("hook", "", "")
 		language := flags.String("language", "", "")
+		indexFile := flags.String("index-file", "", "")
 		if err := flags.Parse(args[2:]); err != nil {
 			return 2, true
 		}
 		executable, _ := os.Executable()
-		return Lint(LintOptions{Hook: *hook, Language: *language, ProjectsRoot: projectsRoot, WBExecutable: executable}), true
+		return Lint(LintOptions{Hook: *hook, Language: *language, ProjectsRoot: projectsRoot, WBExecutable: executable, IndexFile: *indexFile}), true
 	case len(args) >= 6 && args[0] == "run" && args[1] == "--quiet" && args[2] == "--timeout" && args[4] == "--":
 		command := args[5:]
 		if len(command) >= 2 && command[0] == "go" && command[1] == "install" {

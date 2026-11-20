@@ -37,3 +37,27 @@ func TestHooksLintPassesTheHookAndLanguageAndExitsWithTheVerdict(t *testing.T) {
 		t.Fatalf("stdin %q", input)
 	}
 }
+
+// The built-in pre-commit template passes the commit's index as --index-file
+// (wb#993); the command hands it to the lint and never reads it from the
+// environment, where an outer hook's value could be inherited.
+func TestHooksLintHandsTheCommitsIndexFileToTheLint(t *testing.T) {
+	t.Parallel()
+	f := fakeCommands()
+	var got hooks.LintOptions
+	f.git.Lint = func(options hooks.LintOptions) int {
+		got = options
+		return 0
+	}
+	f.git.Exit = func(int) {}
+	cmd := New(f.runtime, f.git, f.life, f.agent)
+	cmd.SetArgs([]string{"lint", "--hook", "pre-commit", "--language", "go", "--index-file", "/repo/.git/index.lock"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if got.IndexFile != "/repo/.git/index.lock" {
+		t.Fatalf("IndexFile = %q", got.IndexFile)
+	}
+}
