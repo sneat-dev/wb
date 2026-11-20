@@ -40,6 +40,9 @@ type LintOptions struct {
 	Stdout       io.Writer
 	Stderr       io.Writer
 	Tools        LintTools
+	// IndexFile is the index the commit is staged in (WB_GIT_INDEX_FILE),
+	// read by the pre-commit staged-file listing; "" reads the default index.
+	IndexFile string
 }
 
 // LintTools are the process seams `wb hooks lint` uses. Zero fields take
@@ -605,7 +608,13 @@ func (r lintRunner) runGolangci(linter string, pin golangciPin, module, dir stri
 // changed lines. It uses an already-built pinned linter only: building one
 // is a pre-push job, never a commit's.
 func (r lintRunner) preCommitGo() int {
-	out, err := r.git("diff", "--cached", "--name-only", "--diff-filter=ACMR", "-z", "--", "*.go")
+	var env []string
+	if r.options.IndexFile != "" {
+		// `git commit -a` / `git commit <paths>` stage the commit in a
+		// temporary index; the default one does not hold it yet. (wb#993)
+		env = []string{"GIT_INDEX_FILE=" + r.options.IndexFile}
+	}
+	out, err := r.options.Tools.Capture(r.options.RepoRoot, env, "git", "diff", "--cached", "--name-only", "--diff-filter=ACMR", "-z", "--", "*.go")
 	if err != nil {
 		r.say("WB hook: could not list the staged Go files (%v); skipping golangci-lint for this commit.", err)
 		return 0
