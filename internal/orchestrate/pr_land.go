@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -1599,8 +1600,31 @@ func pullRequestChangedFiles(ctx context.Context, repository, number string) ([]
 			files = append(files, file)
 		}
 	}
+	for index := range files {
+		files[index].Content = headManifestContent(ctx, files[index])
+	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Filename < files[j].Filename })
 	return files, nil
+}
+
+// githubAPIPrefix is the host part of a `contents_url` the REST API returns.
+const githubAPIPrefix = "https://api.github.com/"
+
+// headManifestContent reads a `package.json` at the pull request head so the
+// classifier can place a hunk whose own lines and header do not name the JSON
+// section it sits in. Any failure returns "": the classifier then refuses the
+// unplaceable hunk, which is the behaviour without the content, so a failed
+// read can never make a change look mechanical.
+func headManifestContent(ctx context.Context, file mechanicalchange.ChangedFile) string {
+	if path.Base(file.Filename) != "package.json" || !strings.HasPrefix(file.ContentsURL, githubAPIPrefix) {
+		return ""
+	}
+	response := githubExecute(ctx, "", "api", "-H", "Accept: application/vnd.github.raw",
+		strings.TrimPrefix(file.ContentsURL, githubAPIPrefix))
+	if response.Err != nil {
+		return ""
+	}
+	return string(response.Stdout)
 }
 
 type mergeResponse struct {

@@ -60,9 +60,73 @@ func TestOrchCovNonMechanicalWorkspaceRefusesGraphRewritingKeys(t *testing.T) {
 	if clean != "" {
 		t.Fatalf("clean workspace reason = %q", clean)
 	}
-	reason := nonMechanicalWorkspace("pnpm-workspace.yaml", "@@ -1 +1 @@\n overrides:\n-  semver: 7.5.0\n+  semver: 7.6.0\n")
-	if !strings.Contains(reason, "overrides") || !strings.Contains(reason, "rewrites what the workspace resolves") {
-		t.Fatalf("overrides reason = %q", reason)
+	reason := nonMechanicalWorkspace("pnpm-workspace.yaml", "@@ -1 +1 @@ packageExtensions:\n-  semver: 7.5.0\n+  semver: 7.6.0\n")
+	if !strings.Contains(reason, "packageExtensions") || !strings.Contains(reason, "rewrites what the workspace resolves") {
+		t.Fatalf("packageExtensions reason = %q", reason)
+	}
+}
+
+func TestWorkspaceVersionPinsAreDependencySectionsAndNothingElseIs(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name  string
+		patch string
+		want  string
+	}{
+		{name: "overrides pin named in the hunk header", patch: "@@ -13,3 +13,3 @@ overrides:\n-  '@sneat/api': 0.27.52\n+  '@sneat/api': 0.27.53\n"},
+		{name: "overrides pin with unquoted and quoted values", patch: "@@ -1 +1 @@ overrides:\n-  semver: \"7.5.0\"\n+  semver: '7.6.0'\n"},
+		{name: "an unchanged context line under overrides is not judged", patch: "@@ -1 +1 @@ overrides:\n   a: node x\n+  b: 2.0.0\n"},
+		{name: "catalog pin", patch: "@@ -1 +1 @@\n catalog:\n-  react: ^18.0.0\n+  react: ^18.3.0\n"},
+		{name: "catalogs group and pin", patch: "@@ -1 +1 @@\n catalogs:\n+  react17:\n+    react: 17.0.2\n"},
+		{name: "comments and blank lines are ignored", patch: "@@ -1 +1 @@ overrides:\n \n-  # old\n+  # new\n"},
+		{name: "a change outside the graph keys is not judged here", patch: "@@ -1 +1 @@\n packages:\n-  - apps/*\n+  - libs/*\n"},
+		{name: "a script value under overrides", patch: "@@ -1 +1 @@ overrides:\n+  semver: node evil.js\n", want: "inside overrides"},
+		{name: "a line under overrides that is not a property", patch: "@@ -1 +1 @@ overrides:\n+  - semver\n", want: "inside overrides"},
+		{name: "a bare name under catalog", patch: "@@ -1 +1 @@ catalog:\n+  react:\n", want: "inside catalog"},
+		{name: "an inline overrides value", patch: "@@ -1 +1 @@\n-overrides: {}\n+overrides: {a: 1}\n", want: "inline"},
+		{name: "a graph-rewriting top level key", patch: "@@ -1 +1 @@\n+patchedDependencies:\n", want: "patchedDependencies"},
+		{name: "a context-only graph-looking line under an unknown top", patch: "@@ -1 +1 @@\n   peerDependencyRules:\n+    a: 1\n"},
+		{name: "a graph key entered through the hunk header", patch: "@@ -1 +1 @@ peerDependencyRules:\n+  ignoreMissing: x\n", want: "peerDependencyRules"},
+		{name: "a header that is not a property", patch: "@@ -1 +1 @@ - item\n+  semver: 7.6.0\n"},
+		{name: "a header without a closing marker", patch: "@@ -1 +1\n+  semver: 7.6.0\n"},
+		{name: "a quoted key that never closes", patch: "@@ -1 +1 @@ overrides:\n+  'semver: 7.6.0\n", want: "inside overrides"},
+		{name: "a quoted key without a colon", patch: "@@ -1 +1 @@ overrides:\n+  'semver' 7.6.0\n", want: "inside overrides"},
+		{name: "a line starting with a colon", patch: "@@ -1 +1 @@ overrides:\n+  : 7.6.0\n", want: "inside overrides"},
+		{name: "file headers are skipped", patch: "--- a/x\n+++ b/x\n@@ -1 +1 @@ overrides:\n-  semver: 7.5.0\n+  semver: 7.6.0\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			reason := nonMechanicalWorkspace("pnpm-workspace.yaml", test.patch)
+			if test.want == "" {
+				if reason != "" {
+					t.Fatalf("reason = %q, want none", reason)
+				}
+				return
+			}
+			if !strings.Contains(reason, test.want) {
+				t.Fatalf("reason = %q, want it to contain %q", reason, test.want)
+			}
+		})
+	}
+}
+
+func TestHunkNewStartReadsTheNewSideLineNumber(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		header string
+		want   int
+		ok     bool
+	}{
+		{"@@ -19,7 +21,7 @@", 21, true},
+		{"@@ -19 +21 @@ x", 21, true},
+		{"@@ -19,7 @@", 0, false},
+		{"@@ -19,7 +x,7 @@", 0, false},
+		{"@@ -19,7 +0,0 @@", 0, false},
+	} {
+		got, ok := hunkNewStart(test.header)
+		if got != test.want || ok != test.ok {
+			t.Fatalf("hunkNewStart(%q) = %d,%t want %d,%t", test.header, got, ok, test.want, test.ok)
+		}
 	}
 }
 
@@ -80,7 +144,9 @@ func TestOrchCovNonMechanicalContentReasonsAboutAPackageManifest(t *testing.T) {
 		name  string
 		file  string
 		patch string
-		want  string
+		// content is the head file, when the case supplies one.
+		content string
+		want    string
 	}{
 		{
 			name:  "dependency bump",
@@ -105,14 +171,45 @@ func TestOrchCovNonMechanicalContentReasonsAboutAPackageManifest(t *testing.T) {
 			want:  "rewrites what the resolver produces",
 		},
 		{
-			name:  "graph rewriting section",
+			name:  "overrides is a dependency pin section",
 			patch: "@@ -1,3 +1,3 @@   \"overrides\": {\n-  \"semver\": \"7.5.0\"\n+  \"semver\": \"7.6.0\"\n",
+		},
+		{
+			name:  "a nested override object is a decision",
+			patch: "@@ -1,3 +1,3 @@   \"overrides\": {\n   \"semver\": {\n-    \"x\": \"7.5.0\"\n+    \"x\": \"7.6.0\"\n",
+			want:  "inside semver",
+		},
+		{
+			name:  "graph rewriting section",
+			patch: "@@ -1,3 +1,3 @@   \"packageExtensions\": {\n-  \"semver\": \"7.5.0\"\n+  \"semver\": \"7.6.0\"\n",
 			want:  "rewrites what the resolver produces",
+		},
+		{
+			name:    "head content places a hunk with an unreadable header",
+			patch:   "@@ -4,3 +4,3 @@\n-    \"c\": \"1.0.0\",\n+    \"c\": \"1.0.1\",\n",
+			content: "{\n  \"dependencies\": {\n    \"a\": \"1\",\n    \"c\": \"1.0.1\",\n  }\n}\n",
+		},
+		{
+			name:    "head content places a hunk inside engines",
+			patch:   "@@ -4,3 +4,3 @@\n-    \"node\": \"20.0.0\",\n+    \"node\": \"22.0.0\",\n",
+			content: "{\n  \"engines\": {\n    \"npm\": \"1\",\n    \"node\": \"22.0.0\",\n  }\n}\n",
+			want:    "inside engines",
+		},
+		{
+			name:    "a bare brace inside head content cannot name a dependency section",
+			patch:   "@@ -6,3 +6,3 @@\n-    \"c\": \"1.0.0\",\n+    \"c\": \"1.0.1\",\n",
+			content: "{\n  \"files\": [\n    {\n      \"a\": \"1\"\n    },\n    \"c\": \"1.0.1\",\n}\n",
+			want:    "which a dependency bump does not touch",
 		},
 		{
 			name:  "outside any dependency section",
 			patch: "@@ -1,3 +1,3 @@\n+  \"private\": true\n",
 			want:  "which a dependency bump does not touch",
+		},
+		{
+			name:  "a bare brace opens an unnamed object",
+			patch: "@@ -1,3 +1,3 @@\n {\n+  \"private\": true\n",
+			want:  "outside any dependency section",
 		},
 		{
 			name:  "a line that is not a single json property",
@@ -141,7 +238,7 @@ func TestOrchCovNonMechanicalContentReasonsAboutAPackageManifest(t *testing.T) {
 			if name == "" {
 				name = "package.json"
 			}
-			reason := nonMechanicalContent(name, test.patch)
+			reason := nonMechanicalContent(name, test.patch, test.content)
 			if test.want == "" {
 				if reason != "" {
 					t.Fatalf("reason = %q, want none", reason)

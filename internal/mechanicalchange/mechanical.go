@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path"
+	"strconv"
 	"strings"
 )
 
@@ -37,12 +38,28 @@ var mechanicalManifests = map[string]bool{
 var codeDirectories = []string{"testdata/", "docs/", "examples/", "fixtures/"}
 
 // mechanicalDependencySections are the `package.json` keys a dependency bump
-// may touch.
+// may touch. `overrides` (npm and `pnpm.overrides`) and `resolutions` (yarn)
+// are dependency pins: a bot that keeps a family of packages on one version
+// bumps them in the same commit as `dependencies`, and a version-shaped edit
+// there is a bump. Only the version-shaped value is accepted (see
+// looksLikeDependencyEntry), so a nested override object or a script-like
+// value still reads as a decision.
 var mechanicalDependencySections = map[string]bool{
 	"dependencies":         true,
 	"devDependencies":      true,
 	"peerDependencies":     true,
 	"optionalDependencies": true,
+	"overrides":            true,
+	"resolutions":          true,
+}
+
+// workspaceVersionSections are the top-level `pnpm-workspace.yaml` keys whose
+// entries are package-name to version pins, the YAML twin of the `package.json`
+// sections above.
+var workspaceVersionSections = map[string]bool{
+	"overrides": true,
+	"catalog":   true,
+	"catalogs":  true,
 }
 
 // graphRewritingKeys change what the resolver produces for packages other than
@@ -55,8 +72,6 @@ var mechanicalDependencySections = map[string]bool{
 // A `replace` in `go.mod` is the same move in the other ecosystem, pointing a
 // module path at something the registry never served.
 var graphRewritingKeys = map[string]bool{
-	"overrides":           true,
-	"resolutions":         true,
 	"packageExtensions":   true,
 	"patchedDependencies": true,
 	"peerDependencyRules": true,
@@ -106,26 +121,126 @@ func nonMechanicalGoModule(name, patch string) string {
 	return ""
 }
 
-// nonMechanicalWorkspace refuses the pnpm workspace keys that rewrite the
-// graph. The file is in the manifest list because a bump can add a catalogued
-// version, but the same file carries overrides and package extensions.
+// nonMechanicalWorkspace refuses the pnpm workspace changes that are not
+// version pins. The file is in the manifest list because a bump moves
+// `overrides:` and `catalog:` entries, but the same file carries package
+// extensions, patched dependencies and peer dependency rules.
+//
+// A hunk shows its enclosing top-level key in the header (Git's default hunk
+// heading is the last line that starts in column 0, which is exactly a YAML
+// top-level key) and in any context line, so the key is tracked the way the
+// JSON classifier tracks sections. Under overrides, catalog and catalogs a
+// changed line must be `name: version`; under any other graph-rewriting key
+// the change is refused.
 func nonMechanicalWorkspace(name, patch string) string {
-	// Every line of the hunk, context included. A change under `overrides:`
-	// shows the key as CONTEXT and only the version as changed — reading the
-	// changed lines alone sees `semver: 7.6.0` and cannot tell it from a
-	// catalogued version bump. If a graph-rewriting key is anywhere in the
-	// hunk, the hunk is in or beside one, and that is enough to want a reader.
+	top := ""
 	for _, line := range strings.Split(patch, "\n") {
-		if strings.HasPrefix(line, "@@") || strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---") {
+		if strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---") {
 			continue
 		}
-		body := strings.TrimSpace(strings.TrimLeft(line, "+- "))
-		key := strings.Trim(strings.TrimSpace(strings.SplitN(body, ":", 2)[0]), `"'`)
-		if graphRewritingKeys[key] {
-			return name + " touches " + key + ", which rewrites what the workspace resolves for every package"
+		if strings.HasPrefix(line, "@@") {
+			top = workspaceKeyFromHunkHeader(line)
+			continue
+		}
+		changed := len(line) > 0 && (line[0] == '+' || line[0] == '-')
+		body := line
+		if len(line) > 0 && (line[0] == '+' || line[0] == '-' || line[0] == ' ') {
+			body = line[1:]
+		}
+		trimmed := strings.TrimSpace(body)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		key, value, isProperty := yamlLineKey(trimmed)
+		if len(body) == len(strings.TrimLeft(body, " \t")) {
+			if isProperty {
+				top = key
+			}
+			if reason := workspaceTopLevelRefusal(name, key, value, changed && isProperty); reason != "" {
+				return reason
+			}
+			continue
+		}
+		if workspaceVersionSections[top] {
+			if !changed {
+				continue
+			}
+			// A nested group name under `catalogs:` has no value of its own.
+			if isProperty && value == "" && top == "catalogs" {
+				continue
+			}
+			if !isProperty || !looksLikeDependencyEntry(quoteYAMLScalar(value)) {
+				return name + " changes " + trimForMessage(trimmed) + " inside " + top +
+					", which is not a package name pinned to a version"
+			}
+			continue
+		}
+		if graphRewritingKeys[top] {
+			return name + " touches " + top + ", which rewrites what the workspace resolves for every package"
 		}
 	}
 	return ""
+}
+
+// workspaceTopLevelRefusal judges a column-0 line of pnpm-workspace.yaml.
+// A version-pin section header may change only as a bare header; any other
+// graph-rewriting key is refused outright.
+func workspaceTopLevelRefusal(name, key, value string, changedProperty bool) string {
+	switch {
+	case workspaceVersionSections[key]:
+		if changedProperty && value != "" {
+			return name + " changes " + key + " inline, which is not a package name pinned to a version"
+		}
+	case graphRewritingKeys[key]:
+		return name + " touches " + key + ", which rewrites what the workspace resolves for every package"
+	}
+	return ""
+}
+
+// workspaceKeyFromHunkHeader reads the top-level YAML key Git appends after
+// the second `@@`.
+func workspaceKeyFromHunkHeader(line string) string {
+	index := strings.Index(line[2:], "@@")
+	if index < 0 {
+		return ""
+	}
+	key, _, _ := yamlLineKey(line[2+index+2:])
+	return key
+}
+
+// yamlLineKey reads `key: value` from one YAML line, unquoting the key.
+func yamlLineKey(body string) (key, value string, ok bool) {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return "", "", false
+	}
+	if quote := body[0]; quote == '\'' || quote == '"' {
+		end := strings.IndexByte(body[1:], quote)
+		if end < 0 {
+			return "", "", false
+		}
+		rest := strings.TrimSpace(body[end+2:])
+		if !strings.HasPrefix(rest, ":") {
+			return "", "", false
+		}
+		return body[1 : end+1], strings.TrimSpace(rest[1:]), true
+	}
+	index := strings.Index(body, ":")
+	if index <= 0 {
+		return "", "", false
+	}
+	return strings.TrimSpace(body[:index]), strings.TrimSpace(body[index+1:]), true
+}
+
+// quoteYAMLScalar turns a YAML scalar into the JSON string
+// looksLikeDependencyEntry reads, dropping one level of YAML quoting.
+func quoteYAMLScalar(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) >= 2 && (value[0] == '\'' || value[0] == '"') && value[len(value)-1] == value[0] {
+		value = value[1 : len(value)-1]
+	}
+	encoded, _ := json.Marshal(value)
+	return string(encoded)
 }
 
 // changedPatchLines yields the added and removed lines of a patch, without
@@ -150,6 +265,14 @@ type ChangedFile struct {
 	Filename string `json:"filename"`
 	Status   string `json:"status"`
 	Patch    string `json:"patch"`
+	// ContentsURL is where GitHub serves the file at the pull request head.
+	ContentsURL string `json:"contents_url"`
+	// Content is the file at the pull request head, when the caller fetched
+	// it. A hunk of a long manifest often starts deep inside a section whose
+	// opening line is outside the hunk, and Git's default hunk heading never
+	// matches a JSON line, so the patch alone cannot say which section a
+	// changed line is in. Absent, such a hunk is refused rather than guessed.
+	Content string `json:"-"`
 }
 
 // MechanicalVerdict explains a classification well enough to argue with.
@@ -184,7 +307,7 @@ func ClassifyMechanical(files []ChangedFile) MechanicalVerdict {
 			verdict.Reasons = append(verdict.Reasons, name+" is not a dependency manifest")
 			continue
 		}
-		if reason := nonMechanicalContent(name, file.Patch); reason != "" {
+		if reason := nonMechanicalContent(name, file.Patch, file.Content); reason != "" {
 			verdict.Mechanical = false
 			verdict.Reasons = append(verdict.Reasons, reason)
 		}
@@ -208,7 +331,7 @@ func inCodeDirectory(name string) bool {
 // A patch GitHub could not produce — a file too large to diff, a rename with no
 // content change — is treated as not mechanical. Absence of evidence is not
 // evidence that a change is safe to land unreviewed.
-func nonMechanicalContent(name, patch string) string {
+func nonMechanicalContent(name, patch, content string) string {
 	if strings.TrimSpace(patch) == "" {
 		return name + " has no diff GitHub could show, so its content cannot be classified"
 	}
@@ -245,6 +368,9 @@ func nonMechanicalContent(name, patch string) string {
 			// "outside any dependency section" and was refused. Seed the stack
 			// from it instead.
 			section = sectionFromHunkHeader(line)
+			if start, ok := hunkNewStart(line); ok && content != "" {
+				section = sectionStackAt(content, start)
+			}
 			continue
 		}
 		changed := len(line) > 0 && (line[0] == '+' || line[0] == '-')
@@ -264,7 +390,9 @@ func nonMechanicalContent(name, patch string) string {
 			continue
 		}
 		if body == "}" || body == "}," || body == "{" {
-			if body != "{" && len(section) > 0 {
+			if body == "{" {
+				section = append(section, "")
+			} else if len(section) > 0 {
 				section = section[:len(section)-1]
 			}
 			continue
@@ -300,6 +428,44 @@ func nonMechanicalContent(name, patch string) string {
 		}
 	}
 	return ""
+}
+
+// hunkNewStart reads the first line number of the new side of a hunk header,
+// `@@ -a,b +c,d @@`.
+func hunkNewStart(header string) (int, bool) {
+	plus := strings.Index(header, " +")
+	if plus < 0 {
+		return 0, false
+	}
+	digits := header[plus+2:]
+	end := 0
+	for end < len(digits) && digits[end] >= '0' && digits[end] <= '9' {
+		end++
+	}
+	number, err := strconv.Atoi(digits[:end])
+	return number, err == nil && number > 0
+}
+
+// sectionStackAt returns the JSON objects enclosing the start of line `line`
+// (1-based) of content, walking the same open and close lines the hunk loop
+// walks. A bare `{` pushes an empty name so the closing brace stays balanced
+// and the name can never match a dependency section.
+func sectionStackAt(content string, line int) []string {
+	section := make([]string, 0, 4)
+	for index, text := range strings.Split(content, "\n") {
+		if index+1 >= line {
+			break
+		}
+		body := strings.TrimSpace(text)
+		if key, _, ok := jsonLineKey(body); ok && strings.HasSuffix(body, "{") {
+			section = append(section, key)
+		} else if body == "{" {
+			section = append(section, "")
+		} else if (body == "}" || body == "},") && len(section) > 0 {
+			section = section[:len(section)-1]
+		}
+	}
+	return section
 }
 
 // jsonLineKey reads the property name from one line of a JSON diff.

@@ -905,3 +905,52 @@ func (c *mutationFixtureDeadline) Err() error {
 	}
 }
 func (c *mutationFixtureDeadline) trigger() { c.once.Do(func() { close(c.done) }) }
+
+// A hunk deep inside a manifest section cannot be placed from the patch alone,
+// so the head file is read for package.json only, and a failed read leaves the
+// content empty (the classifier then refuses the unplaceable hunk).
+const orchCovManifestScript = `#!/bin/sh
+S="$ORCHCOV_GH_STATE"
+if [ "$1" != api ]; then echo "unexpected gh args: $*" >&2; exit 30; fi
+case "$*" in
+  *"Accept: application/vnd.github.raw"*)
+    if [ "$(cat "$S/contents_exit")" != 0 ]; then exit 1; fi
+    cat "$S/contents"; exit 0 ;;
+esac
+cat "$S/body"
+`
+
+func TestPullRequestChangedFilesCarryHeadContentOfPackageManifestsOnly(t *testing.T) {
+	state := testfixture.ScriptState(t, orchCovManifestScript)
+	state.Answer(t, "body", `[`+
+		`{"filename":"package.json","contents_url":"https://api.github.com/repos/acme/app/contents/package.json?ref=abc"},`+
+		`{"filename":"pnpm-lock.yaml","contents_url":"https://api.github.com/repos/acme/app/contents/pnpm-lock.yaml?ref=abc"},`+
+		`{"filename":"web/package.json","contents_url":"https://example.test/not-github"}]`)
+	state.Answer(t, "contents", "{\"dependencies\": {}}\n")
+	state.Answer(t, "contents_exit", "0")
+	files, err := pullRequestChangedFiles(context.Background(), "acme/app", "7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, file := range files {
+		got[file.Filename] = file.Content
+	}
+	if got["package.json"] != "{\"dependencies\": {}}\n" || got["pnpm-lock.yaml"] != "" || got["web/package.json"] != "" {
+		t.Fatalf("head content by file = %q", got)
+	}
+}
+
+func TestPullRequestChangedFilesLeaveContentEmptyWhenTheHeadFileCannotBeRead(t *testing.T) {
+	state := testfixture.ScriptState(t, orchCovManifestScript)
+	state.Answer(t, "body", `[{"filename":"package.json","contents_url":"https://api.github.com/repos/acme/app/contents/package.json?ref=abc"}]`)
+	state.Answer(t, "contents", "ignored")
+	state.Answer(t, "contents_exit", "1")
+	files, err := pullRequestChangedFiles(context.Background(), "acme/app", "7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 || files[0].Content != "" {
+		t.Fatalf("unreadable head file produced content: %+v", files)
+	}
+}
