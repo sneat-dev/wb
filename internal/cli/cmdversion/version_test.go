@@ -2,6 +2,7 @@ package cmdversion
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/buildinfo"
+	"github.com/sneat-dev/wb/internal/stalewb"
 )
 
 func execute(t *testing.T, info buildinfo.Report, args ...string) (string, int, error) {
@@ -154,3 +156,79 @@ func TestTextOptionalFieldsAndBare(t *testing.T) {
 		t.Fatal(out.String())
 	}
 }
+
+func TestVersionReportsStaleWbCopiesInJSONAndAsAHumanWarning(t *testing.T) {
+	t.Parallel()
+	info := report()
+	info.JSONVersion = "0.208.3"
+	stale := []stalewb.Binary{{Path: "/home/u/.local/bin/wb", Version: "0.198.2"}}
+	var gotVersion string
+	scan := func(_ context.Context, current string) []stalewb.Binary { gotVersion = current; return stale }
+	for _, asJSON := range []bool{true, false} {
+		command := NewWithStale(func() buildinfo.Report { return info }, scan)
+		var out, warn bytes.Buffer
+		command.SetOut(&out)
+		command.SetErr(&warn)
+		args := []string{}
+		if asJSON {
+			args = append(args, "--json")
+		}
+		command.SetArgs(args)
+		if err := command.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		if gotVersion != "0.208.3" {
+			t.Fatalf("scan version = %q", gotVersion)
+		}
+		if asJSON {
+			var decoded struct {
+				Version string           `json:"version"`
+				Stale   []stalewb.Binary `json:"stale_binaries"`
+			}
+			if err := json.Unmarshal(out.Bytes(), &decoded); err != nil || decoded.Version != "0.208.3" || len(decoded.Stale) != 1 || decoded.Stale[0].Path != stale[0].Path {
+				t.Fatalf("json = %s (%v)", out.String(), err)
+			}
+			if warn.Len() != 0 {
+				t.Fatalf("json mode warned: %s", warn.String())
+			}
+			continue
+		}
+		if strings.Contains(out.String(), "stale") || !strings.Contains(warn.String(), "/home/u/.local/bin/wb is 0.198.2") || !strings.Contains(warn.String(), "fix: rm /home/u/.local/bin/wb") {
+			t.Fatalf("human out = %q, warning = %q", out.String(), warn.String())
+		}
+	}
+}
+
+func TestVersionJSONOmitsTheStaleKeyWhenThereIsNoneAndAProbeChildNeverScans(t *testing.T) {
+	// Not parallel: it sets the process environment.
+	scans := 0
+	scan := func(context.Context, string) []stalewb.Binary { scans++; return nil }
+	command := NewWithStale(func() buildinfo.Report { return report() }, scan)
+	var out bytes.Buffer
+	command.SetOut(&out)
+	command.SetErr(io.Discard)
+	command.SetArgs([]string{"--json"})
+	if err := command.Execute(); err != nil || strings.Contains(out.String(), "stale_binaries") || scans != 1 {
+		t.Fatalf("out = %s, err = %v, scans = %d", out.String(), err, scans)
+	}
+	t.Setenv(stalewb.SkipEnv, "1")
+	command = NewWithStale(func() buildinfo.Report { return report() }, scan)
+	command.SetOut(io.Discard)
+	command.SetErr(io.Discard)
+	command.SetArgs(nil)
+	if err := command.Execute(); err != nil || scans != 1 {
+		t.Fatalf("a probe child scanned: err = %v, scans = %d", err, scans)
+	}
+}
+
+func TestWriteWithStaleReturnsWarningWriterFailures(t *testing.T) {
+	t.Parallel()
+	err := WriteWithStale(io.Discard, failingWriter{}, report(), []stalewb.Binary{{Path: "/x/wb", Version: "0.1.0"}}, false)
+	if err == nil {
+		t.Fatal("a failing warning writer must surface")
+	}
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("closed") }

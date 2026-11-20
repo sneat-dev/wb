@@ -5,10 +5,12 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/stalewb"
 	"github.com/sneat-dev/wb/internal/testenv" // fakeSelfUpdateBinary writes an executable POSIX shell script standing in
 	// for the exact installed executable identity supplied by the shared provider.
 	"github.com/strongo/cli-helpers/selfupdate"
@@ -223,5 +225,67 @@ func TestDaemonRestartSummaryCoversPartialAndUnreadableReceipts(t *testing.T) {
 				t.Fatalf("daemonRestartSummary() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestAfterUpdateWarnsAboutStaleWbCopiesAndNeverTouchesThem(t *testing.T) {
+	t.Parallel()
+	stale := filepath.Join(t.TempDir(), "wb")
+	if err := testenv.WriteExecutableFile(stale, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	scanner := func() stalewb.Scanner {
+		return stalewb.Scanner{PathEnv: filepath.Dir(stale), Probe: func(context.Context, string) (string, error) { return "0.198.2", nil }}
+	}
+	for name, test := range map[string]struct {
+		update selfupdate.AfterUpdate
+		want   bool
+	}{
+		"installed target":    {selfupdate.AfterUpdate{Outcome: selfupdate.Outcome{Action: selfupdate.ActionManagerExecuted, Target: "0.208.3"}}, true},
+		"latest as target":    {selfupdate.AfterUpdate{Outcome: selfupdate.Outcome{Action: selfupdate.ActionUpdated, Result: selfupdate.CheckResult{Latest: "0.208.3"}}}, true},
+		"already current":     {selfupdate.AfterUpdate{Outcome: selfupdate.Outcome{Action: selfupdate.ActionAlreadyCurrent, Result: selfupdate.CheckResult{Current: "0.208.3"}}}, true},
+		"a dry run":           {selfupdate.AfterUpdate{Outcome: selfupdate.Outcome{Action: selfupdate.ActionPlanned, Target: "0.208.3"}}, false},
+		"no version to judge": {selfupdate.AfterUpdate{Outcome: selfupdate.Outcome{Action: selfupdate.ActionUpdated}}, false},
+	} {
+		var stderr bytes.Buffer
+		service := testService()
+		service.StaleScanner = scanner
+		service.WarnStaleCopies(Output{Out: io.Discard, Err: &stderr}, nil, test.update) //nolint:staticcheck // a nil context is tolerated
+		if got := strings.Contains(stderr.String(), stale+" is 0.198.2") && strings.Contains(stderr.String(), "fix: rm "+stale); got != test.want {
+			t.Errorf("%s: warned = %t, want %t: %q", name, got, test.want, stderr.String())
+		}
+	}
+	var stderr bytes.Buffer
+	service := testService()
+	service.WarnStaleCopies(Output{Out: io.Discard, Err: &stderr}, context.Background(), successfulSelfUpdate(stale))
+	if stderr.Len() != 0 {
+		t.Fatalf("without a scanner: %q", stderr.String())
+	}
+	if _, err := os.Stat(stale); err != nil {
+		t.Fatalf("the stale copy was touched: %v", err)
+	}
+}
+
+func TestAfterUpdateRunsTheStaleCopyWarningAfterSyncingSkills(t *testing.T) {
+	t.Parallel()
+	binary := filepath.Join(t.TempDir(), "wb")
+	if err := testenv.WriteExecutableFile(binary, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	service := testService()
+	service.RunChild = func(context.Context, ChildRequest) (ChildResult, error) {
+		return ChildResult{Stdout: []byte("ok")}, nil
+	}
+	service.StaleScanner = func() stalewb.Scanner {
+		return stalewb.Scanner{PathEnv: filepath.Dir(binary), Probe: func(context.Context, string) (string, error) { return "0.1.0", nil }}
+	}
+	update := successfulSelfUpdate(binary)
+	update.Outcome.Target = "0.96.3"
+	if err := service.AfterUpdate(context.Background(), update, Output{Out: io.Discard, Err: &stderr}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stderr.String(), "older wb copies on PATH than 0.96.3") {
+		t.Fatalf("stderr = %q", stderr.String())
 	}
 }
