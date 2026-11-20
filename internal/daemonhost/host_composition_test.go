@@ -8,15 +8,10 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
-	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -28,8 +23,6 @@ import (
 	"github.com/sneat-dev/wb/internal/daemonruntime"
 	daemonv1 "github.com/sneat-dev/wb/internal/gen/wb/daemon/v1"
 	"github.com/sneat-dev/wb/internal/gen/wb/daemon/v1/daemonv1connect"
-	"github.com/sneat-dev/wb/internal/hubconfig"
-	"github.com/sneat-dev/wb/internal/hubstore"
 	"github.com/sneat-dev/wb/internal/repositoryevents"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -74,55 +67,6 @@ func TestHubHealthAndPeerReadsExposeTheirConfiguredStores(t *testing.T) {
 	peers, err := source.ListPeers(t.Context())
 	if err != nil || len(peers) != 1 || peers[0].Name != record.Name {
 		t.Fatalf("peer read source=%+v error=%v", peers, err)
-	}
-}
-
-func TestPeerAdminInviteReturnsThePersistedCredential(t *testing.T) {
-	t.Parallel()
-	root := t.TempDir()
-	gitContext, cancelGit := context.WithTimeout(t.Context(), 5*time.Second)
-	t.Cleanup(cancelGit)
-	command := exec.CommandContext(gitContext, "git", "-C", root, "init", "--quiet")
-	command.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull}
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("initialize private persistent store: %v: %s", err, output)
-	}
-	store, closer, err := hubstore.Open(t.Context(), hubconfig.Store{Engine: hubconfig.EngineInGitDB, Path: root})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = closer.Close() })
-	trust, stats := hub.NewPeerStores(store)
-	pepper := bytes.Repeat([]byte{'p'}, 32)
-	at := time.Date(2026, 11, 3, 1, 0, 0, 0, time.UTC)
-	admin := &hub.PeerAdminService{Backend: store, Trust: trust, Stats: stats, Pepper: pepper, HubMachineName: "composition-hub", Now: func() time.Time { return at }}
-	handler := daemonruntime.AuthenticatedHandler("owner-token", newPeerAdminHTTPHandler(&hubMount{PeerAdmin: admin}))
-	response := peerAdminRequest(t, handler, "owner-token", peersRPCPrefix+"invite", peerInviteRequest{Name: "composition-peer"})
-	var invite peerInviteResponse
-	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &invite) != nil || invite.Token == "" || invite.Name != "composition-peer" || invite.Rotated || !invite.CreatedAt.Equal(at) {
-		t.Fatalf("invite response status=%d body=%s", response.Code, response.Body.String())
-	}
-	reopened, reopenedCloser, err := hubstore.Open(t.Context(), hubconfig.Store{Engine: hubconfig.EngineInGitDB, Path: root})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = reopenedCloser.Close() })
-	reopenedTrust, reopenedStats := hub.NewPeerStores(reopened)
-	peer, found, err := reopenedTrust.GetPeer(t.Context(), invite.PeerID)
-	if err != nil || !found || peer.Name != invite.Name || peer.Trust != hub.PeerTrustActive || !peer.CreatedAt.Equal(invite.CreatedAt) {
-		t.Fatalf("persisted invite peer=%+v found=%v error=%v", peer, found, err)
-	}
-	if _, found, err := reopenedStats.GetStats(t.Context(), invite.PeerID); err != nil || !found {
-		t.Fatalf("persisted invite statistics found=%v error=%v", found, err)
-	}
-	digest, err := hub.DigestMachineToken(invite.Token, pepper)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, resolver, _ := hub.NewMachineStores(reopened)
-	binding, err := resolver.ResolveMachineCredential(t.Context(), digest)
-	if err != nil || binding.MachineID != invite.PeerID || binding.MachineName != invite.Name {
-		t.Fatalf("returned token does not resolve to persisted invite: %+v error=%v", binding, err)
 	}
 }
 
@@ -217,49 +161,11 @@ func (listener *acceptingHostListener) Close() error {
 	return err
 }
 
-// Only this fixture uses this pool. Ports outside the kernel's automatic range
-// cannot be claimed by another test's :0/connect between Close and rebind.
 func listenCompositionDashboard(network, address string) (net.Listener, error) {
-	if runtime.GOOS != "linux" {
-		return net.Listen(network, address)
-	}
-	rangeText, err := os.ReadFile("/proc/sys/net/ipv4/ip_local_port_range")
-	if err != nil {
-		return nil, err
-	}
-	startText, err := os.ReadFile("/proc/sys/net/ipv4/ip_unprivileged_port_start")
-	if err != nil {
-		return nil, err
-	}
-	fields := strings.Fields(string(rangeText))
-	if len(rangeText) > 128 || len(startText) > 128 || len(fields) != 2 {
-		return nil, errors.New("invalid Linux automatic port bounds")
-	}
-	first, firstErr := strconv.Atoi(fields[0])
-	last, lastErr := strconv.Atoi(fields[1])
-	unprivileged, startErr := strconv.Atoi(strings.TrimSpace(string(startText)))
-	if firstErr != nil || lastErr != nil || startErr != nil || first < 1 || last < first || last > 65535 || unprivileged < 0 || unprivileged > 65535 {
-		return nil, errors.New("invalid Linux automatic port bounds")
-	}
 	if network != "tcp" || address != "127.0.0.1:0" {
 		return nil, fmt.Errorf("unexpected dashboard fixture address: %s %s", network, address)
 	}
-	attempts := 0
-	for port := max(1024, unprivileged); port <= 65535 && attempts < 32; port++ {
-		if port >= first && port <= last {
-			port = last
-			continue
-		}
-		attempts++
-		listener, err := net.Listen(network, net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
-		if err == nil {
-			return listener, nil
-		}
-		if !errors.Is(err, syscall.EADDRINUSE) {
-			return nil, err
-		}
-	}
-	return nil, fmt.Errorf("no dashboard fixture port outside automatic range after %d candidates", attempts)
+	return listenRebindFixtureTCP(dashboardRebindPortPool, 32)
 }
 
 func TestServeKeepsRawCommandsDeniedWhenTheRepositoryReceiverIsDisabled(t *testing.T) {

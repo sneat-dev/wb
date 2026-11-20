@@ -3,16 +3,58 @@ package daemonhost
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
 
+// Separate parity pools keep the dashboard and descriptor fixtures from
+// claiming each other's ports between Close and rebind.
+const (
+	dashboardRebindPortPool = iota
+	sharedCloseRebindPortPool
+)
+
+type automaticPortRange struct{ first, last int }
+
+func listenRebindFixtureTCP(pool, candidates int) (*net.TCPListener, error) {
+	endpoint := net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)}
+	first, automatic, err := rebindFixturePortPolicy()
+	if err != nil {
+		return nil, err
+	}
+	if first == 0 {
+		return net.ListenTCP("tcp4", &endpoint)
+	}
+	for port := first; port <= 65535 && candidates > 0; port++ {
+		if port%2 != pool {
+			continue
+		}
+		reserved := false
+		for _, r := range automatic {
+			reserved = reserved || (port >= r.first && port <= r.last)
+		}
+		if reserved {
+			continue
+		}
+		endpoint.Port = port
+		listener, err := net.ListenTCP("tcp4", &endpoint)
+		if candidates == 1 || !errors.Is(err, syscall.EADDRINUSE) {
+			return listener, err
+		}
+		candidates--
+	}
+	return nil, fmt.Errorf("no fixture port outside automatic ranges for pool %d", pool)
+}
+
 func TestSharedListenerCloseWaitsForHTTPShutdownToReleaseDescriptor(t *testing.T) {
-	tcp, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	t.Parallel()
+	tcp, err := listenRebindFixtureTCP(sharedCloseRebindPortPool, 32)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +88,7 @@ func TestSharedListenerCloseWaitsForHTTPShutdownToReleaseDescriptor(t *testing.T
 	}()
 	waitListenerEvent(t, held, "RawConn.Control held the descriptor")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	shutdownDone := make(chan error, 1)
 	go func() { shutdownDone <- server.Shutdown(ctx) }()
 	waitListenerEvent(t, observed.acceptClosed, "Accept observed the closing state")
@@ -94,6 +136,7 @@ func TestSharedListenerCloseWaitsForHTTPShutdownToReleaseDescriptor(t *testing.T
 }
 
 func TestSharedListenerCloseRetainsTheOriginalCloseError(t *testing.T) {
+	t.Parallel()
 	want := errors.New("original close failure")
 	original := &closeErrorListener{err: want}
 	listener := shareListenerClose(original)

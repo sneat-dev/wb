@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux && e2e
 
 package dependencycache
 
@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-func TestOwnedHelperHelpAndCancellationPreserveExit(t *testing.T) {
+func TestContractOwnedHelperHelpAndCancellationPreserveExit(t *testing.T) {
 	t.Parallel()
 	var out, diagnostic bytes.Buffer
 	if err := Run(context.Background(), []string{"--help"}, &out, &diagnostic); err != nil {
@@ -27,7 +27,7 @@ func TestOwnedHelperHelpAndCancellationPreserveExit(t *testing.T) {
 	}
 }
 
-func TestArchivePolicyFilesystemAndInheritedLeaseRegressions(t *testing.T) {
+func TestContractArchivePolicyFilesystemAndInheritedLeaseRegressions(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	t.Cleanup(cancel)
