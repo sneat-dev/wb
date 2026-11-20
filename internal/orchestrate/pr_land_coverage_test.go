@@ -970,7 +970,8 @@ func classifyTestView(login, title string, commits int) githubchecks.PullRequest
 
 var classifyWorkflowFiles = []mechanicalchange.ChangedFile{{
 	Filename: ".github/workflows/ci.yml", Status: "modified",
-	Patch: "@@ -1,2 +1,2 @@\n-      - uses: actions/checkout@v4\n+      - uses: actions/checkout@v5\n",
+	ContentsURL: "https://api.github.com/repos/acme/app/contents/.github/workflows/ci.yml?ref=" + classifyHead,
+	Patch:       "@@ -1,2 +1,2 @@\n-      - uses: actions/checkout@v4\n+      - uses: actions/checkout@v5\n",
 }}
 
 func classifyCommit(sha, author, committer string, verified bool) string {
