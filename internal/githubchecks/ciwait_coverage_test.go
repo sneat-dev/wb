@@ -377,6 +377,7 @@ func TestOrchCovSimpleGlobMatchHandlesEveryPatternShape(t *testing.T) {
 		{name: "star crosses slash", pattern: "Release / *", value: "Release / Smoke test published artifact (linux/amd64)", want: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			if got := simpleGlobMatch(test.pattern, test.value); got != test.want {
 				t.Fatalf("simpleGlobMatch(%q, %q) = %v, want %v", test.pattern, test.value, got, test.want)
 			}

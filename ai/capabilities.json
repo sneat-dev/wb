@@ -1758,113 +1758,113 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/ci_wait_filter_test.go",
-              "name": "TestCIWaitWorkflowFilterSelectsOnlyThatWorkflowsCheckRuns",
+              "path": "cmd/wb/ci_wait_filter_e2e_test.go",
+              "name": "TestE2ECIWaitWorkflowFilterSelectsOnlyThatWorkflowsCheckRuns",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_filter_test.go",
-              "name": "TestCIWaitCheckGlobFilterSelectsMatchingChecks",
+              "path": "cmd/wb/ci_wait_filter_e2e_test.go",
+              "name": "TestE2ECIWaitCheckGlobFilterSelectsMatchingChecks",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_filter_test.go",
-              "name": "TestCIWaitFilterMatchingNothingDoesNotPass",
+              "path": "cmd/wb/ci_wait_filter_e2e_test.go",
+              "name": "TestE2ECIWaitFilterMatchingNothingDoesNotPass",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_filter_test.go",
-              "name": "TestCIWaitFilterFailureInsideSubsetFails",
+              "path": "cmd/wb/ci_wait_filter_e2e_test.go",
+              "name": "TestE2ECIWaitFilterFailureInsideSubsetFails",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_filter_test.go",
-              "name": "TestCIWaitFilterResumeArgsCarryFiltersSafelyQuoted",
+              "path": "cmd/wb/ci_wait_filter_e2e_test.go",
+              "name": "TestE2ECIWaitFilterResumeArgsCarryFiltersSafelyQuoted",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_filter_test.go",
-              "name": "TestCIWaitFilterJSONBlockPresentOnlyWhenFiltered",
+              "path": "cmd/wb/ci_wait_filter_e2e_test.go",
+              "name": "TestE2ECIWaitFilterJSONBlockPresentOnlyWhenFiltered",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_filter_test.go",
-              "name": "TestCIWaitBothSpellingsAcceptFilterFlags",
+              "path": "cmd/wb/ci_wait_filter_e2e_test.go",
+              "name": "TestE2ECIWaitBothSpellingsAcceptFilterFlags",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_filter_test.go",
-              "name": "TestCIWaitFilterKeepsPendingWhileANeedsGatedJobHasNotRegistered",
+              "path": "cmd/wb/ci_wait_filter_e2e_test.go",
+              "name": "TestE2ECIWaitFilterKeepsPendingWhileANeedsGatedJobHasNotRegistered",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_filter_test.go",
-              "name": "TestCIWaitExactCheckPassesDespiteASlowSiblingJobInTheSameSuite",
+              "path": "cmd/wb/ci_wait_filter_e2e_test.go",
+              "name": "TestE2ECIWaitExactCheckPassesDespiteASlowSiblingJobInTheSameSuite",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_filter_test.go",
-              "name": "TestCIWaitExactCheckDoesNotWaitForAnUnrelatedRunAwaitingApproval",
+              "path": "cmd/wb/ci_wait_filter_e2e_test.go",
+              "name": "TestE2ECIWaitExactCheckDoesNotWaitForAnUnrelatedRunAwaitingApproval",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_filter_test.go",
-              "name": "TestCIWaitAllExactCheckPatternsMustMatchBeforePass",
+              "path": "cmd/wb/ci_wait_filter_e2e_test.go",
+              "name": "TestE2ECIWaitAllExactCheckPatternsMustMatchBeforePass",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_filter_test.go",
-              "name": "TestCIWaitCheckGlobCrossesSlashes",
+              "path": "cmd/wb/ci_wait_filter_e2e_test.go",
+              "name": "TestE2ECIWaitCheckGlobCrossesSlashes",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_filter_test.go",
-              "name": "TestCIWaitCheckExactNameWithBracketIsLiteral",
+              "path": "cmd/wb/ci_wait_filter_e2e_test.go",
+              "name": "TestE2ECIWaitCheckExactNameWithBracketIsLiteral",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_filter_test.go",
-              "name": "TestCIWaitAllWorkflowNamesMustMatchBeforePass",
+              "path": "cmd/wb/ci_wait_filter_e2e_test.go",
+              "name": "TestE2ECIWaitAllWorkflowNamesMustMatchBeforePass",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_filter_test.go",
-              "name": "TestCIWaitCheckGlobKeepsAnotherJoblessRunOpen",
+              "path": "cmd/wb/ci_wait_filter_e2e_test.go",
+              "name": "TestE2ECIWaitCheckGlobKeepsAnotherJoblessRunOpen",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_filter_test.go",
-              "name": "TestCIWaitCheckExactNameAcrossPushAndPullRequestEvents",
+              "path": "cmd/wb/ci_wait_filter_e2e_test.go",
+              "name": "TestE2ECIWaitCheckExactNameAcrossPushAndPullRequestEvents",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_filter_test.go",
-              "name": "TestCIWaitOwnershipKeysOnWorkflowIDAndEventNotIDAlone",
+              "path": "cmd/wb/ci_wait_filter_e2e_test.go",
+              "name": "TestE2ECIWaitOwnershipKeysOnWorkflowIDAndEventNotIDAlone",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_filter_test.go",
-              "name": "TestCIWaitCombinedWorkflowAndCheckWaitsForWholeRun",
+              "path": "cmd/wb/ci_wait_filter_e2e_test.go",
+              "name": "TestE2ECIWaitCombinedWorkflowAndCheckWaitsForWholeRun",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_filter_test.go",
-              "name": "TestCIWaitExactCheckSkippedByAnEarlierFailureIsNotAPass",
+              "path": "cmd/wb/ci_wait_filter_e2e_test.go",
+              "name": "TestE2ECIWaitExactCheckSkippedByAnEarlierFailureIsNotAPass",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_filter_test.go",
-              "name": "TestCIWaitExactCheckSkippedWhileOwningRunIsStillInProgressStaysPendingThenFails",
+              "path": "cmd/wb/ci_wait_filter_e2e_test.go",
+              "name": "TestE2ECIWaitExactCheckSkippedWhileOwningRunIsStillInProgressStaysPendingThenFails",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_filter_test.go",
-              "name": "TestCIWaitJoblessRunRetentionRespectsAnActiveWorkflowFilter",
+              "path": "cmd/wb/ci_wait_filter_e2e_test.go",
+              "name": "TestE2ECIWaitJoblessRunRetentionRespectsAnActiveWorkflowFilter",
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_filter_test.go",
-              "name": "TestCIWaitWorkflowWhollySkippedRunFailsNotPasses",
+              "path": "cmd/wb/ci_wait_filter_e2e_test.go",
+              "name": "TestE2ECIWaitWorkflowWhollySkippedRunFailsNotPasses",
               "kind": "integration"
             },
             {
@@ -5736,13 +5736,13 @@
               "kind": "integration"
             },
             {
-              "path": "internal/locallink/tracked_gowork_test.go",
-              "name": "TestUndoWithoutARecordLeavesACommittedGoWorkUntouched",
+              "path": "internal/locallink/tracked_gowork_e2e_test.go",
+              "name": "TestE2EUndoWithoutARecordLeavesACommittedGoWorkUntouched",
               "kind": "integration"
             },
             {
-              "path": "internal/locallink/tracked_gowork_test.go",
-              "name": "TestUndoRestoresATrackedGoWorkALinkOverwrote",
+              "path": "internal/locallink/tracked_gowork_e2e_test.go",
+              "name": "TestE2EUndoRestoresATrackedGoWorkALinkOverwrote",
               "kind": "integration"
             },
             {
@@ -6154,9 +6154,9 @@
               "kind": "unit"
             },
             {
-              "path": "internal/dependencycache/cache_test.go",
-              "name": "TestArchivePolicyFilesystemAndInheritedLeaseRegressions",
-              "kind": "unit"
+              "path": "internal/dependencycache/cache_e2e_test.go",
+              "name": "TestE2EArchivePolicyFilesystemAndInheritedLeaseRegressions",
+              "kind": "integration"
             }
           ],
           "limitation": null
@@ -14263,8 +14263,8 @@
               "kind": "integration"
             },
             {
-              "path": "cmd/wb/ci_wait_filter_test.go",
-              "name": "TestCIWaitBothSpellingsAcceptFilterFlags",
+              "path": "cmd/wb/ci_wait_filter_e2e_test.go",
+              "name": "TestE2ECIWaitBothSpellingsAcceptFilterFlags",
               "kind": "integration"
             }
           ],
@@ -17233,8 +17233,8 @@
               "kind": "integration"
             },
             {
-              "path": "internal/orchestrate/worktree_merge_legacy_landed_test.go",
-              "name": "TestLegacyLandedValidationPreservesAdvancedCheckoutAndReleasesOnlyHistoricalLane",
+              "path": "internal/orchestrate/worktree_merge_legacy_landed_e2e_test.go",
+              "name": "TestE2ELegacyLandedValidationPreservesAdvancedCheckoutAndReleasesOnlyHistoricalLane",
               "kind": "integration"
             },
             {
@@ -17690,8 +17690,8 @@
           "status": "Full",
           "references": [
             {
-              "path": "internal/orchestrate/worktree_merge_unpublished_validation_failure_test.go",
-              "name": "TestAcknowledgeUnpublishedValidationFailureFreesLane",
+              "path": "internal/orchestrate/worktree_merge_unpublished_validation_failure_e2e_test.go",
+              "name": "TestE2EAcknowledgeUnpublishedValidationFailureFreesLane",
               "kind": "integration"
             }
           ],

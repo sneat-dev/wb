@@ -1,3 +1,5 @@
+//go:build e2e
+
 package worktrees
 
 import (
@@ -37,7 +39,7 @@ func equalTreeCommit(t *testing.T, dir, base string) string {
 }
 
 //nolint:paralleltest // The Git fixture configures process-local identity and paths.
-func TestActiveClaimAcceptsBaseSquashLandedUnderTheWork(t *testing.T) {
+func TestE2EActiveClaimAcceptsBaseSquashLandedUnderTheWork(t *testing.T) {
 	f, c, base := squashLandedBaseFixture(t)
 	squash := equalTreeCommit(t, c.WorktreeDir, base)
 	gitTest(t, c.WorktreeDir, "push", "--force", "origin", squash+":refs/heads/main")
@@ -49,7 +51,7 @@ func TestActiveClaimAcceptsBaseSquashLandedUnderTheWork(t *testing.T) {
 }
 
 //nolint:paralleltest // The Git fixture configures process-local identity and paths.
-func TestActiveClaimRefusesEqualTreeBaseThatNeverLanded(t *testing.T) {
+func TestE2EActiveClaimRefusesEqualTreeBaseThatNeverLanded(t *testing.T) {
 	f, c, base := squashLandedBaseFixture(t)
 	gitTest(t, c.WorktreeDir, "rebase", "--onto", equalTreeCommit(t, c.WorktreeDir, base), base)
 	if _, _, _, err := activeWorkLogClaim(f.home, c.WorktreeDir); err == nil {
@@ -58,7 +60,7 @@ func TestActiveClaimRefusesEqualTreeBaseThatNeverLanded(t *testing.T) {
 }
 
 //nolint:paralleltest // The Git fixture configures process-local identity and paths.
-func TestActiveClaimRefusesBaseWhoseContentLeftTheHistory(t *testing.T) {
+func TestE2EActiveClaimRefusesBaseWhoseContentLeftTheHistory(t *testing.T) {
 	f, c, base := squashLandedBaseFixture(t)
 	if err := os.WriteFile(filepath.Join(c.WorktreeDir, "other.txt"), []byte("different content\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -77,7 +79,7 @@ func TestActiveClaimRefusesBaseWhoseContentLeftTheHistory(t *testing.T) {
 }
 
 //nolint:paralleltest // The Git fixture configures process-local identity and paths.
-func TestSquashLandedBaseRejectsAnUnknownBaseObject(t *testing.T) {
+func TestE2ESquashLandedBaseRejectsAnUnknownBaseObject(t *testing.T) {
 	_, c, _ := squashLandedBaseFixture(t)
 	head := gitTestOutput(t, c.WorktreeDir, "rev-parse", "HEAD")
 	if squashLandedClaimBase(c.WorktreeDir, "0123456789abcdef0123456789abcdef01234567", head) {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -772,7 +773,7 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	for _, file := range files {
 		result.ChangedFiles = append(result.ChangedFiles, file.Filename)
 	}
-	verdict := mechanicalchange.ClassifyMechanical(files)
+	verdict := classifyPullRequestChange(ctx, options.Repository, number, view, files)
 	result.Mechanical, result.NonManifest = verdict.Mechanical, verdict.NonManifest
 	result.Evidence["classification"] = "from-diff-content"
 	if !verdict.Mechanical {
@@ -1599,8 +1600,31 @@ func pullRequestChangedFiles(ctx context.Context, repository, number string) ([]
 			files = append(files, file)
 		}
 	}
+	for index := range files {
+		files[index].Content = headManifestContent(ctx, files[index])
+	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Filename < files[j].Filename })
 	return files, nil
+}
+
+// githubAPIPrefix is the host part of a `contents_url` the REST API returns.
+const githubAPIPrefix = "https://api.github.com/"
+
+// headManifestContent reads a `package.json` or `pnpm-workspace.yaml` at the pull request head so the
+// classifier can place a hunk whose own lines and header do not name the JSON
+// section it sits in. Any failure returns "": the classifier then refuses the
+// unplaceable hunk, which is the behaviour without the content, so a failed
+// read can never make a change look mechanical.
+func headManifestContent(ctx context.Context, file mechanicalchange.ChangedFile) string {
+	if base := path.Base(file.Filename); base != "package.json" && base != "pnpm-workspace.yaml" || !strings.HasPrefix(file.ContentsURL, githubAPIPrefix) {
+		return ""
+	}
+	response := githubExecute(ctx, "", "api", "-H", "Accept: application/vnd.github.raw",
+		strings.TrimPrefix(file.ContentsURL, githubAPIPrefix))
+	if response.Err != nil {
+		return ""
+	}
+	return string(response.Stdout)
 }
 
 type mergeResponse struct {
@@ -1865,6 +1889,76 @@ type SourceCommit struct {
 	// Parents are read for a promotion's first-parent walk; they stay out of
 	// receipts.
 	Parents []string `json:"-"`
+}
+
+// classifyPullRequestChange classifies a pull request's diff with its author
+// and title. The commit list is read only for a bot-authored pull request, and
+// any failure to read it leaves CommitsByBot false, so the bot-only shapes
+// are refused rather than assumed.
+func classifyPullRequestChange(ctx context.Context, repository, number string, view githubchecks.PullRequestView, files []mechanicalchange.ChangedFile) mechanicalchange.MechanicalVerdict {
+	if strings.TrimSpace(view.Head.SHA) == "" {
+		return mechanicalchange.MechanicalVerdict{Reasons: []string{"the pull request head commit is unknown, so the files cannot be tied to it"}}
+	}
+	pr := mechanicalchange.PullRequest{Author: view.User.Login, Title: view.Title, HeadSHA: view.Head.SHA}
+	if mechanicalchange.IsDependencyBotLogin(pr.Author) {
+		actors, err := pullRequestCommitActors(ctx, repository, number)
+		pr.CommitsByBot = err == nil && commitListIsComplete(actors, view) && mechanicalchange.AllCommitsByDependencyBot(actors)
+	}
+	return mechanicalchange.ClassifyMechanicalPullRequest(files, pr)
+}
+
+// commitListIsComplete reports whether the listed commits are all of the pull
+// request's commits and end at the head the merge is pinned to, so a later
+// non-bot commit cannot hide behind the listing's cap or a push in between.
+func commitListIsComplete(actors []mechanicalchange.CommitActors, view githubchecks.PullRequestView) bool {
+	return len(actors) > 0 && len(actors) < maxListedPullRequestCommits && len(actors) == view.Commits &&
+		actors[len(actors)-1].SHA == view.Head.SHA
+}
+
+type commitActorEntry struct {
+	SHA    string `json:"sha"`
+	Commit struct {
+		Verification struct {
+			Verified bool `json:"verified"`
+		} `json:"verification"`
+	} `json:"commit"`
+	Author *struct {
+		Login string `json:"login"`
+	} `json:"author"`
+	Committer *struct {
+		Login string `json:"login"`
+	} `json:"committer"`
+}
+
+// pullRequestCommitActors lists the GitHub account behind each commit's author
+// and committer. A git identity GitHub cannot map to an account has a null
+// user and reads as an empty login.
+func pullRequestCommitActors(ctx context.Context, repository, number string) ([]mechanicalchange.CommitActors, error) {
+	responses, err := githubobserver.GetPages(ctx, githubobserver.GetRequest{
+		Repository: repository,
+		Endpoint:   "repos/" + repository + "/pulls/" + url.PathEscape(number) + "/commits?per_page=100",
+	}, 0)
+	if err != nil {
+		return nil, fmt.Errorf("read commit authors of %s#%s: %w", repository, number, err)
+	}
+	actors := make([]mechanicalchange.CommitActors, 0, 8)
+	for _, response := range responses {
+		var page []commitActorEntry
+		if err := json.Unmarshal(response.Body, &page); err != nil {
+			return nil, fmt.Errorf("decode commit authors of %s#%s: %w", repository, number, err)
+		}
+		for _, entry := range page {
+			actor := mechanicalchange.CommitActors{SHA: entry.SHA, Verified: entry.Commit.Verification.Verified}
+			if entry.Author != nil {
+				actor.Author = entry.Author.Login
+			}
+			if entry.Committer != nil {
+				actor.Committer = entry.Committer.Login
+			}
+			actors = append(actors, actor)
+		}
+	}
+	return actors, nil
 }
 
 type commitListEntry struct {
