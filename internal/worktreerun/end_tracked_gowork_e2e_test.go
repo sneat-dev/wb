@@ -1,3 +1,5 @@
+//go:build e2e
+
 package worktreerun
 
 import (
@@ -33,7 +35,7 @@ func committedWorkspaceRepository(t *testing.T) string {
 
 // The 2026-11-08 refusal: a committed go.work unchanged from HEAD is
 // repository content, not a WB local link, so `wb worktree end` proceeds.
-func TestWorktreeEndAcceptsACommittedGoWork(t *testing.T) {
+func TestE2EWorktreeEndAcceptsACommittedGoWork(t *testing.T) {
 	t.Parallel()
 	checkout := committedWorkspaceRepository(t)
 	guard := streamLinkGuard{store: streams.OpenAt(filepath.Join(t.TempDir(), "streams"))}
@@ -45,7 +47,7 @@ func TestWorktreeEndAcceptsACommittedGoWork(t *testing.T) {
 
 // A committed go.work edited to reach outside the repository is the protection
 // the check exists for: it still refuses, and the remedy never deletes it.
-func TestWorktreeEndRefusesAModifiedCommittedGoWorkWithoutSuggestingDeletion(t *testing.T) {
+func TestE2EWorktreeEndRefusesAModifiedCommittedGoWorkWithoutSuggestingDeletion(t *testing.T) {
 	t.Parallel()
 	checkout := committedWorkspaceRepository(t)
 	if err := os.WriteFile(filepath.Join(checkout, streams.GoWorkFile),
@@ -66,7 +68,7 @@ func TestWorktreeEndRefusesAModifiedCommittedGoWorkWithoutSuggestingDeletion(t *
 }
 
 // A go.work a recorded link wrote is cleared by the recorded link's undo.
-func TestWorktreeEndNamesUndoForARecordedGoWorkLink(t *testing.T) {
+func TestE2EWorktreeEndNamesUndoForARecordedGoWorkLink(t *testing.T) {
 	t.Parallel()
 	worktree := t.TempDir()
 	library := t.TempDir()

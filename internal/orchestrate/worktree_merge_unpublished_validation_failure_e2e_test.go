@@ -1,3 +1,5 @@
+//go:build e2e
+
 package orchestrate
 
 import (
@@ -14,7 +16,8 @@ import (
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
-func TestAcknowledgeDiscardedFailedLandRequiresCompletedAbortProof(t *testing.T) {
+//nolint:paralleltest // newEngineFixture calls t.Setenv (WB home override), which Go's testing package forbids combined with t.Parallel
+func TestE2EAcknowledgeDiscardedFailedLandRequiresCompletedAbortProof(t *testing.T) {
 	fixture := newEngineFixture(t)
 	writeEngineGoModule(t, fixture.canonical, "package app\n")
 	runEngineGit(t, fixture.canonical, "add", "go.mod", "app.go")
@@ -74,6 +77,7 @@ func TestAcknowledgeDiscardedFailedLandRequiresCompletedAbortProof(t *testing.T)
 		{"wrong terminal head", terminalPaths[0], receipt.Candidate.SHA, strings.Repeat("f", 40)},
 		{"mismatched outbox", outboxPaths[0], `"disposition": "discarded"`, `"disposition": "removed"`},
 	} {
+		//nolint:paralleltest // the parent's fixture calls t.Setenv; rows also corrupt and restore one shared fixture in turn
 		t.Run(tc.name, func(t *testing.T) {
 			original, err := os.ReadFile(tc.path)
 			if err != nil {
@@ -112,7 +116,8 @@ func TestAcknowledgeDiscardedFailedLandRequiresCompletedAbortProof(t *testing.T)
 	}
 }
 
-func TestAcknowledgeDiscardedInterruptedPreparingFreesLane(t *testing.T) {
+//nolint:paralleltest // newEngineFixture calls t.Setenv (WB home override), which Go's testing package forbids combined with t.Parallel
+func TestE2EAcknowledgeDiscardedInterruptedPreparingFreesLane(t *testing.T) {
 	fixture := newEngineFixture(t)
 	writeEngineGoModule(t, fixture.canonical, "package app\n")
 	runEngineGit(t, fixture.canonical, "add", "go.mod", "app.go")
@@ -201,7 +206,8 @@ func TestAcknowledgeDiscardedInterruptedPreparingFreesLane(t *testing.T) {
 	}
 }
 
-func TestAcknowledgeDiscardedPreparedCandidateFreesLane(t *testing.T) {
+//nolint:paralleltest // newEngineFixture calls t.Setenv (WB home override), which Go's testing package forbids combined with t.Parallel
+func TestE2EAcknowledgeDiscardedPreparedCandidateFreesLane(t *testing.T) {
 	fixture := newEngineFixture(t)
 	writeEngineGoModule(t, fixture.canonical, "package app\n")
 	runEngineGit(t, fixture.canonical, "add", "go.mod", "app.go")
@@ -287,7 +293,8 @@ func TestAcknowledgeDiscardedPreparedCandidateFreesLane(t *testing.T) {
 	}
 }
 
-func TestAcknowledgeUnpublishedValidationFailureFreesLane(t *testing.T) {
+//nolint:paralleltest // newEngineFixture calls t.Setenv (WB home override), which Go's testing package forbids combined with t.Parallel
+func TestE2EAcknowledgeUnpublishedValidationFailureFreesLane(t *testing.T) {
 	fixture := newEngineFixture(t)
 	writeEngineGoModule(t, fixture.canonical, "package app\n")
 	runEngineGit(t, fixture.canonical, "add", "go.mod", "app.go")
