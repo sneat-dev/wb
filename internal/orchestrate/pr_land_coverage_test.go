@@ -15,6 +15,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/githubchecks"
 	"github.com/sneat-dev/wb/internal/githubobserver/testfixture"
+	"github.com/sneat-dev/wb/internal/mechanicalchange"
 
 	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/testenv"
@@ -905,3 +906,143 @@ func (c *mutationFixtureDeadline) Err() error {
 	}
 }
 func (c *mutationFixtureDeadline) trigger() { c.once.Do(func() { close(c.done) }) }
+
+// A hunk deep inside a manifest section cannot be placed from the patch alone,
+// so the head file is read for package.json only, and a failed read leaves the
+// content empty (the classifier then refuses the unplaceable hunk).
+const orchCovManifestScript = `#!/bin/sh
+S="$ORCHCOV_GH_STATE"
+if [ "$1" != api ]; then echo "unexpected gh args: $*" >&2; exit 30; fi
+case "$*" in
+  *"Accept: application/vnd.github.raw"*)
+    if [ "$(cat "$S/contents_exit")" != 0 ]; then exit 1; fi
+    cat "$S/contents"; exit 0 ;;
+esac
+cat "$S/body"
+`
+
+func TestPullRequestChangedFilesCarryHeadContentOfPackageManifestsOnly(t *testing.T) {
+	state := testfixture.ScriptState(t, orchCovManifestScript)
+	state.Answer(t, "body", `[`+
+		`{"filename":"package.json","contents_url":"https://api.github.com/repos/acme/app/contents/package.json?ref=abc"},`+
+		`{"filename":"pnpm-lock.yaml","contents_url":"https://api.github.com/repos/acme/app/contents/pnpm-lock.yaml?ref=abc"},`+
+		`{"filename":"pnpm-workspace.yaml","contents_url":"https://api.github.com/repos/acme/app/contents/pnpm-workspace.yaml?ref=abc"},`+
+		`{"filename":"web/package.json","contents_url":"https://example.test/not-github"}]`)
+	state.Answer(t, "contents", "{\"dependencies\": {}}\n")
+	state.Answer(t, "contents_exit", "0")
+	files, err := pullRequestChangedFiles(context.Background(), "acme/app", "7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, file := range files {
+		got[file.Filename] = file.Content
+	}
+	if got["package.json"] != "{\"dependencies\": {}}\n" || got["pnpm-workspace.yaml"] != "{\"dependencies\": {}}\n" || got["pnpm-lock.yaml"] != "" || got["web/package.json"] != "" {
+		t.Fatalf("head content by file = %q", got)
+	}
+}
+
+func TestPullRequestChangedFilesLeaveContentEmptyWhenTheHeadFileCannotBeRead(t *testing.T) {
+	state := testfixture.ScriptState(t, orchCovManifestScript)
+	state.Answer(t, "body", `[{"filename":"package.json","contents_url":"https://api.github.com/repos/acme/app/contents/package.json?ref=abc"}]`)
+	state.Answer(t, "contents", "ignored")
+	state.Answer(t, "contents_exit", "1")
+	files, err := pullRequestChangedFiles(context.Background(), "acme/app", "7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 || files[0].Content != "" {
+		t.Fatalf("unreadable head file produced content: %+v", files)
+	}
+}
+
+const classifyHead = "dddddddddddddddddddddddddddddddddddddddd"
+
+func classifyTestView(login, title string, commits int) githubchecks.PullRequestView {
+	var view githubchecks.PullRequestView
+	view.Title = title
+	view.User.Login = login
+	view.Commits = commits
+	view.Head.SHA = classifyHead
+	return view
+}
+
+var classifyWorkflowFiles = []mechanicalchange.ChangedFile{{
+	Filename: ".github/workflows/ci.yml", Status: "modified",
+	Patch: "@@ -1,2 +1,2 @@\n-      - uses: actions/checkout@v4\n+      - uses: actions/checkout@v5\n",
+}}
+
+func classifyCommit(sha, author, committer string, verified bool) string {
+	login := func(name string) string {
+		if name == "" {
+			return "null"
+		}
+		return `{"login":"` + name + `"}`
+	}
+	return fmt.Sprintf(`{"sha":%q,"author":%s,"committer":%s,"commit":{"verification":{"verified":%t}}}`,
+		sha, login(author), login(committer), verified)
+}
+
+func TestClassifyPullRequestChangeAcceptsBotWorkflowBumpOnlyWhenEveryCommitIsVerifiedAndByABot(t *testing.T) {
+	good := classifyCommit("c1", "renovate[bot]", "web-flow", true)
+	head := classifyCommit(classifyHead, "renovate[bot]", "renovate[bot]", true)
+	many := make([]string, 250)
+	for index := range many {
+		many[index] = classifyCommit(fmt.Sprintf("c%d", index), "renovate[bot]", "web-flow", true)
+	}
+	many[249] = head
+	for name, test := range map[string]struct {
+		login   string
+		body    string
+		exit    string
+		commits int
+		want    bool
+	}{
+		"all bot commits, verified, ending at the head": {"renovate[bot]", "[" + good + "," + head + "]", "0", 2, true},
+		"a Copilot repair commit": {"renovate[bot]",
+			"[" + good + "," + classifyCommit(classifyHead, "Copilot", "web-flow", true) + "]", "0", 2, false},
+		"a forged bot identity with no signature": {"renovate[bot]",
+			"[" + good + "," + classifyCommit(classifyHead, "renovate[bot]", "web-flow", false) + "]", "0", 2, false},
+		"a commit with no GitHub account":    {"renovate[bot]", "[" + classifyCommit(classifyHead, "", "web-flow", true) + "]", "0", 1, false},
+		"a commit with no committer account": {"renovate[bot]", "[" + classifyCommit(classifyHead, "renovate[bot]", "", true) + "]", "0", 1, false},
+		"the commits API fails":              {"renovate[bot]", `[]`, "1", 1, false},
+		"the commits are not JSON":           {"renovate[bot]", `not json`, "0", 1, false},
+		"an empty commit list":               {"renovate[bot]", `[]`, "0", 0, false},
+		"fewer listed than the PR has":       {"renovate[bot]", "[" + head + "]", "0", 2, false},
+		"the list ends before the head":      {"renovate[bot]", "[" + good + "]", "0", 1, false},
+		"a list capped at 250":               {"renovate[bot]", "[" + strings.Join(many, ",") + "]", "0", 250, false},
+		"a person's pull request":            {"alex", "[" + head + "]", "0", 1, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			state := testfixture.ScriptState(t, orchCovPagesScript)
+			state.Answer(t, "body", test.body)
+			state.Answer(t, "exit", test.exit)
+			verdict := classifyPullRequestChange(context.Background(), "acme/app", "7",
+				classifyTestView(test.login, "chore(deps): update actions/checkout to v5", test.commits), classifyWorkflowFiles)
+			if verdict.Mechanical != test.want {
+				t.Fatalf("mechanical = %t, want %t (%s)", verdict.Mechanical, test.want, verdict.Summary())
+			}
+		})
+	}
+}
+
+func TestClassifyPullRequestChangeRefusesAnUnknownHeadAndFilesReadAtAnotherCommit(t *testing.T) {
+	view := classifyTestView("alex", "bump", 1)
+	view.Head.SHA = ""
+	if verdict := classifyPullRequestChange(context.Background(), "acme/app", "7", view, classifyWorkflowFiles); verdict.Mechanical ||
+		!strings.Contains(verdict.Summary(), "head commit is unknown") {
+		t.Fatalf("unknown head verdict = %+v", verdict)
+	}
+	files := []mechanicalchange.ChangedFile{{
+		Filename: "go.sum", Patch: "@@\n-a v1 h1:x\n+a v2 h1:y",
+		ContentsURL: "https://api.github.com/repos/acme/app/contents/go.sum?ref=" + classifyHead,
+	}}
+	if verdict := classifyPullRequestChange(context.Background(), "acme/app", "7", classifyTestView("alex", "bump", 1), files); !verdict.Mechanical {
+		t.Fatalf("files at the head were refused: %s", verdict.Summary())
+	}
+	files[0].ContentsURL = "https://api.github.com/repos/acme/app/contents/go.sum?ref=eeee"
+	if verdict := classifyPullRequestChange(context.Background(), "acme/app", "7", classifyTestView("alex", "bump", 1), files); verdict.Mechanical {
+		t.Fatal("files read at another commit than the head were accepted")
+	}
+}

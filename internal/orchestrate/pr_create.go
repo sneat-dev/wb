@@ -10,8 +10,6 @@ import (
 
 	"github.com/sneat-dev/wb/internal/githubchecks"
 
-	"github.com/sneat-dev/wb/internal/mechanicalchange"
-
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/landinglane"
 	"github.com/sneat-dev/wb/internal/repopath"
@@ -531,7 +529,7 @@ func createPullRequestAutoMerge(ctx context.Context, options PullRequestCreateOp
 	if filesErr != nil {
 		return result, fmt.Errorf("read changed files of %s#%s: %w", repository, number, filesErr)
 	}
-	verdict := mechanicalchange.ClassifyMechanical(files)
+	verdict := classifyPullRequestChange(ctx, repository, number, view, files)
 	result.Mechanical = verdict.Mechanical
 	if !verdict.Mechanical {
 		result.Evidence["not_mechanical_because"] = verdict.Summary()
