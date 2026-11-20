@@ -11,6 +11,20 @@ import (
 
 var lintableScriptExtensions = []string{".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"}
 
+// isLintInput reports whether a changed file can change a JS/TS lint result:
+// a script, or the package, workspace, TypeScript, or ESLint configuration
+// the linter reads.
+func isLintInput(file string) bool {
+	base := path.Base(file)
+	switch {
+	case base == "package.json", base == "nx.json", base == "project.json",
+		strings.HasPrefix(base, "tsconfig") && strings.HasSuffix(base, ".json"),
+		strings.HasPrefix(base, ".eslintrc"), strings.HasPrefix(base, "eslint.config."):
+		return true
+	}
+	return isLintableScript(file)
+}
+
 func isLintableScript(file string) bool {
 	for _, extension := range lintableScriptExtensions {
 		if strings.HasSuffix(file, extension) {
@@ -52,7 +66,7 @@ func execTool(manager, tool string, args ...string) []string {
 	case "bun":
 		return append([]string{"bun", "x", tool}, args...)
 	}
-	return append([]string{"npx", "--no-install", tool}, args...)
+	return append([]string{"npm", "exec", "--no", "--", tool}, args...)
 }
 
 func hasPackageScript(packageJSON, script string) bool {
@@ -81,12 +95,12 @@ func (r lintRunner) prePushNode() int {
 	files, all := r.pushedFiles(updates)
 	var scripts []string
 	for _, file := range files {
-		if isLintableScript(file) && !ignoredNodeDir(file) {
+		if isLintInput(file) && !ignoredNodeDir(file) {
 			scripts = append(scripts, file)
 		}
 	}
 	if !all && len(scripts) == 0 {
-		r.say("WB hook: this push changes no JS/TS source; skipping lint.")
+		r.say("WB hook: this push changes no JS/TS source or lint configuration; skipping lint.")
 		return 0
 	}
 	root := r.options.RepoRoot
@@ -118,7 +132,10 @@ func (r lintRunner) prePushNode() int {
 		} else if !ok {
 			continue
 		}
-		if code, err := r.governed(dir, nil, manager, "run", "lint"); err != nil || code != 0 {
+		switch code, err := r.governed(dir, nil, prePushCheckTimeout, manager, "run", "lint"); {
+		case err != nil:
+			r.say("WB hook: lint could not run in package %s (%v); CI remains the lint gate.", pkg, err)
+		case code != 0:
 			r.say("WB hook: lint failed in package %s.", pkg)
 			failed = true
 		}
@@ -176,7 +193,7 @@ func (r lintRunner) nxAffectedLint(updates []RefUpdate) int {
 		base, ok := r.pushBase(update)
 		if !ok {
 			r.say("WB hook: no local base for %s; linting every Nx project.", update.LocalRef)
-			code, err := r.governed(r.options.RepoRoot, nil, execTool(manager, "nx", "run-many", "-t", "lint")...)
+			code, err := r.governed(r.options.RepoRoot, nil, prePushCheckTimeout, execTool(manager, "nx", "run-many", "-t", "lint")...)
 			return r.nxResult(code, err)
 		}
 		candidate := span{base: base, head: update.LocalSHA}
@@ -186,7 +203,7 @@ func (r lintRunner) nxAffectedLint(updates []RefUpdate) int {
 		}
 	}
 	for _, candidate := range spans {
-		code, err := r.governed(r.options.RepoRoot, nil,
+		code, err := r.governed(r.options.RepoRoot, nil, prePushCheckTimeout,
 			execTool(manager, "nx", "affected", "-t", "lint", "--base="+candidate.base, "--head="+candidate.head)...)
 		if result := r.nxResult(code, err); result != 0 {
 			return result
@@ -196,7 +213,11 @@ func (r lintRunner) nxAffectedLint(updates []RefUpdate) int {
 }
 
 func (r lintRunner) nxResult(code int, err error) int {
-	if err != nil || code != 0 {
+	if err != nil {
+		r.say("WB hook: nx lint could not run (%v); CI remains the lint gate.", err)
+		return 0
+	}
+	if code != 0 {
 		r.say("WB hook: nx lint failed for the projects this push affects.")
 		return 1
 	}

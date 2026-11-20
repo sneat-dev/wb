@@ -2,6 +2,7 @@ package hooks
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -9,8 +10,11 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/streambranch"
@@ -42,8 +46,9 @@ type LintTools struct {
 	// Capture runs a plain helper (git, go env) and returns its stdout.
 	Capture func(dir string, env []string, name string, args ...string) (string, error)
 	// Governed runs one check through `wb run --`, streaming its output to
-	// stdout and stderr, and returns the checked command's exit code.
-	Governed func(dir string, env []string, stdout, stderr io.Writer, args ...string) (int, error)
+	// stdout and stderr, and returns the checked command's exit code. A
+	// check still running after timeout is killed and reported as an error.
+	Governed func(dir string, env []string, timeout time.Duration, stdout, stderr io.Writer, args ...string) (int, error)
 	// Classify decides the push tier for the pushed-ref list.
 	Classify func(stdin io.Reader, repoRoot string) (Classification, error)
 	LookPath func(string) (string, error)
@@ -51,6 +56,8 @@ type LintTools struct {
 	CacheRoot func() (string, error)
 	// IsTerminal reports whether stdin is an interactive terminal.
 	IsTerminal func(any) bool
+	// GOOS overrides runtime.GOOS for the linter's executable name.
+	GOOS string
 }
 
 const (
@@ -107,8 +114,8 @@ func withLintDefaults(options LintOptions) LintOptions {
 	}
 	if tools.Governed == nil {
 		executable, projectsRoot := options.WBExecutable, options.ProjectsRoot
-		tools.Governed = func(dir string, env []string, stdout, stderr io.Writer, args ...string) (int, error) {
-			return governedCommand(executable, projectsRoot, stdout, stderr, dir, env, args...)
+		tools.Governed = func(dir string, env []string, timeout time.Duration, stdout, stderr io.Writer, args ...string) (int, error) {
+			return governedCommand(executable, projectsRoot, timeout, stdout, stderr, dir, env, args...)
 		}
 	}
 	if tools.Classify == nil {
@@ -126,8 +133,20 @@ func withLintDefaults(options LintOptions) LintOptions {
 	return options
 }
 
+// Every check a hook runs is bounded, so a stalled network or a hung linter
+// daemon can never hold a commit or push open indefinitely — a hook that
+// hangs is a hook people learn to bypass.
+const (
+	captureTimeout      = time.Minute
+	buildTimeout        = 10 * time.Minute
+	prePushCheckTimeout = 10 * time.Minute
+	preCommitTimeout    = 2 * time.Minute
+)
+
 func captureCommand(dir string, env []string, name string, args ...string) (string, error) {
-	cmd := exec.Command(name, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), captureTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), env...)
 	var stderr bytes.Buffer
@@ -142,18 +161,23 @@ func captureCommand(dir string, env []string, name string, args ...string) (stri
 // governedCommand routes one check through `wb run --` so it is admitted
 // against the shared CPU budget and recorded like every other governed
 // command, preserving the checked command's exit code.
-func governedCommand(executable, projectsRoot string, stdout, stderr io.Writer, dir string, env []string, args ...string) (int, error) {
+func governedCommand(executable, projectsRoot string, timeout time.Duration, stdout, stderr io.Writer, dir string, env []string, args ...string) (int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 	full := []string{}
 	if projectsRoot != "" {
 		full = append(full, "--projects-root", projectsRoot)
 	}
 	full = append(append(full, "run", "--quiet", "--"), args...)
-	cmd := exec.Command(executable, full...)
+	cmd := exec.CommandContext(ctx, executable, full...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), env...)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	err := cmd.Run()
+	if ctx.Err() != nil {
+		return 0, fmt.Errorf("%s did not finish within %s", args[0], timeout)
+	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
 		return exitErr.ExitCode(), nil
@@ -173,8 +197,39 @@ func (r lintRunner) say(format string, args ...any) {
 }
 
 // governed runs one check through `wb run --` with the hook's own output.
-func (r lintRunner) governed(dir string, env []string, args ...string) (int, error) {
-	return r.options.Tools.Governed(dir, env, r.options.Stdout, r.options.Stderr, args...)
+func (r lintRunner) governed(dir string, env []string, timeout time.Duration, args ...string) (int, error) {
+	return r.options.Tools.Governed(dir, env, timeout, r.options.Stdout, r.options.Stderr, args...)
+}
+
+// syncBuffer is a bytes.Buffer two process-output copiers may write at once:
+// exec copies stdout and stderr on separate goroutines when they differ.
+type syncBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.String()
+}
+
+// splitNUL splits `git -z` output. Paths are taken exactly as Git wrote
+// them: a name may legitimately begin or end with a space.
+func splitNUL(out string) []string {
+	var parts []string
+	for _, part := range strings.Split(out, "\x00") {
+		if part = strings.TrimRight(part, "\r\n"); part != "" {
+			parts = append(parts, part)
+		}
+	}
+	return parts
 }
 
 func (r lintRunner) git(args ...string) (string, error) {
@@ -214,26 +269,28 @@ func (r lintRunner) pushScope() (updates []RefUpdate, skip bool) {
 	return checked, false
 }
 
-// pushedFiles lists the repository-relative paths the pushed commits change:
-// every commit reachable from a pushed tip that no remote-tracking ref (and
-// not the remote's current tip) already contains. all is true when the list
-// cannot be established, and the caller must then check everything.
+// pushedFiles lists the repository-relative paths each pushed ref changes:
+// the tree diff from the remote's current tip (or, for a new branch or a
+// remote tip this checkout lacks, from the merge base with the default
+// branch) to the pushed tip. A tree diff covers merge commits, a force push
+// that drops commits, and commits already on some other remote ref (a stream
+// branch pushed at Tier 0), none of which a "commits not on any remote" log
+// would report. Renames count both paths, since removing a file can break
+// the package it left. all is true when no base is known, and the caller
+// must then check everything.
 func (r lintRunner) pushedFiles(updates []RefUpdate) (files []string, all bool) {
 	seen := map[string]bool{}
 	for _, update := range updates {
-		args := []string{"log", "--format=", "--name-only", "-z", update.LocalSHA, "--not", "--remotes"}
-		if !isZeroOID(update.RemoteSHA) {
-			if _, err := r.git("cat-file", "-e", update.RemoteSHA+"^{commit}"); err == nil {
-				args = append(args, update.RemoteSHA)
-			}
+		base, ok := r.pushBase(update)
+		if !ok {
+			return nil, true
 		}
-		out, err := r.git(args...)
+		out, err := r.git("diff", "--name-only", "-z", "--no-renames", base, update.LocalSHA, "--")
 		if err != nil {
 			return nil, true
 		}
-		for _, file := range strings.Split(out, "\x00") {
-			file = strings.TrimSpace(file)
-			if file != "" && !seen[file] {
+		for _, file := range splitNUL(out) {
+			if !seen[file] {
 				seen[file] = true
 				files = append(files, file)
 			}
@@ -243,7 +300,7 @@ func (r lintRunner) pushedFiles(updates []RefUpdate) (files []string, all bool) 
 	return files, false
 }
 
-// pushBase names the commit `nx affected` compares a pushed tip against: the
+// pushBase names the commit a pushed tip is compared against: the
 // remote's current tip when this checkout has it, otherwise the merge base
 // with the default branch's remote-tracking ref. ok is false when neither is
 // known locally.
@@ -295,33 +352,70 @@ func nearestMarkerDir(repoRoot, dir, marker string) (string, bool) {
 	}
 }
 
-func isGoModuleInput(file string) bool {
+func isGolangciConfig(file string) bool {
 	switch path.Base(file) {
-	case "go.mod", "go.sum", ".golangci.yml", ".golangci.yaml", ".golangci.toml", ".golangci.json":
+	case ".golangci.yml", ".golangci.yaml", ".golangci.toml", ".golangci.json":
 		return true
 	}
-	return strings.HasSuffix(file, ".go")
+	return false
+}
+
+func isGoModuleInput(file string) bool {
+	switch path.Base(file) {
+	case "go.mod", "go.sum":
+		return true
+	}
+	return isGolangciConfig(file) || strings.HasSuffix(file, ".go")
+}
+
+// moduleRelative expresses a repository-relative directory relative to the
+// module that contains it.
+func moduleRelative(module, dir string) string {
+	switch {
+	case dir == module:
+		return "."
+	case module == ".":
+		return dir
+	}
+	return strings.TrimPrefix(dir, module+"/")
 }
 
 // goModulesFor maps changed files to the Go modules that own them, each
-// module a repository-relative directory. With all set, every module in the
-// repository is returned.
+// module a repository-relative directory. A file in a directory the go
+// command ignores (testdata, vendor, _x, .x) touches no module. A golangci
+// configuration file touches every module at or beneath its directory, since
+// golangci-lint finds it by walking up from each. With all set, every module
+// in the repository is returned.
 func goModulesFor(repoRoot string, files []string, all bool) []string {
+	modulesInRepo := allMarkerDirs(repoRoot, "go.mod", ignoredGoDir)
 	if all {
-		return allMarkerDirs(repoRoot, "go.mod", ignoredGoDir)
+		return modulesInRepo
 	}
 	seen := map[string]bool{}
 	var modules []string
+	add := func(module string) {
+		if !seen[module] {
+			seen[module] = true
+			modules = append(modules, module)
+		}
+	}
 	for _, file := range files {
 		if !isGoModuleInput(file) {
 			continue
 		}
-		module, ok := nearestMarkerDir(repoRoot, path.Dir(file), "go.mod")
-		if !ok || ignoredGoDir(module) || seen[module] {
+		dir := path.Dir(file)
+		if isGolangciConfig(file) {
+			for _, module := range modulesInRepo {
+				if dir == "." || module == dir || strings.HasPrefix(module, dir+"/") {
+					add(module)
+				}
+			}
+		}
+		module, ok := nearestMarkerDir(repoRoot, dir, "go.mod")
+		if !ok || ignoredGoDir(module) || ignoredGoDir(moduleRelative(module, dir)) {
 			continue
 		}
-		seen[module] = true
-		modules = append(modules, module)
+		add(module)
 	}
 	sort.Strings(modules)
 	return modules
@@ -383,7 +477,10 @@ func (r lintRunner) prePushGo() int {
 	failed := false
 	for _, module := range modules {
 		dir := r.moduleDir(module)
-		if code, err := r.governed(dir, nil, "go", "vet", "./..."); err != nil || code != 0 {
+		switch code, err := r.governed(dir, nil, prePushCheckTimeout, "go", "vet", "./..."); {
+		case err != nil:
+			r.say("WB hook: go vet could not run in %s (%v); CI remains the gate.", moduleLabel(module), err)
+		case code != 0:
 			r.say("WB hook: go vet failed in %s.", moduleLabel(module))
 			failed = true
 		}
@@ -391,7 +488,7 @@ func (r lintRunner) prePushGo() int {
 		if !ok {
 			continue
 		}
-		if r.runGolangci(linter, pin, module, dir, "run", "./...") {
+		if r.runGolangci(linter, pin, module, dir, prePushCheckTimeout, "run", "./...") {
 			failed = true
 		}
 	}
@@ -401,25 +498,35 @@ func (r lintRunner) prePushGo() int {
 	return 0
 }
 
+// golangciIssueLine matches one reported issue's header line,
+// "path:line:col: message (linter)"; a printed source line never has that
+// shape, so matching it cannot be fooled by code that quotes a message.
+var (
+	golangciIssueLine = regexp.MustCompile(`(?m)^\S[^\n]*:\d+:\d+: .*\([A-Za-z0-9_-]+\)$`)
+	exportDataIssue   = regexp.MustCompile(`(?m)^\S[^\n]*:\d+:\d+: .*could not load export data.*\(typecheck\)$`)
+)
+
 // runGolangci runs one golangci-lint invocation and reports whether it found
-// issues. Only exit 1 (issues found) blocks: any other non-zero exit means
-// the linter could not run (a crash, a timeout, a configuration it cannot
-// read), which is reported loudly but left to CI rather than blocking work on
-// a broken tool.
-func (r lintRunner) runGolangci(linter string, pin golangciPin, module, dir string, args ...string) bool {
-	var output bytes.Buffer
-	code, err := r.options.Tools.Governed(dir, nil,
+// issues. Only exit 1 with at least one reported issue blocks: any other
+// outcome means the linter could not lint (a crash, a timeout, a
+// configuration it cannot read, a gateway error, or a pin too old to read
+// this toolchain's export data), which is reported loudly but left to CI
+// rather than blocking work on a broken tool.
+func (r lintRunner) runGolangci(linter string, pin golangciPin, module, dir string, timeout time.Duration, args ...string) bool {
+	var output syncBuffer
+	code, err := r.options.Tools.Governed(dir, nil, timeout,
 		io.MultiWriter(r.options.Stdout, &output), io.MultiWriter(r.options.Stderr, &output),
 		append([]string{linter}, args...)...)
+	reported := output.String()
 	switch {
 	case err != nil:
-		r.say("WB hook: golangci-lint %s could not start in %s (%v); CI remains the lint gate.", pin.Version, moduleLabel(module), err)
-	case code == 1 && strings.Contains(output.String(), "could not load export data"):
+		r.say("WB hook: golangci-lint %s did not complete in %s (%v); CI remains the lint gate.", pin.Version, moduleLabel(module), err)
+	case code == 1 && exportDataIssue.MatchString(reported):
 		// The pinned linter predates this Go toolchain's export data format,
 		// so it reports the standard library itself as a type error. That is
 		// a tool/toolchain mismatch, not a finding in this change.
 		r.say("WB hook: golangci-lint %s cannot read this Go toolchain's export data; its typecheck errors are not findings. Bump the pin in %s (CI uses it too). Skipping golangci-lint in %s, CI remains the lint gate.", pin.Version, pin.Source, moduleLabel(module))
-	case code == 1:
+	case code == 1 && golangciIssueLine.MatchString(reported):
 		r.say("WB hook: golangci-lint %s (%s) found issues in %s.", pin.Version, pin.Source, moduleLabel(module))
 		return true
 	case code == 0, code == 5:
@@ -441,26 +548,20 @@ func (r lintRunner) preCommitGo() int {
 	}
 	packages := map[string][]string{}
 	var modules []string
-	for _, file := range strings.Split(out, "\x00") {
-		if file = strings.TrimSpace(file); file == "" {
-			continue
-		}
+	for _, file := range splitNUL(out) {
 		dir := path.Dir(file)
 		if info, err := os.Stat(r.moduleDir(dir)); err != nil || !info.IsDir() {
 			// A staged package whose directory is gone no longer resolves.
 			continue
 		}
 		module, ok := nearestMarkerDir(r.options.RepoRoot, dir, "go.mod")
-		if !ok || ignoredGoDir(module) {
+		relative := moduleRelative(module, dir)
+		if !ok || ignoredGoDir(module) || ignoredGoDir(relative) {
 			continue
 		}
 		pkg := "."
-		switch {
-		case dir == module:
-		case module == ".":
-			pkg = "./" + dir
-		default:
-			pkg = "./" + strings.TrimPrefix(dir, module+"/")
+		if relative != "." {
+			pkg = "./" + relative
 		}
 		if _, ok := packages[module]; !ok {
 			modules = append(modules, module)
@@ -487,7 +588,7 @@ func (r lintRunner) preCommitGo() int {
 		}
 		targets := packages[module]
 		sort.Strings(targets)
-		if r.runGolangci(linter, pin, module, dir, append(append([]string(nil), args...), targets...)...) {
+		if r.runGolangci(linter, pin, module, dir, preCommitTimeout, append(append([]string(nil), args...), targets...)...) {
 			failed = true
 		}
 	}

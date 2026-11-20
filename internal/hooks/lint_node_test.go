@@ -44,7 +44,7 @@ func TestNodePrePushLintsEveryNxProjectWithoutALocalBase(t *testing.T) {
 	mustMkdirAll(t, filepath.Join(repo, "node_modules"))
 	h := newLintHarness(t, repo)
 	h.terminal = true
-	if code := h.run("pre-push", "node"); code != 0 || !reflect.DeepEqual(h.calls, []string{".|npx --no-install nx run-many -t lint"}) {
+	if code := h.run("pre-push", "node"); code != 0 || !reflect.DeepEqual(h.calls, []string{".|npm exec --no -- nx run-many -t lint"}) {
 		t.Fatalf("exit %d calls %q", code, h.calls)
 	}
 }
@@ -114,7 +114,10 @@ func TestNodePrePushLintsEveryPackageWhenThePushCannotBeRead(t *testing.T) {
 
 func TestNodePrePushSkipsAPushWithoutScriptsOrAtTierZero(t *testing.T) {
 	t.Parallel()
-	repo, head := nodeLintRepo(t, map[string]string{"package.json": `{"scripts":{"lint":"x"}}`, "README.md": "x\n"})
+	repo := lintRepo(t)
+	commitFiles(t, repo, map[string]string{"package.json": `{"scripts":{"lint":"x"}}`})
+	git(t, repo, "push", "-q", "origin", "main")
+	head := commitFiles(t, repo, map[string]string{"README.md": "x\n"})
 	h := newLintHarness(t, repo)
 	if code := h.runWithStdin("pre-push", "node", pushLine("f", head)); code != 0 || len(h.calls) != 0 || !strings.Contains(h.stderr.String(), "changes no JS/TS source") {
 		t.Fatalf("exit %d calls %q", code, h.calls)
@@ -122,6 +125,41 @@ func TestNodePrePushSkipsAPushWithoutScriptsOrAtTierZero(t *testing.T) {
 	h.tier = Classification{Tier: TierSkip, Reason: "checkpoint"}
 	if code := h.runWithStdin("pre-push", "node", pushLine("f", head)); code != 0 || len(h.calls) != 0 {
 		t.Fatalf("tier 0: exit %d calls %q", code, h.calls)
+	}
+}
+
+func TestNodePrePushLintsAfterAConfigurationOnlyChange(t *testing.T) {
+	t.Parallel()
+	for _, config := range []string{"package.json", "tsconfig.base.json", ".eslintrc.json", "eslint.config.mjs", "project.json"} {
+		repo := lintRepo(t)
+		commitFiles(t, repo, map[string]string{"package.json": `{"scripts":{"lint":"x"}}`})
+		git(t, repo, "push", "-q", "origin", "main")
+		mustMkdirAll(t, filepath.Join(repo, "node_modules"))
+		content := "{}\n"
+		if config == "package.json" {
+			content = `{"scripts":{"lint":"y"}}`
+		}
+		head := commitFiles(t, repo, map[string]string{config: content})
+		h := newLintHarness(t, repo)
+		if code := h.runWithStdin("pre-push", "node", pushLine("f", head)); code != 0 || !reflect.DeepEqual(h.calls, []string{".|npm run lint"}) {
+			t.Errorf("%s: exit %d calls %q", config, code, h.calls)
+		}
+	}
+}
+
+func TestNodePrePushLeavesALintThatCannotRunToCI(t *testing.T) {
+	t.Parallel()
+	repo, head := nodeLintRepo(t, map[string]string{"package.json": `{"scripts":{"lint":"x"}}`, "a.js": "x\n", "node_modules/.keep": ""})
+	h := newLintHarness(t, repo)
+	h.exit = func([]string) (int, error) { return 0, errors.New("npm did not finish within 10m0s") }
+	if code := h.runWithStdin("pre-push", "node", pushLine("f", head)); code != 0 || !strings.Contains(h.stderr.String(), "lint could not run in package .") {
+		t.Fatalf("exit %d stderr %q", code, h.stderr.String())
+	}
+	nx, nxHead := nodeLintRepo(t, map[string]string{"nx.json": "{}\n", "a.ts": "x\n", "node_modules/.keep": ""})
+	n := newLintHarness(t, nx)
+	n.exit = h.exit
+	if code := n.runWithStdin("pre-push", "node", pushLine("f", nxHead)); code != 0 || !strings.Contains(n.stderr.String(), "nx lint could not run") {
+		t.Fatalf("nx: exit %d stderr %q", code, n.stderr.String())
 	}
 }
 
@@ -141,7 +179,7 @@ func TestNodeHelpersPickToolsFromTheRepository(t *testing.T) {
 		}
 	}
 	for manager, want := range map[string]string{
-		"pnpm": "pnpm exec nx a", "yarn": "yarn nx a", "bun": "bun x nx a", "npm": "npx --no-install nx a",
+		"pnpm": "pnpm exec nx a", "yarn": "yarn nx a", "bun": "bun x nx a", "npm": "npm exec --no -- nx a",
 	} {
 		if got := strings.Join(execTool(manager, "nx", "a"), " "); got != want {
 			t.Errorf("%s: %q", manager, got)

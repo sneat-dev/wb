@@ -18,6 +18,7 @@ import (
 // unchecked os.Remove the way errcheck does and exits 1, and is otherwise
 // clean. A real linter build needs the network, which an e2e test must not.
 const errcheckLikeLinter = `#!/bin/sh
+printf '%s\n' "$*" >> "$(dirname "$0")/calls.log"
 findings="$(grep -rn --include='*.go' '^[[:space:]]*os.Remove(' . || true)"
 if [ -n "$findings" ]; then
     printf '%s\n' "$findings" | while IFS=: read -r file line _; do
@@ -117,5 +118,15 @@ func TestE2EPrePushLintBlocksAnErrcheckFindingInANestedModule(t *testing.T) {
 	err = upgradeGitRun(t, canonical, hookEnv, "commit", "-m", "purge ignores its error")
 	if err == nil || !strings.Contains(err.Error(), "store/purge.go:6:2: Error return value of `os.Remove` is not checked (errcheck)") {
 		t.Fatalf("the commit hook let an errcheck finding through: %v", err)
+	}
+
+	// Pre-push linted whole modules; pre-commit only the staged package's
+	// changed lines.
+	calls, err := os.ReadFile(filepath.Join(filepath.Dir(linter), "calls.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "run ./...\nrun ./...\nrun --new-from-rev=HEAD ./store\n"; string(calls) != want {
+		t.Fatalf("linter invocations\n got %q\nwant %q", calls, want)
 	}
 }

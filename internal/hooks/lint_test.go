@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/testenv"
 )
@@ -57,7 +58,7 @@ func (h *lintHarness) options(hook, language string) LintOptions {
 				}
 				return captureCommand(dir, env, name, args...)
 			},
-			Governed: func(dir string, env []string, stdout, stderr io.Writer, args ...string) (int, error) {
+			Governed: func(dir string, env []string, _ time.Duration, stdout, stderr io.Writer, args ...string) (int, error) {
 				rel, _ := filepath.Rel(h.repo, dir)
 				h.mu.Lock()
 				h.calls = append(h.calls, filepath.ToSlash(rel)+"|"+strings.Join(args, " "))
@@ -169,7 +170,7 @@ func TestDefaultGovernedSeamRoutesThroughTheWBCommandGateway(t *testing.T) {
 	mustWriteExecutable(t, executable, "#!/bin/sh\nprintf '%s|%s|%s\\n' \"$(pwd -P)\" \"$*\" \"$EXTRA\"\nexit 3\n")
 	var stdout, stderr bytes.Buffer
 	options := withLintDefaults(LintOptions{WBExecutable: executable, ProjectsRoot: "/projects"})
-	code, err := options.Tools.Governed(dir, []string{"EXTRA=yes"}, &stdout, &stderr, "go", "vet", "./...")
+	code, err := options.Tools.Governed(dir, []string{"EXTRA=yes"}, time.Minute, &stdout, &stderr, "go", "vet", "./...")
 	resolved, _ := filepath.EvalSymlinks(dir)
 	if err != nil || code != 3 || stdout.String() != resolved+"|--projects-root /projects run --quiet -- go vet ./...|yes\n" {
 		t.Fatalf("code %d err %v stdout %q", code, err, stdout.String())
@@ -177,11 +178,11 @@ func TestDefaultGovernedSeamRoutesThroughTheWBCommandGateway(t *testing.T) {
 
 	mustWriteExecutable(t, executable, "#!/bin/sh\nprintf '%s\\n' \"$*\"\n")
 	stdout.Reset()
-	code, err = governedCommand(executable, "", &stdout, &stderr, dir, nil, "true")
+	code, err = governedCommand(executable, "", time.Minute, &stdout, &stderr, dir, nil, "true")
 	if err != nil || code != 0 || stdout.String() != "run --quiet -- true\n" {
 		t.Fatalf("code %d err %v stdout %q", code, err, stdout.String())
 	}
-	if _, err := governedCommand(filepath.Join(dir, "absent"), "", &stdout, &stderr, dir, nil, "true"); err == nil {
+	if _, err := governedCommand(filepath.Join(dir, "absent"), "", time.Minute, &stdout, &stderr, dir, nil, "true"); err == nil {
 		t.Fatal("a missing wb executable started")
 	}
 }
@@ -441,12 +442,20 @@ func TestRunGolangciTellsFindingsFromABrokenTool(t *testing.T) {
 		blocks  bool
 		message string
 	}{
-		{name: "issues found", code: 1, blocks: true, message: "found issues in module m"},
-		{name: "export data from a newer toolchain", code: 1, output: "could not load export data: export data version 5", message: "cannot read this Go toolchain's export data"},
+		{name: "issues found", code: 1, output: "a.go:3:2: Error return value is not checked (errcheck)\n", blocks: true, message: "found issues in module m"},
+		{name: "export data from a newer toolchain", code: 1,
+			output:  "cache.go:7:2: could not import io (could not load export data: export data version 5 is greater than maximum supported version 4) (typecheck)\n1 issues:\n",
+			message: "cannot read this Go toolchain's export data"},
+		// A finding whose printed source line merely quotes the phrase is
+		// still a finding: only an issue header line counts.
+		{name: "a finding on a line quoting the export-data message", code: 1,
+			output: "lint.go:414:2: Error return value is not checked (errcheck)\n\tif strings.Contains(out, \"could not load export data\") { // (typecheck)\n",
+			blocks: true, message: "found issues in module m"},
+		{name: "exit 1 without any reported issue", code: 1, output: "error: wb run: admission refused\n", message: "exited 1 in module m without reporting issues"},
 		{name: "clean", code: 0},
 		{name: "no Go files", code: 5},
 		{name: "crash", code: 3, message: "exited 3 in module m without reporting issues"},
-		{name: "cannot start", err: errors.New("exec failed"), message: "could not start in module m"},
+		{name: "cannot start or timed out", err: errors.New("golangci-lint did not finish within 2m0s"), message: "did not complete in module m"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -454,7 +463,7 @@ func TestRunGolangciTellsFindingsFromABrokenTool(t *testing.T) {
 			h.exit = func([]string) (int, error) { return test.code, test.err }
 			h.output = func([]string) string { return test.output }
 			runner := lintRunner{options: withLintDefaults(h.options("pre-push", "go"))}
-			if got := runner.runGolangci("/bin/golangci-lint", pin, "m", h.repo, "run"); got != test.blocks {
+			if got := runner.runGolangci("/bin/golangci-lint", pin, "m", h.repo, time.Minute, "run"); got != test.blocks {
 				t.Fatalf("blocks = %v", got)
 			}
 			if test.message != "" && !strings.Contains(h.stderr.String(), test.message) {
@@ -494,6 +503,7 @@ func TestGoPreCommitLintsOnlyChangedLinesOfTheStagedPackages(t *testing.T) {
 	}
 
 	h.exit = func([]string) (int, error) { return 1, nil }
+	h.output = func([]string) string { return "svc/b.go:1:1: unused variable (unused)\n" }
 	if code := h.run("pre-commit", "go"); code != 1 {
 		t.Fatalf("findings exit %d", code)
 	}
@@ -642,13 +652,13 @@ func TestGolangciBinaryBuildsThePinOnceAndReusesIt(t *testing.T) {
 	}
 	options := withLintDefaults(h.options("pre-push", "go"))
 	governed := options.Tools.Governed
-	options.Tools.Governed = func(dir string, env []string, stdout, stderr io.Writer, args ...string) (int, error) {
+	options.Tools.Governed = func(dir string, env []string, timeout time.Duration, stdout, stderr io.Writer, args ...string) (int, error) {
 		for _, entry := range env {
 			if gobin, ok := strings.CutPrefix(entry, "GOBIN="); ok {
 				mustWriteExecutable(t, filepath.Join(gobin, "golangci-lint"), "#!/bin/sh\n")
 			}
 		}
-		return governed(dir, env, stdout, stderr, args...)
+		return governed(dir, env, timeout, stdout, stderr, args...)
 	}
 	runner := lintRunner{options: options}
 	binary, ok := runner.golangciBinary(pin, h.repo, true)
@@ -659,6 +669,25 @@ func TestGolangciBinaryBuildsThePinOnceAndReusesIt(t *testing.T) {
 	if again, ok := runner.golangciBinary(pin, h.repo, true); !ok || again != want || len(h.calls) != 1 {
 		t.Fatalf("rebuilt: %q %v %q", again, ok, h.calls)
 	}
+}
+
+// buildingOptions makes the harness's `go install` leave a linter in GOBIN,
+// as a real build does.
+func buildingOptions(t *testing.T, h *lintHarness) LintOptions {
+	t.Helper()
+	options := withLintDefaults(h.options("pre-push", "go"))
+	governed := options.Tools.Governed
+	options.Tools.Governed = func(dir string, env []string, timeout time.Duration, stdout, stderr io.Writer, args ...string) (int, error) {
+		for _, entry := range env {
+			if gobin, ok := strings.CutPrefix(entry, "GOBIN="); ok {
+				for _, goos := range []string{"linux", "windows"} {
+					mustWriteExecutable(t, filepath.Join(gobin, golangciExecutableName(goos)), "#!/bin/sh\n")
+				}
+			}
+		}
+		return governed(dir, env, timeout, stdout, stderr, args...)
+	}
+	return options
 }
 
 func TestGolangciBinaryExplainsEveryWayItCanBeUnavailable(t *testing.T) {
@@ -680,6 +709,12 @@ func TestGolangciBinaryExplainsEveryWayItCanBeUnavailable(t *testing.T) {
 		h.goEnv = func(string) (string, error) { return "", errors.New("no go") }
 		check(t, h, h.options("pre-push", "go"), "could not read the Go toolchain version")
 	})
+	t.Run("empty toolchain version", func(t *testing.T) {
+		t.Parallel()
+		h := newLintHarness(t, t.TempDir())
+		h.goEnv = func(string) (string, error) { return "\n", nil }
+		check(t, h, h.options("pre-push", "go"), "printed nothing")
+	})
 	t.Run("no cache directory", func(t *testing.T) {
 		t.Parallel()
 		h := newLintHarness(t, t.TempDir())
@@ -693,18 +728,31 @@ func TestGolangciBinaryExplainsEveryWayItCanBeUnavailable(t *testing.T) {
 		mustWrite(t, filepath.Join(h.cache, "wb"), "file\n")
 		check(t, h, h.options("pre-push", "go"), "could not prepare")
 	})
-	t.Run("cache is read-only", func(t *testing.T) {
-		t.Parallel()
+	readOnlyParent := func(t *testing.T, h *lintHarness, withLock bool) {
+		t.Helper()
 		if runtime.GOOS == "windows" || os.Geteuid() == 0 {
 			t.Skip("permission bits are not enforced here")
 		}
-		h := newLintHarness(t, t.TempDir())
 		parent := filepath.Join(h.cache, "wb", "golangci-lint", "go1.27.4")
 		mustMkdirAll(t, parent)
+		if withLock {
+			mustWrite(t, filepath.Join(parent, "v2.15.0.lock"), "")
+		}
 		if err := os.Chmod(parent, 0o500); err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = os.Chmod(parent, 0o755) })
+	}
+	t.Run("lock cannot be created", func(t *testing.T) {
+		t.Parallel()
+		h := newLintHarness(t, t.TempDir())
+		readOnlyParent(t, h, false)
+		check(t, h, h.options("pre-push", "go"), "could not lock the golangci-lint build")
+	})
+	t.Run("staging cannot be created", func(t *testing.T) {
+		t.Parallel()
+		h := newLintHarness(t, t.TempDir())
+		readOnlyParent(t, h, true)
 		check(t, h, h.options("pre-push", "go"), "could not prepare")
 	})
 	t.Run("build fails", func(t *testing.T) {
@@ -713,37 +761,313 @@ func TestGolangciBinaryExplainsEveryWayItCanBeUnavailable(t *testing.T) {
 		h.exit = func([]string) (int, error) { return 1, nil }
 		check(t, h, h.options("pre-push", "go"), "could not build golangci-lint v2.15.0")
 	})
+	t.Run("build succeeds without producing the linter", func(t *testing.T) {
+		t.Parallel()
+		h := newLintHarness(t, t.TempDir())
+		check(t, h, h.options("pre-push", "go"), "produced no golangci-lint")
+		if entries, _ := os.ReadDir(filepath.Join(h.cache, "wb", "golangci-lint", "go1.27.4")); len(entries) != 1 {
+			t.Fatalf("an empty build was installed: %v", entries)
+		}
+	})
 	t.Run("install target is occupied", func(t *testing.T) {
 		t.Parallel()
 		h := newLintHarness(t, t.TempDir())
 		target := filepath.Join(h.cache, "wb", "golangci-lint", "go1.27.4", "v2.15.0")
 		mustMkdirAll(t, filepath.Dir(target))
 		mustWrite(t, target, "not a directory\n")
-		check(t, h, h.options("pre-push", "go"), "could not install the built golangci-lint")
+		check(t, h, buildingOptions(t, h), "could not install the built golangci-lint")
 	})
 }
 
-func TestGolangciBinaryUsesTheBuildAConcurrentHookFinishedFirst(t *testing.T) {
+func TestGolangciBinaryNamesTheWindowsExecutable(t *testing.T) {
+	t.Parallel()
+	h := newLintHarness(t, t.TempDir())
+	runner := lintRunner{options: buildingOptions(t, h)}
+	runner.options.Tools.GOOS = "windows"
+	binary, ok := runner.golangciBinary(golangciPin{Version: "v2.15.0"}, h.repo, true)
+	if !ok || filepath.Base(binary) != "golangci-lint.exe" {
+		t.Fatalf("binary %q ok %v: %s", binary, ok, h.stderr.String())
+	}
+	if runner.goos() != "windows" || (lintRunner{options: withLintDefaults(LintOptions{})}).goos() != runtime.GOOS {
+		t.Fatal("goos override")
+	}
+}
+
+func TestGolangciBinaryWaitsForABuildAnotherHookHolds(t *testing.T) {
 	t.Parallel()
 	h := newLintHarness(t, t.TempDir())
 	target := filepath.Join(h.cache, "wb", "golangci-lint", "go1.27.4", "v2.15.0")
-	h.exit = func([]string) (int, error) {
-		mustMkdirAll(t, target)
-		mustWriteExecutable(t, filepath.Join(target, "golangci-lint"), "#!/bin/sh\n")
-		return 0, nil
+	mustMkdirAll(t, filepath.Dir(target))
+	unlock, err := lockFile(target + ".lock")
+	if err != nil {
+		t.Fatal(err)
 	}
-	options := withLintDefaults(h.options("pre-push", "go"))
-	governed := options.Tools.Governed
-	options.Tools.Governed = func(dir string, env []string, stdout, stderr io.Writer, args ...string) (int, error) {
-		for _, entry := range env {
-			if gobin, ok := strings.CutPrefix(entry, "GOBIN="); ok {
-				mustWriteExecutable(t, filepath.Join(gobin, "golangci-lint"), "#!/bin/sh\n")
-			}
+	type result struct {
+		binary string
+		ok     bool
+	}
+	done := make(chan result, 1)
+	go func() {
+		runner := lintRunner{options: withLintDefaults(h.options("pre-push", "go"))}
+		binary, ok := runner.golangciBinary(golangciPin{Version: "v2.15.0"}, h.repo, true)
+		done <- result{binary, ok}
+	}()
+	time.Sleep(50 * time.Millisecond)
+	mustMkdirAll(t, target)
+	mustWriteExecutable(t, filepath.Join(target, "golangci-lint"), "#!/bin/sh\n")
+	unlock()
+	got := <-done
+	if !got.ok || got.binary != filepath.Join(target, "golangci-lint") || len(h.calls) != 0 {
+		t.Fatalf("result %#v calls %q", got, h.calls)
+	}
+}
+
+func TestPruneStaleBuildsRemovesOnlyAbandonedBuildsOfThisVersion(t *testing.T) {
+	t.Parallel()
+	parent := t.TempDir()
+	for _, name := range []string{".build-v2.15.0-old", ".build-v2.15.0-new", ".build-v2.14.0-old", "v2.15.0"} {
+		mustMkdirAll(t, filepath.Join(parent, name))
+	}
+	mustWrite(t, filepath.Join(parent, ".build-v2.15.0-file"), "x")
+	old := time.Now().Add(-2 * staleBuildAge)
+	for _, name := range []string{".build-v2.15.0-old", ".build-v2.14.0-old", ".build-v2.15.0-file"} {
+		if err := os.Chtimes(filepath.Join(parent, name), old, old); err != nil {
+			t.Fatal(err)
 		}
-		return governed(dir, env, stdout, stderr, args...)
+	}
+	pruneStaleBuilds(parent, ".build-v2.15.0-", time.Now())
+	var left []string
+	entries, _ := os.ReadDir(parent)
+	for _, entry := range entries {
+		left = append(left, entry.Name())
+	}
+	if want := []string{".build-v2.14.0-old", ".build-v2.15.0-file", ".build-v2.15.0-new", "v2.15.0"}; !reflect.DeepEqual(left, want) {
+		t.Fatalf("left %q", left)
+	}
+	if _, err := lockFile(filepath.Join(parent, "absent", "x.lock")); err == nil {
+		t.Fatal("locked a file in a missing directory")
+	}
+}
+
+func TestPreCommitToolchainProbeNeverDownloads(t *testing.T) {
+	t.Parallel()
+	h := newLintHarness(t, t.TempDir())
+	var probeEnv []string
+	options := withLintDefaults(h.options("pre-commit", "go"))
+	options.Tools.Capture = func(_ string, env []string, _ string, _ ...string) (string, error) {
+		probeEnv = env
+		return "go1.27.4", nil
 	}
 	runner := lintRunner{options: options}
-	if binary, ok := runner.golangciBinary(golangciPin{Version: "v2.15.0"}, h.repo, true); !ok || binary != filepath.Join(target, "golangci-lint") {
-		t.Fatalf("binary %q ok %v: %s", binary, ok, h.stderr.String())
+	if _, ok := runner.golangciBinary(golangciPin{Version: "v2.15.0"}, h.repo, false); ok || !reflect.DeepEqual(probeEnv, []string{"GOPROXY=off"}) {
+		t.Fatalf("probe env %q", probeEnv)
+	}
+}
+
+func TestSyncBufferAcceptsConcurrentWriters(t *testing.T) {
+	t.Parallel()
+	var buffer syncBuffer
+	var group sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			for j := 0; j < 100; j++ {
+				_, _ = buffer.Write([]byte("x"))
+			}
+		}()
+	}
+	group.Wait()
+	if len(buffer.String()) != 800 {
+		t.Fatalf("lost writes: %d", len(buffer.String()))
+	}
+}
+
+func TestGovernedCommandStopsACheckThatOverrunsItsTimeout(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	executable := filepath.Join(dir, "wb")
+	mustWriteExecutable(t, executable, "#!/bin/sh\nexec sleep 5\n")
+	started := time.Now()
+	_, err := governedCommand(executable, "", 100*time.Millisecond, io.Discard, io.Discard, dir, nil, "golangci-lint", "run")
+	if err == nil || !strings.Contains(err.Error(), "golangci-lint did not finish within 100ms") || time.Since(started) > 4*time.Second {
+		t.Fatalf("err %v after %s", err, time.Since(started))
+	}
+}
+
+func TestPushedFilesSeeMergesRenamesForcePushesAndStreamCommits(t *testing.T) {
+	t.Parallel()
+	repo := lintRepo(t)
+	mainTip := commitFiles(t, repo, map[string]string{"backend/go.mod": "module b\n", "backend/a.go": "package b\n", "other/go.mod": "module o\n"})
+	git(t, repo, "push", "-q", "origin", "main")
+	h := newLintHarness(t, repo)
+	runner := lintRunner{options: withLintDefaults(h.options("pre-push", "go"))}
+	files := func(update RefUpdate) []string {
+		t.Helper()
+		got, all := runner.pushedFiles([]RefUpdate{update})
+		if all {
+			t.Fatalf("no base for %#v", update)
+		}
+		return got
+	}
+
+	// A rename reports the path it left, so the old package is checked too.
+	git(t, repo, "mv", "backend/a.go", "other/a.go")
+	git(t, repo, "commit", "-q", "-m", "move")
+	moved := git(t, repo, "rev-parse", "HEAD")
+	if got := files(RefUpdate{LocalSHA: moved, RemoteSHA: mainTip}); !reflect.DeepEqual(got, []string{"backend/a.go", "other/a.go"}) {
+		t.Fatalf("rename: %q", got)
+	}
+
+	// A commit first pushed to a stream branch (Tier 0, unlinted) and then
+	// merged into main still counts when main is pushed.
+	git(t, repo, "checkout", "-q", "-b", "stream/x", mainTip)
+	streamTip := commitFiles(t, repo, map[string]string{"backend/s.go": "package b\n"})
+	git(t, repo, "push", "-q", "origin", "stream/x")
+	git(t, repo, "checkout", "-q", "main")
+	git(t, repo, "reset", "-q", "--hard", mainTip)
+	git(t, repo, "merge", "-q", "--no-ff", "-m", "merge stream", streamTip)
+	merged := git(t, repo, "rev-parse", "HEAD")
+	if got := files(RefUpdate{LocalSHA: merged, RemoteSHA: mainTip}); !reflect.DeepEqual(got, []string{"backend/s.go"}) {
+		t.Fatalf("merge of a stream commit: %q", got)
+	}
+
+	// A force push compares trees, so the files of dropped commits count.
+	git(t, repo, "push", "-q", "origin", merged+":refs/heads/main")
+	git(t, repo, "reset", "-q", "--hard", mainTip)
+	rewritten := commitFiles(t, repo, map[string]string{"other/o.go": "package o\n"})
+	if got := files(RefUpdate{LocalSHA: rewritten, RemoteSHA: merged}); !reflect.DeepEqual(got, []string{"backend/s.go", "other/o.go"}) {
+		t.Fatalf("force push: %q", got)
+	}
+}
+
+func TestGoModuleDiscoverySkipsIgnoredPackagesAndFollowsLinterConfig(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	for _, module := range []string{".", "backend", "emulatortest", "tools/gen"} {
+		mustMkdirAll(t, filepath.Join(repo, module))
+		mustWrite(t, filepath.Join(repo, module, "go.mod"), "module m\n")
+	}
+	if got := goModulesFor(repo, []string{"pkg/testdata/fixture.go", "vendor/x/y.go", "_scratch/z.go"}, false); len(got) != 0 {
+		t.Fatalf("ignored package dirs touched %q", got)
+	}
+	if got := goModulesFor(repo, []string{".golangci.yml"}, false); !reflect.DeepEqual(got, []string{".", "backend", "emulatortest", "tools/gen"}) {
+		t.Fatalf("root config: %q", got)
+	}
+	if got := goModulesFor(repo, []string{"tools/.golangci.yaml"}, false); !reflect.DeepEqual(got, []string{".", "tools/gen"}) {
+		t.Fatalf("nested config: %q", got)
+	}
+	if moduleRelative("backend", "backend") != "." || moduleRelative(".", "a/b") != "a/b" || moduleRelative("backend", "backend/api") != "api" {
+		t.Fatal("moduleRelative")
+	}
+	if got := splitNUL(" lead.go\x00trail.go \x00\x00x.go\n"); !reflect.DeepEqual(got, []string{" lead.go", "trail.go ", "x.go"}) {
+		t.Fatalf("splitNUL %q", got)
+	}
+}
+
+func TestGoPreCommitNeverLintsTestdataOrVendoredPackages(t *testing.T) {
+	t.Parallel()
+	repo := initRepo(t)
+	for name, content := range map[string]string{"go.mod": "module r\n", "pkg/testdata/f.go": "package f\n", "vendor/v/v.go": "package v\n"} {
+		mustMkdirAll(t, filepath.Dir(filepath.Join(repo, name)))
+		mustWrite(t, filepath.Join(repo, name), content)
+	}
+	git(t, repo, "add", "-A")
+	h := newLintHarness(t, repo)
+	h.plantLinter("go1.27.4", DefaultGolangciLintVersion)
+	if code := h.run("pre-commit", "go"); code != 0 || len(h.calls) != 0 {
+		t.Fatalf("exit %d calls %q", code, h.calls)
+	}
+}
+
+func TestGolangciPinRejectsUnsafeOrInexactWorkflowValues(t *testing.T) {
+	t.Parallel()
+	projects := t.TempDir()
+	var gitCalls [][]string
+	capture := func(dir string, _ []string, name string, args ...string) (string, error) {
+		gitCalls = append(gitCalls, append([]string{dir}, args...))
+		return "", errors.New("no clone")
+	}
+	for _, test := range []struct{ version, want, source string }{
+		{"v2.15.0", "v2.15.0", ".github/workflows/ci.yml"},
+		{"2.15.0", "v2.15.0", ".github/workflows/ci.yml"},
+		{"v2.6.0-rc.1", "v2.6.0-rc.1", ".github/workflows/ci.yml"},
+		{"1b907273167eec8b3d84cae636b7798ced4433d5", "1b907273167eec8b3d84cae636b7798ced4433d5", ".github/workflows/ci.yml"},
+		{"v2", DefaultGolangciLintVersion, `pins "v2", which is not an exact version`},
+		{"v2.1", DefaultGolangciLintVersion, `pins "v2.1"`},
+		{"main", DefaultGolangciLintVersion, `pins "main"`},
+		{"..", DefaultGolangciLintVersion, `pins ".."`},
+		{"../../../etc", DefaultGolangciLintVersion, `not an exact version`},
+		{"-O/tmp/x", DefaultGolangciLintVersion, `not an exact version`},
+	} {
+		repo := t.TempDir()
+		mustMkdirAll(t, filepath.Join(repo, ".github", "workflows"))
+		mustWrite(t, filepath.Join(repo, ".github", "workflows", "ci.yml"),
+			"jobs:\n  lint:\n    steps:\n      - uses: golangci/golangci-lint-action-fork@v1\n        with:\n          version: v9.9.9\n      - uses: golangci/golangci-lint-action@v9\n        with:\n          version: '"+test.version+"'\n")
+		pin := resolveGolangciPin(repo, projects, capture)
+		if pin.Version != test.want || !strings.Contains(pin.Source, test.source) {
+			t.Errorf("version %q: pin %#v", test.version, pin)
+		}
+	}
+	for _, uses := range []string{
+		"../../etc/.github/workflows/w.yml@v1",
+		"owner/../.github/workflows/w.yml@v1",
+		"owner/repo/.github/workflows/../../x.yml@v1",
+		"owner/repo/.github/workflows/w.yml@-Ofile",
+		"owner/repo/.github/workflows/w.yml@a..b",
+		"owner/repo/.github/workflows/w.txt@v1",
+		"owner/repo/.github/workflows/w.yml",
+		"owner/.github/workflows/w.yml@v1",
+		".hidden/repo/.github/workflows/w.yml@v1",
+	} {
+		if _, ok := golangciPinFromReusable(uses, projects, capture); ok {
+			t.Errorf("%q resolved", uses)
+		}
+	}
+	if len(gitCalls) != 0 {
+		t.Fatalf("an unsafe reference reached git: %q", gitCalls)
+	}
+	if _, ok := golangciPinFromReusable("owner/repo/.github/workflows/w.yml@v1.2.3", projects, capture); ok || len(gitCalls) != 2 {
+		t.Fatalf("a safe reference was not looked up: %q", gitCalls)
+	}
+	for _, call := range gitCalls {
+		if call[1] != "show" || call[2] != "--end-of-options" || call[3] != "v1.2.3:.github/workflows/w.yml" {
+			t.Fatalf("git call %q", call)
+		}
+	}
+}
+
+func TestLockFileReportsALockTheFilesystemRefuses(t *testing.T) {
+	t.Parallel()
+	refuse := func(int, int) error { return errors.New("locks unsupported") }
+	if _, err := lockFileWith(filepath.Join(t.TempDir(), "x.lock"), refuse); err == nil || err.Error() != "locks unsupported" {
+		t.Fatalf("err %v", err)
+	}
+}
+
+func TestPushedFilesFallsBackWhenThePushedTipIsUnknown(t *testing.T) {
+	t.Parallel()
+	repo := lintRepo(t)
+	h := newLintHarness(t, repo)
+	runner := lintRunner{options: withLintDefaults(h.options("pre-push", "go"))}
+	if files, all := runner.pushedFiles([]RefUpdate{{LocalSHA: strings.Repeat("e", 40), RemoteSHA: git(t, repo, "rev-parse", "HEAD")}}); !all || files != nil {
+		t.Fatalf("files %q all %v", files, all)
+	}
+}
+
+func TestGoPrePushLeavesAVetThatCannotRunToCI(t *testing.T) {
+	t.Parallel()
+	repo := lintRepo(t)
+	head := commitFiles(t, repo, map[string]string{"go.mod": "module r\n", "a.go": "package r\n"})
+	h := newLintHarness(t, repo)
+	h.plantLinter("go1.27.4", DefaultGolangciLintVersion)
+	h.exit = func(args []string) (int, error) {
+		if args[0] == "go" {
+			return 0, errors.New("go did not finish within 10m0s")
+		}
+		return 0, nil
+	}
+	if code := h.runWithStdin("pre-push", "go", pushLine("f", head)); code != 0 || !strings.Contains(h.stderr.String(), "go vet could not run in the root module") {
+		t.Fatalf("exit %d stderr %q", code, h.stderr.String())
 	}
 }
