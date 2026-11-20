@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -167,23 +168,47 @@ func TestDefaultGovernedSeamRoutesThroughTheWBCommandGateway(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	executable := filepath.Join(dir, "wb")
-	mustWriteExecutable(t, executable, "#!/bin/sh\nprintf '%s|%s|%s\\n' \"$(pwd -P)\" \"$*\" \"$EXTRA\"\nexit 3\n")
+	mustWriteExecutable(t, executable, "#!/bin/sh\nprintf '%s|%s|%s\\n' \"$(pwd -P)\" \"$*\" \"$EXTRA\"\necho 'error: go exited with status 3' >&2\nexit 3\n")
 	var stdout, stderr bytes.Buffer
 	options := withLintDefaults(LintOptions{WBExecutable: executable, ProjectsRoot: "/projects"})
 	code, err := options.Tools.Governed(dir, []string{"EXTRA=yes"}, time.Minute, &stdout, &stderr, "go", "vet", "./...")
 	resolved, _ := filepath.EvalSymlinks(dir)
-	if err != nil || code != 3 || stdout.String() != resolved+"|--projects-root /projects run --quiet -- go vet ./...|yes\n" {
+	if err != nil || code != 3 || stdout.String() != resolved+"|--projects-root /projects run --quiet --timeout 1m0s -- go vet ./...|yes\n" {
 		t.Fatalf("code %d err %v stdout %q", code, err, stdout.String())
 	}
 
 	mustWriteExecutable(t, executable, "#!/bin/sh\nprintf '%s\\n' \"$*\"\n")
 	stdout.Reset()
 	code, err = governedCommand(executable, "", time.Minute, &stdout, &stderr, dir, nil, "true")
-	if err != nil || code != 0 || stdout.String() != "run --quiet -- true\n" {
+	if err != nil || code != 0 || stdout.String() != "run --quiet --timeout 1m0s -- true\n" {
 		t.Fatalf("code %d err %v stdout %q", code, err, stdout.String())
 	}
 	if _, err := governedCommand(filepath.Join(dir, "absent"), "", time.Minute, &stdout, &stderr, dir, nil, "true"); err == nil {
 		t.Fatal("a missing wb executable started")
+	}
+	if _, err := governedCommand(executable, "", time.Minute, &stdout, &stderr, dir, nil); err == nil {
+		t.Fatal("an empty command ran")
+	}
+}
+
+func TestGovernedCommandTellsAGatewayFailureFromTheChecksOwnExit(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	executable := filepath.Join(dir, "wb")
+	for name, script := range map[string]string{
+		"admission refused":  "echo 'error: host is saturated' >&2; exit 1",
+		"wb's own timeout":   "echo 'error: golangci-lint did not finish within 1m0s and was stopped' >&2; exit 1",
+		"another command's":  "echo 'error: go exited with status 1' >&2; exit 1",
+		"a different status": "echo 'error: golangci-lint exited with status 2' >&2; exit 1",
+	} {
+		mustWriteExecutable(t, executable, "#!/bin/sh\n"+script+"\n")
+		if code, err := governedCommand(executable, "", time.Minute, io.Discard, io.Discard, dir, nil, "golangci-lint", "run"); err == nil {
+			t.Errorf("%s: read as the check's exit %d", name, code)
+		}
+	}
+	mustWriteExecutable(t, executable, "#!/bin/sh\nprintf 'error: golangci-lint exited with status 1\\r\\n' >&2; exit 1\n")
+	if code, err := governedCommand(executable, "", time.Minute, io.Discard, io.Discard, dir, nil, "golangci-lint", "run"); err != nil || code != 1 {
+		t.Fatalf("the check's own exit: code %d err %v", code, err)
 	}
 }
 
@@ -443,18 +468,26 @@ func TestRunGolangciTellsFindingsFromABrokenTool(t *testing.T) {
 		message string
 	}{
 		{name: "issues found", code: 1, output: "a.go:3:2: Error return value is not checked (errcheck)\n", blocks: true, message: "found issues in module m"},
+		{name: "a column-less finding", code: 1, output: "a.go:3: File is not properly formatted (gofmt)\n", blocks: true, message: "found issues in module m"},
+		{name: "a finding in a format WB cannot parse", code: 1, output: "::error file=a.go,line=3::unused (unused)\r\n", blocks: true, message: "found issues in module m"},
+		{name: "no output at all", code: 1, blocks: true, message: "found issues in module m"},
 		{name: "export data from a newer toolchain", code: 1,
 			output:  "cache.go:7:2: could not import io (could not load export data: export data version 5 is greater than maximum supported version 4) (typecheck)\n1 issues:\n",
 			message: "cannot read this Go toolchain's export data"},
+		{name: "export data with CRLF and colour", code: 1,
+			output:  "\x1b[1mcache.go:7:2\x1b[0m: could not import io (could not load export data: x) (\x1b[34mtypecheck\x1b[0m)\r\n",
+			message: "cannot read this Go toolchain's export data"},
+		{name: "export data in tab format without a column", code: 1,
+			output:  "cache.go:7\ttypecheck\tcould not import io (could not load export data: x)\n",
+			message: "cannot read this Go toolchain's export data"},
 		// A finding whose printed source line merely quotes the phrase is
-		// still a finding: only an issue header line counts.
+		// still a finding: only an issue line counts.
 		{name: "a finding on a line quoting the export-data message", code: 1,
-			output: "lint.go:414:2: Error return value is not checked (errcheck)\n\tif strings.Contains(out, \"could not load export data\") { // (typecheck)\n",
+			output: "lint.go:414:2: Error return value is not checked (errcheck)\n\tif strings.Contains(out, \"could not load export data\") { // typecheck\n",
 			blocks: true, message: "found issues in module m"},
-		{name: "exit 1 without any reported issue", code: 1, output: "error: wb run: admission refused\n", message: "exited 1 in module m without reporting issues"},
 		{name: "clean", code: 0},
 		{name: "no Go files", code: 5},
-		{name: "crash", code: 3, message: "exited 3 in module m without reporting issues"},
+		{name: "crash", code: 3, message: "exited 3 in module m, which is not a lint verdict"},
 		{name: "cannot start or timed out", err: errors.New("golangci-lint did not finish within 2m0s"), message: "did not complete in module m"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -883,15 +916,45 @@ func TestSyncBufferAcceptsConcurrentWriters(t *testing.T) {
 	}
 }
 
-func TestGovernedCommandStopsACheckThatOverrunsItsTimeout(t *testing.T) {
+// TestGovernedCommandStopsAHungCheckAndItsDescendants is the real topology:
+// wb's child spawns a grandchild that keeps the output pipe open, and wb does
+// not stop it (an older wb, or one that hung). The hook must still return,
+// and must stop the whole tree rather than orphan the grandchild.
+func TestGovernedCommandStopsAHungCheckAndItsDescendants(t *testing.T) {
 	t.Parallel()
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("process groups are a Darwin/Linux feature")
+	}
 	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "grandchild.pid")
 	executable := filepath.Join(dir, "wb")
-	mustWriteExecutable(t, executable, "#!/bin/sh\nexec sleep 5\n")
+	mustWriteExecutable(t, executable, "#!/bin/sh\n/bin/sh -c 'sleep 30 & echo $! > \""+pidFile+"\"; wait' &\nsleep 30\n")
+	var stdout syncBuffer
 	started := time.Now()
-	_, err := governedCommand(executable, "", 100*time.Millisecond, io.Discard, io.Discard, dir, nil, "golangci-lint", "run")
-	if err == nil || !strings.Contains(err.Error(), "golangci-lint did not finish within 100ms") || time.Since(started) > 4*time.Second {
-		t.Fatalf("err %v after %s", err, time.Since(started))
+	_, err := governedCommandWithGrace(executable, "", 500*time.Millisecond, 100*time.Millisecond, &stdout, &stdout, dir, nil, "golangci-lint", "run")
+	elapsed := time.Since(started)
+	if err == nil || !strings.Contains(err.Error(), "golangci-lint did not finish within 500ms") || elapsed > 5*time.Second {
+		t.Fatalf("err %v after %s", err, elapsed)
+	}
+	content, readErr := os.ReadFile(pidFile)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	var pid int
+	if _, err := fmt.Sscan(string(content), &pid); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		process, _ := os.FindProcess(pid)
+		if process.Signal(syscall.Signal(0)) != nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			_ = process.Kill()
+			t.Fatalf("grandchild %d survived the timeout", pid)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
@@ -993,6 +1056,7 @@ func TestGolangciPinRejectsUnsafeOrInexactWorkflowValues(t *testing.T) {
 		{"2.15.0", "v2.15.0", ".github/workflows/ci.yml"},
 		{"v2.6.0-rc.1", "v2.6.0-rc.1", ".github/workflows/ci.yml"},
 		{"1b907273167eec8b3d84cae636b7798ced4433d5", "1b907273167eec8b3d84cae636b7798ced4433d5", ".github/workflows/ci.yml"},
+		{"1B907273", "1B907273", ".github/workflows/ci.yml"},
 		{"v2", DefaultGolangciLintVersion, `pins "v2", which is not an exact version`},
 		{"v2.1", DefaultGolangciLintVersion, `pins "v2.1"`},
 		{"main", DefaultGolangciLintVersion, `pins "main"`},
@@ -1019,6 +1083,9 @@ func TestGolangciPinRejectsUnsafeOrInexactWorkflowValues(t *testing.T) {
 		"owner/repo/.github/workflows/w.yml",
 		"owner/.github/workflows/w.yml@v1",
 		".hidden/repo/.github/workflows/w.yml@v1",
+		"owner/./.github/workflows/w.yml@v1",
+		"owner/-repo/.github/workflows/w.yml@v1",
+		"owner/.-x/.github/workflows/w.yml@v1",
 	} {
 		if _, ok := golangciPinFromReusable(uses, projects, capture); ok {
 			t.Errorf("%q resolved", uses)
@@ -1027,12 +1094,15 @@ func TestGolangciPinRejectsUnsafeOrInexactWorkflowValues(t *testing.T) {
 	if len(gitCalls) != 0 {
 		t.Fatalf("an unsafe reference reached git: %q", gitCalls)
 	}
-	if _, ok := golangciPinFromReusable("owner/repo/.github/workflows/w.yml@v1.2.3", projects, capture); ok || len(gitCalls) != 2 {
-		t.Fatalf("a safe reference was not looked up: %q", gitCalls)
-	}
-	for _, call := range gitCalls {
-		if call[1] != "show" || call[2] != "--end-of-options" || call[3] != "v1.2.3:.github/workflows/w.yml" {
-			t.Fatalf("git call %q", call)
+	for _, uses := range []string{"owner/repo/.github/workflows/w.yml@v1.2.3", "sneat-dev/.github/.github/workflows/w.yml@v1.2.3"} {
+		gitCalls = nil
+		if _, ok := golangciPinFromReusable(uses, projects, capture); ok || len(gitCalls) != 2 {
+			t.Fatalf("%s was not looked up: %q", uses, gitCalls)
+		}
+		for _, call := range gitCalls {
+			if call[1] != "show" || call[2] != "--end-of-options" || call[3] != "v1.2.3:.github/workflows/w.yml" {
+				t.Fatalf("git call %q", call)
+			}
 		}
 	}
 }

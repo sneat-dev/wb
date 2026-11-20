@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/console"
+	"github.com/sneat-dev/wb/internal/process"
 	"github.com/sneat-dev/wb/internal/streambranch"
 )
 
@@ -158,34 +159,57 @@ func captureCommand(dir string, env []string, name string, args ...string) (stri
 	return string(out), nil
 }
 
+// gatewayGrace is how long past a check's own deadline the hook waits for
+// `wb run --timeout` to stop the check before stopping wb itself.
+const gatewayGrace = 15 * time.Second
+
 // governedCommand routes one check through `wb run --` so it is admitted
 // against the shared CPU budget and recorded like every other governed
 // command, preserving the checked command's exit code.
+//
+// The deadline is passed to `wb run --timeout`, which owns the check's
+// process group and stops all of it. As a backstop the hook runs wb in its
+// own process group and stops that group gatewayGrace later, with a bounded
+// wait for any descendant still holding an output pipe.
+//
+// A non-zero exit is the check's own only when wb says so ("<command> exited
+// with status N"); any other failure is wb's (a refusal, a timeout, a broken
+// gateway) and is returned as an error, never as a finding.
 func governedCommand(executable, projectsRoot string, timeout time.Duration, stdout, stderr io.Writer, dir string, env []string, args ...string) (int, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	return governedCommandWithGrace(executable, projectsRoot, timeout, gatewayGrace, stdout, stderr, dir, env, args...)
+}
+
+func governedCommandWithGrace(executable, projectsRoot string, timeout, grace time.Duration, stdout, stderr io.Writer, dir string, env []string, args ...string) (int, error) {
+	if len(args) == 0 {
+		return 0, errors.New("no command to run")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout+grace)
 	defer cancel()
 	full := []string{}
 	if projectsRoot != "" {
 		full = append(full, "--projects-root", projectsRoot)
 	}
-	full = append(append(full, "run", "--quiet", "--"), args...)
-	cmd := exec.CommandContext(ctx, executable, full...)
+	full = append(append(full, "run", "--quiet", "--timeout", timeout.String(), "--"), args...)
+	var gatewayOutput syncBuffer
+	cmd := process.CommandContextInteractive(ctx, console.IsTerminal(stdout) || console.IsTerminal(stderr), executable, full...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), env...)
 	cmd.Stdout = stdout
-	cmd.Stderr = stderr
+	cmd.Stderr = io.MultiWriter(stderr, &gatewayOutput)
 	err := cmd.Run()
 	if ctx.Err() != nil {
 		return 0, fmt.Errorf("%s did not finish within %s", args[0], timeout)
 	}
 	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		return exitErr.ExitCode(), nil
-	}
-	if err != nil {
+	if !errors.As(err, &exitErr) {
 		return 0, err
 	}
-	return 0, nil
+	code := exitErr.ExitCode()
+	childExit := regexp.MustCompile(`(?m)^error: ` + regexp.QuoteMeta(args[0]) + ` exited with status ` + fmt.Sprint(code) + `\r?$`)
+	if !childExit.MatchString(gatewayOutput.String()) {
+		return 0, fmt.Errorf("wb run did not complete %s (exit %d)", args[0], code)
+	}
+	return code, nil
 }
 
 type lintRunner struct {
@@ -387,10 +411,11 @@ func moduleRelative(module, dir string) string {
 // golangci-lint finds it by walking up from each. With all set, every module
 // in the repository is returned.
 func goModulesFor(repoRoot string, files []string, all bool) []string {
-	modulesInRepo := allMarkerDirs(repoRoot, "go.mod", ignoredGoDir)
 	if all {
-		return modulesInRepo
+		return allMarkerDirs(repoRoot, "go.mod", ignoredGoDir)
 	}
+	var modulesInRepo []string
+	walked := false
 	seen := map[string]bool{}
 	var modules []string
 	add := func(module string) {
@@ -405,6 +430,10 @@ func goModulesFor(repoRoot string, files []string, all bool) []string {
 		}
 		dir := path.Dir(file)
 		if isGolangciConfig(file) {
+			if !walked {
+				// Walk the repository only when a linter configuration changed.
+				modulesInRepo, walked = allMarkerDirs(repoRoot, "go.mod", ignoredGoDir), true
+			}
 			for _, module := range modulesInRepo {
 				if dir == "." || module == dir || strings.HasPrefix(module, dir+"/") {
 					add(module)
@@ -498,41 +527,51 @@ func (r lintRunner) prePushGo() int {
 	return 0
 }
 
-// golangciIssueLine matches one reported issue's header line,
-// "path:line:col: message (linter)"; a printed source line never has that
-// shape, so matching it cannot be fooled by code that quotes a message.
+// exportDataIssue matches golangci-lint's report that it cannot read the
+// toolchain's export data: an issue line (path:line[:col], any text format)
+// from the typecheck linter carrying the importer's own message. Colour
+// escapes and CRLF line ends are ignored.
 var (
-	golangciIssueLine = regexp.MustCompile(`(?m)^\S[^\n]*:\d+:\d+: .*\([A-Za-z0-9_-]+\)$`)
-	exportDataIssue   = regexp.MustCompile(`(?m)^\S[^\n]*:\d+:\d+: .*could not load export data.*\(typecheck\)$`)
+	issuePosition = regexp.MustCompile(`^[^\s:]+:\d+(?::\d+)?[:\s]`)
+	ansiEscape    = regexp.MustCompile(`\x1b\[[0-9;?]*[A-Za-z]`)
 )
 
+func exportDataIssue(output string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		if issuePosition.MatchString(line) && strings.Contains(line, "could not load export data") && strings.Contains(line, "typecheck") {
+			return true
+		}
+	}
+	return false
+}
+
 // runGolangci runs one golangci-lint invocation and reports whether it found
-// issues. Only exit 1 with at least one reported issue blocks: any other
-// outcome means the linter could not lint (a crash, a timeout, a
-// configuration it cannot read, a gateway error, or a pin too old to read
-// this toolchain's export data), which is reported loudly but left to CI
-// rather than blocking work on a broken tool.
+// issues. golangci-lint's exit 1 ("issues found") blocks unless the failure
+// is positively identified as the tool's own: a pin too old to read this
+// toolchain's export data. Anything that is not golangci-lint's verdict at
+// all (a crash exit, a timeout, a wb gateway error) is reported loudly and
+// left to CI rather than blocking work on a broken tool.
 func (r lintRunner) runGolangci(linter string, pin golangciPin, module, dir string, timeout time.Duration, args ...string) bool {
 	var output syncBuffer
 	code, err := r.options.Tools.Governed(dir, nil, timeout,
 		io.MultiWriter(r.options.Stdout, &output), io.MultiWriter(r.options.Stderr, &output),
 		append([]string{linter}, args...)...)
-	reported := output.String()
+	reported := strings.ReplaceAll(ansiEscape.ReplaceAllString(output.String(), ""), "\r", "")
 	switch {
 	case err != nil:
 		r.say("WB hook: golangci-lint %s did not complete in %s (%v); CI remains the lint gate.", pin.Version, moduleLabel(module), err)
-	case code == 1 && exportDataIssue.MatchString(reported):
+	case code == 1 && exportDataIssue(reported):
 		// The pinned linter predates this Go toolchain's export data format,
 		// so it reports the standard library itself as a type error. That is
 		// a tool/toolchain mismatch, not a finding in this change.
 		r.say("WB hook: golangci-lint %s cannot read this Go toolchain's export data; its typecheck errors are not findings. Bump the pin in %s (CI uses it too). Skipping golangci-lint in %s, CI remains the lint gate.", pin.Version, pin.Source, moduleLabel(module))
-	case code == 1 && golangciIssueLine.MatchString(reported):
+	case code == 1:
 		r.say("WB hook: golangci-lint %s (%s) found issues in %s.", pin.Version, pin.Source, moduleLabel(module))
 		return true
 	case code == 0, code == 5:
 		// 5: no Go files to analyse.
 	default:
-		r.say("WB hook: golangci-lint %s exited %d in %s without reporting issues; it could not lint this module, CI remains the lint gate.", pin.Version, code, moduleLabel(module))
+		r.say("WB hook: golangci-lint %s exited %d in %s, which is not a lint verdict; it could not lint this module, CI remains the lint gate.", pin.Version, code, moduleLabel(module))
 	}
 	return false
 }

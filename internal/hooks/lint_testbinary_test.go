@@ -3,6 +3,7 @@ package hooks
 import (
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -30,17 +31,19 @@ func actAsWBForHookTemplates(args []string) (int, bool) {
 		}
 		executable, _ := os.Executable()
 		return Lint(LintOptions{Hook: *hook, Language: *language, ProjectsRoot: projectsRoot, WBExecutable: executable}), true
-	case len(args) >= 5 && args[0] == "run" && args[3] == "go" && args[4] == "install":
-		// Building the pinned linter needs the network; under test it is
-		// always "offline", so a template test never downloads anything.
-		return 1, true
-	case len(args) >= 4 && args[0] == "run" && args[1] == "--quiet" && args[2] == "--":
-		cmd := exec.Command(args[3], args[4:]...)
+	case len(args) >= 6 && args[0] == "run" && args[1] == "--quiet" && args[2] == "--timeout" && args[4] == "--":
+		command := args[5:]
+		if len(command) >= 2 && command[0] == "go" && command[1] == "install" {
+			// Building the pinned linter needs the network; under test it is
+			// always "offline", so a template test never downloads anything.
+			return childExit(command[0], 1), true
+		}
+		cmd := exec.Command(command[0], command[1:]...)
 		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 		err := cmd.Run()
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			return exitErr.ExitCode(), true
+			return childExit(command[0], exitErr.ExitCode()), true
 		}
 		if err != nil {
 			return 127, true
@@ -48,4 +51,11 @@ func actAsWBForHookTemplates(args []string) (int, bool) {
 		return 0, true
 	}
 	return 0, false
+}
+
+// childExit reports a failed child exactly as `wb run` does, so the hook can
+// tell the command's own exit from a gateway failure.
+func childExit(name string, code int) int {
+	_, _ = fmt.Fprintf(os.Stderr, "error: %s exited with status %d\n", name, code)
+	return code
 }

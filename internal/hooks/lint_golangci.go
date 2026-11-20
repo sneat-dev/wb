@@ -106,7 +106,7 @@ func golangciPinFromWorkflow(content []byte, source, projectsRoot string, captur
 
 var (
 	exactSemver  = regexp.MustCompile(`^v?([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)$`)
-	commitSHA    = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
+	commitSHA    = regexp.MustCompile(`^[0-9a-fA-F]{7,40}$`)
 	safeRepoName = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*$`)
 	safeRef      = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_./-]*$`)
 	workflowFile = regexp.MustCompile(`^\.github/workflows/[A-Za-z0-9_][A-Za-z0-9_.-]*\.ya?ml$`)
@@ -144,10 +144,12 @@ func golangciPinFromReusable(uses, projectsRoot string, capture func(string, []s
 		return golangciPin{}, false
 	}
 	owner, repo, file := parts[0], parts[1], parts[2]
-	for _, name := range []string{owner, repo} {
-		if !safeRepoName.MatchString(name) || strings.Contains(name, "..") {
-			return golangciPin{}, false
-		}
+	// A repository may start with "." (an organisation's ".github" workflow
+	// repository); an owner may not. Neither may be "." or "..", contain
+	// "..", or start with "-".
+	if !safeRepoName.MatchString(owner) || strings.Contains(owner, "..") ||
+		!safeRepoName.MatchString(strings.TrimPrefix(repo, ".")) || strings.Contains(repo, "..") {
+		return golangciPin{}, false
 	}
 	if !workflowFile.MatchString(file) || !safeRef.MatchString(ref) || strings.Contains(ref, "..") {
 		return golangciPin{}, false
