@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -113,6 +114,31 @@ func (pins *pinChanges) unpaired() string {
 	return ""
 }
 
+// addedKey returns the first key (in sorted order, so the reason is stable)
+// added more often than it was removed, and "" when every added key was paired
+// with a removal of the same key. Pairing is by key over everything recorded,
+// never by position, so a line that moves (a re-sort) is a replacement.
+func (pins *pinChanges) addedKey() string {
+	keys := make([]string, 0, len(pins.added))
+	for id, count := range pins.added {
+		if count > pins.removed[id] {
+			keys = append(keys, id)
+		}
+	}
+	if len(keys) == 0 {
+		return ""
+	}
+	sort.Strings(keys)
+	return keys[0]
+}
+
+// newDirectDependencyReason is the refusal for a direct dependency the change
+// introduces: a bump replaces the version of a dependency the repository
+// already chose, and choosing a new one is a decision a reviewer records.
+func newDirectDependencyReason(name, dependency string) string {
+	return name + " adds new direct dependency " + trimForMessage(dependency) + "; needs a recorded review"
+}
+
 // verify returns the refusal for an unpaired pin and starts the next hunk.
 func (pins *pinChanges) verify(name string) string {
 	id := pins.unpaired()
@@ -177,7 +203,9 @@ func sectionFromHunkHeader(line string) []string {
 // whole module is built with — none of which a batch verification can stand in
 // for a reviewer on.
 func nonMechanicalGoModule(name, patch string) string {
-	for _, line := range changedPatchLines(patch) {
+	direct := newPinChanges()
+	for _, changed := range signedPatchLines(patch) {
+		line := changed[1:]
 		fields := strings.Fields(line)
 		if len(fields) == 0 {
 			continue
@@ -187,7 +215,29 @@ func nonMechanicalGoModule(name, patch string) string {
 			return name + " changes a " + fields[0] + " directive, which rewrites what the module graph resolves to"
 		case "go", "toolchain":
 			return name + " changes the " + fields[0] + " directive, which changes how the whole module is built"
+		case "module":
+			return name + " changes the module directive, which renames the module every consumer imports"
 		}
+		if strings.Contains(line, "=>") {
+			// A `replace` entry inside a `replace (` block has no keyword.
+			return name + " changes a replace directive, which rewrites what the module graph resolves to"
+		}
+		if fields[0] == "require" {
+			fields = fields[1:]
+		}
+		// A block opener or closer, a comment and a one-word line (an entry of
+		// a `retract` block) are not a requirement.
+		if len(fields) < 2 || fields[0] == "(" || strings.HasPrefix(fields[0], "//") {
+			continue
+		}
+		if len(fields) >= 4 && fields[2] == "//" && fields[3] == "indirect" {
+			// A transitive requirement a bump brings in or drops.
+			continue
+		}
+		direct.record(changed[0], fields[0])
+	}
+	if dependency := direct.addedKey(); dependency != "" {
+		return newDirectDependencyReason(name, dependency)
 	}
 	return ""
 }
@@ -207,6 +257,9 @@ func nonMechanicalGoModule(name, patch string) string {
 func nonMechanicalWorkspace(name, patch, content string) string {
 	top, group := "", ""
 	pins := newPinChanges()
+	// catalogued pairs catalog entries over the whole file: a catalog entry is
+	// a direct dependency of every package that says `catalog:`.
+	catalogued := newPinChanges()
 	for _, line := range strings.Split(patch, "\n") {
 		if strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---") {
 			continue
@@ -259,9 +312,23 @@ func nonMechanicalWorkspace(name, patch, content string) string {
 			return name + " changes " + trimForMessage(trimmed) + " inside " + top +
 				", which is not the version of a pin"
 		}
+		if top == "catalog" || top == "catalogs" {
+			catalogued.record(line[0], top+"\x00"+group+"\x00"+key)
+			continue
+		}
 		pins.record(line[0], top+"\x00"+group+"\x00"+key)
 	}
-	return pins.verify(name)
+	if reason := pins.verify(name); reason != "" {
+		return reason
+	}
+	if id := catalogued.addedKey(); id != "" {
+		return newDirectDependencyReason(name, id[strings.LastIndex(id, "\x00")+1:])
+	}
+	if id := catalogued.unpaired(); id != "" {
+		return name + " removes the catalog entry " + trimForMessage(id[strings.LastIndex(id, "\x00")+1:]) +
+			" instead of changing the version of an existing one"
+	}
+	return ""
 }
 
 // workspaceTopAt returns the top-level YAML key enclosing the start of line
@@ -334,6 +401,22 @@ func changedPatchLines(patch string) []string {
 			continue
 		}
 		lines = append(lines, strings.TrimSpace(line[1:]))
+	}
+	return lines
+}
+
+// signedPatchLines is changedPatchLines with the diff marker kept as the first
+// byte of each line: `+` for an added line, `-` for a removed one.
+func signedPatchLines(patch string) []string {
+	lines := make([]string, 0, 8)
+	for _, line := range strings.Split(patch, "\n") {
+		if len(line) == 0 || line[0] != '+' && line[0] != '-' {
+			continue
+		}
+		if strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---") {
+			continue
+		}
+		lines = append(lines, line[:1]+strings.TrimSpace(line[1:]))
 	}
 	return lines
 }
@@ -420,9 +503,12 @@ func ClassifyMechanicalPullRequest(files []ChangedFile, pr PullRequest) Mechanic
 // list was read, undone by a force-push before the merge, would otherwise get
 // the benign head classified while the original lands.
 func staleHeadRefusal(file ChangedFile, headSHA string) string {
-	if headSHA == "" || file.ContentsURL == "" {
+	if headSHA == "" {
 		return ""
 	}
+	// An empty `contents_url` is not "nothing to compare": GitHub always sends
+	// one, so its absence means the file list is not what the API returned and
+	// the commit it was read at cannot be proved.
 	parsed, err := url.Parse(file.ContentsURL)
 	if err != nil || parsed.Query().Get("ref") != headSHA {
 		return file.Filename + " was read at a different commit than the pull request head " + trimForMessage(headSHA)
@@ -491,6 +577,9 @@ func nonMechanicalContent(name, patch, content string) string {
 	// carry that section, which is why they are read rather than skipped.
 	section := make([]string, 0, 4)
 	pins := newPinChanges()
+	// direct pairs, over the whole file, the dependency keys the patch removes
+	// with the ones it adds (a re-sort moves a line between hunks).
+	direct := newPinChanges()
 	for _, line := range strings.Split(patch, "\n") {
 		if strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---") {
 			continue
@@ -576,8 +665,15 @@ func nonMechanicalContent(name, patch, content string) string {
 		if !looksLikeDependencyEntry(value) {
 			return name + " changes " + key + " to something that is not a version range: " + trimForMessage(value)
 		}
+		direct.record(line[0], enclosing+"\x00"+key)
 	}
-	return pins.verify(name)
+	if reason := pins.verify(name); reason != "" {
+		return reason
+	}
+	if dependency := direct.addedKey(); dependency != "" {
+		return newDirectDependencyReason(name, dependency[strings.Index(dependency, "\x00")+1:])
+	}
+	return ""
 }
 
 // hunkNewStart reads the first line number of the new side of a hunk header,
@@ -655,6 +751,12 @@ func looksLikeDependencyEntry(value string) bool {
 	}
 	if strings.ContainsAny(decoded, ":/@") && !strings.HasPrefix(decoded, "workspace:") && !strings.HasPrefix(decoded, "catalog:") {
 		return false
+	}
+	if rest, ok := strings.CutPrefix(decoded, "workspace:"); ok {
+		// `workspace:../../evil` and `workspace:@scope/other@1` are paths and
+		// aliases, not a version: only the three bare specifiers and a plain
+		// version or range point at a package of this workspace.
+		return rest == "*" || rest == "^" || rest == "~" || strictPinVersion(rest)
 	}
 	switch decoded[0] {
 	case '^', '~', '>', '<', '=', '*':

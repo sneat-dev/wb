@@ -88,7 +88,7 @@ func TestWorkspaceChangesAreDenyByDefaultAndOnlyAnExistingPinsVersionIsMechanica
 		{name: "a pin indented too deep", patch: "@@ -1 +1 @@\n overrides:\n-    semver: 7.5.0\n+    semver: 7.6.0\n", want: "not the version of a pin"},
 		{name: "a catalogs entry indented as a group", patch: "@@ -1 +1 @@\n catalogs:\n-  react: 7.5.0\n+  react: 7.6.0\n", want: "not the version of a pin"},
 		{name: "a new catalogs group", patch: "@@ -1 +1 @@\n catalogs:\n+  react17:\n", want: "not the version of a pin"},
-		{name: "the same key in two groups cannot be swapped silently", patch: "@@ -1 +1 @@\n catalogs:\n   a:\n-    react: 1.0.0\n   b:\n+    react: 1.0.1\n", want: "adds, removes or renames the pin"},
+		{name: "the same key in two groups cannot be swapped silently", patch: "@@ -1 +1 @@\n catalogs:\n   a:\n-    react: 1.0.0\n   b:\n+    react: 1.0.1\n", want: "adds new direct dependency react"},
 		{name: "a dangerous build setting", patch: "@@ -1 +1 @@\n-dangerouslyAllowAllBuilds: false\n+dangerouslyAllowAllBuilds: true\n", want: "top-level line"},
 		{name: "a new onlyBuiltDependencies entry", patch: "@@ -1 +1,2 @@ onlyBuiltDependencies:\n   - esbuild\n+  - evil\n", want: "outside overrides"},
 		{name: "a new workspace glob", patch: "@@ -1 +1,2 @@\n packages:\n+  - evil/*\n", want: "outside overrides"},
@@ -162,7 +162,7 @@ func TestStaleHeadFilesAreRefused(t *testing.T) {
 		"another commit":          {"https://api.github.com/repos/o/r/contents/go.sum?ref=bbbb", false},
 		"no ref":                  {"https://api.github.com/repos/o/r/contents/go.sum", false},
 		"an unparseable url":      {"https://api.github.com/%zz?ref=" + head, false},
-		"no url to check against": {"", true},
+		"no url to check against": {"", false},
 	} {
 		file := manifest
 		file.ContentsURL = test.url
@@ -200,14 +200,15 @@ func TestPinSectionsAcceptOnlyAReplacedPinWithAPlainRegistryVersion(t *testing.T
 		{name: "a new overrides block", patch: "@@ -1 +1 @@\n+  \"overrides\": {\n+    \"lodash\": \"github:evil/lodash\"\n+  }\n", want: "not a dependency section"},
 		{name: "a rewritten overrides opener", patch: "@@ -1 +1 @@\n-  \"overrides\": {\n+  \"overrides\": {\n", want: "not a dependency section"},
 		{name: "pins in two hunks are paired per hunk", patch: "@@ -1 +1 @@\n" + opener("overrides") + pin("-", "", "a", "1.0.0") + "@@ -9 +9 @@\n" + opener("overrides") + pin("+", "", "a", "1.0.1"), want: "adds, removes or renames the pin"},
-		{name: "a new dependency entry with a plain version stays mechanical", patch: "@@ -1 +1 @@\n" + opener("dependencies") + pin("+", "", "lodash", "4.17.21")},
+		{name: "a new dependency entry with a plain version stays mechanical", patch: "@@ -1 +1 @@\n" + opener("dependencies") + pin("+", "", "lodash", "4.17.21"), want: "adds new direct dependency lodash; needs a recorded review"},
 		{name: "a new dependency entry with github", patch: "@@ -1 +1 @@\n" + opener("dependencies") + pin("+", "", "lodash", "github:evil/lodash"), want: "not a version range"},
 		{name: "a dependency changed to an npm alias", patch: "@@ -1 +1 @@\n" + opener("dependencies") + pin("-", "", "lodash", "4.0.0") + pin("+", "", "lodash", "npm:evil@1.0.0"), want: "not a version range"},
 		{name: "a dependency range hiding a protocol", patch: "@@ -1 +1 @@\n" + opener("dependencies") + pin("+", "", "lodash", "1.0.0||npm:evil@1"), want: "not a version range"},
 		{name: "a dependency to a git url", patch: "@@ -1 +1 @@\n" + opener("dependencies") + pin("+", "", "lodash", "git+https://evil.test/l.git"), want: "not a version range"},
 		{name: "a dependency to a path", patch: "@@ -1 +1 @@\n" + opener("dependencies") + pin("+", "", "lodash", "link:../evil"), want: "not a version range"},
 		{name: "a dependency to an http tarball", patch: "@@ -1 +1 @@\n" + opener("dependencies") + pin("+", "", "lodash", "https://evil.test/l.tgz"), want: "not a version range"},
-		{name: "a dependency to a workspace package stays mechanical", patch: "@@ -1 +1 @@\n" + opener("dependencies") + pin("+", "", "lodash", "workspace:*")},
+		{name: "a dependency to a workspace package stays mechanical", patch: "@@ -1 +1 @@\n" + opener("dependencies") + pin("+", "", "lodash", "workspace:*"), want: "adds new direct dependency lodash"},
+		{name: "a dependency replaced with a workspace package stays mechanical", patch: "@@ -1 +1 @@\n" + opener("dependencies") + pin("-", "", "lodash", "4.0.0") + pin("+", "", "lodash", "workspace:*")},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
