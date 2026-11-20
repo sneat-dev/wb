@@ -287,7 +287,7 @@ func nonMechanicalGoModule(name, patch, content string) string {
 		}
 		// A removed line is not in the file the hunk leaves behind, so it does
 		// not move the block the following lines are in.
-		newSide := !(len(raw) > 0 && raw[0] == '-')
+		newSide := len(raw) == 0 || raw[0] != '-'
 		directive := block.directive
 		switch {
 		case fields[0] == ")":
@@ -307,7 +307,7 @@ func nonMechanicalGoModule(name, patch, content string) string {
 				block = goBlock{directive: fields[0], known: true}
 			}
 			continue
-		case goDirectives[fields[0]] && !(block.known && block.directive != ""):
+		case goDirectives[fields[0]] && (!block.known || block.directive == ""):
 			// A single-line directive can only stand at top level.
 			if newSide {
 				block = goBlock{known: true}
