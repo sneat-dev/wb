@@ -310,7 +310,7 @@ func ClassifyMechanicalPullRequest(files []ChangedFile, pr PullRequest) Mechanic
 			}
 			continue
 		}
-		if inCodeDirectory(name) && !(pr.byDependencyBot() && goFixtureManifest(name)) {
+		if inCodeDirectory(name) && (!pr.byDependencyBot() || !goFixtureManifest(name)) {
 			verdict.Mechanical = false
 			verdict.NonManifest = append(verdict.NonManifest, name)
 			verdict.Reasons = append(verdict.Reasons,
