@@ -10,11 +10,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/sneat-dev/wb/internal/repopath"
-	"github.com/sneat-dev/wb/internal/worktreelayout"
-
 	"github.com/sneat-dev/wb/internal/filewrite"
+	"github.com/sneat-dev/wb/internal/repopath"
 	unix "github.com/sneat-dev/wb/internal/unixcompat"
+	"github.com/sneat-dev/wb/internal/worktreelayout"
 	"github.com/sneat-dev/wb/internal/worktreesecure"
 )
 
@@ -416,9 +415,17 @@ func (lock OperationLock) Release(options ...OperationLockPorts) error {
 		return nil
 	}
 	// Every return gives up ownership. Close alone can leave the flock held
-	// through a forked child's copy of this open file description, so the
-	// deferred cleanup unlocks before closing even when retirement failed.
-	defer unlockAndClose(lock.file)
+	// through a forked child's copy of this open file description, so an
+	// early return unlocks before closing even when retirement failed; the
+	// success path below has already unlocked and only closes.
+	unlocked := false
+	defer func() {
+		if unlocked {
+			_ = lock.file.Close()
+			return
+		}
+		unlockAndClose(lock.file)
+	}()
 	if !LockEntryStillMatches(lock.directory, ".lock", lock.identity) {
 		return fmt.Errorf("operation lock changed before retirement")
 	}
@@ -430,6 +437,7 @@ func (lock OperationLock) Release(options ...OperationLockPorts) error {
 	}
 	// A fork or duplicate can retain this open-file-description after Close.
 	// Unlock only the owned inode after its exact retirement has succeeded.
+	unlocked = true
 	if err := unix.Flock(int(lock.file.Fd()), unix.LOCK_UN); err != nil {
 		return fmt.Errorf("unlock retired operation lock: %w", err)
 	}
@@ -441,6 +449,9 @@ func (lock OperationLock) Release(options ...OperationLockPorts) error {
 // child (between fork and exec) still shares the open file description, which
 // makes a following acquisition see a live holder.
 func unlockAndClose(file *os.File) {
+	if file == nil {
+		return
+	}
 	_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
 	_ = file.Close()
 }

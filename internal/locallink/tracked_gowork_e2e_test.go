@@ -133,80 +133,9 @@ func TestE2EUndoRestoresATrackedGoWorkALinkOverwrote(t *testing.T) {
 	}
 }
 
-func TestE2EClassifyGoWorkJudgesTheWorktreePathNotTheRepositoryRoot(t *testing.T) {
-	t.Parallel()
-	repository := initGuardTestRepository(t)
-	writeGuardTestFile(t, repository, goWorkFile, committedWorkspace)
-	commitGuardTestRepository(t, repository)
-	nested := filepath.Join(repository, "app")
-	writeGuardTestFile(t, nested, goWorkFile, "go 1.27\n\nuse /elsewhere/library\n")
-	if got, err := ClassifyGoWork(nested); err != nil || got != GoWorkUntracked {
-		t.Fatalf("ClassifyGoWork(nested) = (%q, %v), want untracked", got, err)
-	}
-	if got, err := ClassifyGoWork(repository); err != nil || got != GoWorkCommitted {
-		t.Fatalf("ClassifyGoWork(root) = (%q, %v), want committed", got, err)
-	}
-}
-
-// Git failing is never read as "not committed": undo would remove a tracked
-// file. An unborn HEAD and a directory outside any checkout are the only
-// failures that genuinely mean nothing is tracked.
-
-func TestE2EGitPathExistsAtHEADKeepsTheGitDiagnostic(t *testing.T) {
-	t.Parallel()
-	worktree := t.TempDir()
-	writeGuardTestFile(t, worktree, ".git", "gitdir: "+filepath.Join(t.TempDir(), "pruned")+"\n")
-	_, err := gitPathExistsAtHEAD(worktree, goWorkFile)
-	// Git's wording differs between versions; its "fatal:" prefix does not.
-	if err == nil || !strings.Contains(err.Error(), "fatal:") {
-		t.Fatalf("err = %v, want git's own diagnostic kept", err)
-	}
-}
-
-func TestE2EHasLiveLinkReportsAGoWorkWhoseProvenanceCannotBeRead(t *testing.T) {
-	t.Parallel()
-	worktree := t.TempDir()
-	writeGuardTestFile(t, worktree, goWorkFile, "go 1.27\n\nuse /elsewhere/library\n")
-	failed := errors.New("git is gone")
-	_, err := hasLiveLinkWith(nil, worktree, headFiles{exists: func(string, string) (bool, error) { return false, failed }})
-	if !errors.Is(err, failed) {
-		t.Fatalf("err = %v, want the provenance failure", err)
-	}
-}
-
-func TestE2EClassifyGoWorkReportsProvenanceAndGitFailures(t *testing.T) {
-	t.Parallel()
-	failed := errors.New("git is gone")
-	yes := func(string, string) (bool, error) { return true, nil }
-	no := func(string, string) (bool, error) { return false, nil }
-	broken := func(string, string) (bool, error) { return false, failed }
-	cases := []struct {
-		name      string
-		files     headFiles
-		want      GoWorkProvenance
-		wantError bool
-	}{
-		{"untracked", headFiles{exists: no}, GoWorkUntracked, false},
-		{"committed", headFiles{exists: yes, unchanged: yes}, GoWorkCommitted, false},
-		{"modified", headFiles{exists: yes, unchanged: no}, GoWorkModified, false},
-		{"presence unknown", headFiles{exists: broken}, "", true},
-		{"difference unknown", headFiles{exists: yes, unchanged: broken}, "", true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			got, err := tc.files.classify("/worktree", goWorkFile)
-			if (err != nil) != tc.wantError || got != tc.want {
-				t.Fatalf("classify = (%q, %v), want (%q, error %v)", got, err, tc.want, tc.wantError)
-			}
-		})
-	}
-	// The exported entry point reads real Git: a plain directory has no HEAD.
-	if got, err := ClassifyGoWork(t.TempDir()); err != nil || got != GoWorkUntracked {
-		t.Fatalf("ClassifyGoWork(non-repository) = (%q, %v), want untracked", got, err)
-	}
-}
-
+// The link guard's refusal for a go.work no stream records never names
+// `--undo`, which cannot clear it, and never names a command that deletes a
+// tracked file.
 func TestE2EHasLiveLinkNamesAHonestRemedyForAnUnrecordedGoWork(t *testing.T) {
 	t.Parallel()
 
@@ -276,6 +205,29 @@ func TestE2EHasLiveLinkNamesAHonestRemedyForAnUnrecordedGoWork(t *testing.T) {
 	})
 }
 
+func TestE2EHasLiveLinkReportsAGoWorkWhoseProvenanceCannotBeRead(t *testing.T) {
+	t.Parallel()
+	worktree := t.TempDir()
+	writeGuardTestFile(t, worktree, goWorkFile, "go 1.27\n\nuse /elsewhere/library\n")
+	failed := errors.New("git is gone")
+	_, err := hasLiveLinkWith(nil, worktree, headFiles{exists: func(string, string) (bool, error) { return false, failed }})
+	if !errors.Is(err, failed) {
+		t.Fatalf("err = %v, want the provenance failure", err)
+	}
+}
+
+func TestE2EGitRestoreFromHEADReportsAFailure(t *testing.T) {
+	t.Parallel()
+	err := gitRestoreFromHEAD(t.TempDir(), goWorkFile)
+	// The failure must be git's own, not a missing git binary.
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || errors.Is(err, exec.ErrNotFound) || !strings.Contains(err.Error(), "fatal:") {
+		t.Fatalf("err = %v, want git's own failure outside a repository", err)
+	}
+}
+
+// The `wb worktree end` half: a committed, unchanged workspace is repository
+// content; untracked or modified ones still refuse with an honest remedy.
 func TestE2ERetirementGoWorkSignalIgnoresOnlyACommittedUnchangedWorkspace(t *testing.T) {
 	t.Parallel()
 
@@ -334,7 +286,28 @@ func TestE2ERetirementGoWorkSignalIgnoresOnlyACommittedUnchangedWorkspace(t *tes
 
 // Provenance is judged at the worktree's own path: a committed go.work at the
 // repository root says nothing about an untracked one in a subdirectory.
+func TestE2EClassifyGoWorkJudgesTheWorktreePathNotTheRepositoryRoot(t *testing.T) {
+	t.Parallel()
+	repository := initGuardTestRepository(t)
+	writeGuardTestFile(t, repository, goWorkFile, committedWorkspace)
+	commitGuardTestRepository(t, repository)
+	nested := filepath.Join(repository, "app")
+	writeGuardTestFile(t, nested, goWorkFile, "go 1.27\n\nuse /elsewhere/library\n")
+	if got, err := ClassifyGoWork(nested); err != nil || got != GoWorkUntracked {
+		t.Fatalf("ClassifyGoWork(nested) = (%q, %v), want untracked", got, err)
+	}
+	if got, err := ClassifyGoWork(repository); err != nil || got != GoWorkCommitted {
+		t.Fatalf("ClassifyGoWork(root) = (%q, %v), want committed", got, err)
+	}
+	// The exported entry point reads real Git: a plain directory has no HEAD.
+	if got, err := ClassifyGoWork(t.TempDir()); err != nil || got != GoWorkUntracked {
+		t.Fatalf("ClassifyGoWork(non-repository) = (%q, %v), want untracked", got, err)
+	}
+}
 
+// Git failing is never read as "not committed": undo would remove a tracked
+// file. An unborn HEAD and a directory outside any checkout are the only
+// failures that genuinely mean nothing is tracked.
 func TestE2EGitPathExistsAtHEADNeverReadsAGitFailureAsAbsent(t *testing.T) {
 	t.Parallel()
 
@@ -369,5 +342,14 @@ func TestE2EGitPathExistsAtHEADNeverReadsAGitFailureAsAbsent(t *testing.T) {
 	})
 }
 
-// An inherited GIT_DIR or index would aim the HEAD probes at another
-// repository, where a tracked go.work reads as absent; they are stripped.
+// The Git diagnostic of the failed listing survives into the error.
+func TestE2EGitPathExistsAtHEADKeepsTheGitDiagnostic(t *testing.T) {
+	t.Parallel()
+	worktree := t.TempDir()
+	writeGuardTestFile(t, worktree, ".git", "gitdir: "+filepath.Join(t.TempDir(), "pruned")+"\n")
+	_, err := gitPathExistsAtHEAD(worktree, goWorkFile)
+	// Git's wording differs between versions; its "fatal:" prefix does not.
+	if err == nil || !strings.Contains(err.Error(), "fatal:") {
+		t.Fatalf("err = %v, want git's own diagnostic kept", err)
+	}
+}
