@@ -35,7 +35,7 @@ func TestMechanicalIsDecidedFromContent(t *testing.T) {
 			{Filename: "go.sum", Patch: "@@\n-x v1 h1:a=\n+x v2 h1:b=\n"},
 		}, true},
 		{"a scripts edit inside a manifest", []ChangedFile{{Filename: "package.json", Patch: scriptsOnly}}, false},
-		{"a pnpm override", []ChangedFile{{Filename: "package.json", Patch: overrides}}, false},
+		{"a pnpm override version pin", []ChangedFile{{Filename: "package.json", Patch: overrides}}, true},
 		{"a manifest under testdata", []ChangedFile{{Filename: "internal/x/testdata/package.json", Patch: versionOnly}}, false},
 		{"a manifest beside a source file", []ChangedFile{
 			{Filename: "go.mod", Patch: "@@\n-require x v1\n+require x v2\n"},
@@ -53,14 +53,27 @@ func TestMechanicalIsDecidedFromContent(t *testing.T) {
 				"+    \"@sneat/extensions\": \"0.38.4\",\n" +
 				"     \"rxjs\": \"7.8.1\"",
 		}}, true},
-		// Graph rewrites are never a version bump, in any manifest.
+		// Dependency pins are a version bump wherever the manager keeps them.
 		{"an npm overrides block", []ChangedFile{{
 			Filename: "package.json",
 			Patch:    "@@ -20,7 +20,7 @@   \"overrides\": {\n-    \"semver\": \"7.5.4\"\n+    \"semver\": \"7.6.0\"",
-		}}, false},
+		}}, true},
 		{"a yarn resolutions block", []ChangedFile{{
 			Filename: "package.json",
 			Patch:    "@@ -20,7 +20,7 @@   \"resolutions\": {\n-    \"semver\": \"7.5.4\"\n+    \"semver\": \"7.6.0\"",
+		}}, true},
+		// Everything else that rewrites the graph is still a decision.
+		{"a packageExtensions edit", []ChangedFile{{
+			Filename: "package.json",
+			Patch:    "@@ -20,7 +20,7 @@   \"packageExtensions\": {\n-    \"semver\": \"7.5.4\"\n+    \"semver\": \"7.6.0\"",
+		}}, false},
+		{"an override rewritten to a script", []ChangedFile{{
+			Filename: "package.json",
+			Patch:    "@@ -20,7 +20,7 @@   \"overrides\": {\n-    \"semver\": \"7.5.4\"\n+    \"semver\": \"node evil.js\"",
+		}}, false},
+		{"a workflow file", []ChangedFile{{
+			Filename: ".github/workflows/release.yml",
+			Patch:    "@@ -1 +1 @@\n-version: v2.1.0\n+version: v2.2.0",
 		}}, false},
 		{"a go.mod replace directive", []ChangedFile{{
 			Filename: "go.mod",
@@ -73,6 +86,19 @@ func TestMechanicalIsDecidedFromContent(t *testing.T) {
 		{"a pnpm-workspace overrides block", []ChangedFile{{
 			Filename: "pnpm-workspace.yaml",
 			Patch:    "@@ -1,4 +1,4 @@\n overrides:\n-  semver: 7.5.4\n+  semver: 7.6.0",
+		}}, true},
+		{"a pnpm-workspace packageExtensions block", []ChangedFile{{
+			Filename: "pnpm-workspace.yaml",
+			Patch:    "@@ -1,4 +1,4 @@ packageExtensions:\n-  semver: 7.5.4\n+  semver: 7.6.0",
+		}}, false},
+		{"a deep package.json bump when the head content places the hunk", []ChangedFile{{
+			Filename: "package.json",
+			Patch:    "@@ -4,5 +4,5 @@\n     \"b\": \"1.0.0\",\n-    \"c\": \"1.0.0\",\n+    \"c\": \"1.0.1\",\n     \"d\": \"1.0.0\"\n   }",
+			Content:  "{\n  \"name\": \"x\",\n  \"dependencies\": {\n    \"a\": \"1.0.0\",\n    \"b\": \"1.0.0\",\n    \"c\": \"1.0.1\",\n    \"d\": \"1.0.0\"\n  }\n}\n",
+		}}, true},
+		{"the same deep hunk without head content cannot be placed", []ChangedFile{{
+			Filename: "package.json",
+			Patch:    "@@ -4,5 +4,5 @@\n     \"b\": \"1.0.0\",\n-    \"c\": \"1.0.0\",\n+    \"c\": \"1.0.1\",\n     \"d\": \"1.0.0\"\n   }",
 		}}, false},
 		{"a plain go.mod require bump", []ChangedFile{{
 			Filename: "go.mod",
