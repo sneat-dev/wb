@@ -37,3 +37,26 @@ func TestHooksLintPassesTheHookAndLanguageAndExitsWithTheVerdict(t *testing.T) {
 		t.Fatalf("stdin %q", input)
 	}
 }
+
+// The built-in pre-commit template runs `wb hooks lint` with the commit's
+// index in WB_GIT_INDEX_FILE (wb#993); the command hands it to the lint.
+func TestHooksLintReadsTheCommitsIndexFromWBGitIndexFile(t *testing.T) {
+	t.Setenv("WB_GIT_INDEX_FILE", "/repo/.git/index.lock")
+	f := fakeCommands()
+	var got hooks.LintOptions
+	f.git.Lint = func(options hooks.LintOptions) int {
+		got = options
+		return 0
+	}
+	f.git.Exit = func(int) {}
+	cmd := New(f.runtime, f.git, f.life, f.agent)
+	cmd.SetArgs([]string{"lint", "--hook", "pre-commit", "--language", "go"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if got.IndexFile != "/repo/.git/index.lock" {
+		t.Fatalf("IndexFile = %q", got.IndexFile)
+	}
+}

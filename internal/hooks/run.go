@@ -222,6 +222,9 @@ func runTemplateInjected(policy Policy, block HookBlock, options RunOptions, con
 		"WB_HOOK_REPORT_ROOT=" + layout.ReportRoot,
 		"WB_EXECUTABLE=" + wbExecutable,
 		"WB_PROJECTS_ROOT=" + options.ProjectsRoot,
+		// Always set, even empty, so a value inherited from an outer hook
+		// never describes this repository's commit.
+		"WB_GIT_INDEX_FILE=" + hookIndexFile(policy.RepoRoot),
 	}
 	// GOPATH, GOCACHE, GOMODCACHE, GOTMPDIR, TMPDIR and XDG_CACHE_HOME are
 	// deliberately NOT overridden. Go's build and module caches, and
@@ -266,6 +269,20 @@ var gitGeneratedEnvironmentVars = []string{
 	"GIT_COMMON_DIR",
 	"GIT_OBJECT_DIRECTORY",
 	"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+}
+
+// hookIndexFile is the index Git handed this hook in GIT_INDEX_FILE, as an
+// absolute path, or "" when there is none. For `git commit -a`,
+// `git commit <paths>` and `git commit --only` it is a temporary index that
+// holds what is actually being committed. Git runs a hook from the top of the
+// working tree, so a relative value is resolved against repoRoot. It reaches
+// the built-in blocks as WB_GIT_INDEX_FILE, never as GIT_INDEX_FILE. (wb#993)
+func hookIndexFile(repoRoot string) string {
+	index := os.Getenv("GIT_INDEX_FILE")
+	if index == "" || filepath.IsAbs(index) {
+		return index
+	}
+	return filepath.Join(repoRoot, index)
 }
 
 func gitDirectoryEnvironmentCleared(environment []string) []string {

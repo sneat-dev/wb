@@ -2366,7 +2366,14 @@ templates run with `/bin/sh` and need not be executable. Copy and adapt
 [`examples/hooks-policy/`](examples/hooks-policy/). Templates receive
 `WB_HOOK`, `WB_PROFILE`, `WB_BLOCK`, `WB_REPO_ROOT`, `WB_REPO_SLUG`,
 `WB_HEAD_SHA`, `WB_BRANCH`, `WB_HOOKS_CONFIG`, and `WB_HOOK_METRICS_PATH`, plus
-the original Git hook arguments and standard input. `wb hooks check` displays
+the original Git hook arguments and standard input. Git's `GIT_DIR`,
+`GIT_INDEX_FILE` and other location variables are cleared, so a template that
+runs Git in another repository is not redirected. `WB_GIT_INDEX_FILE` carries
+the absolute path of the index Git handed the hook, or is empty. `git commit
+-a`, `git commit <paths>` and `git commit --only` stage the commit in a
+temporary index, so a staged check must read it explicitly:
+`GIT_INDEX_FILE="$WB_GIT_INDEX_FILE" git diff --cached` (when non-empty). The
+built-in templates do this. `wb hooks check` displays
 the detected profiles and exact block order; `--json` exposes the same data.
 
 #### Local user sections around WB

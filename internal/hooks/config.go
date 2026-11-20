@@ -370,10 +370,28 @@ func validateResolvedHook(subject string, hook ResolvedHook) error {
 	return nil
 }
 
+// stagedDiffShell defines wb_staged_diff, the built-in pre-commit templates'
+// `git diff --cached`. `git commit -a`, `git commit <paths>` and
+// `git commit --only` stage the commit in a temporary index and point the hook
+// at it with GIT_INDEX_FILE. hooks.Run clears GIT_INDEX_FILE from every block
+// (see gitGeneratedEnvironmentVars) and hands the index over as
+// WB_GIT_INDEX_FILE instead, so only this one git call reads it: without it
+// the staged checks read the real index, see nothing staged, and pass. Nothing
+// else the block starts -- go vet, a formatter, a linter -- inherits it.
+// (wb#993)
+const stagedDiffShell = `wb_staged_diff() {
+    if [ -n "${WB_GIT_INDEX_FILE:-}" ]; then
+        GIT_INDEX_FILE="$WB_GIT_INDEX_FILE" git diff --cached "$@"
+    else
+        git diff --cached "$@"
+    fi
+}
+`
+
 func builtinTemplate(name string) (string, bool) {
 	switch name {
 	case BuiltinPreCommit:
-		return "#!/bin/sh\nset -eu\ngit diff --cached --check\n", true
+		return "#!/bin/sh\nset -eu\n" + stagedDiffShell + "wb_staged_diff --check\n", true
 	case BuiltinPrePush:
 		return "#!/bin/sh\nset -eu\ngit diff --check\n", true
 	// A commit is a save point, not a release gate: the commit hook runs
@@ -383,13 +401,13 @@ func builtinTemplate(name string) (string, bool) {
 	case BuiltinNodePreCommit:
 		return `#!/bin/sh
 set -eu
-if [ ! -f package.json ]; then
+` + stagedDiffShell + `if [ ! -f package.json ]; then
     exit 0
 fi
 if ! command -v node >/dev/null 2>&1; then
     exit 0
 fi
-changed="$(git diff --cached --name-only --diff-filter=ACMR -z -- \
+changed="$(wb_staged_diff --name-only --diff-filter=ACMR -z -- \
     '*.js' '*.jsx' '*.mjs' '*.cjs' '*.ts' '*.tsx' '*.json' '*.css' '*.scss' '*.html' '*.md' \
     | tr '\0' '\n')"
 if [ -z "$changed" ]; then
@@ -447,7 +465,7 @@ fi
 		// module so a commit stays a save point measured in seconds.
 		return `#!/bin/sh
 set -eu
-changed="$(git diff --cached --name-only --diff-filter=ACMR -- '*.go')"
+` + stagedDiffShell + `changed="$(wb_staged_diff --name-only --diff-filter=ACMR -- '*.go')"
 if [ -z "$changed" ]; then
     exit 0
 fi

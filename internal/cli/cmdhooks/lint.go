@@ -1,6 +1,8 @@
 package cmdhooks
 
 import (
+	"os"
+
 	"github.com/sneat-dev/wb/internal/hooks"
 	"github.com/spf13/cobra"
 )
@@ -20,6 +22,7 @@ func (family commands) newHooksLintCmd() *cobra.Command {
 				Hook: hook, Language: language,
 				ProjectsRoot: family.runtime.Flags().ProjectsRoot,
 				WBExecutable: family.git.Executable(),
+				IndexFile:    os.Getenv("WB_GIT_INDEX_FILE"),
 				Stdin:        cmd.InOrStdin(), Stdout: cmd.OutOrStdout(), Stderr: cmd.ErrOrStderr(),
 			}))
 			return nil
