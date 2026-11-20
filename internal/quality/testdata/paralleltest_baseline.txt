@@ -1108,8 +1108,6 @@ internal/orchestrate::TestAcknowledgeAbsorbedConflictRefusals/source content div
 internal/orchestrate::TestAcknowledgeAbsorbedConflictRefusals/source worktree still exists	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/orchestrate::TestAcknowledgeAbsorbedConflictRefusals/wrong status refuses	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/orchestrate::TestAcknowledgeAbsorbedConflictTamperedAcknowledgementLeavesLaneBlocked	serial pending case-by-case review (sneat-dev/wb#623 baseline)
-internal/orchestrate::TestAcknowledgeDiscardedInterruptedPreparingFreesLane	serial pending case-by-case review (sneat-dev/wb#623 baseline)
-internal/orchestrate::TestAcknowledgeDiscardedPreparedCandidateFreesLane	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/orchestrate::TestAcknowledgeLandedFailedValidationPreservesAdvancedSources	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/orchestrate::TestAcknowledgeLandedFailureAcceptsOlderClaimBaseOnlyWhenItIsAnAncestor	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/orchestrate::TestAcknowledgeLandedFailureRefusesNonAncestorClaimBaseAndIdentityMismatch	kept serial because a nested subtest must stay serial: non-ancestor claim base
@@ -1141,7 +1139,6 @@ internal/orchestrate::TestAcknowledgeStrandedPullRequestLandingRefusesDivergedRe
 internal/orchestrate::TestAcknowledgeStrandedPullRequestLandingRefusesHeadThatDoesNotContainCandidate	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/orchestrate::TestAcknowledgeStrandedPullRequestLandingRefusesSquashTreeMismatch	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/orchestrate::TestAcknowledgeStrandedPullRequestLandingRefusesWhenNotProvenMerged	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
-internal/orchestrate::TestAcknowledgeUnpublishedValidationFailureFreesLane	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/orchestrate::TestAcknowledgeWorktreeMergeReceiptCollisionRefusesMismatchedEvidenceWithoutWrite	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/orchestrate::TestAcquireOperationLockPreservesAmbiguousLinks	kept serial because a nested subtest must stay serial: #1
 internal/orchestrate::TestAcquireOperationLockPreservesAmbiguousLinks/#1	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
@@ -1162,6 +1159,9 @@ internal/orchestrate::TestApplyRecordedWorktreeMergeRouteBeforeFirstResolve	seri
 internal/orchestrate::TestAwaitLandablePullRequestSkippedRequiredCheckAlwaysPasses	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/orchestrate::TestCandidateChecksProgressReportsGitHubAutoMergeNotFailed	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/orchestrate::TestClassifyApprovedBy	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/orchestrate::TestClassifyPullRequestChangeAcceptsBotWorkflowBumpOnlyWhenEveryCommitIsVerifiedAndByABot	kept serial because a nested subtest must stay serial: #1
+internal/orchestrate::TestClassifyPullRequestChangeAcceptsBotWorkflowBumpOnlyWhenEveryCommitIsVerifiedAndByABot/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/orchestrate::TestClassifyPullRequestChangeRefusesAnUnknownHeadAndFilesReadAtAnotherCommit	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/orchestrate::TestCleanupWorktreeMergeAssetsTerminalizesSourceWithReceiptProvenSquashLanding	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/orchestrate::TestCleanupWorktreeMergeReceiptProofRefusesBrokenLinks	kept serial because a nested subtest must stay serial: #1
 internal/orchestrate::TestCleanupWorktreeMergeReceiptProofRefusesBrokenLinks/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
@@ -1479,6 +1479,8 @@ internal/orchestrate::TestPublishedRebatchPreservesEvidenceAcrossFastForwardTarg
 internal/orchestrate::TestPublishedRebatchRefusesRewoundOrLandedTarget	kept serial because a nested subtest must stay serial: #1
 internal/orchestrate::TestPublishedRebatchRefusesRewoundOrLandedTarget/#1	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/orchestrate::TestPublishedRebatchTargetRaceRetainsDurableCandidateReceipt	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
+internal/orchestrate::TestPullRequestChangedFilesCarryHeadContentOfPackageManifestsOnly	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/orchestrate::TestPullRequestChangedFilesLeaveContentEmptyWhenTheHeadFileCannotBeRead	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/orchestrate::TestReadReviewCommentTextPrefersLiteralThenFile	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/orchestrate::TestReceiptCollisionAcknowledgementRevalidatesClaimAtRebatchAndCleanup	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/orchestrate::TestRecordDeferredValidationCheckSkippedFindingReplacesRatherThanAppends	serial pending case-by-case review (sneat-dev/wb#623 baseline)

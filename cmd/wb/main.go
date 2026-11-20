@@ -287,7 +287,7 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"deps propagate local": true,
 		"ci audit":             true,
 		"hooks install":        true, "hooks check": true, "hooks repair": true, "hooks run": true,
-		"hooks measure":            true,
+		"hooks measure": true, "hooks lint": true,
 		"hooks lifecycle backfill": true,
 		"hooks agent pre-tool-use": true, "hooks agent install": true,
 		"coverage": true, "verify": true, "check": true, "status": true, "disk": true,

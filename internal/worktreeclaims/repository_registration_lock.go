@@ -3,9 +3,10 @@ package worktreeclaims
 import (
 	"errors"
 	"fmt"
-	unix "github.com/sneat-dev/wb/internal/unixcompat"
 	"os"
 	"time"
+
+	unix "github.com/sneat-dev/wb/internal/unixcompat"
 )
 
 const RepositoryRegistrationLockName = "wb-worktree-registration.lock"
@@ -82,6 +83,9 @@ func (lock *RepositoryRegistrationLock) Release() error {
 	if lock == nil || lock.file == nil {
 		return nil
 	}
+	// Unlock first: a child forked concurrently (before its exec) shares this
+	// open file description and would otherwise keep the lock held.
+	_ = unix.Flock(int(lock.file.Fd()), unix.LOCK_UN)
 	err := lock.file.Close()
 	lock.file = nil
 	return err

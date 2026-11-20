@@ -1,3 +1,5 @@
+//go:build e2e
+
 package main
 
 import (
@@ -110,12 +112,12 @@ func writeCIWaitFilterExecutable(t *testing.T, script string) string {
 	return bin
 }
 
-// TestCIWaitWorkflowFilterSelectsOnlyThatWorkflowsCheckRuns covers two
+// TestE2ECIWaitWorkflowFilterSelectsOnlyThatWorkflowsCheckRuns covers two
 // required behaviours together: the --workflow filter selects only that
 // workflow's check runs, and required-check completeness is evaluated only
 // over the required checks the filter selects, so the perpetually pending
 // "deploy" check from another workflow never blocks a pass.
-func TestCIWaitWorkflowFilterSelectsOnlyThatWorkflowsCheckRuns(t *testing.T) {
+func TestE2ECIWaitWorkflowFilterSelectsOnlyThatWorkflowsCheckRuns(t *testing.T) {
 	writeCIWaitFilterExecutable(t, ciWaitTwoWorkflowScript)
 	var stdout, stderr bytes.Buffer
 	code := run([]string{
@@ -143,11 +145,11 @@ func TestCIWaitWorkflowFilterSelectsOnlyThatWorkflowsCheckRuns(t *testing.T) {
 	}
 }
 
-// TestCIWaitCheckGlobFilterSelectsMatchingChecks covers the --check glob
+// TestE2ECIWaitCheckGlobFilterSelectsMatchingChecks covers the --check glob
 // (WB's own hand-rolled matcher, not path.Match or regexp — see
 // simpleGlobMatch) and confirms a pending check outside the selection
 // ("lint") never blocks the pass.
-func TestCIWaitCheckGlobFilterSelectsMatchingChecks(t *testing.T) {
+func TestE2ECIWaitCheckGlobFilterSelectsMatchingChecks(t *testing.T) {
 	script := `#!/bin/sh
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
   echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'
@@ -195,13 +197,13 @@ exit 30
 	}
 }
 
-// TestCIWaitFilterMatchingNothingDoesNotPass covers the required "a filter
+// TestE2ECIWaitFilterMatchingNothingDoesNotPass covers the required "a filter
 // matching nothing does not pass" behaviour (sneat-dev/wb#627 M2, red-team
 // finding on PR #629): it stays pending with a diagnostic that only says
 // nothing has registered YET — never that it "will not match later" or is
 // "not found", since WB cannot know that from an absence and a late
 // workflow_run-triggered workflow can still register within the slice.
-func TestCIWaitFilterMatchingNothingDoesNotPass(t *testing.T) {
+func TestE2ECIWaitFilterMatchingNothingDoesNotPass(t *testing.T) {
 	writeCIWaitFilterExecutable(t, ciWaitTwoWorkflowTerminalScript)
 	var stdout, stderr bytes.Buffer
 	code := run([]string{
@@ -235,12 +237,12 @@ func TestCIWaitFilterMatchingNothingDoesNotPass(t *testing.T) {
 	}
 }
 
-// TestCIWaitFilterFailureInsideSubsetFails covers the required "a failure
+// TestE2ECIWaitFilterFailureInsideSubsetFails covers the required "a failure
 // inside the subset fails" behaviour, and (sneat-dev/wb#627 M1, red-team
 // finding on PR #629) that the "filter" block is present on a FAILED result
 // too, not only a passed one — the filter block is set before the first
 // possible return, not filled in only on the terminal path.
-func TestCIWaitFilterFailureInsideSubsetFails(t *testing.T) {
+func TestE2ECIWaitFilterFailureInsideSubsetFails(t *testing.T) {
 	script := `#!/bin/sh
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
   echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'
@@ -308,9 +310,9 @@ exit 30
 	}
 }
 
-// TestCIWaitFilterResumeArgsCarryFiltersSafelyQuoted covers the required
+// TestE2ECIWaitFilterResumeArgsCarryFiltersSafelyQuoted covers the required
 // "the resume command carries the filters, and quoting is safe" behaviour.
-func TestCIWaitFilterResumeArgsCarryFiltersSafelyQuoted(t *testing.T) {
+func TestE2ECIWaitFilterResumeArgsCarryFiltersSafelyQuoted(t *testing.T) {
 	script := `#!/bin/sh
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
   echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'
@@ -377,9 +379,9 @@ exit 30
 	}
 }
 
-// TestCIWaitFilterJSONBlockPresentOnlyWhenFiltered covers the required "the
+// TestE2ECIWaitFilterJSONBlockPresentOnlyWhenFiltered covers the required "the
 // JSON filter block is present only when filtered" behaviour.
-func TestCIWaitFilterJSONBlockPresentOnlyWhenFiltered(t *testing.T) {
+func TestE2ECIWaitFilterJSONBlockPresentOnlyWhenFiltered(t *testing.T) {
 	writeCIWaitFilterExecutable(t, ciWaitTwoWorkflowScript)
 
 	var filteredOut, filteredErr bytes.Buffer
@@ -409,7 +411,7 @@ func TestCIWaitFilterJSONBlockPresentOnlyWhenFiltered(t *testing.T) {
 	}
 }
 
-// TestCIWaitFilterKeepsPendingWhileANeedsGatedJobHasNotRegistered covers B1
+// TestE2ECIWaitFilterKeepsPendingWhileANeedsGatedJobHasNotRegistered covers B1
 // (red-team finding on PR #629): a --check filter must not pass while its
 // parent Actions workflow run is still in_progress, even though the one job
 // the filter selected has already passed — the classic `needs:` chain case,
@@ -418,7 +420,7 @@ func TestCIWaitFilterJSONBlockPresentOnlyWhenFiltered(t *testing.T) {
 // evidence that the workflow run itself is still going is the synthetic
 // "workflow-run:<id>:<event>" entry, which this filter must keep even though
 // its own synthetic name never matches a --check pattern.
-func TestCIWaitFilterKeepsPendingWhileANeedsGatedJobHasNotRegistered(t *testing.T) {
+func TestE2ECIWaitFilterKeepsPendingWhileANeedsGatedJobHasNotRegistered(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), "bin")
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
@@ -507,7 +509,7 @@ exit 30
 	}
 }
 
-// TestCIWaitExactCheckPassesDespiteASlowSiblingJobInTheSameSuite covers B1-R
+// TestE2ECIWaitExactCheckPassesDespiteASlowSiblingJobInTheSameSuite covers B1-R
 // (red-team round 2 on PR #629, the regression the B1 fix introduced): an
 // exact `--check "build"` selects only the "build" job. A sibling "race" job
 // still in_progress in the very same Actions suite must never hold the wait
@@ -518,7 +520,7 @@ exit 30
 // unrelated check EXCLUDED). Both check-runs carry a github-actions app slug
 // so the suite-correlation path in commitCheckRuns is exercised, not the
 // third-party fallback.
-func TestCIWaitExactCheckPassesDespiteASlowSiblingJobInTheSameSuite(t *testing.T) {
+func TestE2ECIWaitExactCheckPassesDespiteASlowSiblingJobInTheSameSuite(t *testing.T) {
 	script := `#!/bin/sh
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
   echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'
@@ -565,11 +567,11 @@ exit 30
 	}
 }
 
-// TestCIWaitExactCheckDoesNotWaitForAnUnrelatedRunAwaitingApproval covers
+// TestE2ECIWaitExactCheckDoesNotWaitForAnUnrelatedRunAwaitingApproval covers
 // B1-R's second scenario: an Actions run stuck in "waiting" (an environment
 // approval) must not hold an exact `--check` that has already matched and
 // gone terminal, even though the run itself is still non-terminal.
-func TestCIWaitExactCheckDoesNotWaitForAnUnrelatedRunAwaitingApproval(t *testing.T) {
+func TestE2ECIWaitExactCheckDoesNotWaitForAnUnrelatedRunAwaitingApproval(t *testing.T) {
 	script := `#!/bin/sh
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
   echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'
@@ -616,13 +618,13 @@ exit 30
 	}
 }
 
-// TestCIWaitAllExactCheckPatternsMustMatchBeforePass covers the multi-pattern
+// TestE2ECIWaitAllExactCheckPatternsMustMatchBeforePass covers the multi-pattern
 // completeness gate B1-R also requires: with several --check patterns, a
 // pass needs every exact (non-glob) one to have matched at least one
 // observed check, not merely one of them. Without this a mistyped or
 // not-yet-registered exact job name would let an unrelated matched sibling
 // wave the whole wait through.
-func TestCIWaitAllExactCheckPatternsMustMatchBeforePass(t *testing.T) {
+func TestE2ECIWaitAllExactCheckPatternsMustMatchBeforePass(t *testing.T) {
 	script := `#!/bin/sh
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
   echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'
@@ -672,12 +674,12 @@ exit 30
 	}
 }
 
-// TestCIWaitCheckGlobCrossesSlashes covers B2 (red-team finding on PR #629):
+// TestE2ECIWaitCheckGlobCrossesSlashes covers B2 (red-team finding on PR #629):
 // "*" must match any run of characters including "/", so "Release / *"
 // matches matrix job names like "Release / Smoke test published artifact
 // (linux/amd64)". It also proves an exact name containing "[" is accepted
 // and matched literally, not rejected as invalid glob syntax.
-func TestCIWaitCheckGlobCrossesSlashes(t *testing.T) {
+func TestE2ECIWaitCheckGlobCrossesSlashes(t *testing.T) {
 	script := `#!/bin/sh
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
   echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'
@@ -725,10 +727,10 @@ exit 30
 	}
 }
 
-// TestCIWaitCheckExactNameWithBracketIsLiteral covers B2's validation side:
+// TestE2ECIWaitCheckExactNameWithBracketIsLiteral covers B2's validation side:
 // an exact --check name containing "[" must be accepted (not rejected as
 // invalid glob syntax the way path.Match would) and matched literally.
-func TestCIWaitCheckExactNameWithBracketIsLiteral(t *testing.T) {
+func TestE2ECIWaitCheckExactNameWithBracketIsLiteral(t *testing.T) {
 	script := `#!/bin/sh
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
   echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'
@@ -771,13 +773,13 @@ exit 30
 	}
 }
 
-// TestCIWaitAllWorkflowNamesMustMatchBeforePass covers M1 (red-team round 3
+// TestE2ECIWaitAllWorkflowNamesMustMatchBeforePass covers M1 (red-team round 3
 // on PR #629): with several --workflow names, a pass requires every one of
 // them to have produced at least one observed check, not merely one. "CI"
 // has finished; "Release" — which this repo only starts via workflow_run
 // after CI, so it does not exist in the Actions-runs receipt at all yet — has
 // never appeared. The filtered wait must stay pending, naming "Release".
-func TestCIWaitAllWorkflowNamesMustMatchBeforePass(t *testing.T) {
+func TestE2ECIWaitAllWorkflowNamesMustMatchBeforePass(t *testing.T) {
 	script := `#!/bin/sh
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
   echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'
@@ -827,14 +829,14 @@ exit 30
 	}
 }
 
-// TestCIWaitCheckGlobKeepsAnotherJoblessRunOpen covers M2(a) (red-team round
+// TestE2ECIWaitCheckGlobKeepsAnotherJoblessRunOpen covers M2(a) (red-team round
 // 3 on PR #629): --check "deploy*" matches "deploy-docs" in the Docs run,
 // which has finished. A second, unrelated Prod run is a concurrency-group
 // wait with no job registered at all yet (jobless). The filtered wait must
 // stay pending until Prod either registers a matching job or otherwise
 // resolves — it must not pass just because a different run's job already
 // matched the glob.
-func TestCIWaitCheckGlobKeepsAnotherJoblessRunOpen(t *testing.T) {
+func TestE2ECIWaitCheckGlobKeepsAnotherJoblessRunOpen(t *testing.T) {
 	script := `#!/bin/sh
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
   echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'
@@ -887,16 +889,16 @@ exit 30
 	}
 }
 
-// TestCIWaitJoblessRunRetentionRespectsAnActiveWorkflowFilter covers minor 1
+// TestE2ECIWaitJoblessRunRetentionRespectsAnActiveWorkflowFilter covers minor 1
 // (red-team round 4 on PR #629): same fixture shape as
-// TestCIWaitCheckGlobKeepsAnotherJoblessRunOpen, but with an active
+// TestE2ECIWaitCheckGlobKeepsAnotherJoblessRunOpen, but with an active
 // `--workflow Docs` alongside `--check deploy*`. The jobless "Prod" run is
 // under a DIFFERENT workflow ("Prod"), which `--workflow Docs` excludes
 // outright — a job under "Prod" could never be selected by the combined AND
 // filter, so retaining its jobless run only holds the wait open for
 // something it could never match. The wait must pass once the Docs job is
 // terminal, not wait out the whole slice on an excluded workflow's run.
-func TestCIWaitJoblessRunRetentionRespectsAnActiveWorkflowFilter(t *testing.T) {
+func TestE2ECIWaitJoblessRunRetentionRespectsAnActiveWorkflowFilter(t *testing.T) {
 	script := `#!/bin/sh
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
   echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'
@@ -945,14 +947,14 @@ exit 30
 	}
 }
 
-// TestCIWaitCheckExactNameAcrossPushAndPullRequestEvents covers M2(b)
+// TestE2ECIWaitCheckExactNameAcrossPushAndPullRequestEvents covers M2(b)
 // (red-team round 3 on PR #629, new since round 2): an exact `--check build`
 // matches the push run's "build" job, which has passed. The same workflow's
 // pull_request run — same WorkflowID, different event, so a run identity
 // keyed on WorkflowID alone would conflate the two — is still "queued" and
 // has not registered a "build" job of its own yet. The filtered wait must
 // stay pending, not pass just because the push run's job already matched.
-func TestCIWaitCheckExactNameAcrossPushAndPullRequestEvents(t *testing.T) {
+func TestE2ECIWaitCheckExactNameAcrossPushAndPullRequestEvents(t *testing.T) {
 	script := `#!/bin/sh
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
   echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'
@@ -1005,7 +1007,7 @@ exit 30
 	}
 }
 
-// TestCIWaitOwnershipKeysOnWorkflowIDAndEventNotIDAlone covers minor 1 (red-
+// TestE2ECIWaitOwnershipKeysOnWorkflowIDAndEventNotIDAlone covers minor 1 (red-
 // team round 3 on PR #629): two runs share a WorkflowID but differ by event.
 // A `--check deploy*` GLOB matches and passes in the push run. The
 // pull_request run — same WorkflowID — has already registered a DIFFERENT,
@@ -1026,7 +1028,7 @@ exit 30
 // also collapses to, marking that entry "owned" and mistakenly retaining
 // it — turning this test's expected "passed" into "pending" if Event is
 // ever dropped from the key.
-func TestCIWaitOwnershipKeysOnWorkflowIDAndEventNotIDAlone(t *testing.T) {
+func TestE2ECIWaitOwnershipKeysOnWorkflowIDAndEventNotIDAlone(t *testing.T) {
 	script := `#!/bin/sh
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
   echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'
@@ -1073,7 +1075,7 @@ exit 30
 	}
 }
 
-// TestCIWaitCombinedWorkflowAndCheckWaitsForWholeRun covers minor 1 (red-team
+// TestE2ECIWaitCombinedWorkflowAndCheckWaitsForWholeRun covers minor 1 (red-team
 // round 3 on PR #629): with --workflow AND --check combined, an exact
 // `--check publish` under `--workflow Release` matches and is terminal, but
 // a sibling job in the same Release run ("verify", gated by `needs: publish`)
@@ -1082,7 +1084,7 @@ exit 30
 // specifically exercises the workflowOwnedRuns retention path, not
 // globOwnedRuns or anyUnmatchedExact (both false here, since the sole exact
 // pattern "publish" has already matched).
-func TestCIWaitCombinedWorkflowAndCheckWaitsForWholeRun(t *testing.T) {
+func TestE2ECIWaitCombinedWorkflowAndCheckWaitsForWholeRun(t *testing.T) {
 	script := `#!/bin/sh
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
   echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'
@@ -1135,12 +1137,12 @@ exit 30
 	}
 }
 
-// TestCIWaitExactCheckSkippedByAnEarlierFailureIsNotAPass covers M3
+// TestE2ECIWaitExactCheckSkippedByAnEarlierFailureIsNotAPass covers M3
 // (red-team round 3 on PR #629): "build" failed, so "publish" (which
 // `needs: build`) concluded "skipped", and the run itself concluded
 // "failure". An exact `--check publish` must not report passed — that would
 // answer "is the release built?", #627's own headline use, with a false yes.
-func TestCIWaitExactCheckSkippedByAnEarlierFailureIsNotAPass(t *testing.T) {
+func TestE2ECIWaitExactCheckSkippedByAnEarlierFailureIsNotAPass(t *testing.T) {
 	script := `#!/bin/sh
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
   echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'
@@ -1187,7 +1189,7 @@ exit 30
 	}
 }
 
-// TestCIWaitExactCheckSkippedWhileOwningRunIsStillInProgressStaysPendingThenFails
+// TestE2ECIWaitExactCheckSkippedWhileOwningRunIsStillInProgressStaysPendingThenFails
 // is a probe test for B1 (red-team round 4 on PR #629): the round-3 M3 fix
 // only compared a skipped check's owning run conclusion against the failing
 // values, so a run still `in_progress` (conclusion "") read as a pass the
@@ -1202,7 +1204,7 @@ exit 30
 // "re-run failed jobs" put the run back in_progress with publish skipped
 // again — must return to pending, not a stale pass or fail from before the
 // rerun.
-func TestCIWaitExactCheckSkippedWhileOwningRunIsStillInProgressStaysPendingThenFails(t *testing.T) {
+func TestE2ECIWaitExactCheckSkippedWhileOwningRunIsStillInProgressStaysPendingThenFails(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), "bin")
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
@@ -1296,7 +1298,7 @@ exit 30
 	}
 }
 
-// TestCIWaitWorkflowWhollySkippedRunFailsNotPasses covers minor 5 (red-team
+// TestE2ECIWaitWorkflowWhollySkippedRunFailsNotPasses covers minor 5 (red-team
 // round 4 on PR #629): every job `--workflow Release` selects reports
 // "skipped" (a `workflow_run` Release gated `if: conclusion == 'success'`
 // after CI failed, so GitHub never runs any Release job at all), and the
@@ -1306,7 +1308,7 @@ exit 30
 // explicit check for "every selected check was skipping", this would pass —
 // answering "is the release built?" with yes when nothing in it ever ran.
 // The wait must fail instead, naming the reason.
-func TestCIWaitWorkflowWhollySkippedRunFailsNotPasses(t *testing.T) {
+func TestE2ECIWaitWorkflowWhollySkippedRunFailsNotPasses(t *testing.T) {
 	script := `#!/bin/sh
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
   echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'
@@ -1356,9 +1358,9 @@ exit 30
 	}
 }
 
-// TestCIWaitBothSpellingsAcceptFilterFlags covers the required "both
+// TestE2ECIWaitBothSpellingsAcceptFilterFlags covers the required "both
 // spellings (`wb ci wait` and `wb wait checks`) accept the flags" behaviour.
-func TestCIWaitBothSpellingsAcceptFilterFlags(t *testing.T) {
+func TestE2ECIWaitBothSpellingsAcceptFilterFlags(t *testing.T) {
 	for _, spelling := range [][]string{
 		{"ci", "wait"},
 		{"wait", "checks"},

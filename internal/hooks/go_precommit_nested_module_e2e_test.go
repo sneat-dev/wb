@@ -106,7 +106,15 @@ func readFakeGoLog(t *testing.T, logPath string) []string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return strings.Split(strings.TrimSpace(string(content)), "\n")
+	// The changed-line lint step reads each module's toolchain version to pick
+	// its pinned linter build; these tests pin the vet invocations.
+	var calls []string
+	for _, line := range strings.Split(strings.TrimSpace(string(content)), "\n") {
+		if !strings.HasSuffix(line, "|env GOVERSION") {
+			calls = append(calls, line)
+		}
+	}
+	return calls
 }
 
 // TestE2EBuiltInGoPreCommitVetsNestedModuleFromItsOwnDirectory pins WB-831: a
@@ -279,12 +287,12 @@ func TestE2EBuiltInGoPreCommitSkipsVetForGoFilesUnderNoModule(t *testing.T) {
 }
 
 // profiles.include forces the go profile on in a repository with no root
-// go.mod (the founder's fleet policy does), so the block must keep skipping vet
-// there exactly as it did before WB-831: nested modules of such a repository
-// are not vetted. Widening that is a separate decision.
+// go.mod (the founder's fleet policy does), and such a repository's Go code
+// lives in nested modules (askstage: backend/, emulatortest/). Each staged
+// package is vetted from its own module; a file under no go.mod is not.
 //
 //nolint:paralleltest // fixture sets XDG_*, WB home and PATH with t.Setenv (isolateConfig, installFakeGo), which forbids t.Parallel
-func TestE2EBuiltInGoPreCommitSkipsVetWhenRepositoryHasNoRootModule(t *testing.T) {
+func TestE2EBuiltInGoPreCommitVetsNestedModulesWhenRepositoryHasNoRootModule(t *testing.T) {
 	repo := goPreCommitFixture(t)
 	mustWrite(t, filepath.Join(repo, ".wb", "hooks.yaml"), "version: 1\nprofiles:\n  include: [go]\nmetrics:\n  enabled: false\n")
 	writeGoModule(t, filepath.Join(repo, "svc"), "example.invalid/svc")
@@ -298,8 +306,9 @@ func TestE2EBuiltInGoPreCommitSkipsVetWhenRepositoryHasNoRootModule(t *testing.T
 		t.Fatalf("exit %d: %s", result.ExitCode, stderr)
 	}
 	requireGoPreCommitBlockRan(t, result)
-	if got := readFakeGoLog(t, logPath); len(got) != 0 {
-		t.Fatalf("go ran in a repository with no root go.mod: %q", got)
+	want := []string{filepath.Join(repo, "svc") + "|vet ."}
+	if got := readFakeGoLog(t, logPath); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("go invocations\n got: %q\nwant: %q", got, want)
 	}
 }
 

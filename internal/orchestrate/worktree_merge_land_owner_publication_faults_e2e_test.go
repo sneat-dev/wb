@@ -205,6 +205,7 @@ func TestE2EUnpublishedPrePushRetryLeaseRejectsRefAppearingAfterGate(t *testing.
 }
 
 func TestE2ECreateOnlyLeaseRejectsExternalAncestorRef(t *testing.T) {
+	t.Parallel()
 	fixture, receipt := landOwnerNativeFixture(t)
 	remoteRef := "refs/heads/" + receipt.Candidate.Branch
 	if _, err := runWorktreeMergePrePushGate(t.Context(), receipt.Candidate.Worktree, receipt.Candidate.SHA, remoteRef, 5*time.Second, 0); err != nil {

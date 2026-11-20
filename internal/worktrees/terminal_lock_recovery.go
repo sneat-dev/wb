@@ -165,7 +165,10 @@ func recoverTerminalOperationLock(ctx context.Context, options TerminalLockRecov
 	if err != nil || hasBacklog {
 		return outcome, fmt.Errorf("operation still has cleanup backlog or uncertain records: %v", err)
 	}
-	canonical := filepath.Join(root, filepath.FromSlash(receipt.Repository))
+	canonical, err := CanonicalRepositoryPath(root, receipt.Repository)
+	if err != nil {
+		return outcome, fmt.Errorf("resolve canonical clone: %w", err)
+	}
 	targetSHA, err := ports.fetchTarget(ctx, canonical, receipt.Target)
 	if err != nil {
 		return outcome, fmt.Errorf("fresh target proof: %w", err)

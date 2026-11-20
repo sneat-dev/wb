@@ -69,6 +69,8 @@ func (p *preparedMovingPR) OpenPullRequest(context.Context, string, string, stri
 	}
 	return 8, "", nil
 }
+
+//nolint:paralleltest // calls t.Setenv (agent identity, PATH, fake gh state), which Go's testing package forbids combined with t.Parallel
 func TestE2EPreparedAdoptionProvesPublishedDescendantWithoutChangingOriginalReceipt(t *testing.T) {
 	// Environment is private to this sequential fixture; no external GitHub/auth calls.
 	t.Setenv(worktrees.EnvAgentID, "prepared-owner")
@@ -182,6 +184,7 @@ esac
 	if strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD")) != head {
 		t.Fatal("adoption rewrote source history")
 	}
+	//nolint:paralleltest // the parent calls t.Setenv, which forbids t.Parallel beneath it
 	t.Run("completed receipt cannot enter prepared mode", func(t *testing.T) {
 		completed := receipt
 		completed.Status = WorktreeMergeComplete
@@ -197,6 +200,7 @@ esac
 		}
 	})
 	for _, fault := range []string{"source read", "branch read", "branch drift", "missing ancestor", "parent read", "parent mismatch", "origin read", "second origin read", "foreign origin", "PR read", "missing PR"} {
+		//nolint:paralleltest // the parent calls t.Setenv, which forbids t.Parallel beneath it
 		t.Run(fault, func(t *testing.T) {
 			bad := o
 			calls := 0
@@ -234,6 +238,7 @@ esac
 		})
 	}
 	for _, nth := range []int{1, 2, 3, 4} {
+		//nolint:paralleltest // the parent calls t.Setenv, which forbids t.Parallel beneath it
 		t.Run(fmt.Sprintf("immutable snapshot read %d", nth), func(t *testing.T) {
 			reads := 0
 			reader := func(path string) (WorktreeMergeReceipt, string, error) {
@@ -249,6 +254,7 @@ esac
 		})
 	}
 	for _, existing := range []bool{true, false} {
+		//nolint:paralleltest // the parent calls t.Setenv, which forbids t.Parallel beneath it
 		t.Run(fmt.Sprintf("receipt changes before append existing=%t", existing), func(t *testing.T) {
 			bad := o
 			if !existing {
@@ -269,6 +275,7 @@ esac
 		})
 	}
 	for _, fault := range []string{"foreign native", "unregistered", "env only", "empty native", "empty SID", "actor SID", "actor runtime", "actor model"} {
+		//nolint:paralleltest // the parent calls t.Setenv, which forbids t.Parallel beneath it
 		t.Run(fault, func(t *testing.T) {
 			identity, _ := registered()
 			bad := o
@@ -299,6 +306,7 @@ esac
 		})
 	}
 	for _, existing := range []bool{true, false} {
+		//nolint:paralleltest // the parent calls t.Setenv, which forbids t.Parallel beneath it
 		t.Run(fmt.Sprintf("registered identity changes before append existing=%t", existing), func(t *testing.T) {
 			bad := o
 			if !existing {
@@ -320,6 +328,7 @@ esac
 			}
 		})
 	}
+	//nolint:paralleltest // the parent calls t.Setenv, which forbids t.Parallel beneath it
 	t.Run("unwritable operation lock", func(t *testing.T) {
 		directory := filepath.Join(home, "worktrees", receipt.Lane)
 		backup := directory + ".retained"
@@ -335,6 +344,7 @@ esac
 			t.Fatal("invalid lock path accepted")
 		}
 	})
+	//nolint:paralleltest // the parent calls t.Setenv, which forbids t.Parallel beneath it
 	t.Run("conflicting prepared archive", func(t *testing.T) {
 		conflicting := dry.Record
 		copyPrepared := *conflicting.Prepared
@@ -348,6 +358,7 @@ esac
 			t.Fatal("conflicting archive accepted", err)
 		}
 	})
+	//nolint:paralleltest // the parent calls t.Setenv, which forbids t.Parallel beneath it
 	t.Run("PR replacement during archival read", func(t *testing.T) {
 		bad := o
 		bad.GitHub = &preparedMovingPR{fakePromoteGitHub: &fakePromoteGitHub{fakeIntegrationGitHub: &fakeIntegrationGitHub{}, number: 7}}
@@ -357,6 +368,7 @@ esac
 	})
 	// Current authorization/publication facts must be authoritative on every retry.
 	for _, fault := range []string{"foreign owner", "dirty", "nonancestor", "wrong PR head", "closed PR", "no strict policy", "unknown remote", "git error", "tampered receipt"} {
+		//nolint:paralleltest // the parent calls t.Setenv, which forbids t.Parallel beneath it
 		t.Run(fault, func(t *testing.T) {
 			bad := o
 			switch fault {

@@ -18,6 +18,7 @@ type GitOperations struct {
 	LocalRepos func(string, string) ([]discover.Repo, error)
 	Run        func(hooks.RunOptions) (hooks.RunResult, error)
 	Classify   func(io.Reader, string) (hooks.Classification, error)
+	Lint       func(hooks.LintOptions) int
 	LoadPolicy func(string, string) (hooks.Policy, error)
 	ReadEvents func(string) ([]hooks.Event, error)
 	Executable func() string
