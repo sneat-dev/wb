@@ -14,6 +14,12 @@ import (
 	"github.com/sneat-dev/wb/internal/streams"
 )
 
+type fakeLiveLinkStore struct{ links []streams.StreamLink }
+
+func (store fakeLiveLinkStore) LiveLinksForWorktree(string) ([]streams.StreamLink, error) {
+	return store.links, nil
+}
+
 // newCommittedWorkspaceConsumer turns the fixture's consumer into a Git
 // repository whose committed HEAD carries go.work, exactly as a clone of such
 // a repository arrives.

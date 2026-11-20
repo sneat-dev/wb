@@ -24,12 +24,6 @@ func readFileString(t *testing.T, path string) string {
 	return string(contents)
 }
 
-type fakeLiveLinkStore struct{ links []streams.StreamLink }
-
-func (store fakeLiveLinkStore) LiveLinksForWorktree(string) ([]streams.StreamLink, error) {
-	return store.links, nil
-}
-
 func TestClassifyGoWorkReportsProvenanceAndGitFailures(t *testing.T) {
 	t.Parallel()
 	failed := errors.New("git is gone")
