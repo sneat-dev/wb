@@ -195,46 +195,142 @@ func sectionFromHunkHeader(line string) []string {
 	return []string{key}
 }
 
-// nonMechanicalGoModule refuses the `go.mod` directives that are decisions
-// rather than versions.
-//
-// `require` is a version bump. `replace` and `exclude` rewrite what the module
-// graph resolves to, and `go`/`toolchain` change the language and compiler the
-// whole module is built with — none of which a batch verification can stand in
-// for a reviewer on.
-func nonMechanicalGoModule(name, patch string) string {
+// goDirectives are the top-level `go.mod` directives. A line whose first word
+// is one of them is a single-line directive; any other indented line inside a
+// block is an entry of that block.
+var goDirectives = map[string]bool{
+	"module": true, "go": true, "toolchain": true, "godebug": true, "require": true,
+	"replace": true, "exclude": true, "retract": true, "tool": true, "ignore": true,
+}
+
+// goBlock is where a `go.mod` line sits: the directive of the enclosing
+// `directive (` block, "" at top level, and whether that is known at all. A
+// hunk in the middle of a long block shows no opener of its own, so the head
+// file places it (see goBlockAt); without that a changed entry cannot be
+// attributed to a directive and is refused.
+type goBlock struct {
+	directive string
+	known     bool
+}
+
+// goBlockAt returns the block enclosing the start of line `line` (1-based) of
+// content, walking the same opener and closer lines the hunk loop walks.
+func goBlockAt(content string, line int) goBlock {
+	block := goBlock{known: true}
+	for index, text := range strings.Split(content, "\n") {
+		if index+1 >= line {
+			break
+		}
+		fields := strings.Fields(text)
+		switch {
+		case len(fields) == 2 && fields[1] == "(":
+			block.directive = fields[0]
+		case len(fields) > 0 && fields[0] == ")":
+			block.directive = ""
+		}
+	}
+	return block
+}
+
+// goDirectiveReason says why a change to directive is not a version bump.
+func goDirectiveReason(name, directive, line string) string {
+	switch directive {
+	case "":
+		return name + " changes a line that cannot be placed in a go.mod directive or block, so it is not shown to be a require edit: " + trimForMessage(strings.TrimSpace(line))
+	case "replace", "exclude":
+		return name + " changes a " + directive + " directive, which rewrites what the module graph resolves to"
+	case "go", "toolchain":
+		return name + " changes the " + directive + " directive, which changes how the whole module is built"
+	case "module":
+		return name + " changes the module directive, which renames the module every consumer imports"
+	case "tool":
+		return name + " changes a tool directive, which names code that go tool and go generate execute"
+	case "godebug":
+		return name + " changes a godebug directive, which changes the module's runtime behaviour"
+	}
+	return name + " changes a " + directive + " directive, which is not a dependency version bump"
+}
+
+// nonMechanicalGoModule is deny-by-default: the only mechanical changes to
+// go.mod are `require` lines (single-line, or inside a `require (` block) and
+// the comments and blank lines around them. Within those, a version bump of an
+// existing module and a new `// indirect` requirement are mechanical, and a
+// new direct requirement is a decision. Every other directive, the opener or
+// closer of any other block and every entry of one (`tool`, `godebug`,
+// `exclude`, `replace`, `retract`, `ignore`, `module`, `go`, `toolchain`, an
+// unknown one) is refused by name. `replace` and `exclude` rewrite what the
+// module graph resolves to, `go`/`toolchain` change the compiler the whole
+// module is built with, and `tool` and `godebug` name code to run and runtime
+// behaviour: none of which a batch verification can stand in for a reviewer on.
+func nonMechanicalGoModule(name, patch, content string) string {
 	direct := newPinChanges()
-	for _, changed := range signedPatchLines(patch) {
-		line := changed[1:]
-		fields := strings.Fields(line)
-		if len(fields) == 0 {
+	var block goBlock
+	for _, raw := range strings.Split(patch, "\n") {
+		if strings.HasPrefix(raw, "+++") || strings.HasPrefix(raw, "---") || strings.HasPrefix(raw, `\`) {
 			continue
 		}
-		switch fields[0] {
-		case "replace", "exclude":
-			return name + " changes a " + fields[0] + " directive, which rewrites what the module graph resolves to"
-		case "go", "toolchain":
-			return name + " changes the " + fields[0] + " directive, which changes how the whole module is built"
-		case "module":
-			return name + " changes the module directive, which renames the module every consumer imports"
+		if strings.HasPrefix(raw, "@@") {
+			block = goBlock{}
+			if start, ok := hunkNewStart(raw); ok && content != "" {
+				block = goBlockAt(content, start)
+			}
+			continue
 		}
-		if strings.Contains(line, "=>") {
-			// A `replace` entry inside a `replace (` block has no keyword.
-			return name + " changes a replace directive, which rewrites what the module graph resolves to"
+		changed := len(raw) > 0 && (raw[0] == '+' || raw[0] == '-')
+		body := raw
+		if len(raw) > 0 && (raw[0] == '+' || raw[0] == '-' || raw[0] == ' ') {
+			body = raw[1:]
 		}
-		if fields[0] == "require" {
+		fields := strings.Fields(body)
+		if len(fields) == 0 || strings.HasPrefix(fields[0], "//") {
+			continue
+		}
+		// A removed line is not in the file the hunk leaves behind, so it does
+		// not move the block the following lines are in.
+		newSide := !(len(raw) > 0 && raw[0] == '-')
+		directive := block.directive
+		switch {
+		case fields[0] == ")":
+			if changed && block.directive != "require" {
+				// An unknown block has no directive, so the reason says it cannot be placed.
+				return goDirectiveReason(name, block.directive, body)
+			}
+			if newSide {
+				block = goBlock{known: true}
+			}
+			continue
+		case len(fields) == 2 && fields[1] == "(":
+			if changed && fields[0] != "require" {
+				return goDirectiveReason(name, fields[0], body)
+			}
+			if newSide {
+				block = goBlock{directive: fields[0], known: true}
+			}
+			continue
+		case goDirectives[fields[0]] && !(block.known && block.directive != ""):
+			// A single-line directive can only stand at top level.
+			if newSide {
+				block = goBlock{known: true}
+			}
+			directive = fields[0]
 			fields = fields[1:]
+		case !block.known:
+			directive = ""
 		}
-		// A block opener or closer, a comment and a one-word line (an entry of
-		// a `retract` block) are not a requirement.
-		if len(fields) < 2 || fields[0] == "(" || strings.HasPrefix(fields[0], "//") {
+		if !changed {
 			continue
+		}
+		if directive != "require" {
+			return goDirectiveReason(name, directive, body)
+		}
+		if len(fields) < 2 {
+			return name + " changes a require line that is not a module and a version"
 		}
 		if len(fields) >= 4 && fields[2] == "//" && fields[3] == "indirect" {
 			// A transitive requirement a bump brings in or drops.
 			continue
 		}
-		direct.record(changed[0], fields[0])
+		direct.record(raw[0], fields[0])
 	}
 	if dependency := direct.addedKey(); dependency != "" {
 		return newDirectDependencyReason(name, dependency)
@@ -405,22 +501,6 @@ func changedPatchLines(patch string) []string {
 	return lines
 }
 
-// signedPatchLines is changedPatchLines with the diff marker kept as the first
-// byte of each line: `+` for an added line, `-` for a removed one.
-func signedPatchLines(patch string) []string {
-	lines := make([]string, 0, 8)
-	for _, line := range strings.Split(patch, "\n") {
-		if len(line) == 0 || line[0] != '+' && line[0] != '-' {
-			continue
-		}
-		if strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---") {
-			continue
-		}
-		lines = append(lines, line[:1]+strings.TrimSpace(line[1:]))
-	}
-	return lines
-}
-
 // ChangedFile is one file of a pull request's diff, with the patch GitHub
 // returns for it.
 type ChangedFile struct {
@@ -562,7 +642,7 @@ func nonMechanicalContent(name, patch, content string) string {
 	case "package.json":
 		// Checked line by line below.
 	case "go.mod":
-		return nonMechanicalGoModule(name, patch)
+		return nonMechanicalGoModule(name, patch, content)
 	case "pnpm-workspace.yaml":
 		return nonMechanicalWorkspace(name, patch, content)
 	default:

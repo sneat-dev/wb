@@ -927,6 +927,7 @@ func TestPullRequestChangedFilesCarryHeadContentOfPackageManifestsOnly(t *testin
 		`{"filename":"package.json","contents_url":"https://api.github.com/repos/acme/app/contents/package.json?ref=abc"},`+
 		`{"filename":"pnpm-lock.yaml","contents_url":"https://api.github.com/repos/acme/app/contents/pnpm-lock.yaml?ref=abc"},`+
 		`{"filename":"pnpm-workspace.yaml","contents_url":"https://api.github.com/repos/acme/app/contents/pnpm-workspace.yaml?ref=abc"},`+
+		`{"filename":"go.mod","contents_url":"https://api.github.com/repos/acme/app/contents/go.mod?ref=abc"},`+
 		`{"filename":"web/package.json","contents_url":"https://example.test/not-github"}]`)
 	state.Answer(t, "contents", "{\"dependencies\": {}}\n")
 	state.Answer(t, "contents_exit", "0")
@@ -938,7 +939,7 @@ func TestPullRequestChangedFilesCarryHeadContentOfPackageManifestsOnly(t *testin
 	for _, file := range files {
 		got[file.Filename] = file.Content
 	}
-	if got["package.json"] != "{\"dependencies\": {}}\n" || got["pnpm-workspace.yaml"] != "{\"dependencies\": {}}\n" || got["pnpm-lock.yaml"] != "" || got["web/package.json"] != "" {
+	if got["package.json"] != "{\"dependencies\": {}}\n" || got["pnpm-workspace.yaml"] != "{\"dependencies\": {}}\n" || got["go.mod"] != "{\"dependencies\": {}}\n" || got["pnpm-lock.yaml"] != "" || got["web/package.json"] != "" {
 		t.Fatalf("head content by file = %q", got)
 	}
 }

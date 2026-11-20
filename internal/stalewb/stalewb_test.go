@@ -228,3 +228,24 @@ func TestFindWithTheDefaultRuleSkipsFilesWithoutAnExecuteBit(t *testing.T) {
 		t.Fatalf("found = %+v", got)
 	}
 }
+
+func TestFindSkipsPathEntriesThatAreNotAbsolute(t *testing.T) {
+	t.Parallel()
+	real := stub(t, "wb", "x", true)
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relative, err := filepath.Rel(cwd, filepath.Dir(real))
+	if err != nil || filepath.IsAbs(relative) {
+		t.Skip("no relative path to the temp dir on this platform:", err)
+	}
+	for _, entry := range []string{relative, ".", "bin", "node_modules/.bin", ""} {
+		if found := (Scanner{Executable: anyFile, PathEnv: entry}).Find(); len(found) != 0 {
+			t.Errorf("PATH entry %q was searched: %+v", entry, found)
+		}
+	}
+	if found := (Scanner{Executable: anyFile, PathEnv: filepath.Dir(real)}).Find(); len(found) != 1 {
+		t.Fatalf("the absolute entry was not searched: %+v", found)
+	}
+}

@@ -27,7 +27,9 @@ func TestOrchCovNonMechanicalGoModuleRefusesGraphDirectives(t *testing.T) {
 	for _, test := range []struct {
 		name  string
 		patch string
-		want  string
+		// content is the head go.mod, when the case supplies one.
+		content string
+		want    string
 	}{
 		{name: "require is a bump", patch: "@@ -1 +1 @@\n-require example.test/a v1.0.0\n+require example.test/a v1.1.0\n"},
 		{name: "replace", patch: "@@ -1 +1 @@\n+replace example.test/a => ../a\n", want: "replace directive"},
@@ -40,7 +42,7 @@ func TestOrchCovNonMechanicalGoModuleRefusesGraphDirectives(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			reason := nonMechanicalGoModule("go.mod", test.patch)
+			reason := nonMechanicalGoModule("go.mod", test.patch, test.content)
 			if test.want == "" {
 				if reason != "" {
 					t.Fatalf("reason = %q, want none", reason)

@@ -19,18 +19,21 @@ func New(snapshot func() buildinfo.Report) *cobra.Command { return NewWithStale(
 // NewWithStale is New plus a scan for older wb copies on PATH. scan receives the
 // running version; nil skips it.
 func NewWithStale(snapshot func() buildinfo.Report, scan func(context.Context, string) []stalewb.Binary) *cobra.Command {
-	var asJSON bool
+	var asJSON, checkStale bool
 	command := &cobra.Command{Use: "version", Short: "Print the wb version, build revision, and toolchain", Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			info := snapshot()
 			var stale []stalewb.Binary
-			if scan != nil {
+			// A scan runs one child per other wb on PATH. The human form pays for
+			// it; the JSON form, which tooling calls often, only on request.
+			if scan != nil && (!asJSON || checkStale) {
 				stale = scan(command.Context(), info.JSONVersion)
 			}
 			return WriteWithStale(command.OutOrStdout(), command.ErrOrStderr(), info, stale, asJSON)
 		},
 	}
 	shared.AddJSONFormatFlags(command, &asJSON)
+	command.Flags().BoolVar(&checkStale, "check-stale", false, "with --json, also scan PATH for older wb copies (stale_binaries); the text form always scans")
 	return command
 }
 

@@ -1610,13 +1610,13 @@ func pullRequestChangedFiles(ctx context.Context, repository, number string) ([]
 // githubAPIPrefix is the host part of a `contents_url` the REST API returns.
 const githubAPIPrefix = "https://api.github.com/"
 
-// headManifestContent reads a `package.json` or `pnpm-workspace.yaml` at the pull request head so the
+// headManifestContent reads a `package.json`, `pnpm-workspace.yaml` or `go.mod` at the pull request head so the
 // classifier can place a hunk whose own lines and header do not name the JSON
-// section it sits in. Any failure returns "": the classifier then refuses the
+// section or go.mod block it sits in. Any failure returns "": the classifier then refuses the
 // unplaceable hunk, which is the behaviour without the content, so a failed
 // read can never make a change look mechanical.
 func headManifestContent(ctx context.Context, file mechanicalchange.ChangedFile) string {
-	if base := path.Base(file.Filename); base != "package.json" && base != "pnpm-workspace.yaml" || !strings.HasPrefix(file.ContentsURL, githubAPIPrefix) {
+	if base := path.Base(file.Filename); base != "package.json" && base != "pnpm-workspace.yaml" && base != "go.mod" || !strings.HasPrefix(file.ContentsURL, githubAPIPrefix) {
 		return ""
 	}
 	response := githubExecute(ctx, "", "api", "-H", "Accept: application/vnd.github.raw",

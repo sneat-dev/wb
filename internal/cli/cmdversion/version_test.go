@@ -157,44 +157,54 @@ func TestTextOptionalFieldsAndBare(t *testing.T) {
 	}
 }
 
-func TestVersionReportsStaleWbCopiesInJSONAndAsAHumanWarning(t *testing.T) {
+func TestVersionReportsStaleWbCopiesAsAHumanWarningAndInJSONOnlyWhenAsked(t *testing.T) {
 	t.Parallel()
 	info := report()
 	info.JSONVersion = "0.208.3"
 	stale := []stalewb.Binary{{Path: "/home/u/.local/bin/wb", Version: "0.198.2"}}
-	var gotVersion string
-	scan := func(_ context.Context, current string) []stalewb.Binary { gotVersion = current; return stale }
-	for _, asJSON := range []bool{true, false} {
+	for name, test := range map[string]struct {
+		args      []string
+		wantScan  bool
+		wantStale string // "json", "human" or ""
+	}{
+		"text":                  {args: nil, wantScan: true, wantStale: "human"},
+		"json is not scanned":   {args: []string{"--json"}, wantScan: false},
+		"json with check-stale": {args: []string{"--json", "--check-stale"}, wantScan: true, wantStale: "json"},
+		"text with check-stale": {args: []string{"--check-stale"}, wantScan: true, wantStale: "human"},
+	} {
+		scans, gotVersion := 0, ""
+		scan := func(_ context.Context, current string) []stalewb.Binary { scans++; gotVersion = current; return stale }
 		command := NewWithStale(func() buildinfo.Report { return info }, scan)
 		var out, warn bytes.Buffer
 		command.SetOut(&out)
 		command.SetErr(&warn)
-		args := []string{}
-		if asJSON {
-			args = append(args, "--json")
-		}
-		command.SetArgs(args)
+		command.SetArgs(test.args)
 		if err := command.Execute(); err != nil {
 			t.Fatal(err)
 		}
-		if gotVersion != "0.208.3" {
-			t.Fatalf("scan version = %q", gotVersion)
+		if (scans == 1) != test.wantScan || (test.wantScan && gotVersion != "0.208.3") {
+			t.Fatalf("%s: scans = %d, version %q", name, scans, gotVersion)
 		}
-		if asJSON {
+		switch test.wantStale {
+		case "json":
 			var decoded struct {
 				Version string           `json:"version"`
 				Stale   []stalewb.Binary `json:"stale_binaries"`
 			}
 			if err := json.Unmarshal(out.Bytes(), &decoded); err != nil || decoded.Version != "0.208.3" || len(decoded.Stale) != 1 || decoded.Stale[0].Path != stale[0].Path {
-				t.Fatalf("json = %s (%v)", out.String(), err)
+				t.Fatalf("%s: json = %s (%v)", name, out.String(), err)
 			}
 			if warn.Len() != 0 {
-				t.Fatalf("json mode warned: %s", warn.String())
+				t.Fatalf("%s: json mode warned: %s", name, warn.String())
 			}
-			continue
-		}
-		if strings.Contains(out.String(), "stale") || !strings.Contains(warn.String(), "/home/u/.local/bin/wb is 0.198.2") || !strings.Contains(warn.String(), "fix: rm /home/u/.local/bin/wb") {
-			t.Fatalf("human out = %q, warning = %q", out.String(), warn.String())
+		case "human":
+			if strings.Contains(out.String(), "stale") || !strings.Contains(warn.String(), "/home/u/.local/bin/wb is 0.198.2") || !strings.Contains(warn.String(), "fix: rm /home/u/.local/bin/wb") {
+				t.Fatalf("%s: human out = %q, warning = %q", name, out.String(), warn.String())
+			}
+		default:
+			if strings.Contains(out.String(), "stale_binaries") || warn.Len() != 0 {
+				t.Fatalf("%s: unexpected stale output %q %q", name, out.String(), warn.String())
+			}
 		}
 	}
 }
@@ -206,7 +216,7 @@ func TestVersionJSONOmitsTheStaleKeyWhenThereIsNone(t *testing.T) {
 	var out bytes.Buffer
 	command.SetOut(&out)
 	command.SetErr(io.Discard)
-	command.SetArgs([]string{"--json"})
+	command.SetArgs([]string{"--json", "--check-stale"})
 	if err := command.Execute(); err != nil || strings.Contains(out.String(), "stale_binaries") || scans != 1 {
 		t.Fatalf("out = %s, err = %v, scans = %d", out.String(), err, scans)
 	}

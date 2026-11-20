@@ -123,7 +123,7 @@ func ParseVersion(output []byte) (string, error) {
 type Candidate struct{ Path, Real string }
 
 // Find lists the wb executables on PATH in PATH order, once per real file. A
-// candidate is a PATH entry named wb whose target resolves to a regular file
+// candidate is an absolute PATH entry named wb whose target resolves to a regular file
 // with an execute bit; a directory, a device, a dangling symlink or a
 // non-executable file is never probed.
 func (scanner Scanner) Find() []Candidate {
@@ -134,7 +134,10 @@ func (scanner Scanner) Find() []Candidate {
 	seen := map[string]bool{}
 	var found []Candidate
 	for _, directory := range filepath.SplitList(scanner.PathEnv) {
-		if directory == "" {
+		// A relative entry (`.`, `bin`, `node_modules/.bin`) is resolved against
+		// the working directory, so a checkout could put its own `wb` there and
+		// have it run by a scan inside that checkout.
+		if !filepath.IsAbs(directory) {
 			continue
 		}
 		for _, name := range []string{"wb", "wb.exe"} {

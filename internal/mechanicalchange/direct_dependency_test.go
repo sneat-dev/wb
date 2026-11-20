@@ -74,26 +74,26 @@ func TestNewDirectDependenciesNeedAReviewAndBumpsDoNot(t *testing.T) {
 		{name: "go.mod new single-line indirect require", file: "go.mod",
 			patch: "@@ -5,0 +6,1 @@\n+require github.com/new/dep v1.0.0 // indirect\n"},
 		{name: "go.mod new block require", file: "go.mod",
-			patch: "@@ -5,3 +5,4 @@ require (\n \tgithub.com/a/b v1.0.0\n+\tgithub.com/new/dep v1.0.0\n )\n",
+			patch: "@@ -5,3 +5,4 @@\n require (\n \tgithub.com/a/b v1.0.0\n+\tgithub.com/new/dep v1.0.0\n )\n",
 			want:  "adds new direct dependency github.com/new/dep"},
 		{name: "go.mod new block indirect require", file: "go.mod",
-			patch: "@@ -5,3 +5,4 @@ require (\n \tgithub.com/a/b v1.0.0\n+\tgithub.com/new/dep v1.0.0 // indirect\n )\n"},
+			patch: "@@ -5,3 +5,4 @@\n require (\n \tgithub.com/a/b v1.0.0\n+\tgithub.com/new/dep v1.0.0 // indirect\n )\n"},
 		{name: "go.mod new require block", file: "go.mod",
 			patch: "@@ -5,0 +6,4 @@\n+require (\n+\tgithub.com/new/dep v1.0.0\n+\tgithub.com/new/two v1.0.0 // indirect\n+)\n",
 			want:  "adds new direct dependency github.com/new/dep"},
 		{name: "go.mod re-sort within the block is a replacement", file: "go.mod",
-			patch: "@@ -5,3 +5,2 @@ require (\n-\tgithub.com/z/z v1.0.0\n \tgithub.com/a/b v1.0.0\n@@ -9,3 +8,4 @@ require (\n+\tgithub.com/z/z v1.0.0\n \tgithub.com/m/m v1.0.0\n"},
+			patch: "@@ -5,3 +5,2 @@\n require (\n-\tgithub.com/z/z v1.0.0\n \tgithub.com/a/b v1.0.0\n@@ -9,3 +8,4 @@\n require (\n+\tgithub.com/z/z v1.0.0\n \tgithub.com/m/m v1.0.0\n"},
 		{name: "go.mod indirect turned direct is not a bump", file: "go.mod",
-			patch: "@@ -5,1 +5,1 @@\n-\tgithub.com/a/b v1.0.0 // indirect\n+\tgithub.com/a/b v1.0.0\n",
+			patch: "@@ -5,1 +5,1 @@\n require (\n-\tgithub.com/a/b v1.0.0 // indirect\n+\tgithub.com/a/b v1.0.0\n",
 			want:  "adds new direct dependency github.com/a/b"},
 		{name: "go.mod block replace entry", file: "go.mod",
-			patch: "@@ -5,1 +5,2 @@ replace (\n+\tgithub.com/a/b => ../evil\n",
+			patch: "@@ -5,1 +5,2 @@\n replace (\n+\tgithub.com/a/b => ../evil\n",
 			want:  "replace directive"},
 		{name: "go.mod module directive", file: "go.mod",
 			patch: "@@ -1,1 +1,1 @@\n-module github.com/a/b\n+module github.com/a/c\n",
 			want:  "module directive"},
 		{name: "go.mod comment and blank lines are not requirements", file: "go.mod",
-			patch: "@@ -1,3 +1,4 @@\n+// a note\n+\n+)\n"},
+			patch: "@@ -1,3 +1,4 @@\n+// a note\n+\n"},
 		{name: "go.sum new lines", file: "go.sum",
 			patch: "@@ -1,0 +2,2 @@\n+github.com/new/dep v1.0.0 h1:x=\n+github.com/new/dep v1.0.0/go.mod h1:y=\n"},
 		{name: "pnpm-lock new transitive entry", file: "pnpm-lock.yaml",
@@ -250,10 +250,58 @@ func classifyFileAt(file ChangedFile, head string) string {
 	return verdict.Summary()
 }
 
-func TestSignedPatchLinesKeepTheMarkerAndSkipFileHeaders(t *testing.T) {
+func TestGoModIsDenyByDefaultAndOnlyRequireLinesAreMechanical(t *testing.T) {
 	t.Parallel()
-	got := signedPatchLines("--- a/go.mod\n+++ b/go.mod\n@@ -1 +1 @@\n context\n-\told v1\n+\tnew v2\n\n")
-	if len(got) != 2 || got[0] != "-old v1" || got[1] != "+new v2" {
-		t.Fatalf("lines = %q", got)
+	const head = "module example.test/app\n\ngo 1.24\n\nrequire (\n\texample.test/a v1.0.0\n\texample.test/b v1.0.0\n)\n\ntool (\n\texample.test/cmd/gen\n)\n\ngodebug (\n\tx509sha1=0\n)\n\nexclude (\n\texample.test/a v0.9.0\n)\n\nretract (\n\tv1.0.0\n)\n\nreplace (\n\texample.test/a => ../a\n)\n\nrequire example.test/c v1.0.0\n"
+	for _, test := range []struct {
+		name    string
+		patch   string
+		content string
+		want    string // "" = mechanical, else a fragment of the refusal
+	}{
+		// Accepted.
+		{name: "bump inside a require block placed by the head file", patch: "@@ -6,1 +6,1 @@\n-\texample.test/a v0.9.0\n+\texample.test/a v1.0.0\n", content: head},
+		{name: "new indirect require inside the block placed by the head file", patch: "@@ -7,1 +7,2 @@\n \texample.test/b v1.0.0\n+\texample.test/z v1.0.0 // indirect\n", content: head},
+		{name: "a require block opened and closed by the bot", patch: "@@ -0,0 +1,3 @@\n+require (\n+\texample.test/z v1.0.0 // indirect\n+)\n"},
+		{name: "single-line require bump with a comment around it", patch: "@@ -1,2 +1,2 @@\n // keep\n-require example.test/c v1.0.0\n+require example.test/c v1.0.1\n"},
+		// tool
+		{name: "new tool inside a tool block", patch: "@@ -11,1 +11,2 @@\n \texample.test/cmd/gen\n+\texample.evil/cmd/x\n", content: head, want: "tool directive"},
+		{name: "new tool inside a tool block opened in the hunk", patch: "@@ -1,2 +1,3 @@\n tool (\n \texample.test/cmd/gen\n+\texample.evil/cmd/x\n", want: "tool directive"},
+		{name: "single-line tool swapped", patch: "@@ -1 +1 @@\n-tool example.test/cmd/gen\n+tool example.evil/cmd/gen\n", want: "tool directive"},
+		{name: "a tool block opened by the change", patch: "@@ -0,0 +1,3 @@\n+tool (\n+\texample.evil/cmd/x\n+)\n", want: "tool directive"},
+		// godebug
+		{name: "godebug entry added", patch: "@@ -15,1 +15,2 @@\n \tx509sha1=0\n+\tx509sha1=1\n", content: head, want: "godebug directive"},
+		{name: "single-line godebug swapped", patch: "@@ -1 +1 @@\n-godebug x509sha1=0\n+godebug x509sha1=1\n", want: "godebug directive"},
+		// exclude, retract, ignore, replace, module, unknown
+		{name: "exclude version changed in its block", patch: "@@ -19,1 +19,1 @@\n-\texample.test/a v0.9.0\n+\texample.test/a v0.8.0\n", content: head, want: "exclude directive"},
+		{name: "retract entry added", patch: "@@ -23,1 +23,2 @@\n \tv1.0.0\n+\tv1.1.0\n", content: head, want: "retract directive"},
+		{name: "ignore entry added", patch: "@@ -1,2 +1,3 @@\n ignore (\n \t./a\n+\t./b\n", want: "ignore directive"},
+		{name: "replace entry changed in its block", patch: "@@ -27,1 +27,1 @@\n-\texample.test/a => ../a\n+\texample.test/a => ../evil\n", content: head, want: "replace directive"},
+		{name: "module renamed", patch: "@@ -1 +1 @@\n-module example.test/app\n+module example.evil/app\n", want: "module directive"},
+		{name: "unknown directive", patch: "@@ -1 +1 @@\n+frobnicate x y\n", want: "frobnicate"},
+		{name: "unknown block", patch: "@@ -1,2 +1,3 @@\n frobnicate (\n \tx\n+\ty\n", want: "frobnicate directive"},
+		{name: "go directive", patch: "@@ -3 +3 @@\n-go 1.24\n+go 1.25\n", want: "go directive"},
+		// placement
+		{name: "an entry no opener or head file places", patch: "@@ -6,1 +6,1 @@\n-\texample.test/a v0.9.0\n+\texample.test/a v1.0.0\n", want: "cannot be placed"},
+		{name: "a hunk placed by the head file at top level", patch: "@@ -9,1 +9,2 @@\n \n+\texample.test/z v1.0.0\n", content: head, want: "cannot be placed"},
+		{name: "a changed closer of another block", patch: "@@ -12,1 +12,1 @@\n-)\n+)\n", content: head, want: "tool directive"},
+		{name: "a changed closer with no known block", patch: "@@ -1 +1 @@\n+)\n", want: "cannot be placed"},
+		{name: "a changed closer of a require block", patch: "@@ -1,3 +1,3 @@\n require (\n \texample.test/a v1.0.0\n-)\n+)\n"},
+		{name: "a require entry with no version", patch: "@@ -1,2 +1,2 @@\n require (\n+\texample.test/a\n", want: "not a module and a version"},
+		{name: "diff markers are not lines", patch: "--- a/go.mod\n+++ b/go.mod\n@@ -1 +1 @@\n-require example.test/c v1.0.0\n+require example.test/c v1.0.1\n\\ No newline at end of file\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got := classifyFile(ChangedFile{Filename: "go.mod", Patch: test.patch, Content: test.content})
+			if test.want == "" {
+				if got != "" {
+					t.Fatalf("refused: %s", got)
+				}
+				return
+			}
+			if !strings.Contains(got, test.want) {
+				t.Fatalf("summary = %q, want it to contain %q", got, test.want)
+			}
+		})
 	}
 }
