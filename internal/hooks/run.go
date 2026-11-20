@@ -278,7 +278,10 @@ var gitGeneratedEnvironmentVars = []string{
 // working tree, so a relative value is resolved against repoRoot. It reaches
 // the built-in blocks as WB_GIT_INDEX_FILE, never as GIT_INDEX_FILE. (wb#993)
 func hookIndexFile(repoRoot string) string {
-	index := os.Getenv("GIT_INDEX_FILE")
+	return resolveHookIndexFile(repoRoot, os.Getenv("GIT_INDEX_FILE"))
+}
+
+func resolveHookIndexFile(repoRoot, index string) string {
 	if index == "" || filepath.IsAbs(index) {
 		return index
 	}

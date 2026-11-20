@@ -176,7 +176,7 @@ func TestE2ECommitAllAndCommitPathsRunTheStagedChecks(t *testing.T) {
 	}
 	linter := filepath.Join(cacheRoot, "wb", "golangci-lint", strings.TrimSpace(string(goVersion)), hooks.DefaultGolangciLintVersion, "golangci-lint")
 	mustUpgradeMkdir(t, filepath.Dir(linter))
-	if err := os.WriteFile(linter, []byte(errcheckLikeLinter), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(linter, []byte(errcheckLikeLinter), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -216,6 +216,18 @@ func TestE2ECommitAllAndCommitPathsRunTheStagedChecks(t *testing.T) {
 		mustUpgradeWrite(t, filepath.Join(canonical, tc.file), string(original))
 	}
 
+	// The checks read the commit's index, not the real one: a gofmt
+	// violation staged in the real index does not block `commit --only` of a
+	// clean path, and is not committed by it.
+	mustUpgradeWrite(t, filepath.Join(canonical, "format", "format.go"), "package format\n\nfunc Clean() int {return 2}\n")
+	upgradeGit(t, canonical, nil, "add", "format/format.go")
+	mustUpgradeWrite(t, filepath.Join(canonical, "vet", "vet.go"), "package vet\n\nfunc Clean() int { return 4 }\n")
+	upgradeGit(t, canonical, hookEnv, "commit", "--only", "-m", "vet only", "vet/vet.go")
+	if out, err := runUpgradeGit(canonical, nil, "show", "--name-only", "--format=", "HEAD"); err != nil || strings.TrimSpace(out) != "vet/vet.go" {
+		t.Fatalf("commit --only committed %q (%v), want only vet/vet.go", out, err)
+	}
+	upgradeGit(t, canonical, nil, "checkout", "HEAD", "--", "format/format.go")
+
 	// The vet commit is linted as well; the gofmt one stops before lint. The
 	// fixed commit -a passes, linted on its staged package.
 	mustUpgradeWrite(t, filepath.Join(canonical, "lint", "lint.go"), "package lint\n\nfunc Clean() int { return 3 }\n")
@@ -224,7 +236,7 @@ func TestE2ECommitAllAndCommitPathsRunTheStagedChecks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "run --new-from-rev=HEAD ./vet\nrun --new-from-rev=HEAD ./lint\nrun --new-from-rev=HEAD ./lint\n"; string(calls) != want {
+	if want := "run --new-from-rev=HEAD ./vet\nrun --new-from-rev=HEAD ./lint\nrun --new-from-rev=HEAD ./vet\nrun --new-from-rev=HEAD ./lint\n"; string(calls) != want {
 		t.Fatalf("linter invocations\n got %q\nwant %q", calls, want)
 	}
 }

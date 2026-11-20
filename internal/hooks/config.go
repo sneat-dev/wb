@@ -377,8 +377,8 @@ func validateResolvedHook(subject string, hook ResolvedHook) error {
 // (see gitGeneratedEnvironmentVars) and hands the index over as
 // WB_GIT_INDEX_FILE instead, so only this one git call reads it: without it
 // the staged checks read the real index, see nothing staged, and pass. Nothing
-// else the block starts -- go vet, a formatter, a linter -- inherits it.
-// (wb#993)
+// else the block starts -- go vet, a formatter, a linter -- inherits it;
+// `wb hooks lint` takes it as --index-file. (wb#993)
 const stagedDiffShell = `wb_staged_diff() {
     if [ -n "${WB_GIT_INDEX_FILE:-}" ]; then
         GIT_INDEX_FILE="$WB_GIT_INDEX_FILE" git diff --cached "$@"
@@ -560,7 +560,7 @@ EOF_MODULES
 # Changed-line lint with the CI-pinned golangci-lint, over the same staged
 # packages, through ` + "`wb run --`" + `. It reports only issues on new or changed
 # lines, and never builds a linter (pre-push does), so it stays in seconds.
-if ! "$WB_EXECUTABLE" --projects-root "$WB_PROJECTS_ROOT" hooks lint --hook pre-commit --language go; then
+if ! "$WB_EXECUTABLE" --projects-root "$WB_PROJECTS_ROOT" hooks lint --hook pre-commit --language go --index-file "${WB_GIT_INDEX_FILE:-}"; then
     failed=1
 fi
 if [ "$failed" -ne 0 ]; then
