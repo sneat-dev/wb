@@ -23,18 +23,27 @@ type PullRequest struct {
 	// still reads as Renovate's. Unset (including when the commit list could
 	// not be read) the bot-only shapes are refused.
 	CommitsByBot bool
+	// HeadSHA is the pull request head the merge is pinned to. When set,
+	// every file whose `contents_url` names another commit is refused.
+	HeadSHA string
 }
 
 // CommitActors are the GitHub logins of one commit's author and committer, as
 // the pull request commits API reports them (empty when GitHub has no account
 // for the git identity).
 type CommitActors struct {
+	SHA       string
 	Author    string
 	Committer string
+	// Verified is GitHub's `commit.verification.verified`. The author and
+	// committer logins come from the commit's email, which anyone with push
+	// access can set to a bot's address; only a valid signature is evidence
+	// the commit is the bot's.
+	Verified bool
 }
 
-// AllCommitsByDependencyBot reports whether every commit was authored by a
-// dependency bot. The committer may also be `web-flow`: a bot that commits
+// AllCommitsByDependencyBot reports whether every commit is signature-verified
+// and authored by a dependency bot. The committer may also be `web-flow`: a bot that commits
 // through the GitHub API (Renovate does) shows `web-flow` as committer, and a
 // person's web-UI edit still carries that person as author.
 func AllCommitsByDependencyBot(commits []CommitActors) bool {
@@ -42,7 +51,7 @@ func AllCommitsByDependencyBot(commits []CommitActors) bool {
 		return false
 	}
 	for _, commit := range commits {
-		if !IsDependencyBotLogin(commit.Author) {
+		if !commit.Verified || !IsDependencyBotLogin(commit.Author) {
 			return false
 		}
 		if committer := strings.ToLower(strings.TrimSpace(commit.Committer)); committer != "web-flow" && !IsDependencyBotLogin(committer) {
@@ -108,18 +117,11 @@ func nonMechanicalWorkflow(name, status, patch string, pr PullRequest) string {
 	if strings.TrimSpace(patch) == "" {
 		return name + " has no diff GitHub could show, so its content cannot be classified"
 	}
-	var removed, added []string
-	for _, line := range strings.Split(patch, "\n") {
-		if len(line) == 0 || line[0] != '+' && line[0] != '-' || strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---") {
-			continue
-		}
-		if line[0] == '-' {
-			removed = append(removed, line[1:])
-		} else {
-			added = append(added, line[1:])
-		}
+	removed, added, reason := workflowChangePairs(name, patch)
+	if reason != "" {
+		return reason
 	}
-	if len(removed) == 0 || len(removed) != len(added) {
+	if len(removed) == 0 {
 		return name + " adds or removes lines, which a version bump does not do"
 	}
 	for index := range removed {
@@ -128,6 +130,46 @@ func nonMechanicalWorkflow(name, status, patch string, pr PullRequest) string {
 		}
 	}
 	return ""
+}
+
+// workflowChangePairs pairs each removed line with the added line that takes
+// its place: within one hunk, at the same position of one contiguous change
+// block. A line removed from one place and added at another (another job, a
+// different step) is not a replacement, so a block whose removed and added
+// line counts differ, or a change spread over separate blocks, is refused.
+func workflowChangePairs(name, patch string) (removed, added []string, reason string) {
+	var blockRemoved, blockAdded []string
+	flush := func() bool {
+		if len(blockRemoved) != len(blockAdded) {
+			return false
+		}
+		removed = append(removed, blockRemoved...)
+		added = append(added, blockAdded...)
+		blockRemoved, blockAdded = nil, nil
+		return true
+	}
+	const unpaired = " adds or removes lines, or moves one to another place, which a version bump does not do"
+	for _, line := range strings.Split(patch, "\n") {
+		switch {
+		case strings.HasPrefix(line, "+++"), strings.HasPrefix(line, "---"):
+		case strings.HasPrefix(line, "-"):
+			if len(blockAdded) > 0 && !flush() {
+				return nil, nil, name + unpaired
+			}
+			blockRemoved = append(blockRemoved, line[1:])
+		case strings.HasPrefix(line, "+"):
+			blockAdded = append(blockAdded, line[1:])
+		default:
+			// A context line, a hunk header or a blank line ends the block.
+			if !flush() {
+				return nil, nil, name + unpaired
+			}
+		}
+	}
+	if !flush() {
+		return nil, nil, name + unpaired
+	}
+	return removed, added, ""
 }
 
 func workflowPairRefusal(name, before, after string, pr PullRequest) string {
@@ -150,7 +192,7 @@ func workflowPairRefusal(name, before, after string, pr PullRequest) string {
 	if !workflowVersionText.MatchString(oldVersion[2]) || !workflowVersionText.MatchString(newVersion[2]) {
 		return name + " sets " + newVersion[1] + " to something that is not a version: " + trimForMessage(newVersion[2])
 	}
-	if !strings.Contains(strings.ToLower(pr.Title), strings.ToLower(strings.TrimPrefix(newVersion[2], "v"))) {
+	if !titleNamesVersion(pr.Title, newVersion[2]) {
 		return name + " sets " + newVersion[1] + " to " + newVersion[2] + ", which the pull request title does not name"
 	}
 	return ""
@@ -162,19 +204,51 @@ func versionKey(key string) bool {
 	return lower == "version" || strings.HasSuffix(lower, "-version") || strings.HasSuffix(lower, "_version")
 }
 
-// usesNamedByTitle ties a `uses:` ref change to the pull request: the action's
-// `owner/repo` is in the title, or the new tag is, or (for a commit SHA) the
-// version in the trailing `# vX` comment is.
+// titleFields splits a pull request title into lower-case words, dropping the
+// punctuation Renovate and Dependabot put around names and versions.
+func titleFields(title string) []string {
+	fields := strings.FieldsFunc(strings.ToLower(title), func(r rune) bool {
+		return r == ' ' || r == '\t' || r == ',' || r == ';' || r == '(' || r == ')' || r == '[' || r == ']' || r == '`' || r == '\'' || r == '"'
+	})
+	for index, field := range fields {
+		fields[index] = strings.TrimRight(field, ".:")
+	}
+	return fields
+}
+
+// titleNamesVersion reports whether the title carries version as a whole word
+// (`v4.2.0` and `4.2.0` are the word `4.2.0`; `4` is not a part of either).
+func titleNamesVersion(title, version string) bool {
+	version = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(version)), "v")
+	if version == "" || !workflowVersionText.MatchString(version) {
+		return false
+	}
+	for _, field := range titleFields(title) {
+		if strings.TrimPrefix(field, "v") == version {
+			return true
+		}
+	}
+	return false
+}
+
+// usesNamedByTitle ties a `uses:` ref change to the pull request. For a
+// version tag: the action's `owner/repo` is a word of the title, or the new
+// tag is a whole version word of it. For a commit SHA: the trailing `# vX`
+// comment must name a version, and the title must name that same version,
+// because an arbitrary 40-hex SHA is whatever code its author pushed to the
+// fork network, and only a version the title names says which release it is.
 func usesNamedByTitle(uses []string, title string) bool {
-	title = strings.ToLower(title)
-	segments := strings.SplitN(uses[1], "/", 3)
-	if strings.Contains(title, strings.ToLower(segments[0]+"/"+segments[1])) {
-		return true
-	}
 	ref := uses[2]
-	if len(ref) != 40 || strings.Trim(ref, "0123456789abcdefABCDEF") != "" {
-		return strings.Contains(title, strings.ToLower(strings.TrimPrefix(ref, "v")))
+	if len(ref) == 40 && strings.Trim(ref, "0123456789abcdefABCDEF") == "" {
+		comment := strings.Fields(strings.TrimSpace(uses[3]))
+		return len(comment) > 0 && titleNamesVersion(title, comment[0])
 	}
-	comment := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(strings.SplitN(strings.TrimSpace(uses[3]), " ", 2)[0])), "v")
-	return comment != "" && strings.Contains(title, comment)
+	segments := strings.SplitN(uses[1], "/", 3)
+	repository := strings.ToLower(segments[0] + "/" + segments[1])
+	for _, field := range titleFields(title) {
+		if field == repository {
+			return true
+		}
+	}
+	return titleNamesVersion(title, ref)
 }

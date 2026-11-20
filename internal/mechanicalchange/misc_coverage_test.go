@@ -54,49 +54,164 @@ func TestOrchCovNonMechanicalGoModuleRefusesGraphDirectives(t *testing.T) {
 	}
 }
 
-func TestOrchCovNonMechanicalWorkspaceRefusesGraphRewritingKeys(t *testing.T) {
+func TestWorkspaceChangesAreDenyByDefaultAndOnlyAnExistingPinsVersionIsMechanical(t *testing.T) {
 	t.Parallel()
-	clean := nonMechanicalWorkspace("pnpm-workspace.yaml", "packages:\n  - apps/*\n")
-	if clean != "" {
-		t.Fatalf("clean workspace reason = %q", clean)
-	}
-	reason := nonMechanicalWorkspace("pnpm-workspace.yaml", "@@ -1 +1 @@ packageExtensions:\n-  semver: 7.5.0\n+  semver: 7.6.0\n")
-	if !strings.Contains(reason, "packageExtensions") || !strings.Contains(reason, "rewrites what the workspace resolves") {
-		t.Fatalf("packageExtensions reason = %q", reason)
+	// head places the hunk at line 5 of this file inside `overrides:`, while
+	// Git's own heading would name the earlier `minimumReleaseAgeExclude`.
+	overridesHead := "packages:\n  - apps/*\nminimumReleaseAgeExclude:\n  - astro@7.4.7\noverrides:\n  semver: 7.5.0\n  other: 1.0.0\n"
+	quotedKeyHead := "overrides:\n  semver: 7.5.0\n\"packageExtensions\":\n  semver:\n    dependencies:\n      x: 1\n"
+	for _, test := range []struct {
+		name    string
+		patch   string
+		content string
+		want    string
+	}{
+		{name: "an existing pin's version, section in the hunk", patch: "@@ -1 +1 @@\n overrides:\n-  semver: 7.5.0\n+  semver: 7.6.0\n"},
+		{name: "a versioned key pin", patch: "@@ -8,4 +8,4 @@ minimumReleaseAgeExclude:\n   - astro@7.4.7\n overrides:\n-  undici@7.29.1: 8.12.4\n+  undici@7.29.1: 8.13.0"},
+		{name: "section placed by the head file", patch: "@@ -6,2 +6,2 @@ minimumReleaseAgeExclude:\n-  semver: 7.5.0\n+  semver: 7.6.0\n   other: 1.0.0", content: overridesHead},
+		{name: "quoted and ranged values", patch: "@@ -1 +1 @@\n overrides:\n-  semver: \"^7.5.0\"\n+  semver: '>=7.6.0 <8'\n"},
+		{name: "catalog pin", patch: "@@ -1 +1 @@\n catalog:\n-  react: ^18.0.0\n+  react: ^18.3.0\n"},
+		{name: "catalogs pin under a named group", patch: "@@ -1 +1 @@\n catalogs:\n   react17:\n-    react: 17.0.1\n+    react: 17.0.2\n"},
+		{name: "comments and blank lines are ignored", patch: "@@ -1 +1 @@\n overrides:\n \n-  # old\n+  # new\n"},
+		{name: "file headers are skipped", patch: "--- a/x\n+++ b/x\n@@ -1 +1 @@\n overrides:\n-  semver: 7.5.0\n+  semver: 7.6.0\n"},
+		{name: "a context line that is not a property is not judged", patch: "@@ -1 +1 @@\n overrides:\n   - note\n-  semver: 7.5.0\n+  semver: 7.6.0\n"},
+
+		{name: "an added pin to another package", patch: "@@ -1 +1,2 @@\n overrides:\n+  lodash: github:evil/lodash\n", want: "not the version of a pin"},
+		{name: "an added pin with a plain version", patch: "@@ -1 +1,2 @@\n overrides:\n+  lodash: 4.17.21\n", want: "adds, removes or renames the pin"},
+		{name: "a removed pin", patch: "@@ -1,2 +1 @@\n overrides:\n-  lodash: 4.17.21\n", want: "adds, removes or renames the pin"},
+		{name: "a renamed pin", patch: "@@ -1,2 +1,2 @@\n overrides:\n-  lodash: 4.17.21\n+  underscore: 4.17.21\n", want: "adds, removes or renames the pin"},
+		{name: "a pin changed to an npm alias", patch: "@@ -1 +1 @@\n overrides:\n-  semver: 7.5.0\n+  semver: npm:evil-semver@1.0.0\n", want: "not the version of a pin"},
+		{name: "a pin changed to a git url", patch: "@@ -1 +1 @@\n overrides:\n-  semver: 7.5.0\n+  semver: git+https://evil.test/s.git\n", want: "not the version of a pin"},
+		{name: "a pin changed to a path", patch: "@@ -1 +1 @@\n overrides:\n-  semver: 7.5.0\n+  semver: file:../evil\n", want: "not the version of a pin"},
+		{name: "a pin with no value", patch: "@@ -1 +1 @@\n overrides:\n-  semver: 7.5.0\n+  semver:\n", want: "not the version of a pin"},
+		{name: "a pin that is not a property", patch: "@@ -1 +1 @@\n overrides:\n+  - semver\n", want: "not the version of a pin"},
+		{name: "a pin indented too deep", patch: "@@ -1 +1 @@\n overrides:\n-    semver: 7.5.0\n+    semver: 7.6.0\n", want: "not the version of a pin"},
+		{name: "a catalogs entry indented as a group", patch: "@@ -1 +1 @@\n catalogs:\n-  react: 7.5.0\n+  react: 7.6.0\n", want: "not the version of a pin"},
+		{name: "a new catalogs group", patch: "@@ -1 +1 @@\n catalogs:\n+  react17:\n", want: "not the version of a pin"},
+		{name: "the same key in two groups cannot be swapped silently", patch: "@@ -1 +1 @@\n catalogs:\n   a:\n-    react: 1.0.0\n   b:\n+    react: 1.0.1\n", want: "adds, removes or renames the pin"},
+		{name: "a dangerous build setting", patch: "@@ -1 +1 @@\n-dangerouslyAllowAllBuilds: false\n+dangerouslyAllowAllBuilds: true\n", want: "top-level line"},
+		{name: "a new onlyBuiltDependencies entry", patch: "@@ -1 +1,2 @@ onlyBuiltDependencies:\n   - esbuild\n+  - evil\n", want: "outside overrides"},
+		{name: "a new workspace glob", patch: "@@ -1 +1,2 @@\n packages:\n+  - evil/*\n", want: "outside overrides"},
+		{name: "a packageExtensions edit", patch: "@@ -1 +1 @@\n packageExtensions:\n-  semver: 7.5.0\n+  semver: 7.6.0\n", want: "outside overrides"},
+		{name: "pins in two hunks are paired per hunk", patch: "@@ -1 +1 @@\n overrides:\n-  semver: 7.5.0\n@@ -9 +9 @@\n overrides:\n+  semver: 7.6.0\n", want: "adds, removes or renames the pin"},
+		{name: "a header that names overrides is not trusted", patch: "@@ -3,2 +3,2 @@ overrides:\n-    dependencies: 7.5.0\n+    dependencies: 7.6.0\n", want: "outside overrides"},
+		{name: "a quoted key the heading skipped, placed by the head file", patch: "@@ -5,2 +5,2 @@ overrides:\n-    x: 1\n+    x: 2\n", content: quotedKeyHead, want: "outside overrides"},
+		{name: "a changed pin section opener", patch: "@@ -1 +1 @@\n-overrides:\n+overrides: {}\n", want: "top-level line"},
+		{name: "no section known and no head file", patch: "@@ -4 +4 @@\n-  semver: 7.5.0\n+  semver: 7.6.0\n", want: "outside overrides"},
+		{name: "a hunk starting past the end of the head file", patch: "@@ -90 +90 @@\n-  semver: 7.5.0\n+  semver: 7.6.0\n", content: overridesHead, want: "outside overrides"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			reason := nonMechanicalWorkspace("pnpm-workspace.yaml", test.patch, test.content)
+			if test.want == "" {
+				if reason != "" {
+					t.Fatalf("reason = %q, want none", reason)
+				}
+				return
+			}
+			if !strings.Contains(reason, test.want) {
+				t.Fatalf("reason = %q, want it to contain %q", reason, test.want)
+			}
+		})
 	}
 }
 
-func TestWorkspaceVersionPinsAreDependencySectionsAndNothingElseIs(t *testing.T) {
+func TestStrictPinVersionAcceptsOnlyRegistryVersionsAndRanges(t *testing.T) {
 	t.Parallel()
+	for value, want := range map[string]bool{
+		"1.2.3": true, "v1.2.3": true, "^1.2.3": true, "~1.2": true, ">=1.0.0": true, "<2": true, "=1.0.0": true,
+		"1.x": true, "1.2.*": true, "1.0.0-beta.1": true, "1.0.0+build.5": true, ">=1.0.0 <2.0.0": true, "^1.0.0 || ^2.0.0": true, " 1.2.3 ": true,
+		"": false, "*": false, "latest": false, "npm:x@1.0.0": false, "github:a/b": false, "git+https://x/y.git": false,
+		"git:x": false, "http://x/y.tgz": false, "https://x/y.tgz": false, "file:../x": false, "link:../x": false,
+		"workspace:*": false, "patch:x@1.0.0#p": false, "portal:../x": false, "a/b": false, "1.0.0||npm:x": false, "1.0.0 github:a/b": false,
+	} {
+		if got := strictPinVersion(value); got != want {
+			t.Errorf("strictPinVersion(%q) = %t, want %t", value, got, want)
+		}
+	}
+}
+
+func TestWorkspaceTopAtReadsTheEnclosingTopLevelKey(t *testing.T) {
+	t.Parallel()
+	content := "# c\npackages:\n  - a\n\n'overrides':\n\tx: 1\n  y: 2\n- note\n"
+	for line, want := range map[int]string{1: "", 3: "packages", 6: "overrides", 9: "overrides", 99: ""} {
+		if got := workspaceTopAt(content, line); got != want {
+			t.Errorf("workspaceTopAt(line %d) = %q, want %q", line, got, want)
+		}
+	}
+}
+
+func TestUnquoteYAMLScalarDropsOneLevelOfQuotes(t *testing.T) {
+	t.Parallel()
+	for in, want := range map[string]string{`'1.0'`: "1.0", `"1.0"`: "1.0", ` 1.0 `: "1.0", `'1.0"`: `'1.0"`, `'`: `'`} {
+		if got := unquoteYAMLScalar(in); got != want {
+			t.Errorf("unquoteYAMLScalar(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestStaleHeadFilesAreRefused(t *testing.T) {
+	t.Parallel()
+	const head = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	manifest := ChangedFile{Filename: "go.sum", Patch: "@@\n-a v1 h1:x\n+a v2 h1:y"}
+	for name, test := range map[string]struct {
+		url  string
+		want bool
+	}{
+		"the head commit":         {"https://api.github.com/repos/o/r/contents/go.sum?ref=" + head, true},
+		"another commit":          {"https://api.github.com/repos/o/r/contents/go.sum?ref=bbbb", false},
+		"no ref":                  {"https://api.github.com/repos/o/r/contents/go.sum", false},
+		"an unparseable url":      {"https://api.github.com/%zz?ref=" + head, false},
+		"no url to check against": {"", true},
+	} {
+		file := manifest
+		file.ContentsURL = test.url
+		if got := ClassifyMechanicalPullRequest([]ChangedFile{file}, PullRequest{HeadSHA: head}).Mechanical; got != test.want {
+			t.Errorf("%s: mechanical = %t, want %t", name, got, test.want)
+		}
+	}
+	file := manifest
+	file.ContentsURL = "https://api.github.com/repos/o/r/contents/go.sum?ref=bbbb"
+	if !ClassifyMechanical([]ChangedFile{file}).Mechanical {
+		t.Error("without a pull request head there is nothing to compare against")
+	}
+}
+
+func TestPinSectionsAcceptOnlyAReplacedPinWithAPlainRegistryVersion(t *testing.T) {
+	t.Parallel()
+	pin := func(sign, section, key, value string) string {
+		return sign + "    \"" + key + "\": \"" + value + "\"\n"
+	}
+	opener := func(name string) string { return " \"" + name + "\": {\n" }
 	for _, test := range []struct {
 		name  string
 		patch string
 		want  string
 	}{
-		{name: "overrides pin named in the hunk header", patch: "@@ -13,3 +13,3 @@ overrides:\n-  '@sneat/api': 0.27.52\n+  '@sneat/api': 0.27.53\n"},
-		{name: "overrides pin with unquoted and quoted values", patch: "@@ -1 +1 @@ overrides:\n-  semver: \"7.5.0\"\n+  semver: '7.6.0'\n"},
-		{name: "an unchanged context line under overrides is not judged", patch: "@@ -1 +1 @@ overrides:\n   a: node x\n+  b: 2.0.0\n"},
-		{name: "catalog pin", patch: "@@ -1 +1 @@\n catalog:\n-  react: ^18.0.0\n+  react: ^18.3.0\n"},
-		{name: "catalogs group and pin", patch: "@@ -1 +1 @@\n catalogs:\n+  react17:\n+    react: 17.0.2\n"},
-		{name: "comments and blank lines are ignored", patch: "@@ -1 +1 @@ overrides:\n \n-  # old\n+  # new\n"},
-		{name: "a change outside the graph keys is not judged here", patch: "@@ -1 +1 @@\n packages:\n-  - apps/*\n+  - libs/*\n"},
-		{name: "a script value under overrides", patch: "@@ -1 +1 @@ overrides:\n+  semver: node evil.js\n", want: "inside overrides"},
-		{name: "a line under overrides that is not a property", patch: "@@ -1 +1 @@ overrides:\n+  - semver\n", want: "inside overrides"},
-		{name: "a bare name under catalog", patch: "@@ -1 +1 @@ catalog:\n+  react:\n", want: "inside catalog"},
-		{name: "an inline overrides value", patch: "@@ -1 +1 @@\n-overrides: {}\n+overrides: {a: 1}\n", want: "inline"},
-		{name: "a graph-rewriting top level key", patch: "@@ -1 +1 @@\n+patchedDependencies:\n", want: "patchedDependencies"},
-		{name: "a context-only graph-looking line under an unknown top", patch: "@@ -1 +1 @@\n   peerDependencyRules:\n+    a: 1\n"},
-		{name: "a graph key entered through the hunk header", patch: "@@ -1 +1 @@ peerDependencyRules:\n+  ignoreMissing: x\n", want: "peerDependencyRules"},
-		{name: "a header that is not a property", patch: "@@ -1 +1 @@ - item\n+  semver: 7.6.0\n"},
-		{name: "a header without a closing marker", patch: "@@ -1 +1\n+  semver: 7.6.0\n"},
-		{name: "a quoted key that never closes", patch: "@@ -1 +1 @@ overrides:\n+  'semver: 7.6.0\n", want: "inside overrides"},
-		{name: "a quoted key without a colon", patch: "@@ -1 +1 @@ overrides:\n+  'semver' 7.6.0\n", want: "inside overrides"},
-		{name: "a line starting with a colon", patch: "@@ -1 +1 @@ overrides:\n+  : 7.6.0\n", want: "inside overrides"},
-		{name: "file headers are skipped", patch: "--- a/x\n+++ b/x\n@@ -1 +1 @@ overrides:\n-  semver: 7.5.0\n+  semver: 7.6.0\n"},
+		{name: "overrides pin replaced", patch: "@@ -1 +1 @@\n" + opener("overrides") + pin("-", "", "semver", "7.5.4") + pin("+", "", "semver", "7.6.0")},
+		{name: "resolutions pin replaced", patch: "@@ -1 +1 @@\n" + opener("resolutions") + pin("-", "", "semver", "7.5.4") + pin("+", "", "semver", "^7.6.0")},
+		{name: "pnpm overrides pin replaced", patch: "@@ -1 +1 @@\n \"pnpm\": {\n" + opener("overrides") + pin("-", "", "semver", "7.5.4") + pin("+", "", "semver", "7.6.0")},
+		{name: "a new pin", patch: "@@ -1 +1 @@\n" + opener("overrides") + pin("+", "", "semver", "7.6.0"), want: "adds, removes or renames the pin"},
+		{name: "a removed pin", patch: "@@ -1 +1 @@\n" + opener("overrides") + pin("-", "", "semver", "7.6.0"), want: "adds, removes or renames the pin"},
+		{name: "a pin added under npm alias", patch: "@@ -1 +1 @@\n" + opener("overrides") + pin("+", "", "lodash", "npm:evil-lodash@1.0.0"), want: "plain registry version"},
+		{name: "a pin added under github", patch: "@@ -1 +1 @@\n" + opener("overrides") + pin("+", "", "lodash", "github:evil/lodash"), want: "plain registry version"},
+		{name: "a resolutions pin changed to a file", patch: "@@ -1 +1 @@\n" + opener("resolutions") + pin("-", "", "lodash", "4.0.0") + pin("+", "", "lodash", "file:../evil"), want: "plain registry version"},
+		{name: "a pin whose value is not a string", patch: "@@ -1 +1 @@\n" + opener("overrides") + "-    \"lodash\": 1\n+    \"lodash\": 2\n", want: "plain registry version"},
+		{name: "a new overrides block", patch: "@@ -1 +1 @@\n+  \"overrides\": {\n+    \"lodash\": \"github:evil/lodash\"\n+  }\n", want: "not a dependency section"},
+		{name: "a rewritten overrides opener", patch: "@@ -1 +1 @@\n-  \"overrides\": {\n+  \"overrides\": {\n", want: "not a dependency section"},
+		{name: "pins in two hunks are paired per hunk", patch: "@@ -1 +1 @@\n" + opener("overrides") + pin("-", "", "a", "1.0.0") + "@@ -9 +9 @@\n" + opener("overrides") + pin("+", "", "a", "1.0.1"), want: "adds, removes or renames the pin"},
+		{name: "a new dependency entry with a plain version stays mechanical", patch: "@@ -1 +1 @@\n" + opener("dependencies") + pin("+", "", "lodash", "4.17.21")},
+		{name: "a new dependency entry with github", patch: "@@ -1 +1 @@\n" + opener("dependencies") + pin("+", "", "lodash", "github:evil/lodash"), want: "not a version range"},
+		{name: "a dependency changed to an npm alias", patch: "@@ -1 +1 @@\n" + opener("dependencies") + pin("-", "", "lodash", "4.0.0") + pin("+", "", "lodash", "npm:evil@1.0.0"), want: "not a version range"},
+		{name: "a dependency range hiding a protocol", patch: "@@ -1 +1 @@\n" + opener("dependencies") + pin("+", "", "lodash", "1.0.0||npm:evil@1"), want: "not a version range"},
+		{name: "a dependency to a git url", patch: "@@ -1 +1 @@\n" + opener("dependencies") + pin("+", "", "lodash", "git+https://evil.test/l.git"), want: "not a version range"},
+		{name: "a dependency to a path", patch: "@@ -1 +1 @@\n" + opener("dependencies") + pin("+", "", "lodash", "link:../evil"), want: "not a version range"},
+		{name: "a dependency to an http tarball", patch: "@@ -1 +1 @@\n" + opener("dependencies") + pin("+", "", "lodash", "https://evil.test/l.tgz"), want: "not a version range"},
+		{name: "a dependency to a workspace package stays mechanical", patch: "@@ -1 +1 @@\n" + opener("dependencies") + pin("+", "", "lodash", "workspace:*")},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			reason := nonMechanicalWorkspace("pnpm-workspace.yaml", test.patch)
+			reason := nonMechanicalContent("package.json", test.patch, "")
 			if test.want == "" {
 				if reason != "" {
 					t.Fatalf("reason = %q, want none", reason)
@@ -171,7 +286,7 @@ func TestOrchCovNonMechanicalContentReasonsAboutAPackageManifest(t *testing.T) {
 			want:  "rewrites what the resolver produces",
 		},
 		{
-			name:  "overrides is a dependency pin section",
+			name:  "overrides is a pin section",
 			patch: "@@ -1,3 +1,3 @@   \"overrides\": {\n-  \"semver\": \"7.5.0\"\n+  \"semver\": \"7.6.0\"\n",
 		},
 		{
@@ -278,9 +393,12 @@ func TestOrchCovLooksLikeDependencyEntryAcceptsEveryVersionSpelling(t *testing.T
 		{value: `"1.2.3"`, want: true},
 		{value: `"workspace:*"`, want: true},
 		{value: `"catalog:default"`, want: true},
-		{value: `"npm:other@1.0.0"`, want: true},
-		{value: `"file:../local"`, want: true},
-		{value: `"git+https://example.test/a.git"`, want: true},
+		{value: `"npm:other@1.0.0"`, want: false},
+		{value: `"file:../local"`, want: false},
+		{value: `"link:../local"`, want: false},
+		{value: `"github:a/b"`, want: false},
+		{value: `"1.0.0||npm:x"`, want: false},
+		{value: `"git+https://example.test/a.git"`, want: false},
 		{value: `not json`, want: false},
 		{value: `""`, want: false},
 		{value: `"   "`, want: false},
@@ -317,6 +435,29 @@ func TestOrchCovMechanicalVerdictSummaryExplainsItself(t *testing.T) {
 	for _, want := range []string{"a.go", "b.go"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("summary %q is missing %q", got, want)
+		}
+	}
+}
+
+func TestYAMLLineKeyReadsQuotedAndPlainKeys(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		in, key, value string
+		ok             bool
+	}{
+		{"semver: 7.6.0", "semver", "7.6.0", true},
+		{"'@a/b': 1", "@a/b", "1", true},
+		{`"a": "b"`, "a", `"b"`, true},
+		{"undici@7.29.1: 8.1", "undici@7.29.1", "8.1", true},
+		{"", "", "", false},
+		{"'unterminated: 1", "", "", false},
+		{"'a' 1", "", "", false},
+		{": 1", "", "", false},
+		{"- item", "", "", false},
+	} {
+		key, value, ok := yamlLineKey(test.in)
+		if key != test.key || value != test.value || ok != test.ok {
+			t.Errorf("yamlLineKey(%q) = %q,%q,%t want %q,%q,%t", test.in, key, value, ok, test.key, test.value, test.ok)
 		}
 	}
 }

@@ -3,7 +3,9 @@ package mechanicalchange
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"path"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -51,6 +53,75 @@ var mechanicalDependencySections = map[string]bool{
 	"optionalDependencies": true,
 	"overrides":            true,
 	"resolutions":          true,
+}
+
+// pinnedSections are the `package.json` sections of mechanicalDependencySections
+// that redirect resolution instead of declaring a dependency. They are held to
+// a stricter rule than `dependencies`: a changed line must REPLACE an existing
+// pin of the same key (never add, remove or rename one, never open or rewrite
+// the section) and its value must be a registry semver version or range, never
+// a protocol (`npm:`, `github:`, `git+`, `file:`, `link:`, ...). An override
+// that points a package at another package, a git URL or a path silently
+// swaps the code every transitive user of that package runs.
+var pinnedSections = map[string]bool{
+	"overrides":   true,
+	"resolutions": true,
+}
+
+// strictPinRange accepts only digits, `x`/`*` wildcards inside a version and
+// the semver range operators: no `:` or `/`, so no protocol, alias, URL, path or
+// git ref can pass.
+var strictPinRange = regexp.MustCompile(
+	`^(?:[\^~]|[<>]=?|=)?\s*v?\d+(?:\.(?:\d+|[xX*])){0,2}(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z.-]+)?` +
+		`(?:(?:\s+|\s*\|\|\s*)(?:[\^~]|[<>]=?|=)?\s*v?\d+(?:\.(?:\d+|[xX*])){0,2}(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z.-]+)?)*$`)
+
+func strictPinVersion(value string) bool {
+	return strictPinRange.MatchString(strings.TrimSpace(value))
+}
+
+// pinChanges pairs, within one hunk, the removed and added pin lines of one
+// key. A hunk whose added keys are not exactly its removed keys adds, removes
+// or renames a pin, which is a decision rather than a version bump.
+type pinChanges struct {
+	removed, added map[string]int
+}
+
+func newPinChanges() *pinChanges {
+	return &pinChanges{removed: map[string]int{}, added: map[string]int{}}
+}
+
+func (pins *pinChanges) record(sign byte, id string) {
+	if sign == '+' {
+		pins.added[id]++
+	} else {
+		pins.removed[id]++
+	}
+}
+
+// unpaired returns the first pin key whose added and removed counts differ.
+func (pins *pinChanges) unpaired() string {
+	for id, count := range pins.added {
+		if pins.removed[id] != count {
+			return id
+		}
+	}
+	for id, count := range pins.removed {
+		if pins.added[id] != count {
+			return id
+		}
+	}
+	return ""
+}
+
+// verify returns the refusal for an unpaired pin and starts the next hunk.
+func (pins *pinChanges) verify(name string) string {
+	id := pins.unpaired()
+	pins.removed, pins.added = map[string]int{}, map[string]int{}
+	if id == "" {
+		return ""
+	}
+	return name + " adds, removes or renames the pin " + trimForMessage(strings.ReplaceAll(id, "\x00", " ")) +
+		" instead of changing the version of an existing one"
 }
 
 // workspaceVersionSections are the top-level `pnpm-workspace.yaml` keys whose
@@ -121,25 +192,33 @@ func nonMechanicalGoModule(name, patch string) string {
 	return ""
 }
 
-// nonMechanicalWorkspace refuses the pnpm workspace changes that are not
-// version pins. The file is in the manifest list because a bump moves
-// `overrides:` and `catalog:` entries, but the same file carries package
-// extensions, patched dependencies and peer dependency rules.
+// nonMechanicalWorkspace is deny-by-default: the only mechanical change to
+// pnpm-workspace.yaml is the version of an EXISTING pin under `overrides`,
+// `catalog` or `catalogs`. Every other changed line is a decision: a new,
+// removed or renamed pin, a new group, any top-level key (`packages`,
+// `onlyBuiltDependencies`, `dangerouslyAllowAllBuilds`, `packageExtensions`,
+// ...) and any value that is not a plain registry version or range.
 //
-// A hunk shows its enclosing top-level key in the header (Git's default hunk
-// heading is the last line that starts in column 0, which is exactly a YAML
-// top-level key) and in any context line, so the key is tracked the way the
-// JSON classifier tracks sections. Under overrides, catalog and catalogs a
-// changed line must be `name: version`; under any other graph-rewriting key
-// the change is refused.
-func nonMechanicalWorkspace(name, patch string) string {
-	top := ""
+// The enclosing top-level key comes from the head file at the hunk's first
+// line when it is available. Git's default hunk heading is not trusted: it
+// skips quoted keys, so it can name an earlier section than the one the hunk
+// is in. Without the head file only a column-0 line inside the hunk names the
+// section, and a changed line with no known section is refused.
+func nonMechanicalWorkspace(name, patch, content string) string {
+	top, group := "", ""
+	pins := newPinChanges()
 	for _, line := range strings.Split(patch, "\n") {
 		if strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---") {
 			continue
 		}
 		if strings.HasPrefix(line, "@@") {
-			top = workspaceKeyFromHunkHeader(line)
+			if reason := pins.verify(name); reason != "" {
+				return reason
+			}
+			top, group = "", ""
+			if start, ok := hunkNewStart(line); ok && content != "" {
+				top = workspaceTopAt(content, start)
+			}
 			continue
 		}
 		changed := len(line) > 0 && (line[0] == '+' || line[0] == '-')
@@ -152,60 +231,62 @@ func nonMechanicalWorkspace(name, patch string) string {
 			continue
 		}
 		key, value, isProperty := yamlLineKey(trimmed)
-		if len(body) == len(strings.TrimLeft(body, " \t")) {
+		indent := len(body) - len(strings.TrimLeft(body, " "))
+		if indent == 0 {
 			if isProperty {
-				top = key
+				top, group = key, ""
 			}
-			if reason := workspaceTopLevelRefusal(name, key, value, changed && isProperty); reason != "" {
-				return reason
-			}
-			continue
-		}
-		if workspaceVersionSections[top] {
-			if !changed {
-				continue
-			}
-			// A nested group name under `catalogs:` has no value of its own.
-			if isProperty && value == "" && top == "catalogs" {
-				continue
-			}
-			if !isProperty || !looksLikeDependencyEntry(quoteYAMLScalar(value)) {
-				return name + " changes " + trimForMessage(trimmed) + " inside " + top +
-					", which is not a package name pinned to a version"
+			if changed {
+				return name + " changes the top-level line " + trimForMessage(trimmed) +
+					", and only the version of an existing pin under overrides, catalog or catalogs is mechanical"
 			}
 			continue
 		}
-		if graphRewritingKeys[top] {
-			return name + " touches " + top + ", which rewrites what the workspace resolves for every package"
+		if !changed {
+			if top == "catalogs" && indent == 2 && isProperty && value == "" {
+				group = key
+			}
+			continue
 		}
+		if !workspaceVersionSections[top] {
+			return name + " changes " + trimForMessage(trimmed) + " outside overrides, catalog and catalogs"
+		}
+		depth := 2
+		if top == "catalogs" {
+			depth = 4
+		}
+		if !isProperty || value == "" || indent != depth || !strictPinVersion(unquoteYAMLScalar(value)) {
+			return name + " changes " + trimForMessage(trimmed) + " inside " + top +
+				", which is not the version of a pin"
+		}
+		pins.record(line[0], top+"\x00"+group+"\x00"+key)
 	}
-	return ""
+	return pins.verify(name)
 }
 
-// workspaceTopLevelRefusal judges a column-0 line of pnpm-workspace.yaml.
-// A version-pin section header may change only as a bare header; any other
-// graph-rewriting key is refused outright.
-func workspaceTopLevelRefusal(name, key, value string, changedProperty bool) string {
-	switch {
-	case workspaceVersionSections[key]:
-		if changedProperty && value != "" {
-			return name + " changes " + key + " inline, which is not a package name pinned to a version"
-		}
-	case graphRewritingKeys[key]:
-		return name + " touches " + key + ", which rewrites what the workspace resolves for every package"
-	}
-	return ""
-}
-
-// workspaceKeyFromHunkHeader reads the top-level YAML key Git appends after
-// the second `@@`.
-func workspaceKeyFromHunkHeader(line string) string {
-	index := strings.Index(line[2:], "@@")
-	if index < 0 {
+// workspaceTopAt returns the top-level YAML key enclosing the start of line
+// `line` (1-based) of content.
+func workspaceTopAt(content string, line int) string {
+	top := ""
+	lines := strings.Split(content, "\n")
+	if line > len(lines)+1 {
+		// The patch starts past the end of the file it is supposed to be a
+		// change to: the two do not describe the same commit.
 		return ""
 	}
-	key, _, _ := yamlLineKey(line[2+index+2:])
-	return key
+	for index, text := range lines {
+		if index+1 >= line {
+			break
+		}
+		trimmed := strings.TrimSpace(text)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") || text[0] == ' ' || text[0] == '\t' {
+			continue
+		}
+		if key, _, ok := yamlLineKey(trimmed); ok {
+			top = key
+		}
+	}
+	return top
 }
 
 // yamlLineKey reads `key: value` from one YAML line, unquoting the key.
@@ -232,15 +313,13 @@ func yamlLineKey(body string) (key, value string, ok bool) {
 	return strings.TrimSpace(body[:index]), strings.TrimSpace(body[index+1:]), true
 }
 
-// quoteYAMLScalar turns a YAML scalar into the JSON string
-// looksLikeDependencyEntry reads, dropping one level of YAML quoting.
-func quoteYAMLScalar(value string) string {
+// unquoteYAMLScalar drops one level of YAML quoting from a scalar.
+func unquoteYAMLScalar(value string) string {
 	value = strings.TrimSpace(value)
 	if len(value) >= 2 && (value[0] == '\'' || value[0] == '"') && value[len(value)-1] == value[0] {
 		value = value[1 : len(value)-1]
 	}
-	encoded, _ := json.Marshal(value)
-	return string(encoded)
+	return value
 }
 
 // changedPatchLines yields the added and removed lines of a patch, without
@@ -303,6 +382,11 @@ func ClassifyMechanicalPullRequest(files []ChangedFile, pr PullRequest) Mechanic
 	verdict := MechanicalVerdict{Mechanical: true}
 	for _, file := range files {
 		name := file.Filename
+		if reason := staleHeadRefusal(file, pr.HeadSHA); reason != "" {
+			verdict.Mechanical = false
+			verdict.Reasons = append(verdict.Reasons, reason)
+			continue
+		}
 		if pr.byDependencyBot() && workflowFile(name) {
 			if reason := nonMechanicalWorkflow(name, file.Status, file.Patch, pr); reason != "" {
 				verdict.Mechanical = false
@@ -329,6 +413,21 @@ func ClassifyMechanicalPullRequest(files []ChangedFile, pr PullRequest) Mechanic
 		}
 	}
 	return verdict
+}
+
+// staleHeadRefusal refuses a file that GitHub served at a different commit
+// than the pull request head the merge is pinned to: a push before the file
+// list was read, undone by a force-push before the merge, would otherwise get
+// the benign head classified while the original lands.
+func staleHeadRefusal(file ChangedFile, headSHA string) string {
+	if headSHA == "" || file.ContentsURL == "" {
+		return ""
+	}
+	parsed, err := url.Parse(file.ContentsURL)
+	if err != nil || parsed.Query().Get("ref") != headSHA {
+		return file.Filename + " was read at a different commit than the pull request head " + trimForMessage(headSHA)
+	}
+	return ""
 }
 
 // goFixtureManifest reports whether name is a `go.mod` or `go.sum` whose only
@@ -379,7 +478,7 @@ func nonMechanicalContent(name, patch, content string) string {
 	case "go.mod":
 		return nonMechanicalGoModule(name, patch)
 	case "pnpm-workspace.yaml":
-		return nonMechanicalWorkspace(name, patch)
+		return nonMechanicalWorkspace(name, patch, content)
 	default:
 		// go.sum and the lockfiles carry only resolved dependency data, and a
 		// lockfile is a *consequence* of a manifest edit rather than a decision
@@ -391,11 +490,15 @@ func nonMechanicalContent(name, patch, content string) string {
 	// and only the enclosing section tells them apart. The hunk's context lines
 	// carry that section, which is why they are read rather than skipped.
 	section := make([]string, 0, 4)
+	pins := newPinChanges()
 	for _, line := range strings.Split(patch, "\n") {
 		if strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---") {
 			continue
 		}
 		if strings.HasPrefix(line, "@@") {
+			if reason := pins.verify(name); reason != "" {
+				return reason
+			}
 			// Git puts the enclosing context after the second `@@` — for a
 			// manifest that is usually the very section the hunk is inside:
 			//
@@ -422,7 +525,7 @@ func nonMechanicalContent(name, patch, content string) string {
 		}
 		if key, _, ok := jsonLineKey(body); ok && strings.HasSuffix(body, "{") {
 			section = append(section, key)
-			if changed && !mechanicalDependencySections[key] {
+			if changed && (!mechanicalDependencySections[key] || pinnedSections[key]) {
 				return name + " changes the " + key + " section, which is not a dependency section"
 			}
 			continue
@@ -461,11 +564,20 @@ func nonMechanicalContent(name, patch, content string) string {
 			}
 			return name + " changes " + key + " " + where + ", which a dependency bump does not touch"
 		}
+		if pinnedSections[enclosing] {
+			var decoded string
+			if json.Unmarshal([]byte(strings.TrimSuffix(value, ",")), &decoded) != nil || !strictPinVersion(decoded) {
+				return name + " changes the pin " + key + " to something that is not a plain registry version or range: " +
+					trimForMessage(value)
+			}
+			pins.record(line[0], strings.Join(section, "/")+"\x00"+key)
+			continue
+		}
 		if !looksLikeDependencyEntry(value) {
 			return name + " changes " + key + " to something that is not a version range: " + trimForMessage(value)
 		}
 	}
-	return ""
+	return pins.verify(name)
 }
 
 // hunkNewStart reads the first line number of the new side of a hunk header,
@@ -541,6 +653,9 @@ func looksLikeDependencyEntry(value string) bool {
 	if strings.ContainsAny(decoded, " \t&|;") {
 		return false
 	}
+	if strings.ContainsAny(decoded, ":/@") && !strings.HasPrefix(decoded, "workspace:") && !strings.HasPrefix(decoded, "catalog:") {
+		return false
+	}
 	switch decoded[0] {
 	case '^', '~', '>', '<', '=', '*':
 		return true
@@ -548,8 +663,10 @@ func looksLikeDependencyEntry(value string) bool {
 	if decoded[0] >= '0' && decoded[0] <= '9' {
 		return true
 	}
-	// workspace:, catalog:, npm: and file: protocols are dependency spellings.
-	for _, prefix := range []string{"workspace:", "catalog:", "npm:", "file:", "link:", "git+", "github:"} {
+	// workspace: and catalog: only point inside the repository. Every other
+	// protocol or path (npm: aliases, github:, git+, file:, link:, http(s):,
+	// patch:, portal:) names code the registry never served for this package.
+	for _, prefix := range []string{"workspace:", "catalog:"} {
 		if strings.HasPrefix(decoded, prefix) {
 			return true
 		}

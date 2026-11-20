@@ -30,12 +30,13 @@ import (
 // PullRequestView is the pull-request state the land and merge verbs branch on.
 // It is deliberately small: every field here is one a verb actually reads.
 type PullRequestView struct {
-	Number int    `json:"number"`
-	State  string `json:"state"`
-	Draft  bool   `json:"draft"`
-	Locked bool   `json:"locked"`
-	Title  string `json:"title"`
-	User   struct {
+	Number  int    `json:"number"`
+	State   string `json:"state"`
+	Draft   bool   `json:"draft"`
+	Locked  bool   `json:"locked"`
+	Title   string `json:"title"`
+	Commits int    `json:"commits"`
+	User    struct {
 		Login string `json:"login"`
 	} `json:"user"`
 	Body           string     `json:"body"`

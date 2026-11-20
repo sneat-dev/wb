@@ -28,7 +28,7 @@ func TestBotWorkflowEditsAreMechanicalOnlyWhenEveryLineIsAVersionRefOrValue(t *t
 	}{
 		{name: "action tag bump", pr: renovate, patch: workflowPatch("      - uses: actions/checkout@v4", "      - uses: actions/checkout@v5")},
 		{name: "action tag bump with comment", pr: renovate, patch: workflowPatch("        uses: actions/setup-go@v5 # v5", "        uses: actions/setup-go@v6 # v6")},
-		{name: "action digest pin", pr: renovate, patch: workflowPatch("      - uses: actions/setup-go@"+sha40+" # v5.0.0", "      - uses: actions/setup-go@"+strings.Repeat("a", 40)+" # v5.1.0")},
+		{name: "action digest pin", pr: PullRequest{Author: "renovate[bot]", CommitsByBot: true, Title: "update actions/setup-go to v5.1.0"}, patch: workflowPatch("      - uses: actions/setup-go@"+sha40+" # v5.0.0", "      - uses: actions/setup-go@"+strings.Repeat("a", 40)+" # v5.1.0")},
 		{name: "action with a path", pr: renovate, patch: workflowPatch("      - uses: github/codeql-action/init@v3", "      - uses: github/codeql-action/init@v4")},
 		{name: "version input named by the title", pr: renovate, patch: workflowPatch("          version: v2.1.4", "          version: v2.1.5")},
 		{name: "quoted version input", pr: renovate, patch: workflowPatch("          version: 'v2.1.4'", "          version: \"v2.1.5\" # pinned")},
@@ -42,6 +42,18 @@ func TestBotWorkflowEditsAreMechanicalOnlyWhenEveryLineIsAVersionRefOrValue(t *t
 		{name: "sha pin named by the version comment", pr: PullRequest{Author: "renovate[bot]", CommitsByBot: true, Title: "update tools to v5.1.0"}, patch: workflowPatch("      - uses: acme/tool@"+sha40+" # v5.0.0", "      - uses: acme/tool@"+strings.Repeat("b", 40)+" # v5.1.0 pinned")},
 		{name: "sha pin whose comment the title does not name", pr: PullRequest{Author: "renovate[bot]", CommitsByBot: true, Title: "update tools to v5.1.0"}, patch: workflowPatch("      - uses: acme/tool@"+sha40+" # v5.0.0", "      - uses: acme/tool@"+strings.Repeat("b", 40)+" # v7.7.7"), want: "does not name"},
 		{name: "sha pin with no version comment", pr: PullRequest{Author: "renovate[bot]", CommitsByBot: true, Title: "update tools to v5.1.0"}, patch: workflowPatch("      - uses: acme/tool@"+sha40, "      - uses: acme/tool@"+strings.Repeat("b", 40)), want: "does not name"},
+		{name: "go-version 4 is not a part of v4.2.0", pr: PullRequest{Author: "renovate[bot]", CommitsByBot: true, Title: "update dependency go to v4.2.0"}, patch: workflowPatch("          go-version: 3", "          go-version: 4"), want: "does not name"},
+		{name: "a version equal to the title's whole word", pr: PullRequest{Author: "renovate[bot]", CommitsByBot: true, Title: "update dependency go to v4"}, patch: workflowPatch("          go-version: 3", "          go-version: 4")},
+		{name: "a sha swap whose version the title does not name", pr: PullRequest{Author: "renovate[bot]", CommitsByBot: true, Title: "update actions/checkout to v5"}, patch: workflowPatch("      - uses: actions/checkout@"+sha40+" # v4.2.1", "      - uses: actions/checkout@"+strings.Repeat("c", 40)+" # v4.2.2"), want: "does not name"},
+		{name: "a repository in the title is no longer enough for a sha", pr: PullRequest{Author: "renovate[bot]", CommitsByBot: true, Title: "update actions/checkout"}, patch: workflowPatch("      - uses: actions/checkout@"+sha40+" # v4.2.1", "      - uses: actions/checkout@"+strings.Repeat("c", 40)+" # v4.2.2"), want: "does not name"},
+		{name: "a repository that is only a prefix of the title word", pr: PullRequest{Author: "renovate[bot]", CommitsByBot: true, Title: "update actions/checkout-extra"}, patch: workflowPatch("      - uses: actions/checkout@v4", "      - uses: actions/checkout@v9"), want: "does not name"},
+		{name: "a line moved to another job", pr: renovate, patch: "@@ -10,3 +10,2 @@\n     steps:\n-      - uses: actions/checkout@v4\n       - run: x\n@@ -40,2 +39,3 @@\n     steps:\n+      - uses: actions/checkout@v5\n       - run: y\n", want: "moves one to another place"},
+		{name: "a removed line and a later added block in one hunk", pr: renovate, patch: "@@ -1,4 +1,4 @@\n-      - uses: actions/checkout@v4\n       - run: x\n+      - uses: actions/checkout@v5\n       - run: y\n", want: "moves one to another place"},
+		{name: "two removals then one addition", pr: renovate, patch: "@@ -1,2 +1 @@\n-      - uses: actions/checkout@v4\n-      - uses: actions/setup-go@v5\n+      - uses: actions/checkout@v5\n", want: "moves one to another place"},
+		{name: "two separate replacement blocks in one hunk", pr: renovate, patch: "@@ -1,3 +1,3 @@\n-      - uses: actions/checkout@v4\n+      - uses: actions/checkout@v5\n       - run: x\n-      - uses: actions/setup-go@v5\n+      - uses: actions/setup-go@v6\n"},
+		{name: "a trailing block that is unpaired", pr: renovate, patch: "@@ -1,3 +1,3 @@\n-      - uses: actions/checkout@v4\n+      - uses: actions/checkout@v5\n+      - uses: actions/setup-go@v6", want: "moves one to another place"},
+		{name: "a patch with no changed line at all", pr: renovate, patch: "@@ -1 +1 @@\n       - uses: actions/checkout@v5\n", want: "adds or removes lines"},
+		{name: "a removal after a longer addition", pr: renovate, patch: "@@ -1,2 +1,3 @@\n-      - uses: actions/checkout@v4\n+      - uses: actions/checkout@v5\n+      - uses: actions/setup-go@v6\n-      - uses: actions/setup-go@v5\n", want: "moves one to another place"},
 		{name: "a person's identical edit", pr: PullRequest{Author: "someone", Title: renovate.Title}, patch: workflowPatch("      - uses: actions/checkout@v4", "      - uses: actions/checkout@v5"), want: "is not a dependency manifest"},
 		{name: "no author", patch: workflowPatch("      - uses: actions/checkout@v4", "      - uses: actions/checkout@v5"), want: "is not a dependency manifest"},
 		{name: "a different action", pr: renovate, patch: workflowPatch("      - uses: actions/checkout@v4", "      - uses: evil/checkout@v4"), want: "different action"},
@@ -110,23 +122,44 @@ func TestBotAuthorsAreNormalisedAndPeopleAreNot(t *testing.T) {
 	}
 }
 
-func TestEveryCommitMustBeByABotForTheBotOnlyShapes(t *testing.T) {
+func TestEveryCommitMustBeVerifiedAndByABotForTheBotOnlyShapes(t *testing.T) {
 	t.Parallel()
-	bot := CommitActors{Author: "renovate[bot]", Committer: "web-flow"}
+	bot := CommitActors{Author: "renovate[bot]", Committer: "web-flow", Verified: true}
 	for name, test := range map[string]struct {
 		commits []CommitActors
 		want    bool
 	}{
 		"all bot commits, web-flow committer": {[]CommitActors{bot, bot}, true},
-		"bot committer":                       {[]CommitActors{{Author: "dependabot[bot]", Committer: "dependabot[bot]"}}, true},
-		"a Copilot repair commit":             {[]CommitActors{bot, {Author: "Copilot", Committer: "web-flow"}}, false},
-		"a human commit":                      {[]CommitActors{bot, {Author: "alex", Committer: "alex"}}, false},
-		"a bot author with a human committer": {[]CommitActors{{Author: "renovate[bot]", Committer: "alex"}}, false},
-		"an author GitHub cannot map":         {[]CommitActors{{Author: "", Committer: "web-flow"}}, false},
+		"bot committer":                       {[]CommitActors{{Author: "dependabot[bot]", Committer: "dependabot[bot]", Verified: true}}, true},
+		"a forged bot identity, unsigned":     {[]CommitActors{bot, {Author: "renovate[bot]", Committer: "renovate[bot]"}}, false},
+		"a Copilot repair commit":             {[]CommitActors{bot, {Author: "Copilot", Committer: "web-flow", Verified: true}}, false},
+		"a human commit":                      {[]CommitActors{bot, {Author: "alex", Committer: "alex", Verified: true}}, false},
+		"a bot author with a human committer": {[]CommitActors{{Author: "renovate[bot]", Committer: "alex", Verified: true}}, false},
+		"an author GitHub cannot map":         {[]CommitActors{{Author: "", Committer: "web-flow", Verified: true}}, false},
 		"no commits":                          {nil, false},
 	} {
 		if got := AllCommitsByDependencyBot(test.commits); got != test.want {
 			t.Errorf("%s: = %t, want %t", name, got, test.want)
+		}
+	}
+}
+
+func TestTitleVersionsAreWholeWordsOnly(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		title, version string
+		want           bool
+	}{
+		{"update dependency go to v4.2.0", "4.2.0", true},
+		{"update dependency go to v4.2.0", "v4.2.0", true},
+		{"update dependency go to v4.2.0", "4", false},
+		{"bump node from 22 to 24 (major)", "24", true},
+		{"bump x from 1.0.0 to 1.0.1.", "1.0.1", true},
+		{"update x to latest", "latest", false},
+		{"update x to v1", "", false},
+	} {
+		if got := titleNamesVersion(test.title, test.version); got != test.want {
+			t.Errorf("titleNamesVersion(%q, %q) = %t, want %t", test.title, test.version, got, test.want)
 		}
 	}
 }
@@ -177,7 +210,7 @@ func TestNestedManifestBumpIsPlacedFromHeadContent(t *testing.T) {
 func TestWorkspaceOverrideWithAVersionedKeyIsAPin(t *testing.T) {
 	t.Parallel()
 	patch := "@@ -8,4 +8,4 @@ minimumReleaseAgeExclude:\n   - '@astrojs/markdown-satteri@0.4.7'\n   - astro@7.4.7\n overrides:\n-  undici@7.29.1: 8.12.4\n+  undici@7.29.1: 8.13.0"
-	if reason := nonMechanicalWorkspace("pnpm-workspace.yaml", patch); reason != "" {
+	if reason := nonMechanicalWorkspace("pnpm-workspace.yaml", patch, ""); reason != "" {
 		t.Fatalf("refused: %s", reason)
 	}
 }
