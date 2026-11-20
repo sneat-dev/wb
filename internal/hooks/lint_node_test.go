@@ -148,7 +148,7 @@ func TestNodePrePushLintsAfterAConfigurationOnlyChange(t *testing.T) {
 	}
 }
 
-func TestNodePrePushLeavesALintThatCannotRunToCI(t *testing.T) {
+func TestNodePrePushLeavesALintThatRanPastItsDeadlineToCI(t *testing.T) {
 	t.Parallel()
 	repo, head := nodeLintRepo(t, map[string]string{"package.json": `{"scripts":{"lint":"x"}}`, "a.js": "x\n", "node_modules/.keep": ""})
 	h := newLintHarness(t, repo)

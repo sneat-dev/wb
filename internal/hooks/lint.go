@@ -554,23 +554,25 @@ var (
 	ansiEscape    = regexp.MustCompile(`\x1b\[[0-9;?]*[A-Za-z]`)
 )
 
-// onlyExportDataIssues reports whether every issue golangci-lint printed is a
-// typecheck failure to load the toolchain's export data — the signature of a
-// pinned linter older than the local Go, not of a problem in the code. Any
-// other issue line, or none at all, means the run is a verdict on the code.
+// onlyExportDataIssues reports whether golangci-lint's issues are the
+// signature of a pinned linter older than the local Go: every issue line is
+// from typecheck (one unreadable package cascades into typecheck errors in
+// its importers) and at least one says it could not load export data. Any
+// other linter's issue, or no issue at all, means the run is a verdict on
+// the code.
 func onlyExportDataIssues(output string) bool {
-	found := false
+	exportData := false
 	for _, line := range strings.Split(strings.ReplaceAll(ansiEscape.ReplaceAllString(output, ""), "\r", ""), "\n") {
 		match := golangciIssue.FindStringSubmatch(line)
 		if match == nil {
 			continue
 		}
-		if match[3] != "typecheck" || !strings.Contains(match[2], "could not load export data") {
+		if match[3] != "typecheck" {
 			return false
 		}
-		found = true
+		exportData = exportData || strings.Contains(match[2], "could not load export data")
 	}
-	return found
+	return exportData
 }
 
 // runGolangci runs one golangci-lint invocation and reports whether it
@@ -585,12 +587,14 @@ func (r lintRunner) runGolangci(linter string, pin golangciPin, module, dir stri
 		code, err := r.options.Tools.Governed(dir, nil, timeout,
 			io.MultiWriter(r.options.Stdout, &output), io.MultiWriter(r.options.Stderr, &output),
 			append([]string{linter}, args...)...)
-		if err == nil && code != 0 && onlyExportDataIssues(output.String()) {
+		switch {
+		case err == nil && code == 5 && strings.Contains(strings.ToLower(output.String()), "no go files"):
+			// A go.mod-only, tools, or build-tag-gated module: nothing to lint.
+			r.say("WB hook: golangci-lint found no Go files to lint in %s; skipped.", moduleLabel(module))
+			return 0, nil
+		case err == nil && code != 0 && onlyExportDataIssues(output.String()):
 			r.say("WB hook: golangci-lint %s cannot read this Go toolchain's export data; its typecheck errors are not findings. Bump the pin in %s (CI uses it too). Skipping golangci-lint in %s, CI remains the lint gate.", pin.Version, pin.Source, moduleLabel(module))
 			return 0, nil
-		}
-		if err == nil && code != 0 {
-			r.say("WB hook: golangci-lint %s (%s) found issues in %s.", pin.Version, pin.Source, moduleLabel(module))
 		}
 		return code, err
 	})

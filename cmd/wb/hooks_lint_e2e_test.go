@@ -93,7 +93,7 @@ func TestE2EPrePushLintBlocksAnErrcheckFindingInANestedModule(t *testing.T) {
 	}
 	for _, want := range []string{
 		"store/reset.go:6:2: Error return value of `os.Remove` is not checked (errcheck)",
-		"found issues in module backend",
+		"golangci-lint v2.15.0 failed in module backend (exit 1)",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("push refusal lacks %q:\n%v", want, err)

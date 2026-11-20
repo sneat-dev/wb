@@ -269,7 +269,7 @@ func TestGoPrePushBlocksOnAnErrcheckFindingInANestedModule(t *testing.T) {
 	if code := h.runWithStdin("pre-push", "go", pushLine("feature", head)); code != 1 {
 		t.Fatalf("exit %d", code)
 	}
-	if !strings.Contains(h.stderr.String(), "found issues in module backend") {
+	if !strings.Contains(h.stderr.String(), "golangci-lint v2.15.0 failed in module backend (exit 1)") {
 		t.Fatalf("stderr %q", h.stderr.String())
 	}
 }
@@ -466,10 +466,10 @@ func TestRunGolangciTellsFindingsFromABrokenTool(t *testing.T) {
 		blocks  bool
 		message string
 	}{
-		{name: "issues found", code: 1, output: "a.go:3:2: Error return value is not checked (errcheck)\n", blocks: true, message: "found issues in module m"},
-		{name: "a column-less finding", code: 1, output: "a.go:3: File is not properly formatted (gofmt)\n", blocks: true, message: "found issues in module m"},
-		{name: "a finding in a format WB cannot parse", code: 1, output: "::error file=a.go,line=3::unused (unused)\r\n", blocks: true, message: "found issues in module m"},
-		{name: "no output at all", code: 1, blocks: true, message: "found issues in module m"},
+		{name: "issues found", code: 1, output: "a.go:3:2: Error return value is not checked (errcheck)\n", blocks: true, message: "failed in module m (exit 1)"},
+		{name: "a column-less finding", code: 1, output: "a.go:3: File is not properly formatted (gofmt)\n", blocks: true, message: "failed in module m (exit 1)"},
+		{name: "a finding in a format WB cannot parse", code: 1, output: "::error file=a.go,line=3::unused (unused)\r\n", blocks: true, message: "failed in module m (exit 1)"},
+		{name: "no output at all", code: 1, blocks: true, message: "failed in module m (exit 1)"},
 		{name: "export data from a newer toolchain", code: 1,
 			output:  "cache.go:7:2: could not import io (could not load export data: export data version 5 is greater than maximum supported version 4) (typecheck)\n1 issues:\n",
 			message: "cannot read this Go toolchain's export data"},
@@ -478,7 +478,7 @@ func TestRunGolangciTellsFindingsFromABrokenTool(t *testing.T) {
 			message: "cannot read this Go toolchain's export data"},
 		{name: "export data plus a real finding", code: 1,
 			output: "cache.go:7:2: could not import io (could not load export data: x) (typecheck)\na.go:3:2: Error return value is not checked (errcheck)\n",
-			blocks: true, message: "found issues in module m"},
+			blocks: true, message: "failed in module m (exit 1)"},
 		{name: "export data in a format WB does not parse", code: 1,
 			output: "cache.go:7\ttypecheck\tcould not import io (could not load export data: x)\n", blocks: true},
 		{name: "export data reported by another linter", code: 1,
@@ -487,9 +487,16 @@ func TestRunGolangciTellsFindingsFromABrokenTool(t *testing.T) {
 		// still a finding: only an issue line counts.
 		{name: "a finding on a line quoting the export-data message", code: 1,
 			output: "lint.go:414:2: Error return value is not checked (errcheck)\n\tif strings.Contains(out, \"could not load export data\") { // typecheck\n",
-			blocks: true, message: "found issues in module m"},
+			blocks: true, message: "failed in module m (exit 1)"},
 		{name: "clean", code: 0},
 		{name: "any other exit", code: 3, blocks: true, message: "failed in module m (exit 3)"},
+		{name: "no Go files to lint", code: 5, output: "level=error msg=\"Running error: context loading failed: no go files to analyze\"\n", message: "found no Go files to lint in module m; skipped"},
+		{name: "exit 5 for another reason", code: 5, output: "panic: boom\n", blocks: true, message: "failed in module m (exit 5)"},
+		{name: "an export-data failure cascading into typecheck errors", code: 1,
+			output:  "cache.go:7:2: could not import io (could not load export data: x) (typecheck)\nstore.go:3:2: undefined: cache.Get (typecheck)\n",
+			message: "cannot read this Go toolchain's export data"},
+		{name: "typecheck errors without the export-data signature", code: 1,
+			output: "store.go:3:2: undefined: cache.Get (typecheck)\n", blocks: true, message: "failed in module m (exit 1)"},
 		{name: "the hook's own deadline", err: fmt.Errorf("golangci-lint %w (2m0s)", errCheckTimedOut), message: "did not finish in module m"},
 		{name: "wb could not run it", err: errors.New("exec: wb not found"), blocks: true, message: "This is a WB problem, not a lint result"},
 	} {
@@ -1128,7 +1135,7 @@ func TestPushedFilesFallsBackWhenThePushedTipIsUnknown(t *testing.T) {
 	}
 }
 
-func TestGoPrePushLeavesAVetThatCannotRunToCI(t *testing.T) {
+func TestGoPrePushLeavesAVetThatRanPastItsDeadlineToCI(t *testing.T) {
 	t.Parallel()
 	repo := lintRepo(t)
 	head := commitFiles(t, repo, map[string]string{"go.mod": "module r\n", "a.go": "package r\n"})
