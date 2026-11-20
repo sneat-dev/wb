@@ -191,24 +191,23 @@ func TestDefaultGovernedSeamRoutesThroughTheWBCommandGateway(t *testing.T) {
 	}
 }
 
-func TestGovernedCommandTellsAGatewayFailureFromTheChecksOwnExit(t *testing.T) {
+func TestGovernedCommandOnlyCallsItATimeoutWhenTheDeadlinePassed(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	executable := filepath.Join(dir, "wb")
-	for name, script := range map[string]string{
-		"admission refused":  "echo 'error: host is saturated' >&2; exit 1",
-		"wb's own timeout":   "echo 'error: golangci-lint did not finish within 1m0s and was stopped' >&2; exit 1",
-		"another command's":  "echo 'error: go exited with status 1' >&2; exit 1",
-		"a different status": "echo 'error: golangci-lint exited with status 2' >&2; exit 1",
-	} {
-		mustWriteExecutable(t, executable, "#!/bin/sh\n"+script+"\n")
-		if code, err := governedCommand(executable, "", time.Minute, io.Discard, io.Discard, dir, nil, "golangci-lint", "run"); err == nil {
-			t.Errorf("%s: read as the check's exit %d", name, code)
-		}
-	}
-	mustWriteExecutable(t, executable, "#!/bin/sh\nprintf 'error: golangci-lint exited with status 1\\r\\n' >&2; exit 1\n")
+	// A quick non-zero exit is reported as is, whoever printed it: a wb
+	// refusal blocks like a finding does.
+	mustWriteExecutable(t, executable, "#!/bin/sh\necho 'error: host is saturated' >&2\nexit 1\n")
 	if code, err := governedCommand(executable, "", time.Minute, io.Discard, io.Discard, dir, nil, "golangci-lint", "run"); err != nil || code != 1 {
-		t.Fatalf("the check's own exit: code %d err %v", code, err)
+		t.Fatalf("quick exit: code %d err %v", code, err)
+	}
+	// wb run --timeout stopping the check exits 1 at the deadline.
+	mustWriteExecutable(t, executable, "#!/bin/sh\nsleep 0.3\nexit 1\n")
+	if _, err := governedCommand(executable, "", 100*time.Millisecond, io.Discard, io.Discard, dir, nil, "golangci-lint", "run"); !errors.Is(err, errCheckTimedOut) {
+		t.Fatalf("deadline exit: %v", err)
+	}
+	if _, err := governedCommand(executable, "", 0, io.Discard, io.Discard, dir, nil, "golangci-lint"); err == nil || errors.Is(err, errCheckTimedOut) {
+		t.Fatalf("zero deadline: %v", err)
 	}
 }
 
@@ -477,18 +476,22 @@ func TestRunGolangciTellsFindingsFromABrokenTool(t *testing.T) {
 		{name: "export data with CRLF and colour", code: 1,
 			output:  "\x1b[1mcache.go:7:2\x1b[0m: could not import io (could not load export data: x) (\x1b[34mtypecheck\x1b[0m)\r\n",
 			message: "cannot read this Go toolchain's export data"},
-		{name: "export data in tab format without a column", code: 1,
-			output:  "cache.go:7\ttypecheck\tcould not import io (could not load export data: x)\n",
-			message: "cannot read this Go toolchain's export data"},
+		{name: "export data plus a real finding", code: 1,
+			output: "cache.go:7:2: could not import io (could not load export data: x) (typecheck)\na.go:3:2: Error return value is not checked (errcheck)\n",
+			blocks: true, message: "found issues in module m"},
+		{name: "export data in a format WB does not parse", code: 1,
+			output: "cache.go:7\ttypecheck\tcould not import io (could not load export data: x)\n", blocks: true},
+		{name: "export data reported by another linter", code: 1,
+			output: "typecheck.go:7:2: could not load export data quoted (revive)\n", blocks: true},
 		// A finding whose printed source line merely quotes the phrase is
 		// still a finding: only an issue line counts.
 		{name: "a finding on a line quoting the export-data message", code: 1,
 			output: "lint.go:414:2: Error return value is not checked (errcheck)\n\tif strings.Contains(out, \"could not load export data\") { // typecheck\n",
 			blocks: true, message: "found issues in module m"},
 		{name: "clean", code: 0},
-		{name: "no Go files", code: 5},
-		{name: "crash", code: 3, message: "exited 3 in module m, which is not a lint verdict"},
-		{name: "cannot start or timed out", err: errors.New("golangci-lint did not finish within 2m0s"), message: "did not complete in module m"},
+		{name: "any other exit", code: 3, blocks: true, message: "failed in module m (exit 3)"},
+		{name: "the hook's own deadline", err: fmt.Errorf("golangci-lint %w (2m0s)", errCheckTimedOut), message: "did not finish in module m"},
+		{name: "wb could not run it", err: errors.New("exec: wb not found"), blocks: true, message: "This is a WB problem, not a lint result"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -933,7 +936,7 @@ func TestGovernedCommandStopsAHungCheckAndItsDescendants(t *testing.T) {
 	started := time.Now()
 	_, err := governedCommandWithGrace(executable, "", 500*time.Millisecond, 100*time.Millisecond, &stdout, &stdout, dir, nil, "golangci-lint", "run")
 	elapsed := time.Since(started)
-	if err == nil || !strings.Contains(err.Error(), "golangci-lint did not finish within 500ms") || elapsed > 5*time.Second {
+	if err == nil || !errors.Is(err, errCheckTimedOut) || elapsed > 5*time.Second {
 		t.Fatalf("err %v after %s", err, elapsed)
 	}
 	content, readErr := os.ReadFile(pidFile)
@@ -1133,11 +1136,32 @@ func TestGoPrePushLeavesAVetThatCannotRunToCI(t *testing.T) {
 	h.plantLinter("go1.27.4", DefaultGolangciLintVersion)
 	h.exit = func(args []string) (int, error) {
 		if args[0] == "go" {
-			return 0, errors.New("go did not finish within 10m0s")
+			return 0, fmt.Errorf("go %w (10m0s)", errCheckTimedOut)
 		}
 		return 0, nil
 	}
-	if code := h.runWithStdin("pre-push", "go", pushLine("f", head)); code != 0 || !strings.Contains(h.stderr.String(), "go vet could not run in the root module") {
+	if code := h.runWithStdin("pre-push", "go", pushLine("f", head)); code != 0 || !strings.Contains(h.stderr.String(), "go vet did not finish in the root module") {
 		t.Fatalf("exit %d stderr %q", code, h.stderr.String())
+	}
+}
+
+// TestGovernedCommandAlwaysRunsWBInItsOwnProcessGroup pins that a hook check
+// is never attached to the terminal's process group, whatever the hook's
+// output is: there is no interactive branch to fall into.
+func TestGovernedCommandAlwaysRunsWBInItsOwnProcessGroup(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("process groups are a Darwin/Linux feature")
+	}
+	dir := t.TempDir()
+	executable := filepath.Join(dir, "wb")
+	mustWriteExecutable(t, executable, "#!/bin/sh\nprintf '%s %s' \"$$\" \"$(ps -o pgid= -p $$ | tr -d ' ')\"\n")
+	var stdout bytes.Buffer
+	if _, err := governedCommand(executable, "", time.Minute, &stdout, os.Stderr, dir, nil, "true"); err != nil {
+		t.Fatal(err)
+	}
+	var pid, pgid int
+	if _, err := fmt.Sscan(stdout.String(), &pid, &pgid); err != nil || pid != pgid {
+		t.Fatalf("wb pid %d runs in process group %d (%q)", pid, pgid, stdout.String())
 	}
 }

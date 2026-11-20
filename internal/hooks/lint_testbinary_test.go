@@ -3,7 +3,6 @@ package hooks
 import (
 	"errors"
 	"flag"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -36,14 +35,14 @@ func actAsWBForHookTemplates(args []string) (int, bool) {
 		if len(command) >= 2 && command[0] == "go" && command[1] == "install" {
 			// Building the pinned linter needs the network; under test it is
 			// always "offline", so a template test never downloads anything.
-			return childExit(command[0], 1), true
+			return 1, true
 		}
 		cmd := exec.Command(command[0], command[1:]...)
 		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 		err := cmd.Run()
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			return childExit(command[0], exitErr.ExitCode()), true
+			return exitErr.ExitCode(), true
 		}
 		if err != nil {
 			return 127, true
@@ -51,11 +50,4 @@ func actAsWBForHookTemplates(args []string) (int, bool) {
 		return 0, true
 	}
 	return 0, false
-}
-
-// childExit reports a failed child exactly as `wb run` does, so the hook can
-// tell the command's own exit from a gateway failure.
-func childExit(name string, code int) int {
-	_, _ = fmt.Fprintf(os.Stderr, "error: %s exited with status %d\n", name, code)
-	return code
 }

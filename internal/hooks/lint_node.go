@@ -132,11 +132,9 @@ func (r lintRunner) prePushNode() int {
 		} else if !ok {
 			continue
 		}
-		switch code, err := r.governed(dir, nil, prePushCheckTimeout, manager, "run", "lint"); {
-		case err != nil:
-			r.say("WB hook: lint could not run in package %s (%v); CI remains the lint gate.", pkg, err)
-		case code != 0:
-			r.say("WB hook: lint failed in package %s.", pkg)
+		if r.checkFailed("lint", "package "+pkg, func() (int, error) {
+			return r.governed(dir, nil, prePushCheckTimeout, manager, "run", "lint")
+		}) {
 			failed = true
 		}
 	}
@@ -213,12 +211,7 @@ func (r lintRunner) nxAffectedLint(updates []RefUpdate) int {
 }
 
 func (r lintRunner) nxResult(code int, err error) int {
-	if err != nil {
-		r.say("WB hook: nx lint could not run (%v); CI remains the lint gate.", err)
-		return 0
-	}
-	if code != 0 {
-		r.say("WB hook: nx lint failed for the projects this push affects.")
+	if r.checkFailed("nx lint", "the projects this push affects", func() (int, error) { return code, err }) {
 		return 1
 	}
 	return 0

@@ -163,18 +163,21 @@ func captureCommand(dir string, env []string, name string, args ...string) (stri
 // `wb run --timeout` to stop the check before stopping wb itself.
 const gatewayGrace = 15 * time.Second
 
+// errCheckTimedOut marks a check the hook itself stopped at its deadline: the
+// only governed-command failure that is left to CI rather than blocking.
+var errCheckTimedOut = errors.New("did not finish within its deadline")
+
 // governedCommand routes one check through `wb run --` so it is admitted
 // against the shared CPU budget and recorded like every other governed
-// command, preserving the checked command's exit code.
+// command, returning the exit code wb reports.
 //
-// The deadline is passed to `wb run --timeout`, which owns the check's
-// process group and stops all of it. As a backstop the hook runs wb in its
-// own process group and stops that group gatewayGrace later, with a bounded
-// wait for any descendant still holding an output pipe.
-//
-// A non-zero exit is the check's own only when wb says so ("<command> exited
-// with status N"); any other failure is wb's (a refusal, a timeout, a broken
-// gateway) and is returned as an error, never as a finding.
+// The deadline is passed to `wb run --timeout`, which on Darwin and Linux
+// stops the check's whole process group. As a backstop the hook runs wb in
+// its own process group (never attached to the terminal: a hook check reads
+// no input) and stops that group gatewayGrace later, with a bounded wait for
+// any descendant still holding an output pipe. A non-zero exit at or past
+// the deadline is the hook's own timeout and returns errCheckTimedOut; any
+// other non-zero exit is returned as is, and the caller blocks on it.
 func governedCommand(executable, projectsRoot string, timeout time.Duration, stdout, stderr io.Writer, dir string, env []string, args ...string) (int, error) {
 	return governedCommandWithGrace(executable, projectsRoot, timeout, gatewayGrace, stdout, stderr, dir, env, args...)
 }
@@ -183,6 +186,9 @@ func governedCommandWithGrace(executable, projectsRoot string, timeout, grace ti
 	if len(args) == 0 {
 		return 0, errors.New("no command to run")
 	}
+	if timeout <= 0 {
+		return 0, fmt.Errorf("invalid deadline %s for %s", timeout, args[0])
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout+grace)
 	defer cancel()
 	full := []string{}
@@ -190,26 +196,23 @@ func governedCommandWithGrace(executable, projectsRoot string, timeout, grace ti
 		full = append(full, "--projects-root", projectsRoot)
 	}
 	full = append(append(full, "run", "--quiet", "--timeout", timeout.String(), "--"), args...)
-	var gatewayOutput syncBuffer
-	cmd := process.CommandContextInteractive(ctx, console.IsTerminal(stdout) || console.IsTerminal(stderr), executable, full...)
+	cmd := process.CommandContext(ctx, executable, full...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), env...)
 	cmd.Stdout = stdout
-	cmd.Stderr = io.MultiWriter(stderr, &gatewayOutput)
+	cmd.Stderr = stderr
+	started := time.Now()
 	err := cmd.Run()
-	if ctx.Err() != nil {
-		return 0, fmt.Errorf("%s did not finish within %s", args[0], timeout)
-	}
 	var exitErr *exec.ExitError
-	if !errors.As(err, &exitErr) {
-		return 0, err
+	switch {
+	case err == nil:
+		return 0, nil
+	case ctx.Err() != nil || (errors.As(err, &exitErr) && time.Since(started) >= timeout):
+		return 0, fmt.Errorf("%s %w (%s)", args[0], errCheckTimedOut, timeout)
+	case errors.As(err, &exitErr):
+		return exitErr.ExitCode(), nil
 	}
-	code := exitErr.ExitCode()
-	childExit := regexp.MustCompile(`(?m)^error: ` + regexp.QuoteMeta(args[0]) + ` exited with status ` + fmt.Sprint(code) + `\r?$`)
-	if !childExit.MatchString(gatewayOutput.String()) {
-		return 0, fmt.Errorf("wb run did not complete %s (exit %d)", args[0], code)
-	}
-	return code, nil
+	return 0, err
 }
 
 type lintRunner struct {
@@ -223,6 +226,25 @@ func (r lintRunner) say(format string, args ...any) {
 // governed runs one check through `wb run --` with the hook's own output.
 func (r lintRunner) governed(dir string, env []string, timeout time.Duration, args ...string) (int, error) {
 	return r.options.Tools.Governed(dir, env, timeout, r.options.Stdout, r.options.Stderr, args...)
+}
+
+// checkFailed runs one governed check and reports whether it blocks: any
+// non-zero exit, and any failure to run it, blocks; only the hook's own
+// deadline expiring is left to CI.
+func (r lintRunner) checkFailed(check, where string, run func() (int, error)) bool {
+	code, err := run()
+	switch {
+	case errors.Is(err, errCheckTimedOut):
+		r.say("WB hook: %s did not finish in %s (%v); CI remains the gate.", check, where, err)
+		return false
+	case err != nil:
+		r.say("WB hook: %s could not be run through wb in %s (%v). This is a WB problem, not a lint result: repair wb rather than skipping the hook.", check, where, err)
+		return true
+	case code != 0:
+		r.say("WB hook: %s failed in %s (exit %d). If the output above is a wb error rather than %s's, repair wb rather than skipping the hook.", check, where, code, check)
+		return true
+	}
+	return false
 }
 
 // syncBuffer is a bytes.Buffer two process-output copiers may write at once:
@@ -506,11 +528,9 @@ func (r lintRunner) prePushGo() int {
 	failed := false
 	for _, module := range modules {
 		dir := r.moduleDir(module)
-		switch code, err := r.governed(dir, nil, prePushCheckTimeout, "go", "vet", "./..."); {
-		case err != nil:
-			r.say("WB hook: go vet could not run in %s (%v); CI remains the gate.", moduleLabel(module), err)
-		case code != 0:
-			r.say("WB hook: go vet failed in %s.", moduleLabel(module))
+		if r.checkFailed("go vet", moduleLabel(module), func() (int, error) {
+			return r.governed(dir, nil, prePushCheckTimeout, "go", "vet", "./...")
+		}) {
 			failed = true
 		}
 		linter, ok := r.golangciBinary(pin, dir, true)
@@ -527,53 +547,53 @@ func (r lintRunner) prePushGo() int {
 	return 0
 }
 
-// exportDataIssue matches golangci-lint's report that it cannot read the
-// toolchain's export data: an issue line (path:line[:col], any text format)
-// from the typecheck linter carrying the importer's own message. Colour
-// escapes and CRLF line ends are ignored.
+// golangciIssue is one issue line in golangci-lint's default text format,
+// "<file>.go:<line>[:col]: <message> (<linter>)".
 var (
-	issuePosition = regexp.MustCompile(`^[^\s:]+:\d+(?::\d+)?[:\s]`)
+	golangciIssue = regexp.MustCompile(`^(\S+\.go):\d+(?::\d+)?: (.*) \(([A-Za-z0-9_-]+)\)$`)
 	ansiEscape    = regexp.MustCompile(`\x1b\[[0-9;?]*[A-Za-z]`)
 )
 
-func exportDataIssue(output string) bool {
-	for _, line := range strings.Split(output, "\n") {
-		if issuePosition.MatchString(line) && strings.Contains(line, "could not load export data") && strings.Contains(line, "typecheck") {
-			return true
+// onlyExportDataIssues reports whether every issue golangci-lint printed is a
+// typecheck failure to load the toolchain's export data — the signature of a
+// pinned linter older than the local Go, not of a problem in the code. Any
+// other issue line, or none at all, means the run is a verdict on the code.
+func onlyExportDataIssues(output string) bool {
+	found := false
+	for _, line := range strings.Split(strings.ReplaceAll(ansiEscape.ReplaceAllString(output, ""), "\r", ""), "\n") {
+		match := golangciIssue.FindStringSubmatch(line)
+		if match == nil {
+			continue
 		}
+		if match[3] != "typecheck" || !strings.Contains(match[2], "could not load export data") {
+			return false
+		}
+		found = true
 	}
-	return false
+	return found
 }
 
-// runGolangci runs one golangci-lint invocation and reports whether it found
-// issues. golangci-lint's exit 1 ("issues found") blocks unless the failure
-// is positively identified as the tool's own: a pin too old to read this
-// toolchain's export data. Anything that is not golangci-lint's verdict at
-// all (a crash exit, a timeout, a wb gateway error) is reported loudly and
-// left to CI rather than blocking work on a broken tool.
+// runGolangci runs one golangci-lint invocation and reports whether it
+// blocks. Any non-zero exit blocks, except two positively identified cases
+// that are reported and left to CI: every reported issue is the export-data
+// typecheck failure of a pin older than this toolchain, or the hook's own
+// deadline expired.
 func (r lintRunner) runGolangci(linter string, pin golangciPin, module, dir string, timeout time.Duration, args ...string) bool {
 	var output syncBuffer
-	code, err := r.options.Tools.Governed(dir, nil, timeout,
-		io.MultiWriter(r.options.Stdout, &output), io.MultiWriter(r.options.Stderr, &output),
-		append([]string{linter}, args...)...)
-	reported := strings.ReplaceAll(ansiEscape.ReplaceAllString(output.String(), ""), "\r", "")
-	switch {
-	case err != nil:
-		r.say("WB hook: golangci-lint %s did not complete in %s (%v); CI remains the lint gate.", pin.Version, moduleLabel(module), err)
-	case code == 1 && exportDataIssue(reported):
-		// The pinned linter predates this Go toolchain's export data format,
-		// so it reports the standard library itself as a type error. That is
-		// a tool/toolchain mismatch, not a finding in this change.
-		r.say("WB hook: golangci-lint %s cannot read this Go toolchain's export data; its typecheck errors are not findings. Bump the pin in %s (CI uses it too). Skipping golangci-lint in %s, CI remains the lint gate.", pin.Version, pin.Source, moduleLabel(module))
-	case code == 1:
-		r.say("WB hook: golangci-lint %s (%s) found issues in %s.", pin.Version, pin.Source, moduleLabel(module))
-		return true
-	case code == 0, code == 5:
-		// 5: no Go files to analyse.
-	default:
-		r.say("WB hook: golangci-lint %s exited %d in %s, which is not a lint verdict; it could not lint this module, CI remains the lint gate.", pin.Version, code, moduleLabel(module))
-	}
-	return false
+	check := "golangci-lint " + pin.Version
+	return r.checkFailed(check, moduleLabel(module), func() (int, error) {
+		code, err := r.options.Tools.Governed(dir, nil, timeout,
+			io.MultiWriter(r.options.Stdout, &output), io.MultiWriter(r.options.Stderr, &output),
+			append([]string{linter}, args...)...)
+		if err == nil && code != 0 && onlyExportDataIssues(output.String()) {
+			r.say("WB hook: golangci-lint %s cannot read this Go toolchain's export data; its typecheck errors are not findings. Bump the pin in %s (CI uses it too). Skipping golangci-lint in %s, CI remains the lint gate.", pin.Version, pin.Source, moduleLabel(module))
+			return 0, nil
+		}
+		if err == nil && code != 0 {
+			r.say("WB hook: golangci-lint %s (%s) found issues in %s.", pin.Version, pin.Source, moduleLabel(module))
+		}
+		return code, err
+	})
 }
 
 // preCommitGo lints the staged Go packages, reporting only issues on new or

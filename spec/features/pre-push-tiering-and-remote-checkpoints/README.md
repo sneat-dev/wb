@@ -64,10 +64,11 @@ Each check MUST run through `wb run --`. golangci-lint MUST be the version the
 repository's own CI pins (a golangci-lint-action `version` input in its
 workflows, or in a reusable workflow it calls, read from that workflow
 repository's local clone at the pinned ref), built once per machine with the Go
-toolchain the module selects. Only a linter finding blocks: a linter that
-cannot be built offline, cannot read the toolchain's export data, or cannot
-run is reported and left to CI; missing JS dependencies (`node_modules`) skip
-JS lint with a note.
+toolchain the module selects. Any non-zero exit of a check MUST block,
+except when every reported issue is golangci-lint's typecheck failure to load
+the toolchain's export data, or the check ran past its deadline; those are
+reported and left to CI. A linter that cannot be built offline, and missing
+JS dependencies (`node_modules`), skip lint with a note.
 
 The managed pre-commit hook MUST additionally run that pinned golangci-lint
 over the staged Go packages only, reporting issues on new or changed lines

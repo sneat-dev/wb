@@ -219,7 +219,10 @@ wb run --changed --target origin/main -- go vet`,
 					defer cancel()
 				}
 				result, err := deps.Execute(ctx, runexec.ExecuteRequest{Argv: append([]string(nil), args...), ProjectsRoot: runtime.Flags().ProjectsRoot, ConfigPath: configPath, AllowSaturatedHost: allowSaturatedHost, Stdin: cmd.InOrStdin(), Stdout: cmd.OutOrStdout(), Stderr: cmd.ErrOrStderr(), Observe: progress.report})
-				if timeout > 0 && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				// Only a run the deadline actually cut short is a timeout: a
+				// command that finished (exit 0, or its own non-zero exit) just
+				// as the deadline passed keeps its result.
+				if timeout > 0 && errors.Is(ctx.Err(), context.DeadlineExceeded) && (err != nil || (result.ChildFailed && result.ExitCode < 0)) {
 					return runtime.ExitError(1, fmt.Sprintf("%s did not finish within %s and was stopped", args[0], timeout))
 				}
 				if err != nil {

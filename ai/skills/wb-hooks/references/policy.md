@@ -82,10 +82,14 @@ a reusable workflow it calls (for example `strongo/cicd/...@<sha>`), read from
 that repository's local clone at the pinned ref without fetching;
 `v2.15.0` otherwise. It is built once per machine and Go toolchain into
 `<user cache>/wb/golangci-lint/<go version>/<version>/` by the first pre-push
-that needs it (seconds with a warm module cache, about a minute cold). Only a
-finding blocks. A linter that cannot be built (offline), cannot read the
-toolchain's export data (a pin older than the local Go), or crashes is
-reported and left to CI; so are missing `node_modules`.
+that needs it (seconds with a warm module cache, about a minute cold). Any
+non-zero exit of a lint step blocks — a finding, a crash, or `wb run` itself
+failing (repair wb; never skip the hook). Just two cases warn and leave lint
+to CI: every reported issue is golangci-lint's typecheck failure to load the
+toolchain's export data (a pin older than the local Go), or the step ran past
+its deadline (`wb run --timeout`; on Darwin and Linux the whole process group
+is stopped). A linter that cannot be built offline, and missing
+`node_modules`, also skip with a note.
 
 The Go pre-commit block also runs that linter over the staged packages only,
 reporting issues on new or changed lines (`--new-from-rev=HEAD`). It never

@@ -2,6 +2,7 @@ package hooks
 
 import (
 	"errors"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -151,14 +152,14 @@ func TestNodePrePushLeavesALintThatCannotRunToCI(t *testing.T) {
 	t.Parallel()
 	repo, head := nodeLintRepo(t, map[string]string{"package.json": `{"scripts":{"lint":"x"}}`, "a.js": "x\n", "node_modules/.keep": ""})
 	h := newLintHarness(t, repo)
-	h.exit = func([]string) (int, error) { return 0, errors.New("npm did not finish within 10m0s") }
-	if code := h.runWithStdin("pre-push", "node", pushLine("f", head)); code != 0 || !strings.Contains(h.stderr.String(), "lint could not run in package .") {
+	h.exit = func([]string) (int, error) { return 0, fmt.Errorf("npm %w (10m0s)", errCheckTimedOut) }
+	if code := h.runWithStdin("pre-push", "node", pushLine("f", head)); code != 0 || !strings.Contains(h.stderr.String(), "lint did not finish in package .") {
 		t.Fatalf("exit %d stderr %q", code, h.stderr.String())
 	}
 	nx, nxHead := nodeLintRepo(t, map[string]string{"nx.json": "{}\n", "a.ts": "x\n", "node_modules/.keep": ""})
 	n := newLintHarness(t, nx)
 	n.exit = h.exit
-	if code := n.runWithStdin("pre-push", "node", pushLine("f", nxHead)); code != 0 || !strings.Contains(n.stderr.String(), "nx lint could not run") {
+	if code := n.runWithStdin("pre-push", "node", pushLine("f", nxHead)); code != 0 || !strings.Contains(n.stderr.String(), "nx lint did not finish") {
 		t.Fatalf("nx: exit %d stderr %q", code, n.stderr.String())
 	}
 }

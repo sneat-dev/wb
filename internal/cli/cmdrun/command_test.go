@@ -282,3 +282,24 @@ func TestCommandModeTimeoutStopsTheCommandAndSaysSo(t *testing.T) {
 		t.Fatalf("err %v deadline %v", err, hadDeadline)
 	}
 }
+
+func TestCommandModeKeepsTheResultOfACommandThatFinishedAtTheDeadline(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		result runexec.ExecuteResult
+		code   int
+	}{{runexec.ExecuteResult{}, 0}, {runexec.ExecuteResult{ChildFailed: true, ExitCode: 1}, 1}} {
+		deps := fakeDependencies()
+		deps.Execute = func(ctx context.Context, _ runexec.ExecuteRequest) (runexec.ExecuteResult, error) {
+			<-ctx.Done() // the deadline passes during receipt bookkeeping
+			return test.result, nil
+		}
+		_, _, err := executeTestCommand(t, []string{"--timeout", "10ms", "--", "golangci-lint", "run"}, deps)
+		if test.code == 0 && err != nil {
+			t.Fatalf("finished run reported %v", err)
+		}
+		if coded, ok := err.(*codedError); test.code != 0 && (!ok || coded.code != 1 || coded.message != "golangci-lint exited with status 1") {
+			t.Fatalf("finished exit 1 reported %#v", err)
+		}
+	}
+}
