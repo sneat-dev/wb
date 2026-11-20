@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"io"
 
 	"github.com/sneat-dev/wb/internal/buildinfo"
@@ -13,12 +12,7 @@ import (
 type versionInfo = buildinfo.Report
 
 func newVersionCmd() *cobra.Command {
-	return cmdversion.NewWithStale(buildinfo.Snapshot, func(ctx context.Context, current string) []stalewb.Binary {
-		if stalewb.Disabled() {
-			return nil
-		}
-		return stalewb.New().Stale(ctx, current)
-	})
+	return cmdversion.NewWithStale(buildinfo.Snapshot, stalewb.Scan)
 }
 
 // Bare version requests bypass Cobra and all invocation side effects.

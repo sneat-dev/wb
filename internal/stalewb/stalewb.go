@@ -72,10 +72,18 @@ func New() Scanner {
 	return Scanner{PathEnv: os.Getenv("PATH"), Probe: ProbeWith(runner.New()), Skip: skip}
 }
 
-// Disabled reports whether this process is itself a probe child.
-func Disabled() bool { return disabledBy(os.Getenv(SkipEnv)) }
+// Scan returns the wb copies on PATH older than current. A process that is
+// itself a probe child (SkipEnv set) scans nothing, so probes never recurse.
+func Scan(ctx context.Context, current string) []Binary {
+	return scanUnless(os.Getenv(SkipEnv), New, ctx, current)
+}
 
-func disabledBy(marker string) bool { return marker != "" }
+func scanUnless(marker string, scanner func() Scanner, ctx context.Context, current string) []Binary {
+	if marker != "" {
+		return nil
+	}
+	return scanner().Stale(ctx, current)
+}
 
 // ProbeWith returns a probe that runs `path version --json` through run with a
 // bounded timeout and the probe marker in the child's environment, and returns

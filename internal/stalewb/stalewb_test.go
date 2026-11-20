@@ -183,13 +183,21 @@ func TestNewScansTheProcessPathAndSkipsTheRunningBinary(t *testing.T) {
 	}
 }
 
-func TestDisabledFollowsTheProbeMarker(t *testing.T) {
+func TestScanSkipsEntirelyInAProbeChild(t *testing.T) {
 	t.Parallel()
-	if disabledBy("") || !disabledBy("1") {
-		t.Fatal("only a non-empty marker disables the scan")
+	older := stub(t, "wb", "x", true)
+	scanner := func() Scanner {
+		return Scanner{Executable: anyFile, PathEnv: pathOf(older), Probe: versions(map[string]string{older: "0.1.0"})}
 	}
-	if Disabled() != disabledBy(os.Getenv(SkipEnv)) {
-		t.Fatal("Disabled must read the process environment")
+	if got := scanUnless("1", scanner, context.Background(), "0.2.0"); got != nil {
+		t.Fatalf("a probe child scanned: %+v", got)
+	}
+	if got := scanUnless("", scanner, context.Background(), "0.2.0"); len(got) != 1 {
+		t.Fatalf("stale = %+v", got)
+	}
+	// The process-level entry point: a development version has nothing to compare to.
+	if got := Scan(context.Background(), "dev"); got != nil {
+		t.Fatalf("scan = %+v", got)
 	}
 }
 
