@@ -3,26 +3,12 @@ package locallink
 import (
 	"context"
 	"errors"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/streams"
 )
-
-// committedWorkspace is a repository's own multi-module workspace — the shape
-// sneat-co/commitius commits at its root.
-const committedWorkspace = "go 1.27\n\nuse ./backend\n"
-
-func readFileString(t *testing.T, path string) string {
-	t.Helper()
-	contents, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(contents)
-}
 
 func TestClassifyGoWorkReportsProvenanceAndGitFailures(t *testing.T) {
 	t.Parallel()

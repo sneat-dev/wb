@@ -14,6 +14,19 @@ import (
 	"github.com/sneat-dev/wb/internal/streams"
 )
 
+// committedWorkspace is a repository's own multi-module workspace — the shape
+// sneat-co/commitius commits at its root.
+const committedWorkspace = "go 1.27\n\nuse ./backend\n"
+
+func readFileString(t *testing.T, path string) string {
+	t.Helper()
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(contents)
+}
+
 type fakeLiveLinkStore struct{ links []streams.StreamLink }
 
 func (store fakeLiveLinkStore) LiveLinksForWorktree(string) ([]streams.StreamLink, error) {
