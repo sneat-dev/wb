@@ -773,7 +773,7 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	for _, file := range files {
 		result.ChangedFiles = append(result.ChangedFiles, file.Filename)
 	}
-	verdict := mechanicalchange.ClassifyMechanical(files)
+	verdict := mechanicalchange.ClassifyMechanicalPullRequest(files, mechanicalchange.PullRequest{Author: view.User.Login, Title: view.Title})
 	result.Mechanical, result.NonManifest = verdict.Mechanical, verdict.NonManifest
 	result.Evidence["classification"] = "from-diff-content"
 	if !verdict.Mechanical {

@@ -284,9 +284,18 @@ type MechanicalVerdict struct {
 	NonManifest []string
 }
 
-// ClassifyMechanical decides from the diff whether a change is a mechanical
-// dependency bump.
+// ClassifyMechanical decides from the diff alone whether a change is a
+// mechanical dependency bump. Without the pull request's author nothing
+// outside a dependency manifest can be mechanical.
 func ClassifyMechanical(files []ChangedFile) MechanicalVerdict {
+	return ClassifyMechanicalPullRequest(files, PullRequest{})
+}
+
+// ClassifyMechanicalPullRequest is ClassifyMechanical with the pull request's
+// author and title. A dependency bot's pull request may also change the
+// version refs of a workflow file (see nonMechanicalWorkflow) and the
+// `require` versions of a `go.mod`/`go.sum` fixture under `testdata/`.
+func ClassifyMechanicalPullRequest(files []ChangedFile, pr PullRequest) MechanicalVerdict {
 	if len(files) == 0 {
 		// An empty diff is not a bump; it is a pull request with nothing in it.
 		return MechanicalVerdict{Reasons: []string{"the pull request changes no files"}}
@@ -294,7 +303,14 @@ func ClassifyMechanical(files []ChangedFile) MechanicalVerdict {
 	verdict := MechanicalVerdict{Mechanical: true}
 	for _, file := range files {
 		name := file.Filename
-		if inCodeDirectory(name) {
+		if pr.byDependencyBot() && workflowFile(name) {
+			if reason := nonMechanicalWorkflow(name, file.Status, file.Patch, pr); reason != "" {
+				verdict.Mechanical = false
+				verdict.Reasons = append(verdict.Reasons, reason)
+			}
+			continue
+		}
+		if inCodeDirectory(name) && !(pr.byDependencyBot() && goFixtureManifest(name)) {
 			verdict.Mechanical = false
 			verdict.NonManifest = append(verdict.NonManifest, name)
 			verdict.Reasons = append(verdict.Reasons,
@@ -315,10 +331,32 @@ func ClassifyMechanical(files []ChangedFile) MechanicalVerdict {
 	return verdict
 }
 
-func inCodeDirectory(name string) bool {
-	normalized := strings.TrimPrefix(name, "./")
+// goFixtureManifest reports whether name is a `go.mod` or `go.sum` whose only
+// code directory is `testdata/`. Such a file is still checked line by line by
+// nonMechanicalGoModule, so a `replace`, `exclude`, `go` or `toolchain` change
+// in a fixture is refused like anywhere else; `docs/`, `examples/` and
+// `fixtures/` stay code, and so does every non-Go manifest under `testdata/`.
+func goFixtureManifest(name string) bool {
+	base := path.Base(name)
+	if base != "go.mod" && base != "go.sum" {
+		return false
+	}
 	for _, directory := range codeDirectories {
-		if strings.HasPrefix(normalized, directory) || strings.Contains(normalized, "/"+directory) {
+		if directory != "testdata/" && hasCodeDirectory(name, directory) {
+			return false
+		}
+	}
+	return true
+}
+
+func hasCodeDirectory(name, directory string) bool {
+	normalized := strings.TrimPrefix(name, "./")
+	return strings.HasPrefix(normalized, directory) || strings.Contains(normalized, "/"+directory)
+}
+
+func inCodeDirectory(name string) bool {
+	for _, directory := range codeDirectories {
+		if hasCodeDirectory(name, directory) {
 			return true
 		}
 	}

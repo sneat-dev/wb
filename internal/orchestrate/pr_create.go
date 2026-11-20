@@ -531,7 +531,7 @@ func createPullRequestAutoMerge(ctx context.Context, options PullRequestCreateOp
 	if filesErr != nil {
 		return result, fmt.Errorf("read changed files of %s#%s: %w", repository, number, filesErr)
 	}
-	verdict := mechanicalchange.ClassifyMechanical(files)
+	verdict := mechanicalchange.ClassifyMechanicalPullRequest(files, mechanicalchange.PullRequest{Author: view.User.Login, Title: view.Title})
 	result.Mechanical = verdict.Mechanical
 	if !verdict.Mechanical {
 		result.Evidence["not_mechanical_because"] = verdict.Summary()
