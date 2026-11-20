@@ -1,3 +1,5 @@
+//go:build e2e
+
 package worktreeretire
 
 import (
@@ -56,7 +58,7 @@ func historyWorking(t *testing.T) string {
 	}
 	return dir
 }
-func TestHistoryBundleMustRestoreIntoAnEmptyObjectDatabase(t *testing.T) {
+func TestE2EHistoryBundleMustRestoreIntoAnEmptyObjectDatabase(t *testing.T) {
 	t.Parallel()
 	root, source, base := historyRepository(t)
 	bundle := filepath.Join(t.TempDir(), "history.bundle")
@@ -98,7 +100,7 @@ func TestHistoryBundleMustRestoreIntoAnEmptyObjectDatabase(t *testing.T) {
 		})
 	}
 }
-func TestHistoryArchiveRetryReusesPublishedBytes(t *testing.T) {
+func TestE2EHistoryArchiveRetryReusesPublishedBytes(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	root, source, base := historyRepository(t)
@@ -132,7 +134,7 @@ func TestHistoryArchiveRetryReusesPublishedBytes(t *testing.T) {
 		t.Fatal("retry regenerated backup bytes")
 	}
 }
-func TestHistoryArchiveRefusesEveryUnavailableBackupStage(t *testing.T) {
+func TestE2EHistoryArchiveRefusesEveryUnavailableBackupStage(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	root, source, base := historyRepository(t)
@@ -200,13 +202,13 @@ func TestHistoryArchiveRefusesEveryUnavailableBackupStage(t *testing.T) {
 }
 
 //nolint:paralleltest // TMPDIR failure is scoped to this test by t.Setenv.
-func TestHistoryProofRefusesUnavailableRestoreDirectory(t *testing.T) {
+func TestE2EHistoryProofRefusesUnavailableRestoreDirectory(t *testing.T) {
 	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "missing"))
 	if err := validateSourceHistory(context.Background(), "bundle", "source", "base", Ports{}); err == nil {
 		t.Fatal("missing restore directory accepted")
 	}
 }
-func TestLegacyHistoryArchiveChecksPinnedManifest(t *testing.T) {
+func TestE2ELegacyHistoryArchiveChecksPinnedManifest(t *testing.T) {
 	t.Parallel()
 	failure := errors.New("manifest unavailable")
 	for _, body := range []string{`{"files":{}}`, `{"base_sha":"base","files":{"history.bundle":"hash"}}`, `invalid`} {
@@ -230,7 +232,7 @@ func TestLegacyHistoryArchiveChecksPinnedManifest(t *testing.T) {
 	}
 }
 
-func TestPublishArchiveResumesLegacyHistoryOnlyWithValidAncestry(t *testing.T) {
+func TestE2EPublishArchiveResumesLegacyHistoryOnlyWithValidAncestry(t *testing.T) {
 	t.Parallel()
 	for _, stage := range []string{"legacy valid", "manifest failed", "ancestry failed"} {
 		t.Run(stage, func(t *testing.T) {
@@ -279,7 +281,7 @@ func TestPublishArchiveResumesLegacyHistoryOnlyWithValidAncestry(t *testing.T) {
 		})
 	}
 }
-func TestArchiveManifestBindsOriginalBase(t *testing.T) {
+func TestE2EArchiveManifestBindsOriginalBase(t *testing.T) {
 	t.Parallel()
 	expected := Manifest{Version: 1, BaseSHA: "original"}
 	actual := expected
@@ -289,7 +291,7 @@ func TestArchiveManifestBindsOriginalBase(t *testing.T) {
 	}
 }
 
-func TestPublishArchiveStopsBeforePublicationWhenHistoryBackupFails(t *testing.T) {
+func TestE2EPublishArchiveStopsBeforePublicationWhenHistoryBackupFails(t *testing.T) {
 	t.Parallel()
 	home, result, ports := archiveFixture(t)
 	readClaim := ports.ReadClaim

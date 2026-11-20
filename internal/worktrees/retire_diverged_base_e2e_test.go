@@ -1,3 +1,5 @@
+//go:build e2e
+
 package worktrees
 
 import (
@@ -53,7 +55,7 @@ func divergedRetirementFixture(t *testing.T) (*gitFixture, CreateResult, RetireO
 }
 
 //nolint:paralleltest // The Git fixture configures process-local identity and paths.
-func TestPreservationRetirementBacksUpDivergedBaseWithoutRewritingClaim(t *testing.T) {
+func TestE2EPreservationRetirementBacksUpDivergedBaseWithoutRewritingClaim(t *testing.T) {
 	f, c, opts, head := divergedRetirementFixture(t)
 	ctx := context.Background()
 	projection, err := readWorkLogProjectionForReadOnlyClaim(c.WorktreeDir)
@@ -142,7 +144,7 @@ func TestPreservationRetirementBacksUpDivergedBaseWithoutRewritingClaim(t *testi
 }
 
 //nolint:paralleltest // The Git fixture configures process-local identity and paths.
-func TestPreservationRetirementRejectsOtherClaimFailures(t *testing.T) {
+func TestE2EPreservationRetirementRejectsOtherClaimFailures(t *testing.T) {
 	f, c, opts, head := divergedRetirementFixture(t)
 	p, err := readWorkLogProjectionForReadOnlyClaim(c.WorktreeDir)
 	if err != nil {
@@ -182,7 +184,7 @@ func TestPreservationRetirementRejectsOtherClaimFailures(t *testing.T) {
 }
 
 //nolint:paralleltest // The Git fixture configures process-local identity and paths.
-func TestPreservationResumesAnArchivePublishedBeforeHistoryBundles(t *testing.T) {
+func TestE2EPreservationResumesAnArchivePublishedBeforeHistoryBundles(t *testing.T) {
 	f, c, opts, _ := divergedRetirementFixture(t)
 	ctx := context.Background()
 	// Make this an ordinary ancestry-valid lane, as required by the legacy path.
@@ -226,7 +228,7 @@ func TestPreservationResumesAnArchivePublishedBeforeHistoryBundles(t *testing.T)
 }
 
 //nolint:paralleltest // The Git fixture configures process-local identity and paths.
-func TestPreservationProofRefusesUnavailableOrChangedAuthority(t *testing.T) {
+func TestE2EPreservationProofRefusesUnavailableOrChangedAuthority(t *testing.T) {
 	f, c, _, head := divergedRetirementFixture(t)
 	p, err := readWorkLogProjectionForReadOnlyClaim(c.WorktreeDir)
 	if err != nil {
@@ -262,7 +264,7 @@ func TestPreservationProofRefusesUnavailableOrChangedAuthority(t *testing.T) {
 	}
 }
 
-func TestPreservationDiagnosticsKeepsUnrelatedFailures(t *testing.T) {
+func TestE2EPreservationDiagnosticsKeepsUnrelatedFailures(t *testing.T) {
 	t.Parallel()
 	original := ListDiagnostic{DiscoveryScope: "selected-proof", Path: filepath.Join(t.TempDir(), "missing"), Message: "unreadable claim"}
 	kept := preservationDiagnostics(t.TempDir(), []ListDiagnostic{original})

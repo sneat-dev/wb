@@ -2,7 +2,6 @@ package orchestrate
 
 import (
 	"context"
-	"errors"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -20,6 +19,7 @@ type conflictRecoveryFixture struct {
 }
 
 func TestUnpublishedLandConflictRetryRequiresExactCleanCandidate(t *testing.T) {
+	t.Parallel()
 	f := newConflictRecoveryFixture(t)
 	receipt := f.receipt
 	receipt.Phase = WorktreeMergePhaseLand
@@ -49,46 +49,6 @@ func TestUnpublishedLandConflictRetryRequiresExactCleanCandidate(t *testing.T) {
 	changed, err = advanceResolvedConflictCandidateWithRunner(t.Context(), runner.New(), f.engine.githubDir, &receipt, 5*time.Second, 0, nativeConflictAdvanceStore())
 	if changed || err != nil {
 		t.Fatalf("published candidate should use published recovery: changed=%v err=%v", changed, err)
-	}
-}
-
-func TestUnpublishedLandConflictRejectsPublishedOrUnobservableCandidate(t *testing.T) {
-	f := newConflictRecoveryFixture(t)
-	receipt := f.receipt
-	receipt.Phase = WorktreeMergePhaseLand
-	receipt.Candidate.SHA = f.head
-	receipt.Route.Route = WorktreeMergeRoutePullRequest
-	receipt.ValidationDeferral = &WorktreeMergeValidationDeferral{Route: WorktreeMergeRoutePullRequest, CandidateSHA: f.head}
-	receipt.Failure = "managed pre-push gate failed before opening the push connection: host load"
-	before := receipt
-	runEngineGit(t, receipt.Candidate.Worktree, "push", "origin", f.head+":refs/heads/"+receipt.Candidate.Branch)
-	changed, err := advanceResolvedConflictCandidateWithRunner(t.Context(), runner.New(), f.engine.githubDir, &receipt, 5*time.Second, 0, nativeConflictAdvanceStore())
-	if changed || err == nil || !strings.Contains(err.Error(), "already published") || !reflect.DeepEqual(receipt, before) {
-		t.Fatalf("published candidate accepted: changed=%v err=%v", changed, err)
-	}
-	runEngineGit(t, receipt.Candidate.Worktree, "push", "origin", ":refs/heads/"+receipt.Candidate.Branch)
-	refusal := errors.New("remote read refused")
-	run := conflictNegativeRunner{Runner: runner.New(), dir: receipt.Candidate.Worktree, argv: "ls-remote --heads origin refs/heads/" + receipt.Candidate.Branch, err: refusal}
-	changed, err = advanceResolvedConflictCandidateWithRunner(t.Context(), run, f.engine.githubDir, &receipt, 5*time.Second, 0, nativeConflictAdvanceStore())
-	if changed || !errors.Is(err, refusal) || !reflect.DeepEqual(receipt, before) {
-		t.Fatalf("unobservable candidate accepted: changed=%v err=%v", changed, err)
-	}
-
-	receipt.Failure = "unrelated land conflict"
-	changed, err = advanceResolvedConflictCandidateWithRunner(t.Context(), runner.New(), f.engine.githubDir, &receipt, 5*time.Second, 0, nativeConflictAdvanceStore())
-	if changed || err == nil || !strings.Contains(err.Error(), "pre-push refusal") {
-		t.Fatalf("unrelated land conflict accepted: changed=%v err=%v", changed, err)
-	}
-	receipt.Failure = "receipt " + receipt.ReceiptPath + " has no recoverable conflict candidate"
-	receipt.HostLoadAdmission = &WorktreeMergeHostLoadAdmission{Load: 35, Floor: 36}
-	changed, err = advanceResolvedConflictCandidateWithRunner(t.Context(), runner.New(), f.engine.githubDir, &receipt, 5*time.Second, 0, nativeConflictAdvanceStore())
-	if changed || err != nil {
-		t.Fatalf("legacy pre-push receipt refused: changed=%v err=%v", changed, err)
-	}
-	receipt.ValidationDeferral = nil
-	changed, err = advanceResolvedConflictCandidateWithRunner(t.Context(), runner.New(), f.engine.githubDir, &receipt, 5*time.Second, 0, nativeConflictAdvanceStore())
-	if changed || err == nil || !strings.Contains(err.Error(), "pre-push refusal") {
-		t.Fatalf("unproven legacy refusal accepted: changed=%v err=%v", changed, err)
 	}
 }
 

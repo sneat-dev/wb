@@ -1,3 +1,5 @@
+//go:build e2e
+
 package worktrees
 
 import (
@@ -15,7 +17,7 @@ import (
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
-func TestTerminalLockOperationNameBindsMergeReceipt(t *testing.T) {
+func TestE2ETerminalLockOperationNameBindsMergeReceipt(t *testing.T) {
 	t.Parallel()
 	const receipt = "merge-sneat-co-bookius-main-c97cdfb3334d-1d2d9879e050"
 	for _, task := range []string{
@@ -78,7 +80,7 @@ func terminalLockRecoveryFixture(t *testing.T) (TerminalLockRecoveryOptions, str
 }
 
 //nolint:paralleltest // The real Git fixture scopes WB configuration through t.Setenv.
-func TestTerminalLockRecoveryRequiresFreshContainedLandingAndRetiresOnlyLock(t *testing.T) {
+func TestE2ETerminalLockRecoveryRequiresFreshContainedLandingAndRetiresOnlyLock(t *testing.T) {
 	options, lockPath, receipt := terminalLockRecoveryFixture(t)
 	planned, err := RecoverTerminalOperationLock(context.Background(), options)
 	if err != nil {
@@ -115,7 +117,7 @@ func TestTerminalLockRecoveryRequiresFreshContainedLandingAndRetiresOnlyLock(t *
 }
 
 //nolint:paralleltest // Every case creates a real Git fixture that calls t.Setenv.
-func TestTerminalLockRecoveryRefusesUnprovenOrLiveOperations(t *testing.T) {
+func TestE2ETerminalLockRecoveryRefusesUnprovenOrLiveOperations(t *testing.T) {
 	tests := []struct {
 		name   string
 		change func(*testing.T, *TerminalLockRecoveryOptions, string, []byte)
@@ -196,7 +198,7 @@ func TestTerminalLockRecoveryRefusesUnprovenOrLiveOperations(t *testing.T) {
 }
 
 //nolint:paralleltest // Every case creates a real Git fixture that calls t.Setenv.
-func TestTerminalLockRecoveryPreservesEvidenceOnBoundaryFailures(t *testing.T) {
+func TestE2ETerminalLockRecoveryPreservesEvidenceOnBoundaryFailures(t *testing.T) {
 	sentinel := errors.New("injected boundary failure")
 	tests := []struct {
 		name   string
@@ -273,7 +275,7 @@ func TestTerminalLockRecoveryPreservesEvidenceOnBoundaryFailures(t *testing.T) {
 }
 
 //nolint:paralleltest // Every case creates a real Git fixture that calls t.Setenv.
-func TestTerminalLockRecoveryRefusesRemainingCandidatesAndBacklog(t *testing.T) {
+func TestE2ETerminalLockRecoveryRefusesRemainingCandidatesAndBacklog(t *testing.T) {
 	tests := []struct {
 		name   string
 		inject func(*terminalLockRecoveryPorts)
@@ -306,7 +308,7 @@ func TestTerminalLockRecoveryRefusesRemainingCandidatesAndBacklog(t *testing.T) 
 }
 
 //nolint:paralleltest // The real Git fixture scopes WB configuration through t.Setenv.
-func TestTerminalLockRecoveryRequiresWritableAuditBeforeRetirement(t *testing.T) {
+func TestE2ETerminalLockRecoveryRequiresWritableAuditBeforeRetirement(t *testing.T) {
 	options, lock, _ := terminalLockRecoveryFixture(t)
 	options.Apply = true
 	auditRoot := filepath.Join(options.ProjectsRoot, ".wb", "reports", "worktree-lock-recovery")
@@ -322,7 +324,7 @@ func TestTerminalLockRecoveryRequiresWritableAuditBeforeRetirement(t *testing.T)
 }
 
 //nolint:paralleltest // The real Git fixture scopes WB configuration through t.Setenv.
-func TestTerminalLockRecoveryReportsUnexpectedShellAfterAuditedRelease(t *testing.T) {
+func TestE2ETerminalLockRecoveryReportsUnexpectedShellAfterAuditedRelease(t *testing.T) {
 	options, _, _ := terminalLockRecoveryFixture(t)
 	options.Apply = true
 	ports := defaultTerminalLockRecoveryPorts()

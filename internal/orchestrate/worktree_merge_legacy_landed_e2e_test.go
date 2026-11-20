@@ -1,3 +1,5 @@
+//go:build e2e
+
 package orchestrate
 
 import (
@@ -129,7 +131,7 @@ func (f *legacyLandedFixture) options() WorktreeMergeLandedFailureAcknowledgemen
 	return WorktreeMergeLandedFailureAcknowledgementOptions{ProjectsRoot: f.githubDir, Receipt: f.receipt.ReceiptPath, Actor: "reviewer", Reason: "historical validation landed; newer candidate preserved"}
 }
 
-func TestLegacyLandedValidationPreservesAdvancedCheckoutAndReleasesOnlyHistoricalLane(t *testing.T) {
+func TestE2ELegacyLandedValidationPreservesAdvancedCheckoutAndReleasesOnlyHistoricalLane(t *testing.T) {
 	t.Parallel()
 	f := newLegacyLandedFixture(t)
 	original, err := os.ReadFile(f.receipt.ReceiptPath)
@@ -192,7 +194,7 @@ func TestLegacyLandedValidationPreservesAdvancedCheckoutAndReleasesOnlyHistorica
 	}
 }
 
-func TestLegacyLandedValidationRejectsContradictoryValidationIdentity(t *testing.T) {
+func TestE2ELegacyLandedValidationRejectsContradictoryValidationIdentity(t *testing.T) {
 	t.Parallel()
 	f := newLegacyLandedFixture(t)
 	for _, fault := range []string{"candidate", "target", "sources", "published", "dirty validation", "phase", "missing revision"} {
@@ -229,7 +231,7 @@ func TestLegacyLandedValidationRejectsContradictoryValidationIdentity(t *testing
 	}
 }
 
-func TestLegacyLandedValidationReadRequiresBothUntamperedSidecars(t *testing.T) {
+func TestE2ELegacyLandedValidationReadRequiresBothUntamperedSidecars(t *testing.T) {
 	t.Parallel()
 	f := newLegacyLandedFixture(t)
 	o := f.options()
@@ -304,7 +306,7 @@ func TestLegacyLandedValidationReadRequiresBothUntamperedSidecars(t *testing.T) 
 	}
 }
 
-func TestLegacyLandedValidationNativeCustodyAndRetirementRefusals(t *testing.T) {
+func TestE2ELegacyLandedValidationNativeCustodyAndRetirementRefusals(t *testing.T) {
 	t.Parallel()
 	for _, fault := range []string{"dirty candidate", "missing candidate", "foreign branch", "foreign claim", "non-descendant candidate", "missing cleanup", "malformed cleanup", "wrong cleanup head", "missing terminal", "source path resurrected", "source branch resurrected", "foreign PR head", "foreign PR base", "unmerged PR", "wrong PR landing", "unavailable PR", "target lacks historical candidate", "missing actor"} {
 		t.Run(fault, func(t *testing.T) {
@@ -421,7 +423,7 @@ func (r legacyLandedRunner) RunOpts(ctx context.Context, dir string, opts runner
 	return r.Runner.RunOpts(ctx, dir, opts, name, args...)
 }
 
-func TestLegacyLandedValidationRechecksMutableProofBeforePublishing(t *testing.T) {
+func TestE2ELegacyLandedValidationRechecksMutableProofBeforePublishing(t *testing.T) {
 	t.Parallel()
 	for _, fault := range []string{"target advanced", "candidate advanced", "source resurrected", "second proof unavailable"} {
 		t.Run(fault, func(t *testing.T) {
@@ -468,7 +470,7 @@ func TestLegacyLandedValidationRechecksMutableProofBeforePublishing(t *testing.T
 	}
 }
 
-func TestLegacyLandedValidationUnavailableExternalEvidenceFailsClosed(t *testing.T) {
+func TestE2ELegacyLandedValidationUnavailableExternalEvidenceFailsClosed(t *testing.T) {
 	t.Parallel()
 	f := newLegacyLandedFixture(t)
 	for _, fault := range []string{"canonical", "receipt hash", "cleanup initial hash", "cleanup final hash", "cleanup digest changed", "retired original not ancestor", "PR proof changed", "claim ancestry query", "historical root query", "final custody query", "final target query", "invalid shape"} {
@@ -541,7 +543,7 @@ func TestLegacyLandedValidationUnavailableExternalEvidenceFailsClosed(t *testing
 	}
 }
 
-func TestLegacyLandedValidationOwnerRechecksReceiptAndRecoversInterruptedSidecarWrite(t *testing.T) {
+func TestE2ELegacyLandedValidationOwnerRechecksReceiptAndRecoversInterruptedSidecarWrite(t *testing.T) {
 	t.Parallel()
 	for _, fault := range []string{"invalid receipt", "locked lane", "initial read failed", "initial receipt changed", "final read failed", "final receipt changed", "identity write failed", "ack write failed", "existing identity different", "existing identity corrupt", "second proof failed"} {
 		t.Run(fault, func(t *testing.T) {
@@ -627,7 +629,7 @@ func TestLegacyLandedValidationOwnerRechecksReceiptAndRecoversInterruptedSidecar
 	}
 }
 
-func TestLegacyLandedValidationRetainsExactHeadSupportAndLateCustodyFences(t *testing.T) {
+func TestE2ELegacyLandedValidationRetainsExactHeadSupportAndLateCustodyFences(t *testing.T) {
 	t.Parallel()
 	for _, scenario := range []string{"exact checkout", "checkout changes during source proof", "earlier source reappears", "current source reappears"} {
 		t.Run(scenario, func(t *testing.T) {

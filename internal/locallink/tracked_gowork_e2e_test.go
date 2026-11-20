@@ -1,3 +1,5 @@
+//go:build e2e
+
 package locallink
 
 import (
@@ -49,7 +51,7 @@ func readFileString(t *testing.T, path string) string {
 // The 2026-11-08 data loss: `--undo` on a consumer with a committed go.work
 // and no link record deleted the tracked file. Without a record there is
 // nothing to undo, and a tracked file is never WB's to delete.
-func TestUndoWithoutARecordLeavesACommittedGoWorkUntouched(t *testing.T) {
+func TestE2EUndoWithoutARecordLeavesACommittedGoWorkUntouched(t *testing.T) {
 	t.Parallel()
 	fixture := newFixture(t,
 		map[string]string{"backend/go.mod": goLibraryModule},
@@ -84,7 +86,7 @@ func TestUndoWithoutARecordLeavesACommittedGoWorkUntouched(t *testing.T) {
 
 // A real link written over a committed go.work: undo restores the tracked
 // file from HEAD and removes only the untracked artefacts the record names.
-func TestUndoRestoresATrackedGoWorkALinkOverwrote(t *testing.T) {
+func TestE2EUndoRestoresATrackedGoWorkALinkOverwrote(t *testing.T) {
 	t.Parallel()
 	fixture := newFixture(t,
 		map[string]string{"backend/go.mod": goLibraryModule},
@@ -147,7 +149,7 @@ func TestUndoRestoresATrackedGoWorkALinkOverwrote(t *testing.T) {
 // The link guard's refusal for a go.work no stream records never names
 // `--undo`, which cannot clear it, and never names a command that deletes a
 // tracked file.
-func TestHasLiveLinkNamesAHonestRemedyForAnUnrecordedGoWork(t *testing.T) {
+func TestE2EHasLiveLinkNamesAHonestRemedyForAnUnrecordedGoWork(t *testing.T) {
 	t.Parallel()
 
 	t.Run("untracked", func(t *testing.T) {
@@ -222,7 +224,7 @@ func (store fakeLiveLinkStore) LiveLinksForWorktree(string) ([]streams.StreamLin
 	return store.links, nil
 }
 
-func TestClassifyGoWorkReportsProvenanceAndGitFailures(t *testing.T) {
+func TestE2EClassifyGoWorkReportsProvenanceAndGitFailures(t *testing.T) {
 	t.Parallel()
 	failed := errors.New("git is gone")
 	yes := func(string, string) (bool, error) { return true, nil }
@@ -255,7 +257,7 @@ func TestClassifyGoWorkReportsProvenanceAndGitFailures(t *testing.T) {
 	}
 }
 
-func TestHasLiveLinkReportsAGoWorkWhoseProvenanceCannotBeRead(t *testing.T) {
+func TestE2EHasLiveLinkReportsAGoWorkWhoseProvenanceCannotBeRead(t *testing.T) {
 	t.Parallel()
 	worktree := t.TempDir()
 	writeGuardTestFile(t, worktree, goWorkFile, "go 1.27\n\nuse /elsewhere/library\n")
@@ -266,7 +268,7 @@ func TestHasLiveLinkReportsAGoWorkWhoseProvenanceCannotBeRead(t *testing.T) {
 	}
 }
 
-func TestRestoreLinkArtefactsNeverDeletesTrackedContent(t *testing.T) {
+func TestE2ERestoreLinkArtefactsNeverDeletesTrackedContent(t *testing.T) {
 	t.Parallel()
 	failed := errors.New("git is gone")
 	yes := func(string, string) (bool, error) { return true, nil }
@@ -357,7 +359,7 @@ func TestRestoreLinkArtefactsNeverDeletesTrackedContent(t *testing.T) {
 	})
 }
 
-func TestUndoReportsAGoWorkItCouldNotRestore(t *testing.T) {
+func TestE2EUndoReportsAGoWorkItCouldNotRestore(t *testing.T) {
 	t.Parallel()
 	worktree := t.TempDir()
 	library := t.TempDir()
@@ -371,7 +373,7 @@ func TestUndoReportsAGoWorkItCouldNotRestore(t *testing.T) {
 	}
 }
 
-func TestUndoWithoutARecordReportsAGoWorkItCouldNotClassify(t *testing.T) {
+func TestE2EUndoWithoutARecordReportsAGoWorkItCouldNotClassify(t *testing.T) {
 	t.Parallel()
 	worktree := t.TempDir()
 	writeGuardTestFile(t, worktree, goWorkFile, "go 1.27\n\nuse /elsewhere/library\n")
@@ -382,7 +384,7 @@ func TestUndoWithoutARecordReportsAGoWorkItCouldNotClassify(t *testing.T) {
 	}
 }
 
-func TestGitRestoreFromHEADReportsAFailure(t *testing.T) {
+func TestE2EGitRestoreFromHEADReportsAFailure(t *testing.T) {
 	t.Parallel()
 	if err := gitRestoreFromHEAD(t.TempDir(), goWorkFile); err == nil {
 		t.Fatal("restoring outside a repository reported success")
@@ -391,7 +393,7 @@ func TestGitRestoreFromHEADReportsAFailure(t *testing.T) {
 
 // The `wb worktree end` half: a committed, unchanged workspace is repository
 // content; untracked or modified ones still refuse with an honest remedy.
-func TestRetirementGoWorkSignalIgnoresOnlyACommittedUnchangedWorkspace(t *testing.T) {
+func TestE2ERetirementGoWorkSignalIgnoresOnlyACommittedUnchangedWorkspace(t *testing.T) {
 	t.Parallel()
 
 	t.Run("no go.work", func(t *testing.T) {
@@ -449,7 +451,7 @@ func TestRetirementGoWorkSignalIgnoresOnlyACommittedUnchangedWorkspace(t *testin
 
 // Provenance is judged at the worktree's own path: a committed go.work at the
 // repository root says nothing about an untracked one in a subdirectory.
-func TestClassifyGoWorkJudgesTheWorktreePathNotTheRepositoryRoot(t *testing.T) {
+func TestE2EClassifyGoWorkJudgesTheWorktreePathNotTheRepositoryRoot(t *testing.T) {
 	t.Parallel()
 	repository := initGuardTestRepository(t)
 	writeGuardTestFile(t, repository, goWorkFile, committedWorkspace)
@@ -467,7 +469,7 @@ func TestClassifyGoWorkJudgesTheWorktreePathNotTheRepositoryRoot(t *testing.T) {
 // Git failing is never read as "not committed": undo would remove a tracked
 // file. An unborn HEAD and a directory outside any checkout are the only
 // failures that genuinely mean nothing is tracked.
-func TestGitPathExistsAtHEADNeverReadsAGitFailureAsAbsent(t *testing.T) {
+func TestE2EGitPathExistsAtHEADNeverReadsAGitFailureAsAbsent(t *testing.T) {
 	t.Parallel()
 
 	t.Run("outside any checkout", func(t *testing.T) {
@@ -503,7 +505,7 @@ func TestGitPathExistsAtHEADNeverReadsAGitFailureAsAbsent(t *testing.T) {
 
 // An inherited GIT_DIR or index would aim the HEAD probes at another
 // repository, where a tracked go.work reads as absent; they are stripped.
-func TestHeadGitCommandIgnoresInheritedRepositoryOverrides(t *testing.T) {
+func TestE2EHeadGitCommandIgnoresInheritedRepositoryOverrides(t *testing.T) {
 	t.Parallel()
 	kept := withoutRepositoryOverrides([]string{
 		"PATH=/bin", "GIT_DIR=/elsewhere/.git", "GIT_INDEX_FILE=/elsewhere/index", "GIT_WORK_TREE=/elsewhere", "HOME=/home/x",
@@ -523,7 +525,7 @@ func TestHeadGitCommandIgnoresInheritedRepositoryOverrides(t *testing.T) {
 }
 
 // The Git diagnostic of the failed listing survives into the error.
-func TestGitPathExistsAtHEADKeepsTheGitDiagnostic(t *testing.T) {
+func TestE2EGitPathExistsAtHEADKeepsTheGitDiagnostic(t *testing.T) {
 	t.Parallel()
 	worktree := t.TempDir()
 	writeGuardTestFile(t, worktree, ".git", "gitdir: "+filepath.Join(t.TempDir(), "pruned")+"\n")

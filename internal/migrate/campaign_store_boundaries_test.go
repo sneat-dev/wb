@@ -44,8 +44,15 @@ func TestRegisteredCampaignWorktreeReportsMissingCanonicalPath(t *testing.T) {
 	}
 }
 
+// This test closes the lock's descriptor before Release runs, so Release
+// cannot LOCK_UN the retired inode. If another test forks a child at that
+// moment, the child's inherited copy of the open file description keeps the
+// retired inode flocked until it execs, and the following acquisition (which
+// reclaims that retired inode) reports it as active. It therefore runs
+// serially, when no other test in the package can be forking.
+//
+//nolint:paralleltest // must not overlap another test's fork: see above.
 func TestCampaignAcquisitionRefusesIncompleteOwnedMetadata(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
 	var owned *os.File
 	held, err := acquireCampaignLockWithInitializer(root, "metadata", func(file *os.File, id string) error {
