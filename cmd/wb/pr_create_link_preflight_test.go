@@ -126,7 +126,8 @@ case "$*" in
   'pr edit https://github.com/acme/app/pull/'*' --repo acme/app --body '*)
     printf '%s\n' "$*" >>"$S/pr-edit-calls" ;;
   'api repos/acme/app/pulls/'*'/files?per_page=100 --include'|'api repos/acme/app/pulls/'*'/files?per_page=100')
-    cat "$S/files" ;;
+    # GitHub names the head each file was read at in its contents_url.
+    sed "s#{\"filename\"#{\"contents_url\":\"https://api.github.com/repos/acme/app/contents/f?ref=$head\",\"filename\"#g" "$S/files" ;;
   'api repos/acme/app/pulls/'*'/commits?per_page=100 --include'|'api repos/acme/app/pulls/'*'/commits?per_page=100')
     cat "$S/commits" ;;
   'api repos/acme/app/pulls/'*' --include'|'api repos/acme/app/pulls/'*)

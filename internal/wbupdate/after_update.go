@@ -8,6 +8,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/stalewb"
 	"github.com/strongo/cli-helpers/selfupdate"
 )
 
@@ -24,11 +25,37 @@ type ChildResult struct{ Combined, Stdout, Stderr []byte }
 type Service struct {
 	RunChild       func(context.Context, ChildRequest) (ChildResult, error)
 	HandoffTimeout func() time.Duration
+	// StaleScanner supplies the PATH scan behind the stale-copy warning; nil
+	// turns the warning off.
+	StaleScanner func() stalewb.Scanner
 }
 
 func (service Service) AfterUpdate(ctx context.Context, update selfupdate.AfterUpdate, output Output) error {
 	service.RestartDaemon(output, ctx, update)
-	return service.SyncSkills(output, ctx, update)
+	err := service.SyncSkills(output, ctx, update)
+	service.WarnStaleCopies(output, ctx, update)
+	return err
+}
+
+// WarnStaleCopies names every wb on PATH that is older than the version just
+// installed, and the fix for each, on stderr. It only reports: the old copies
+// belong to whichever install method put them there. A dry run installs
+// nothing, so it has nothing to compare against.
+func (service Service) WarnStaleCopies(output Output, ctx context.Context, update selfupdate.AfterUpdate) {
+	if update.Outcome.Action == selfupdate.ActionPlanned || service.StaleScanner == nil {
+		return
+	}
+	installed := update.Outcome.Target
+	if installed == "" {
+		installed = update.Outcome.Result.Latest
+	}
+	if installed == "" {
+		installed = update.Outcome.Result.Current
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	_, _ = io.WriteString(output.Err, stalewb.Warning(installed, service.StaleScanner().Stale(ctx, installed)))
 }
 func (service Service) RestartDaemon(output Output, parent context.Context, update selfupdate.AfterUpdate) {
 	if update.Outcome.Action == selfupdate.ActionAlreadyCurrent || update.Outcome.PostSwapWarning != nil {

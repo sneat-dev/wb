@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -113,6 +114,31 @@ func (pins *pinChanges) unpaired() string {
 	return ""
 }
 
+// addedKey returns the first key (in sorted order, so the reason is stable)
+// added more often than it was removed, and "" when every added key was paired
+// with a removal of the same key. Pairing is by key over everything recorded,
+// never by position, so a line that moves (a re-sort) is a replacement.
+func (pins *pinChanges) addedKey() string {
+	keys := make([]string, 0, len(pins.added))
+	for id, count := range pins.added {
+		if count > pins.removed[id] {
+			keys = append(keys, id)
+		}
+	}
+	if len(keys) == 0 {
+		return ""
+	}
+	sort.Strings(keys)
+	return keys[0]
+}
+
+// newDirectDependencyReason is the refusal for a direct dependency the change
+// introduces: a bump replaces the version of a dependency the repository
+// already chose, and choosing a new one is a decision a reviewer records.
+func newDirectDependencyReason(name, dependency string) string {
+	return name + " adds new direct dependency " + trimForMessage(dependency) + "; needs a recorded review"
+}
+
 // verify returns the refusal for an unpaired pin and starts the next hunk.
 func (pins *pinChanges) verify(name string) string {
 	id := pins.unpaired()
@@ -169,25 +195,145 @@ func sectionFromHunkHeader(line string) []string {
 	return []string{key}
 }
 
-// nonMechanicalGoModule refuses the `go.mod` directives that are decisions
-// rather than versions.
-//
-// `require` is a version bump. `replace` and `exclude` rewrite what the module
-// graph resolves to, and `go`/`toolchain` change the language and compiler the
-// whole module is built with — none of which a batch verification can stand in
-// for a reviewer on.
-func nonMechanicalGoModule(name, patch string) string {
-	for _, line := range changedPatchLines(patch) {
-		fields := strings.Fields(line)
-		if len(fields) == 0 {
+// goDirectives are the top-level `go.mod` directives. A line whose first word
+// is one of them is a single-line directive; any other indented line inside a
+// block is an entry of that block.
+var goDirectives = map[string]bool{
+	"module": true, "go": true, "toolchain": true, "godebug": true, "require": true,
+	"replace": true, "exclude": true, "retract": true, "tool": true, "ignore": true,
+}
+
+// goBlock is where a `go.mod` line sits: the directive of the enclosing
+// `directive (` block, "" at top level, and whether that is known at all. A
+// hunk in the middle of a long block shows no opener of its own, so the head
+// file places it (see goBlockAt); without that a changed entry cannot be
+// attributed to a directive and is refused.
+type goBlock struct {
+	directive string
+	known     bool
+}
+
+// goBlockAt returns the block enclosing the start of line `line` (1-based) of
+// content, walking the same opener and closer lines the hunk loop walks.
+func goBlockAt(content string, line int) goBlock {
+	block := goBlock{known: true}
+	for index, text := range strings.Split(content, "\n") {
+		if index+1 >= line {
+			break
+		}
+		fields := strings.Fields(text)
+		switch {
+		case len(fields) == 2 && fields[1] == "(":
+			block.directive = fields[0]
+		case len(fields) > 0 && fields[0] == ")":
+			block.directive = ""
+		}
+	}
+	return block
+}
+
+// goDirectiveReason says why a change to directive is not a version bump.
+func goDirectiveReason(name, directive, line string) string {
+	switch directive {
+	case "":
+		return name + " changes a line that cannot be placed in a go.mod directive or block, so it is not shown to be a require edit: " + trimForMessage(strings.TrimSpace(line))
+	case "replace", "exclude":
+		return name + " changes a " + directive + " directive, which rewrites what the module graph resolves to"
+	case "go", "toolchain":
+		return name + " changes the " + directive + " directive, which changes how the whole module is built"
+	case "module":
+		return name + " changes the module directive, which renames the module every consumer imports"
+	case "tool":
+		return name + " changes a tool directive, which names code that go tool and go generate execute"
+	case "godebug":
+		return name + " changes a godebug directive, which changes the module's runtime behaviour"
+	}
+	return name + " changes a " + directive + " directive, which is not a dependency version bump"
+}
+
+// nonMechanicalGoModule is deny-by-default: the only mechanical changes to
+// go.mod are `require` lines (single-line, or inside a `require (` block) and
+// the comments and blank lines around them. Within those, a version bump of an
+// existing module and a new `// indirect` requirement are mechanical, and a
+// new direct requirement is a decision. Every other directive, the opener or
+// closer of any other block and every entry of one (`tool`, `godebug`,
+// `exclude`, `replace`, `retract`, `ignore`, `module`, `go`, `toolchain`, an
+// unknown one) is refused by name. `replace` and `exclude` rewrite what the
+// module graph resolves to, `go`/`toolchain` change the compiler the whole
+// module is built with, and `tool` and `godebug` name code to run and runtime
+// behaviour: none of which a batch verification can stand in for a reviewer on.
+func nonMechanicalGoModule(name, patch, content string) string {
+	direct := newPinChanges()
+	var block goBlock
+	for _, raw := range strings.Split(patch, "\n") {
+		if strings.HasPrefix(raw, "+++") || strings.HasPrefix(raw, "---") || strings.HasPrefix(raw, `\`) {
 			continue
 		}
-		switch fields[0] {
-		case "replace", "exclude":
-			return name + " changes a " + fields[0] + " directive, which rewrites what the module graph resolves to"
-		case "go", "toolchain":
-			return name + " changes the " + fields[0] + " directive, which changes how the whole module is built"
+		if strings.HasPrefix(raw, "@@") {
+			block = goBlock{}
+			if start, ok := hunkNewStart(raw); ok && content != "" {
+				block = goBlockAt(content, start)
+			}
+			continue
 		}
+		changed := len(raw) > 0 && (raw[0] == '+' || raw[0] == '-')
+		body := raw
+		if len(raw) > 0 && (raw[0] == '+' || raw[0] == '-' || raw[0] == ' ') {
+			body = raw[1:]
+		}
+		fields := strings.Fields(body)
+		if len(fields) == 0 || strings.HasPrefix(fields[0], "//") {
+			continue
+		}
+		// A removed line is not in the file the hunk leaves behind, so it does
+		// not move the block the following lines are in.
+		newSide := len(raw) == 0 || raw[0] != '-'
+		directive := block.directive
+		switch {
+		case fields[0] == ")":
+			if changed && block.directive != "require" {
+				// An unknown block has no directive, so the reason says it cannot be placed.
+				return goDirectiveReason(name, block.directive, body)
+			}
+			if newSide {
+				block = goBlock{known: true}
+			}
+			continue
+		case len(fields) == 2 && fields[1] == "(":
+			if changed && fields[0] != "require" {
+				return goDirectiveReason(name, fields[0], body)
+			}
+			if newSide {
+				block = goBlock{directive: fields[0], known: true}
+			}
+			continue
+		case goDirectives[fields[0]] && (!block.known || block.directive == ""):
+			// A single-line directive can only stand at top level.
+			if newSide {
+				block = goBlock{known: true}
+			}
+			directive = fields[0]
+			fields = fields[1:]
+		case !block.known:
+			directive = ""
+		}
+		if !changed {
+			continue
+		}
+		if directive != "require" {
+			return goDirectiveReason(name, directive, body)
+		}
+		if len(fields) < 2 {
+			return name + " changes a require line that is not a module and a version"
+		}
+		if len(fields) >= 4 && fields[2] == "//" && fields[3] == "indirect" {
+			// A transitive requirement a bump brings in or drops.
+			continue
+		}
+		direct.record(raw[0], fields[0])
+	}
+	if dependency := direct.addedKey(); dependency != "" {
+		return newDirectDependencyReason(name, dependency)
 	}
 	return ""
 }
@@ -207,6 +353,9 @@ func nonMechanicalGoModule(name, patch string) string {
 func nonMechanicalWorkspace(name, patch, content string) string {
 	top, group := "", ""
 	pins := newPinChanges()
+	// catalogued pairs catalog entries over the whole file: a catalog entry is
+	// a direct dependency of every package that says `catalog:`.
+	catalogued := newPinChanges()
 	for _, line := range strings.Split(patch, "\n") {
 		if strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---") {
 			continue
@@ -259,9 +408,23 @@ func nonMechanicalWorkspace(name, patch, content string) string {
 			return name + " changes " + trimForMessage(trimmed) + " inside " + top +
 				", which is not the version of a pin"
 		}
+		if top == "catalog" || top == "catalogs" {
+			catalogued.record(line[0], top+"\x00"+group+"\x00"+key)
+			continue
+		}
 		pins.record(line[0], top+"\x00"+group+"\x00"+key)
 	}
-	return pins.verify(name)
+	if reason := pins.verify(name); reason != "" {
+		return reason
+	}
+	if id := catalogued.addedKey(); id != "" {
+		return newDirectDependencyReason(name, id[strings.LastIndex(id, "\x00")+1:])
+	}
+	if id := catalogued.unpaired(); id != "" {
+		return name + " removes the catalog entry " + trimForMessage(id[strings.LastIndex(id, "\x00")+1:]) +
+			" instead of changing the version of an existing one"
+	}
+	return ""
 }
 
 // workspaceTopAt returns the top-level YAML key enclosing the start of line
@@ -420,9 +583,12 @@ func ClassifyMechanicalPullRequest(files []ChangedFile, pr PullRequest) Mechanic
 // list was read, undone by a force-push before the merge, would otherwise get
 // the benign head classified while the original lands.
 func staleHeadRefusal(file ChangedFile, headSHA string) string {
-	if headSHA == "" || file.ContentsURL == "" {
+	if headSHA == "" {
 		return ""
 	}
+	// An empty `contents_url` is not "nothing to compare": GitHub always sends
+	// one, so its absence means the file list is not what the API returned and
+	// the commit it was read at cannot be proved.
 	parsed, err := url.Parse(file.ContentsURL)
 	if err != nil || parsed.Query().Get("ref") != headSHA {
 		return file.Filename + " was read at a different commit than the pull request head " + trimForMessage(headSHA)
@@ -476,7 +642,7 @@ func nonMechanicalContent(name, patch, content string) string {
 	case "package.json":
 		// Checked line by line below.
 	case "go.mod":
-		return nonMechanicalGoModule(name, patch)
+		return nonMechanicalGoModule(name, patch, content)
 	case "pnpm-workspace.yaml":
 		return nonMechanicalWorkspace(name, patch, content)
 	default:
@@ -491,6 +657,9 @@ func nonMechanicalContent(name, patch, content string) string {
 	// carry that section, which is why they are read rather than skipped.
 	section := make([]string, 0, 4)
 	pins := newPinChanges()
+	// direct pairs, over the whole file, the dependency keys the patch removes
+	// with the ones it adds (a re-sort moves a line between hunks).
+	direct := newPinChanges()
 	for _, line := range strings.Split(patch, "\n") {
 		if strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---") {
 			continue
@@ -576,8 +745,15 @@ func nonMechanicalContent(name, patch, content string) string {
 		if !looksLikeDependencyEntry(value) {
 			return name + " changes " + key + " to something that is not a version range: " + trimForMessage(value)
 		}
+		direct.record(line[0], enclosing+"\x00"+key)
 	}
-	return pins.verify(name)
+	if reason := pins.verify(name); reason != "" {
+		return reason
+	}
+	if dependency := direct.addedKey(); dependency != "" {
+		return newDirectDependencyReason(name, dependency[strings.Index(dependency, "\x00")+1:])
+	}
+	return ""
 }
 
 // hunkNewStart reads the first line number of the new side of a hunk header,
@@ -655,6 +831,12 @@ func looksLikeDependencyEntry(value string) bool {
 	}
 	if strings.ContainsAny(decoded, ":/@") && !strings.HasPrefix(decoded, "workspace:") && !strings.HasPrefix(decoded, "catalog:") {
 		return false
+	}
+	if rest, ok := strings.CutPrefix(decoded, "workspace:"); ok {
+		// `workspace:../../evil` and `workspace:@scope/other@1` are paths and
+		// aliases, not a version: only the three bare specifiers and a plain
+		// version or range point at a package of this workspace.
+		return rest == "*" || rest == "^" || rest == "~" || strictPinVersion(rest)
 	}
 	switch decoded[0] {
 	case '^', '~', '>', '<', '=', '*':

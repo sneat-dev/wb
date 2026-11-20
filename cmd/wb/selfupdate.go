@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/sneat-dev/wb/internal/stalewb"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/daemonruntime"
@@ -14,7 +15,7 @@ func newSelfUpdateCmd() *cobra.Command {
 	return cmdinstall.NewSelfUpdate(newCLIErrorRuntime(), wbupdate.Config(collectVersion().Version), maintenanceUpdateService().AfterUpdate)
 }
 func maintenanceUpdateService() wbupdate.Service {
-	return wbupdate.Service{RunChild: wbupdate.RunChild, HandoffTimeout: daemonHandoffTimeout(daemonruntime.DefaultLifecycleBounds)}
+	return wbupdate.Service{RunChild: wbupdate.RunChild, HandoffTimeout: daemonHandoffTimeout(daemonruntime.DefaultLifecycleBounds), StaleScanner: stalewb.New}
 }
 
 // The operation reads these actual lifecycle bounds when the verified handoff starts.

@@ -127,6 +127,11 @@ func (fixture *landFixture) installGH(t *testing.T, branch string, files []strin
 		// A manifest edit that only changes a version is what a mechanical
 		// bump looks like on the wire.
 		patch := "@@ -1,3 +1,3 @@\n \"dependencies\": {\n-    \"@acme/lib\": \"1.0.0\"\n+    \"@acme/lib\": \"2.0.0\"\n }"
+		if file == "go.mod" {
+			// The hunk carries its own `require (` opener: go.mod is judged
+			// deny-by-default and a bare entry has no directive to judge.
+			patch = "@@ -5,3 +5,3 @@\n require (\n-\tgithub.com/acme/lib v1.0.0\n+\tgithub.com/acme/lib v2.0.0\n )"
+		}
 		if !strings.HasSuffix(file, ".json") && !strings.HasSuffix(file, ".yaml") &&
 			file != "go.mod" && file != "go.sum" {
 			patch = "@@ -1,2 +1,3 @@\n package app\n+// changed\n"
@@ -210,7 +215,7 @@ case "$*" in
       rm -f "$S/pending-force-push"
       printf '%s' "$raced" >"$S/head"
     fi ;;
-  'api repos/acme/app/pulls/7/files?per_page=100 --include'|'api repos/acme/app/pulls/7/files?per_page=100') cat "$S/files" ;;
+  'api repos/acme/app/pulls/7/files?per_page=100 --include'|'api repos/acme/app/pulls/7/files?per_page=100') sed "s#{\"filename\"#{\"contents_url\":\"https://api.github.com/repos/acme/app/contents/f?ref=$head\",\"filename\"#g" "$S/files" ;;
   'api repos/acme/app/pulls/7/commits?per_page=100 --include'|'api repos/acme/app/pulls/7/commits?per_page=100') cat "$S/commits" ;;
   'api repos/acme/app/pulls?state=all&per_page=1&base='*|'api repos/acme/app/pulls?state=all&per_page=1&base='*' --include')
     # Pull requests onto the head branch; a test may name some.

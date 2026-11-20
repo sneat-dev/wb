@@ -14059,11 +14059,12 @@
             {
               "path": "wb version",
               "flags": [
+                "--check-stale",
                 "--format",
                 "--json"
               ],
               "modes": [
-                "Prints the WB version, build revision, dirty state, and Go toolchain provenance."
+                "Prints the WB version, build revision, dirty state, and Go toolchain provenance, and warns about older wb copies on PATH."
               ]
             }
           ],
@@ -14075,6 +14076,7 @@
             {
               "command": "wb version --help",
               "contains": [
+                "--check-stale",
                 "--format",
                 "--json",
                 "build revision"

@@ -3,6 +3,7 @@ package mechanicalchange
 import (
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -183,7 +184,7 @@ func workflowPairRefusal(name, before, after string, pr PullRequest) string {
 		if !usesNamedByTitle(newUses, pr.Title) {
 			return name + " moves " + newUses[1] + " to " + newUses[2] + ", which the pull request title does not name"
 		}
-		return ""
+		return usesDowngradeRefusal(name, oldUses, newUses)
 	}
 	oldVersion, newVersion := workflowVersionLine.FindStringSubmatch(before), workflowVersionLine.FindStringSubmatch(after)
 	if oldVersion == nil || newVersion == nil || oldVersion[1] != newVersion[1] || !versionKey(newVersion[1]) {
@@ -196,6 +197,62 @@ func workflowPairRefusal(name, before, after string, pr PullRequest) string {
 		return name + " sets " + newVersion[1] + " to " + newVersion[2] + ", which the pull request title does not name"
 	}
 	return ""
+}
+
+// usesVersion is the release a `uses:` line pins: the tag itself, or for a
+// full commit SHA the first word of its trailing `# vX` comment.
+func usesVersion(uses []string) string {
+	if isCommitSHA(uses[2]) {
+		if comment := strings.Fields(uses[3]); len(comment) > 0 {
+			return comment[0]
+		}
+		return ""
+	}
+	return uses[2]
+}
+
+func isCommitSHA(ref string) bool {
+	return len(ref) == 40 && strings.Trim(ref, "0123456789abcdefABCDEF") == ""
+}
+
+// usesDowngradeRefusal refuses a bump that goes to an older release, and one
+// whose old or new release cannot be read as numbers. Tags are never resolved
+// over the network, so an unreadable version is the absence of evidence that
+// the bump moves forward.
+func usesDowngradeRefusal(name string, oldUses, newUses []string) string {
+	before, beforeOK := numericVersion(usesVersion(oldUses))
+	after, afterOK := numericVersion(usesVersion(newUses))
+	if !beforeOK || !afterOK {
+		return name + " moves " + newUses[1] + " between refs whose versions cannot be compared, so it is not shown to be an upgrade"
+	}
+	for index := range before {
+		if after[index] != before[index] {
+			if after[index] < before[index] {
+				return name + " moves " + newUses[1] + " to an older version " + trimForMessage(usesVersion(newUses)) +
+					" than " + trimForMessage(usesVersion(oldUses)) + ", which is a downgrade"
+			}
+			break
+		}
+	}
+	return ""
+}
+
+// numericVersion reads `v1`, `1.2` or `v1.2.3.4` as four numbers. A
+// pre-release or build suffix, or anything else, is not comparable.
+func numericVersion(text string) ([4]int, bool) {
+	var parts [4]int
+	fields := strings.Split(strings.TrimPrefix(text, "v"), ".")
+	if len(fields) > len(parts) {
+		return parts, false
+	}
+	for index, field := range fields {
+		number, err := strconv.Atoi(field)
+		if err != nil || number < 0 || field != strconv.Itoa(number) {
+			return parts, false
+		}
+		parts[index] = number
+	}
+	return parts, true
 }
 
 // versionKey reports whether key names a version input or variable.
@@ -239,7 +296,7 @@ func titleNamesVersion(title, version string) bool {
 // fork network, and only a version the title names says which release it is.
 func usesNamedByTitle(uses []string, title string) bool {
 	ref := uses[2]
-	if len(ref) == 40 && strings.Trim(ref, "0123456789abcdefABCDEF") == "" {
+	if isCommitSHA(ref) {
 		comment := strings.Fields(strings.TrimSpace(uses[3]))
 		return len(comment) > 0 && titleNamesVersion(title, comment[0])
 	}

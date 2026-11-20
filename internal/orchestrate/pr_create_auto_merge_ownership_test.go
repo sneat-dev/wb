@@ -85,7 +85,7 @@ func TestCreateAutoMergeStageRefusalsReleaseTheObservedOwnedLane(t *testing.T) {
 						if stage == "changed files" {
 							return githubobserver.Response{}, sentinel
 						}
-						return githubobserver.Response{Body: []byte(`[{"filename":"go.sum","status":"modified","patch":"@@ -1 +1 @@\n-old h1:x=\n+new h1:y=\n"}]`)}, nil
+						return githubobserver.Response{Body: []byte(`[{"contents_url":"https://api.github.com/repos/acme/app/contents/go.sum?ref=` + head + `","filename":"go.sum","status":"modified","patch":"@@ -1 +1 @@\n-old h1:x=\n+new h1:y=\n"}]`)}, nil
 					case endpoint + "/commits?per_page=100":
 						assertHeld()
 						if stage == "commits" {

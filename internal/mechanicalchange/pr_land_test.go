@@ -102,7 +102,7 @@ func TestMechanicalIsDecidedFromContent(t *testing.T) {
 		}}, false},
 		{"a plain go.mod require bump", []ChangedFile{{
 			Filename: "go.mod",
-			Patch:    "@@ -8,1 +8,1 @@\n-\tgithub.com/acme/lib v1.2.0\n+\tgithub.com/acme/lib v1.3.0",
+			Patch:    "@@ -8,1 +8,1 @@\n require (\n-\tgithub.com/acme/lib v1.2.0\n+\tgithub.com/acme/lib v1.3.0",
 		}}, true},
 	} {
 		verdict := ClassifyMechanical(testCase.files)

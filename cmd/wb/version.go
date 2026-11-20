@@ -5,12 +5,15 @@ import (
 
 	"github.com/sneat-dev/wb/internal/buildinfo"
 	"github.com/sneat-dev/wb/internal/cli/cmdversion"
+	"github.com/sneat-dev/wb/internal/stalewb"
 	"github.com/spf13/cobra"
 )
 
 type versionInfo = buildinfo.Report
 
-func newVersionCmd() *cobra.Command { return cmdversion.New(buildinfo.Snapshot) }
+func newVersionCmd() *cobra.Command {
+	return cmdversion.NewWithStale(buildinfo.Snapshot, stalewb.Scan)
+}
 
 // Bare version requests bypass Cobra and all invocation side effects.
 func printBareVersion(out io.Writer) int {
