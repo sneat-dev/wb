@@ -1,11 +1,13 @@
+//go:build unix
+
 package hooks
 
 import (
-	"errors"
 	"flag"
 	"io"
 	"os"
 	"os/exec"
+	"syscall"
 )
 
 // actAsWBForHookTemplates lets this test binary stand in for $WB_EXECUTABLE
@@ -37,17 +39,16 @@ func actAsWBForHookTemplates(args []string) (int, bool) {
 			// always "offline", so a template test never downloads anything.
 			return 1, true
 		}
-		cmd := exec.Command(command[0], command[1:]...)
-		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-		err := cmd.Run()
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			return exitErr.ExitCode(), true
-		}
+		// Become the command, as `exec` in a shell does: its exit status is
+		// this stand-in's, which is all the hook reads from `wb run`. This
+		// process is already the test binary re-run as $WB_EXECUTABLE by a
+		// template test, so no further process is started.
+		path, err := exec.LookPath(command[0])
 		if err != nil {
 			return 127, true
 		}
-		return 0, true
+		_ = syscall.Exec(path, command, os.Environ())
+		return 126, true
 	}
 	return 0, false
 }

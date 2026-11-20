@@ -292,11 +292,8 @@ func prepareNodeProfileTest(t *testing.T, lockfile, scripts string, tools ...str
 	if lockfile != "" {
 		mustWrite(t, filepath.Join(repo, lockfile), "test\n")
 	}
-	// The pushed commits must change a JS/TS source for the lint-only node
-	// pre-push to run, and dependencies must be installed for its linter.
-	mustWrite(t, filepath.Join(repo, "index.js"), "export const answer = 42;\n")
-	git(t, repo, "add", "-A")
-	git(t, repo, "commit", "-m", "add a script")
+	// With no origin to diff the push against, the lint-only node pre-push
+	// lints every package; its linter needs installed dependencies.
 	mustMkdirAll(t, filepath.Join(repo, "node_modules"))
 	configDir := filepath.Join(repo, ".wb")
 	mustMkdirAll(t, configDir)

@@ -83,7 +83,7 @@ func TestE2EPrePushLintBlocksAnErrcheckFindingInANestedModule(t *testing.T) {
 	}
 	linter := filepath.Join(cacheRoot, "wb", "golangci-lint", strings.TrimSpace(string(goVersion)), hooks.DefaultGolangciLintVersion, "golangci-lint")
 	mustUpgradeMkdir(t, filepath.Dir(linter))
-	if err := os.WriteFile(linter, []byte(errcheckLikeLinter), 0o755); err != nil {
+	if err := testenv.WriteExecutableFile(linter, []byte(errcheckLikeLinter), 0o755); err != nil {
 		t.Fatal(err)
 	}
 

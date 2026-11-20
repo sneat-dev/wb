@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/filewrite"
+	"github.com/sneat-dev/wb/internal/repopath"
 	unix "github.com/sneat-dev/wb/internal/unixcompat"
 	"gopkg.in/yaml.v3"
 )
@@ -107,7 +109,6 @@ func golangciPinFromWorkflow(content []byte, source, projectsRoot string, captur
 var (
 	exactSemver  = regexp.MustCompile(`^v?([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)$`)
 	commitSHA    = regexp.MustCompile(`^[0-9a-fA-F]{7,40}$`)
-	safeRepoName = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*$`)
 	safeRef      = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_./-]*$`)
 	workflowFile = regexp.MustCompile(`^\.github/workflows/[A-Za-z0-9_][A-Za-z0-9_.-]*\.ya?ml$`)
 )
@@ -144,30 +145,25 @@ func golangciPinFromReusable(uses, projectsRoot string, capture func(string, []s
 		return golangciPin{}, false
 	}
 	owner, repo, file := parts[0], parts[1], parts[2]
-	// A repository may start with "." (an organisation's ".github" workflow
-	// repository); an owner may not. Neither may be "." or "..", contain
-	// "..", or start with "-".
-	if !safeRepoName.MatchString(owner) || strings.Contains(owner, "..") ||
-		!safeRepoName.MatchString(strings.TrimPrefix(repo, ".")) || strings.Contains(repo, "..") {
+	// WB's own clone-path segment rules: a repository may start with "." (an
+	// organisation's ".github" workflow repository), an owner may not, and
+	// neither may be "." or "..". ".." anywhere is refused as well.
+	if !repopath.SafeSegment(owner, false) || !repopath.SafeSegment(repo, true) ||
+		strings.Contains(owner, "..") || strings.Contains(repo, "..") {
 		return golangciPin{}, false
 	}
 	if !workflowFile.MatchString(file) || !safeRef.MatchString(ref) || strings.Contains(ref, "..") {
 		return golangciPin{}, false
 	}
-	for _, clone := range []string{
-		filepath.Join(projectsRoot, owner, repo),
-		filepath.Join(projectsRoot, "github.com", owner, repo),
-	} {
-		content, err := capture(clone, nil, "git", "show", "--end-of-options", ref+":"+file)
-		if err != nil {
-			continue
-		}
-		source := owner + "/" + repo + "/" + file + "@" + ref
-		if pin, ok := golangciPinFromWorkflow([]byte(content), source, projectsRoot, capture, false); ok {
-			return pin, true
-		}
+	address, err := repopath.Locate(projectsRoot, owner, repo)
+	if err != nil {
+		return golangciPin{}, false
 	}
-	return golangciPin{}, false
+	content, err := capture(address.Path(projectsRoot), nil, "git", "show", "--end-of-options", ref+":"+file)
+	if err != nil {
+		return golangciPin{}, false
+	}
+	return golangciPinFromWorkflow([]byte(content), owner+"/"+repo+"/"+file+"@"+ref, projectsRoot, capture, false)
 }
 
 func golangciPackage(version string) string {
@@ -266,7 +262,7 @@ func (r lintRunner) golangciBinary(pin golangciPin, moduleDir string, build bool
 		r.say("WB hook: building golangci-lint %s produced no %s; skipping golangci-lint, CI remains the lint gate.", pin.Version, name)
 		return "", false
 	}
-	if err := os.Rename(staging, dir); err != nil {
+	if err := filewrite.Rename(staging, dir, nil); err != nil {
 		r.say("WB hook: could not install the built golangci-lint into %s (%v); skipping golangci-lint, CI remains the lint gate.", dir, err)
 		return "", false
 	}

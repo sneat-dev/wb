@@ -15,15 +15,87 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sneat-dev/wb/internal/testenv"
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/runner/runnertest"
 )
+
+// fakeGit answers the git questions `wb hooks lint` asks, from a small
+// in-memory model, so these unit tests never start git. How git itself
+// computes those answers (merges, renames, force pushes) is pinned by the
+// e2e-tagged lint_git_e2e_test.go against a real repository.
+type fakeGit struct {
+	notRepo       bool
+	commits       map[string]bool     // cat-file -e <sha>^{commit}
+	defaultBranch string              // refs/remotes/origin/<branch>
+	mergeBases    map[string]string   // pushed tip -> merge base with the default branch
+	diffs         map[string][]string // "<base>..<tip>" -> changed paths
+	staged        []string            // git diff --cached
+	stagedErr     error
+	noHead        bool
+	shows         map[string]string // "<dir>|<ref>:<file>" -> content
+	calls         []string
+}
+
+func (g *fakeGit) answer(t *testing.T, repo, dir string, args []string) (string, error) {
+	g.calls = append(g.calls, strings.Join(args, " "))
+	missing := errors.New("fatal: not found")
+	switch args[0] {
+	case "rev-parse":
+		if args[1] == "--show-toplevel" {
+			if g.notRepo {
+				return "", errors.New("fatal: not a git repository")
+			}
+			return repo + "\n", nil
+		}
+		if g.noHead {
+			return "", missing
+		}
+		return strings.Repeat("f", 40) + "\n", nil
+	case "cat-file":
+		if g.commits[strings.TrimSuffix(args[2], "^{commit}")] {
+			return "", nil
+		}
+		return "", missing
+	case "symbolic-ref":
+		return "", missing
+	case "show-ref":
+		if g.defaultBranch != "" && args[3] == "refs/remotes/origin/"+g.defaultBranch {
+			return "", nil
+		}
+		return "", missing
+	case "merge-base":
+		if base, ok := g.mergeBases[args[1]]; ok {
+			return base + "\n", nil
+		}
+		return "", missing
+	case "diff":
+		if args[1] == "--cached" {
+			if g.stagedErr != nil {
+				return "", g.stagedErr
+			}
+			return strings.Join(g.staged, "\x00") + "\x00", nil
+		}
+		if files, ok := g.diffs[args[4]+".."+args[5]]; ok {
+			return strings.Join(files, "\x00") + "\x00", nil
+		}
+		return "", missing
+	case "show":
+		if content, ok := g.shows[dir+"|"+args[2]]; ok {
+			return content, nil
+		}
+		return "", missing
+	}
+	t.Errorf("unexpected git call: git %s", strings.Join(args, " "))
+	return "", missing
+}
 
 // lintHarness records every governed command `wb hooks lint` would run and
 // answers the plain helpers it captures, so a test pins exactly what runs,
-// from which directory, without building or running a real linter.
+// from which directory, without starting git or building a linter.
 type lintHarness struct {
 	t        *testing.T
 	repo     string
+	git      *fakeGit
 	mu       sync.Mutex
 	calls    []string
 	cache    string
@@ -40,8 +112,15 @@ type lintHarness struct {
 
 func newLintHarness(t *testing.T, repo string) *lintHarness {
 	t.Helper()
+	if resolved, err := filepath.EvalSymlinks(repo); err == nil {
+		repo = resolved
+	}
 	return &lintHarness{
 		t: t, repo: repo, cache: t.TempDir(),
+		git: &fakeGit{
+			commits: map[string]bool{}, defaultBranch: "main",
+			mergeBases: map[string]string{}, diffs: map[string][]string{}, shows: map[string]string{},
+		},
 		tier:    Classification{Tier: TierLint, Reason: "feature branch"},
 		missing: map[string]bool{},
 		goEnv:   func(string) (string, error) { return "go1.27.4\n", nil },
@@ -53,11 +132,15 @@ func (h *lintHarness) options(hook, language string) LintOptions {
 		RepoRoot: h.repo, Hook: hook, Language: language,
 		Stdin: strings.NewReader(""), Stdout: &h.stdout, Stderr: &h.stderr,
 		Tools: LintTools{
-			Capture: func(dir string, env []string, name string, args ...string) (string, error) {
-				if name == "go" {
+			Capture: func(dir string, _ []string, name string, args ...string) (string, error) {
+				switch name {
+				case "go":
 					return h.goEnv(dir)
+				case "git":
+					return h.git.answer(h.t, h.repo, dir, args)
 				}
-				return captureCommand(dir, env, name, args...)
+				h.t.Errorf("unexpected helper %s %q", name, args)
+				return "", errors.New("unexpected")
 			},
 			Governed: func(dir string, env []string, _ time.Duration, stdout, stderr io.Writer, args ...string) (int, error) {
 				rel, _ := filepath.Rel(h.repo, dir)
@@ -95,6 +178,25 @@ func (h *lintHarness) runWithStdin(hook, language, stdin string) int {
 	return Lint(options)
 }
 
+// files writes repository files (module markers, configs) the hook reads
+// from disk.
+func (h *lintHarness) files(files map[string]string) {
+	h.t.Helper()
+	for name, content := range files {
+		path := filepath.Join(h.repo, filepath.FromSlash(name))
+		mustMkdirAll(h.t, filepath.Dir(path))
+		mustWrite(h.t, path, content)
+	}
+}
+
+// push models a new branch tip whose merge base with the default branch is
+// base, changing files, and returns the pre-push line Git would send.
+func (h *lintHarness) push(tip, base string, files ...string) string {
+	h.git.mergeBases[tip] = base
+	h.git.diffs[base+".."+tip] = files
+	return pushLine("feature", tip)
+}
+
 // plantLinter puts an already-built pinned linter where golangciBinary looks.
 func (h *lintHarness) plantLinter(goVersion, version string) string {
 	h.t.Helper()
@@ -104,37 +206,15 @@ func (h *lintHarness) plantLinter(goVersion, version string) string {
 	return path
 }
 
-// lintRepo is a repository with a pushed main on a local bare origin, so
-// "commits not on any remote" is exactly the commits a test adds after it.
-func lintRepo(t *testing.T) string {
-	t.Helper()
-	repo := initRepo(t)
-	bare := filepath.Join(t.TempDir(), "origin.git")
-	testenv.InitBareRemoteForTest(t, bare)
-	git(t, repo, "remote", "add", "origin", bare)
-	git(t, repo, "push", "-q", "origin", "main")
-	return repo
-}
-
-func commitFiles(t *testing.T, repo string, files map[string]string) string {
-	t.Helper()
-	for name, content := range files {
-		path := filepath.Join(repo, filepath.FromSlash(name))
-		mustMkdirAll(t, filepath.Dir(path))
-		mustWrite(t, path, content)
-	}
-	git(t, repo, "add", "-A")
-	git(t, repo, "commit", "-q", "-m", "change")
-	return git(t, repo, "rev-parse", "HEAD")
-}
-
 func pushLine(branch, sha string) string {
 	return "refs/heads/" + branch + " " + sha + " refs/heads/" + branch + " " + zeroOID40 + "\n"
 }
 
+func sha(c byte) string { return strings.Repeat(string(c), 40) }
+
 func TestLintRejectsAnUnsupportedHookAndLanguage(t *testing.T) {
 	t.Parallel()
-	h := newLintHarness(t, initRepo(t))
+	h := newLintHarness(t, t.TempDir())
 	if code := h.run("pre-commit", "node"); code != 2 {
 		t.Fatalf("exit %d", code)
 	}
@@ -146,8 +226,326 @@ func TestLintRejectsAnUnsupportedHookAndLanguage(t *testing.T) {
 func TestLintRefusesToRunOutsideAGitCheckout(t *testing.T) {
 	t.Parallel()
 	h := newLintHarness(t, t.TempDir())
+	h.git.notRepo = true
 	if code := h.run("pre-push", "go"); code != 2 || !strings.Contains(h.stderr.String(), "inside a Git checkout") {
 		t.Fatalf("exit %d, stderr %q", code, h.stderr.String())
+	}
+}
+
+func TestCaptureWithRunsHelpersThroughTheCommandRunner(t *testing.T) {
+	t.Parallel()
+	fake := runnertest.New(t).
+		ExpectArgv([]string{"git", "rev-parse", "--show-toplevel"}, runner.Result{Stdout: "/repo\n"}, nil).
+		ExpectArgv([]string{"go", "env", "GOVERSION"}, runner.Result{Stderr: "go: no toolchain\n", ExitCode: 1}, errors.New("exit status 1"))
+	out, err := captureWith(fake, "/repo", []string{"GOPROXY=off"}, "git", "rev-parse", "--show-toplevel")
+	if err != nil || out != "/repo\n" {
+		t.Fatalf("out %q err %v", out, err)
+	}
+	calls := fake.Calls()
+	if calls[0].Op != "RunOpts" || calls[0].Dir != "/repo" || calls[0].Opts.Env[len(calls[0].Opts.Env)-1] != "GOPROXY=off" {
+		t.Fatalf("call %#v", calls[0])
+	}
+	if _, err := captureWith(fake, "/repo", nil, "go", "env", "GOVERSION"); err == nil || !strings.Contains(err.Error(), "go: no toolchain") {
+		t.Fatalf("err %v", err)
+	}
+	// The production seam is the real runner; a helper that does not exist
+	// fails without starting anything.
+	if _, err := withLintDefaults(LintOptions{}).Tools.Capture(t.TempDir(), nil, "wb-lint-test-no-such-helper"); err == nil {
+		t.Fatal("a missing helper ran")
+	}
+}
+
+func TestGoPrePushVetsAndLintsEveryModuleThePushTouches(t *testing.T) {
+	t.Parallel()
+	h := newLintHarness(t, t.TempDir())
+	h.files(map[string]string{
+		"backend/go.mod": "module b\n", "emulatortest/go.mod": "module e\n", "backend/testdata/x/go.mod": "module f\n",
+	})
+	stdin := h.push(sha('a'), sha('0'), "backend/facade/a.go", "emulatortest/e2e/b.go", "docs/readme.md", "backend/testdata/x/x.go")
+	linter := h.plantLinter("go1.27.4", DefaultGolangciLintVersion)
+	if code := h.runWithStdin("pre-push", "go", stdin); code != 0 {
+		t.Fatalf("exit %d: %s", code, h.stderr.String())
+	}
+	want := []string{
+		"backend|go vet ./...", "backend|" + linter + " run ./...",
+		"emulatortest|go vet ./...", "emulatortest|" + linter + " run ./...",
+	}
+	if !reflect.DeepEqual(h.calls, want) {
+		t.Fatalf("calls\n got %q\nwant %q", h.calls, want)
+	}
+	if !strings.Contains(h.stdout.String(), "WB hook: tier 1 — feature branch") {
+		t.Fatalf("stdout %q", h.stdout.String())
+	}
+	if !containsExact(h.git.calls, "diff --name-only -z --no-renames "+sha('0')+" "+sha('a')+" --") {
+		t.Fatalf("git calls %q", h.git.calls)
+	}
+}
+
+func TestGoPrePushBlocksOnAnErrcheckFindingInANestedModule(t *testing.T) {
+	t.Parallel()
+	h := newLintHarness(t, t.TempDir())
+	h.files(map[string]string{"backend/go.mod": "module b\n"})
+	stdin := h.push(sha('a'), sha('0'), "backend/a_test.go")
+	h.plantLinter("go1.27.4", DefaultGolangciLintVersion)
+	h.exit = func(args []string) (int, error) {
+		if strings.HasSuffix(args[0], "golangci-lint") {
+			return 1, nil
+		}
+		return 0, nil
+	}
+	h.output = func([]string) string {
+		return "a_test.go:3:2: Error return value of `f.enqueue` is not checked (errcheck)\n"
+	}
+	if code := h.runWithStdin("pre-push", "go", stdin); code != 1 {
+		t.Fatalf("exit %d", code)
+	}
+	if !strings.Contains(h.stderr.String(), "golangci-lint v2.15.0 failed in module backend (exit 1)") {
+		t.Fatalf("stderr %q", h.stderr.String())
+	}
+}
+
+func TestGoPrePushReportsAVetFailureAndKeepsLinting(t *testing.T) {
+	t.Parallel()
+	h := newLintHarness(t, t.TempDir())
+	h.files(map[string]string{"go.mod": "module r\n"})
+	stdin := h.push(sha('a'), sha('0'), "a.go")
+	h.exit = func([]string) (int, error) { return 1, nil } // vet fails; building the linter fails: offline
+	if code := h.runWithStdin("pre-push", "go", stdin); code != 1 {
+		t.Fatalf("exit %d", code)
+	}
+	for _, want := range []string{"go vet failed in the root module", "could not build golangci-lint"} {
+		if !strings.Contains(h.stderr.String(), want) {
+			t.Fatalf("stderr lacks %q: %s", want, h.stderr.String())
+		}
+	}
+}
+
+func TestGoPrePushLeavesAVetThatRanPastItsDeadlineToCI(t *testing.T) {
+	t.Parallel()
+	h := newLintHarness(t, t.TempDir())
+	h.files(map[string]string{"go.mod": "module r\n"})
+	stdin := h.push(sha('a'), sha('0'), "a.go")
+	h.plantLinter("go1.27.4", DefaultGolangciLintVersion)
+	h.exit = func(args []string) (int, error) {
+		if args[0] == "go" {
+			return 0, fmt.Errorf("go %w (10m0s)", errCheckTimedOut)
+		}
+		return 0, nil
+	}
+	if code := h.runWithStdin("pre-push", "go", stdin); code != 0 || !strings.Contains(h.stderr.String(), "go vet did not finish in the root module") {
+		t.Fatalf("exit %d stderr %q", code, h.stderr.String())
+	}
+}
+
+func TestGoPrePushSkipsWhenNothingNeedsChecking(t *testing.T) {
+	t.Parallel()
+	t.Run("tier 0", func(t *testing.T) {
+		t.Parallel()
+		h := newLintHarness(t, t.TempDir())
+		h.tier = Classification{Tier: TierSkip, Reason: "deletion"}
+		if code := h.run("pre-push", "go"); code != 0 || len(h.calls) != 0 {
+			t.Fatalf("exit %d calls %q", code, h.calls)
+		}
+	})
+	t.Run("no Go module changed", func(t *testing.T) {
+		t.Parallel()
+		h := newLintHarness(t, t.TempDir())
+		h.files(map[string]string{"go.mod": "module r\n"})
+		h.git.commits[sha('b')] = true
+		h.git.diffs[sha('b')+".."+sha('c')] = []string{"README.md"}
+		h.classErr = errors.New("bad input")
+		code := h.runWithStdin("pre-push", "go", "refs/heads/main "+sha('c')+" refs/heads/main "+sha('b')+"\n")
+		if code != 0 || len(h.calls) != 0 || !strings.Contains(h.stderr.String(), "changes no Go module") {
+			t.Fatalf("exit %d calls %q stderr %q", code, h.calls, h.stderr.String())
+		}
+		if !strings.Contains(h.stdout.String(), "classification failed (bad input)") {
+			t.Fatalf("stdout %q", h.stdout.String())
+		}
+	})
+	t.Run("go is not installed", func(t *testing.T) {
+		t.Parallel()
+		h := newLintHarness(t, t.TempDir())
+		h.files(map[string]string{"go.mod": "module r\n"})
+		h.terminal = true
+		h.git.mergeBases["HEAD"] = sha('0')
+		h.git.diffs[sha('0')+"..HEAD"] = []string{"go.mod"}
+		h.missing["go"] = true
+		if code := h.run("pre-push", "go"); code != 0 || len(h.calls) != 0 || !strings.Contains(h.stderr.String(), "go is not on PATH") {
+			t.Fatalf("exit %d calls %q", code, h.calls)
+		}
+	})
+}
+
+func TestPushedFilesDiffsEachPushedTipAgainstItsBase(t *testing.T) {
+	t.Parallel()
+	h := newLintHarness(t, t.TempDir())
+	h.git.commits[sha('1')] = true
+	h.git.diffs[sha('1')+".."+sha('2')] = []string{"two.go", "three.go"}
+	h.git.mergeBases[sha('2')] = sha('0')
+	h.git.diffs[sha('0')+".."+sha('2')] = []string{"one.go", " spaced.go", "two.go"}
+	runner := lintRunner{options: withLintDefaults(h.options("pre-push", "go"))}
+	files, all := runner.pushedFiles([]RefUpdate{
+		{LocalSHA: sha('2'), RemoteSHA: sha('1')},  // the remote tip is known: diff from it
+		{LocalSHA: sha('2'), RemoteSHA: sha('d')},  // unknown remote tip: merge base
+		{LocalSHA: sha('2'), RemoteSHA: zeroOID40}, // new branch: merge base
+	})
+	if all || !reflect.DeepEqual(files, []string{" spaced.go", "one.go", "three.go", "two.go"}) {
+		t.Fatalf("files %q all %v", files, all)
+	}
+}
+
+func TestPushedFilesFallsBackToEverythingWithoutABase(t *testing.T) {
+	t.Parallel()
+	for name, configure := range map[string]func(*fakeGit){
+		"no default branch":       func(g *fakeGit) { g.defaultBranch = "" },
+		"no merge base":           func(*fakeGit) {},
+		"the diff cannot be read": func(g *fakeGit) { g.commits[sha('1')] = true },
+	} {
+		h := newLintHarness(t, t.TempDir())
+		configure(h.git)
+		runner := lintRunner{options: withLintDefaults(h.options("pre-push", "go"))}
+		if files, all := runner.pushedFiles([]RefUpdate{{LocalSHA: sha('2'), RemoteSHA: sha('1')}}); !all || files != nil {
+			t.Errorf("%s: files %q all %v", name, files, all)
+		}
+	}
+	h := newLintHarness(t, t.TempDir())
+	h.files(map[string]string{"a/go.mod": "module a\n", "b/go.mod": "module b\n", ".hidden/go.mod": "module h\n"})
+	if got := goModulesFor(h.repo, nil, true); !reflect.DeepEqual(got, []string{"a", "b"}) {
+		t.Fatalf("modules %q", got)
+	}
+}
+
+func TestPushBaseUsesTheRemoteTipOrTheDefaultBranchMergeBase(t *testing.T) {
+	t.Parallel()
+	h := newLintHarness(t, t.TempDir())
+	h.git.commits[sha('1')] = true
+	h.git.mergeBases[sha('2')] = sha('0')
+	runner := lintRunner{options: withLintDefaults(h.options("pre-push", "node"))}
+	runner.options.RepoRoot = h.repo
+	if base, ok := runner.pushBase(RefUpdate{LocalSHA: sha('2'), RemoteSHA: sha('1')}); !ok || base != sha('1') {
+		t.Fatalf("base %q ok %v", base, ok)
+	}
+	if base, ok := runner.pushBase(RefUpdate{LocalSHA: sha('2'), RemoteSHA: sha('f')}); !ok || base != sha('0') {
+		t.Fatalf("merge base %q ok %v", base, ok)
+	}
+	if _, ok := runner.pushBase(RefUpdate{LocalSHA: sha('e'), RemoteSHA: zeroOID40}); ok {
+		t.Fatal("an unknown tip has a merge base")
+	}
+	h.git.defaultBranch = ""
+	if _, ok := runner.pushBase(RefUpdate{LocalSHA: sha('2'), RemoteSHA: zeroOID40}); ok {
+		t.Fatal("a repository without a default branch has a base")
+	}
+}
+
+func TestGoPreCommitLintsOnlyChangedLinesOfTheStagedPackages(t *testing.T) {
+	t.Parallel()
+	h := newLintHarness(t, t.TempDir())
+	h.files(map[string]string{
+		"go.mod": "module r\n", "a.go": "", "svc/b.go": "", "svc/c.go": "",
+		"backend/go.mod": "module b\n", "backend/x.go": "", "backend/api/y.go": "",
+		"tools/testdata/go.mod": "module f\n", "tools/testdata/f.go": "",
+	})
+	h.git.staged = []string{"a.go", "svc/b.go", "svc/c.go", "backend/x.go", "backend/api/y.go", "tools/testdata/f.go", "gone/z.go"}
+	linter := h.plantLinter("go1.27.4", DefaultGolangciLintVersion)
+	if code := h.run("pre-commit", "go"); code != 0 {
+		t.Fatalf("exit %d: %s", code, h.stderr.String())
+	}
+	want := []string{
+		".|" + linter + " run --new-from-rev=HEAD . ./svc",
+		"backend|" + linter + " run --new-from-rev=HEAD . ./api",
+	}
+	if !reflect.DeepEqual(h.calls, want) {
+		t.Fatalf("calls\n got %q\nwant %q", h.calls, want)
+	}
+
+	h.exit = func([]string) (int, error) { return 1, nil }
+	h.output = func([]string) string { return "svc/b.go:1:1: unused variable (unused)\n" }
+	if code := h.run("pre-commit", "go"); code != 1 {
+		t.Fatalf("findings exit %d", code)
+	}
+}
+
+func TestGoPreCommitLintsWholePackagesBeforeTheFirstCommit(t *testing.T) {
+	t.Parallel()
+	h := newLintHarness(t, t.TempDir())
+	h.files(map[string]string{"go.mod": "module r\n", "a.go": ""})
+	h.git.staged = []string{"a.go"}
+	h.git.noHead = true
+	linter := h.plantLinter("go1.27.4", DefaultGolangciLintVersion)
+	if code := h.run("pre-commit", "go"); code != 0 || !reflect.DeepEqual(h.calls, []string{".|" + linter + " run ."}) {
+		t.Fatalf("exit %d calls %q", code, h.calls)
+	}
+}
+
+func TestGoPreCommitSkipsWithoutStagedGoOrAnUnbuiltLinter(t *testing.T) {
+	t.Parallel()
+	h := newLintHarness(t, t.TempDir())
+	if code := h.run("pre-commit", "go"); code != 0 || len(h.calls) != 0 {
+		t.Fatalf("nothing staged: exit %d calls %q", code, h.calls)
+	}
+	h.files(map[string]string{"go.mod": "module r\n", "a.go": ""})
+	h.git.staged = []string{"a.go"}
+	if code := h.run("pre-commit", "go"); code != 0 || len(h.calls) != 0 || !strings.Contains(h.stderr.String(), "the next pre-push builds it") {
+		t.Fatalf("unbuilt linter: exit %d calls %q stderr %q", code, h.calls, h.stderr.String())
+	}
+	h.git.stagedErr = errors.New("git broke")
+	if code := h.run("pre-commit", "go"); code != 0 || !strings.Contains(h.stderr.String(), "could not list the staged Go files") {
+		t.Fatalf("git failure: exit %d stderr %q", code, h.stderr.String())
+	}
+}
+
+func TestGoPreCommitNeverLintsTestdataOrVendoredPackages(t *testing.T) {
+	t.Parallel()
+	h := newLintHarness(t, t.TempDir())
+	h.files(map[string]string{"go.mod": "module r\n", "pkg/testdata/f.go": "", "vendor/v/v.go": ""})
+	h.git.staged = []string{"pkg/testdata/f.go", "vendor/v/v.go"}
+	h.plantLinter("go1.27.4", DefaultGolangciLintVersion)
+	if code := h.run("pre-commit", "go"); code != 0 || len(h.calls) != 0 {
+		t.Fatalf("exit %d calls %q", code, h.calls)
+	}
+}
+
+func TestResolveGolangciPinFollowsAReusableWorkflowIntoItsLocalClone(t *testing.T) {
+	t.Parallel()
+	projects := t.TempDir()
+	clone := filepath.Join(projects, "github.com", "strongo", "cicd")
+	mustMkdirAll(t, filepath.Join(clone, ".git"))
+	h := newLintHarness(t, t.TempDir())
+	capture := h.options("pre-push", "go").Tools.Capture
+	ref := strings.Repeat("7", 40)
+	h.git.shows[clone+"|"+ref+":.github/workflows/workflow.yml"] = `jobs:
+  nested:
+    uses: other/repo/.github/workflows/x.yml@v1
+  golangci:
+    steps:
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.15.0
+`
+	empty := strings.Repeat("8", 40)
+	h.git.shows[clone+"|"+empty+":.github/workflows/workflow.yml"] = "jobs:\n  x:\n    steps: []\n"
+	h.files(map[string]string{".github/workflows/ci.yml": `jobs:
+  local:
+    uses: ./.github/workflows/local.yml
+  missing:
+    uses: absent/repo/.github/workflows/workflow.yml@v1
+  backend:
+    uses: strongo/cicd/.github/workflows/workflow.yml@` + ref + "\n"})
+	pin := resolveGolangciPin(h.repo, projects, capture)
+	if pin.Version != "v2.15.0" || pin.Source != "strongo/cicd/.github/workflows/workflow.yml@"+ref {
+		t.Fatalf("reusable pin: %#v", pin)
+	}
+	if pin := resolveGolangciPin(h.repo, "", capture); pin.Version != DefaultGolangciLintVersion {
+		t.Fatalf("no projects root: %#v", pin)
+	}
+	h.files(map[string]string{".github/workflows/ci.yml": "jobs:\n  b:\n    uses: strongo/cicd/.github/workflows/workflow.yml@" + empty + "\n"})
+	if pin := resolveGolangciPin(h.repo, projects, capture); pin.Version != DefaultGolangciLintVersion {
+		t.Fatalf("reusable without a pin: %#v", pin)
+	}
+	// The same owner/repository cloned under two hosts is ambiguous.
+	mustMkdirAll(t, filepath.Join(projects, "gitlab.com", "strongo", "cicd", ".git"))
+	if _, ok := golangciPinFromReusable("strongo/cicd/.github/workflows/workflow.yml@"+ref, projects, capture); ok {
+		t.Fatal("an ambiguous clone resolved")
 	}
 }
 
@@ -211,167 +609,9 @@ func TestGovernedCommandOnlyCallsItATimeoutWhenTheDeadlinePassed(t *testing.T) {
 	}
 }
 
-func TestCaptureCommandReturnsStdoutAndExplainsFailure(t *testing.T) {
-	t.Parallel()
-	out, err := captureCommand(t.TempDir(), []string{"WB_LINT_PROBE=1"}, "/bin/sh", "-c", "printf '%s' \"$WB_LINT_PROBE\"")
-	if err != nil || out != "1" {
-		t.Fatalf("out %q err %v", out, err)
-	}
-	if _, err := captureCommand(t.TempDir(), nil, "/bin/sh", "-c", "echo boom >&2; exit 4"); err == nil || !strings.Contains(err.Error(), "boom") {
-		t.Fatalf("err %v", err)
-	}
-}
-
-func TestGoPrePushVetsAndLintsEveryModuleThePushTouches(t *testing.T) {
-	t.Parallel()
-	repo := lintRepo(t)
-	head := commitFiles(t, repo, map[string]string{
-		"backend/go.mod":            "module example.invalid/backend\n",
-		"backend/facade/a.go":       "package facade\n",
-		"emulatortest/go.mod":       "module example.invalid/emulatortest\n",
-		"emulatortest/e2e/b.go":     "package e2e\n",
-		"docs/readme.md":            "not go\n",
-		"backend/testdata/x/go.mod": "module fixture\n",
-		"backend/testdata/x/x.go":   "package x\n",
-	})
-	h := newLintHarness(t, repo)
-	linter := h.plantLinter("go1.27.4", DefaultGolangciLintVersion)
-	if code := h.runWithStdin("pre-push", "go", pushLine("feature", head)); code != 0 {
-		t.Fatalf("exit %d: %s", code, h.stderr.String())
-	}
-	want := []string{
-		"backend|go vet ./...", "backend|" + linter + " run ./...",
-		"emulatortest|go vet ./...", "emulatortest|" + linter + " run ./...",
-	}
-	if !reflect.DeepEqual(h.calls, want) {
-		t.Fatalf("calls\n got %q\nwant %q", h.calls, want)
-	}
-	if !strings.Contains(h.stdout.String(), "WB hook: tier 1 — feature branch") {
-		t.Fatalf("stdout %q", h.stdout.String())
-	}
-}
-
-func TestGoPrePushBlocksOnAnErrcheckFindingInANestedModule(t *testing.T) {
-	t.Parallel()
-	repo := lintRepo(t)
-	head := commitFiles(t, repo, map[string]string{"backend/go.mod": "module b\n", "backend/a_test.go": "package b\n"})
-	h := newLintHarness(t, repo)
-	h.plantLinter("go1.27.4", DefaultGolangciLintVersion)
-	h.exit = func(args []string) (int, error) {
-		if strings.HasSuffix(args[0], "golangci-lint") {
-			return 1, nil
-		}
-		return 0, nil
-	}
-	h.output = func(args []string) string {
-		return "a_test.go:3:2: Error return value of `f.enqueue` is not checked (errcheck)\n"
-	}
-	if code := h.runWithStdin("pre-push", "go", pushLine("feature", head)); code != 1 {
-		t.Fatalf("exit %d", code)
-	}
-	if !strings.Contains(h.stderr.String(), "golangci-lint v2.15.0 failed in module backend (exit 1)") {
-		t.Fatalf("stderr %q", h.stderr.String())
-	}
-}
-
-func TestGoPrePushReportsAVetFailureAndKeepsLinting(t *testing.T) {
-	t.Parallel()
-	repo := lintRepo(t)
-	head := commitFiles(t, repo, map[string]string{"go.mod": "module r\n", "a.go": "package r\n"})
-	h := newLintHarness(t, repo)
-	h.exit = func(args []string) (int, error) {
-		if args[0] == "go" && args[1] == "vet" {
-			return 1, nil
-		}
-		return 1, nil // building the linter fails: offline
-	}
-	if code := h.runWithStdin("pre-push", "go", pushLine("feature", head)); code != 1 {
-		t.Fatalf("exit %d", code)
-	}
-	for _, want := range []string{"go vet failed in the root module", "could not build golangci-lint"} {
-		if !strings.Contains(h.stderr.String(), want) {
-			t.Fatalf("stderr lacks %q: %s", want, h.stderr.String())
-		}
-	}
-}
-
-func TestGoPrePushSkipsWhenNothingNeedsChecking(t *testing.T) {
-	t.Parallel()
-	t.Run("tier 0", func(t *testing.T) {
-		t.Parallel()
-		h := newLintHarness(t, lintRepo(t))
-		h.tier = Classification{Tier: TierSkip, Reason: "deletion"}
-		if code := h.run("pre-push", "go"); code != 0 || len(h.calls) != 0 {
-			t.Fatalf("exit %d calls %q", code, h.calls)
-		}
-	})
-	t.Run("no Go module changed", func(t *testing.T) {
-		t.Parallel()
-		repo := lintRepo(t)
-		head := commitFiles(t, repo, map[string]string{"go.mod": "module r\n", "README.md": "changed\n"})
-		git(t, repo, "push", "-q", "origin", "main")
-		next := commitFiles(t, repo, map[string]string{"README.md": "again\n"})
-		h := newLintHarness(t, repo)
-		h.classErr = errors.New("bad input")
-		code := h.runWithStdin("pre-push", "go", "refs/heads/main "+next+" refs/heads/main "+head+"\n")
-		if code != 0 || len(h.calls) != 0 || !strings.Contains(h.stderr.String(), "changes no Go module") {
-			t.Fatalf("exit %d calls %q stderr %q", code, h.calls, h.stderr.String())
-		}
-		if !strings.Contains(h.stdout.String(), "classification failed (bad input)") {
-			t.Fatalf("stdout %q", h.stdout.String())
-		}
-	})
-	t.Run("go is not installed", func(t *testing.T) {
-		t.Parallel()
-		repo := lintRepo(t)
-		commitFiles(t, repo, map[string]string{"go.mod": "module r\n"})
-		h := newLintHarness(t, repo)
-		h.terminal = true
-		h.missing["go"] = true
-		if code := h.run("pre-push", "go"); code != 0 || len(h.calls) != 0 || !strings.Contains(h.stderr.String(), "go is not on PATH") {
-			t.Fatalf("exit %d calls %q", code, h.calls)
-		}
-	})
-}
-
-func TestPushedFilesFallsBackToEverythingWhenHistoryIsUnreadable(t *testing.T) {
-	t.Parallel()
-	repo := lintRepo(t)
-	commitFiles(t, repo, map[string]string{"a/go.mod": "module a\n", "b/go.mod": "module b\n", ".hidden/go.mod": "module h\n"})
-	h := newLintHarness(t, repo)
-	runner := lintRunner{options: withLintDefaults(h.options("pre-push", "go"))}
-	files, all := runner.pushedFiles([]RefUpdate{{LocalSHA: strings.Repeat("e", 40), RemoteSHA: zeroOID40}})
-	if !all || files != nil {
-		t.Fatalf("files %q all %v", files, all)
-	}
-	if got := goModulesFor(repo, nil, true); !reflect.DeepEqual(got, []string{"a", "b"}) {
-		t.Fatalf("modules %q", got)
-	}
-}
-
-func TestPushedFilesExcludesWhatTheRemoteAlreadyHas(t *testing.T) {
-	t.Parallel()
-	repo := lintRepo(t)
-	first := commitFiles(t, repo, map[string]string{"one.go": "package one\n"})
-	second := commitFiles(t, repo, map[string]string{"two.go": "package two\n", "three.go": "package three\n"})
-	h := newLintHarness(t, repo)
-	runner := lintRunner{options: withLintDefaults(h.options("pre-push", "go"))}
-	files, all := runner.pushedFiles([]RefUpdate{
-		{LocalSHA: second, RemoteSHA: first},
-		{LocalSHA: second, RemoteSHA: strings.Repeat("d", 40)},
-	})
-	if all || !reflect.DeepEqual(files, []string{"one.go", "three.go", "two.go"}) {
-		t.Fatalf("files %q all %v", files, all)
-	}
-	files, _ = runner.pushedFiles([]RefUpdate{{LocalSHA: second, RemoteSHA: first}})
-	if !reflect.DeepEqual(files, []string{"three.go", "two.go"}) {
-		t.Fatalf("files %q", files)
-	}
-}
-
 func TestPushScopeDropsRefsThatCarryNoCheck(t *testing.T) {
 	t.Parallel()
-	h := newLintHarness(t, initRepo(t))
+	h := newLintHarness(t, t.TempDir())
 	runner := lintRunner{options: withLintDefaults(h.options("pre-push", "go"))}
 	runner.options.Stdin = strings.NewReader(
 		"(delete) " + zeroOID40 + " refs/heads/old " + strings.Repeat("a", 40) + "\n" +
@@ -381,29 +621,6 @@ func TestPushScopeDropsRefsThatCarryNoCheck(t *testing.T) {
 	updates, skip := runner.pushScope()
 	if skip || len(updates) != 1 || updates[0].LocalSHA != strings.Repeat("d", 40) {
 		t.Fatalf("updates %#v skip %v", updates, skip)
-	}
-}
-
-func TestPushBaseUsesTheRemoteTipOrTheDefaultBranchMergeBase(t *testing.T) {
-	t.Parallel()
-	repo := lintRepo(t)
-	mainTip := git(t, repo, "rev-parse", "HEAD")
-	head := commitFiles(t, repo, map[string]string{"a.ts": "x\n"})
-	h := newLintHarness(t, repo)
-	runner := lintRunner{options: withLintDefaults(h.options("pre-push", "node"))}
-	runner.options.RepoRoot = repo
-	if base, ok := runner.pushBase(RefUpdate{LocalSHA: head, RemoteSHA: mainTip}); !ok || base != mainTip {
-		t.Fatalf("base %q ok %v", base, ok)
-	}
-	if base, ok := runner.pushBase(RefUpdate{LocalSHA: head, RemoteSHA: strings.Repeat("f", 40)}); !ok || base != mainTip {
-		t.Fatalf("merge base %q ok %v", base, ok)
-	}
-	if _, ok := runner.pushBase(RefUpdate{LocalSHA: strings.Repeat("e", 40), RemoteSHA: zeroOID40}); ok {
-		t.Fatal("an unknown tip has a merge base")
-	}
-	runner.options.RepoRoot = initRepo(t)
-	if _, ok := runner.pushBase(RefUpdate{LocalSHA: "HEAD", RemoteSHA: zeroOID40}); ok {
-		t.Fatal("a repository without a default branch has a base")
 	}
 }
 
@@ -516,81 +733,6 @@ func TestRunGolangciTellsFindingsFromABrokenTool(t *testing.T) {
 	}
 }
 
-func TestGoPreCommitLintsOnlyChangedLinesOfTheStagedPackages(t *testing.T) {
-	t.Parallel()
-	repo := initRepo(t)
-	for name, content := range map[string]string{
-		"go.mod": "module r\n", "a.go": "package r\n", "svc/b.go": "package svc\n", "svc/c.go": "package svc\n",
-		"backend/go.mod": "module b\n", "backend/x.go": "package b\n", "backend/api/y.go": "package api\n",
-		"tools/testdata/go.mod": "module f\n", "tools/testdata/f.go": "package f\n",
-		"gone/z.go": "package gone\n",
-	} {
-		mustMkdirAll(t, filepath.Dir(filepath.Join(repo, name)))
-		mustWrite(t, filepath.Join(repo, name), content)
-	}
-	git(t, repo, "add", "-A")
-	if err := os.RemoveAll(filepath.Join(repo, "gone")); err != nil {
-		t.Fatal(err)
-	}
-	h := newLintHarness(t, repo)
-	linter := h.plantLinter("go1.27.4", DefaultGolangciLintVersion)
-	if code := h.run("pre-commit", "go"); code != 0 {
-		t.Fatalf("exit %d: %s", code, h.stderr.String())
-	}
-	want := []string{
-		".|" + linter + " run --new-from-rev=HEAD . ./svc",
-		"backend|" + linter + " run --new-from-rev=HEAD . ./api",
-	}
-	if !reflect.DeepEqual(h.calls, want) {
-		t.Fatalf("calls\n got %q\nwant %q", h.calls, want)
-	}
-
-	h.exit = func([]string) (int, error) { return 1, nil }
-	h.output = func([]string) string { return "svc/b.go:1:1: unused variable (unused)\n" }
-	if code := h.run("pre-commit", "go"); code != 1 {
-		t.Fatalf("findings exit %d", code)
-	}
-}
-
-func TestGoPreCommitLintsWholePackagesBeforeTheFirstCommit(t *testing.T) {
-	t.Parallel()
-	repo := t.TempDir()
-	if resolved, err := filepath.EvalSymlinks(repo); err == nil {
-		repo = resolved
-	}
-	git(t, repo, "init", "-q", "-b", "main")
-	mustWrite(t, filepath.Join(repo, "go.mod"), "module r\n")
-	mustWrite(t, filepath.Join(repo, "a.go"), "package r\n")
-	git(t, repo, "add", "-A")
-	h := newLintHarness(t, repo)
-	linter := h.plantLinter("go1.27.4", DefaultGolangciLintVersion)
-	if code := h.run("pre-commit", "go"); code != 0 || !reflect.DeepEqual(h.calls, []string{".|" + linter + " run ."}) {
-		t.Fatalf("exit %d calls %q", code, h.calls)
-	}
-}
-
-func TestGoPreCommitSkipsWithoutStagedGoOrAnUnbuiltLinter(t *testing.T) {
-	t.Parallel()
-	repo := initRepo(t)
-	h := newLintHarness(t, repo)
-	if code := h.run("pre-commit", "go"); code != 0 || len(h.calls) != 0 {
-		t.Fatalf("nothing staged: exit %d calls %q", code, h.calls)
-	}
-	mustWrite(t, filepath.Join(repo, "go.mod"), "module r\n")
-	mustWrite(t, filepath.Join(repo, "a.go"), "package r\n")
-	git(t, repo, "add", "-A")
-	if code := h.run("pre-commit", "go"); code != 0 || len(h.calls) != 0 || !strings.Contains(h.stderr.String(), "the next pre-push builds it") {
-		t.Fatalf("unbuilt linter: exit %d calls %q stderr %q", code, h.calls, h.stderr.String())
-	}
-
-	broken := newLintHarness(t, repo)
-	options := broken.options("pre-commit", "go")
-	options.Tools.Capture = func(string, []string, string, ...string) (string, error) { return "", errors.New("git broke") }
-	if code := Lint(options); code != 0 || !strings.Contains(broken.stderr.String(), "could not list the staged Go files") {
-		t.Fatalf("git failure: exit %d stderr %q", code, broken.stderr.String())
-	}
-}
-
 func TestResolveGolangciPinReadsTheRepositorysOwnCI(t *testing.T) {
 	t.Parallel()
 	noGit := func(string, []string, string, ...string) (string, error) { return "", errors.New("no clone") }
@@ -622,55 +764,6 @@ func TestResolveGolangciPinReadsTheRepositorysOwnCI(t *testing.T) {
 `)
 	if pin := resolveGolangciPin(repo, "", noGit); pin.Version != "1b907273167eec8b3d84cae636b7798ced4433d5" || pin.Source != ".github/workflows/d-go.yaml" {
 		t.Fatalf("direct pin: %#v", pin)
-	}
-}
-
-func TestResolveGolangciPinFollowsAReusableWorkflowIntoItsLocalClone(t *testing.T) {
-	t.Parallel()
-	projects := t.TempDir()
-	cicd := filepath.Join(projects, "github.com", "strongo", "cicd")
-	mustMkdirAll(t, filepath.Join(cicd, ".github", "workflows"))
-	git(t, projects, "init", "-q", "-b", "main", cicd)
-	git(t, cicd, "config", "user.name", "t")
-	git(t, cicd, "config", "user.email", "t@example.invalid")
-	mustWrite(t, filepath.Join(cicd, ".github", "workflows", "workflow.yml"), `jobs:
-  nested:
-    uses: other/repo/.github/workflows/x.yml@v1
-  golangci:
-    steps:
-      - uses: golangci/golangci-lint-action@v9
-        with:
-          version: v2.15.0
-`)
-	git(t, cicd, "add", "-A")
-	git(t, cicd, "commit", "-q", "-m", "pin")
-	ref := git(t, cicd, "rev-parse", "HEAD")
-	mustWrite(t, filepath.Join(cicd, ".github", "workflows", "workflow.yml"), "jobs: {}\n")
-
-	repo := t.TempDir()
-	mustMkdirAll(t, filepath.Join(repo, ".github", "workflows"))
-	mustWrite(t, filepath.Join(repo, ".github", "workflows", "ci.yml"), fmt.Sprintf(`jobs:
-  local:
-    uses: ./.github/workflows/local.yml
-  missing:
-    uses: absent/repo/.github/workflows/workflow.yml@v1
-  backend:
-    uses: strongo/cicd/.github/workflows/workflow.yml@%s
-`, ref))
-	pin := resolveGolangciPin(repo, projects, captureCommand)
-	if pin.Version != "v2.15.0" || pin.Source != "strongo/cicd/.github/workflows/workflow.yml@"+ref {
-		t.Fatalf("reusable pin: %#v", pin)
-	}
-	if pin := resolveGolangciPin(repo, "", captureCommand); pin.Version != DefaultGolangciLintVersion {
-		t.Fatalf("no projects root: %#v", pin)
-	}
-	mustWrite(t, filepath.Join(cicd, ".github", "workflows", "workflow.yml"), "jobs:\n  x:\n    steps: []\n")
-	git(t, cicd, "add", "-A")
-	git(t, cicd, "commit", "-q", "-m", "drop pin")
-	empty := git(t, cicd, "rev-parse", "HEAD")
-	mustWrite(t, filepath.Join(repo, ".github", "workflows", "ci.yml"), "jobs:\n  b:\n    uses: strongo/cicd/.github/workflows/workflow.yml@"+empty+"\n")
-	if pin := resolveGolangciPin(repo, projects, captureCommand); pin.Version != DefaultGolangciLintVersion {
-		t.Fatalf("reusable without a pin: %#v", pin)
 	}
 }
 
@@ -930,6 +1023,10 @@ func TestSyncBufferAcceptsConcurrentWriters(t *testing.T) {
 // wb's child spawns a grandchild that keeps the output pipe open, and wb does
 // not stop it (an older wb, or one that hung). The hook must still return,
 // and must stop the whole tree rather than orphan the grandchild.
+// TestGovernedCommandStopsAHungCheckAndItsDescendants is the real topology:
+// wb's child spawns a grandchild that keeps the output pipe open, and wb does
+// not stop it (an older wb, or one that hung). The hook must still return,
+// and must stop the whole tree rather than orphan the grandchild.
 func TestGovernedCommandStopsAHungCheckAndItsDescendants(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
@@ -968,52 +1065,6 @@ func TestGovernedCommandStopsAHungCheckAndItsDescendants(t *testing.T) {
 	}
 }
 
-func TestPushedFilesSeeMergesRenamesForcePushesAndStreamCommits(t *testing.T) {
-	t.Parallel()
-	repo := lintRepo(t)
-	mainTip := commitFiles(t, repo, map[string]string{"backend/go.mod": "module b\n", "backend/a.go": "package b\n", "other/go.mod": "module o\n"})
-	git(t, repo, "push", "-q", "origin", "main")
-	h := newLintHarness(t, repo)
-	runner := lintRunner{options: withLintDefaults(h.options("pre-push", "go"))}
-	files := func(update RefUpdate) []string {
-		t.Helper()
-		got, all := runner.pushedFiles([]RefUpdate{update})
-		if all {
-			t.Fatalf("no base for %#v", update)
-		}
-		return got
-	}
-
-	// A rename reports the path it left, so the old package is checked too.
-	git(t, repo, "mv", "backend/a.go", "other/a.go")
-	git(t, repo, "commit", "-q", "-m", "move")
-	moved := git(t, repo, "rev-parse", "HEAD")
-	if got := files(RefUpdate{LocalSHA: moved, RemoteSHA: mainTip}); !reflect.DeepEqual(got, []string{"backend/a.go", "other/a.go"}) {
-		t.Fatalf("rename: %q", got)
-	}
-
-	// A commit first pushed to a stream branch (Tier 0, unlinted) and then
-	// merged into main still counts when main is pushed.
-	git(t, repo, "checkout", "-q", "-b", "stream/x", mainTip)
-	streamTip := commitFiles(t, repo, map[string]string{"backend/s.go": "package b\n"})
-	git(t, repo, "push", "-q", "origin", "stream/x")
-	git(t, repo, "checkout", "-q", "main")
-	git(t, repo, "reset", "-q", "--hard", mainTip)
-	git(t, repo, "merge", "-q", "--no-ff", "-m", "merge stream", streamTip)
-	merged := git(t, repo, "rev-parse", "HEAD")
-	if got := files(RefUpdate{LocalSHA: merged, RemoteSHA: mainTip}); !reflect.DeepEqual(got, []string{"backend/s.go"}) {
-		t.Fatalf("merge of a stream commit: %q", got)
-	}
-
-	// A force push compares trees, so the files of dropped commits count.
-	git(t, repo, "push", "-q", "origin", merged+":refs/heads/main")
-	git(t, repo, "reset", "-q", "--hard", mainTip)
-	rewritten := commitFiles(t, repo, map[string]string{"other/o.go": "package o\n"})
-	if got := files(RefUpdate{LocalSHA: rewritten, RemoteSHA: merged}); !reflect.DeepEqual(got, []string{"backend/s.go", "other/o.go"}) {
-		t.Fatalf("force push: %q", got)
-	}
-}
-
 func TestGoModuleDiscoverySkipsIgnoredPackagesAndFollowsLinterConfig(t *testing.T) {
 	t.Parallel()
 	repo := t.TempDir()
@@ -1035,21 +1086,6 @@ func TestGoModuleDiscoverySkipsIgnoredPackagesAndFollowsLinterConfig(t *testing.
 	}
 	if got := splitNUL(" lead.go\x00trail.go \x00\x00x.go\n"); !reflect.DeepEqual(got, []string{" lead.go", "trail.go ", "x.go"}) {
 		t.Fatalf("splitNUL %q", got)
-	}
-}
-
-func TestGoPreCommitNeverLintsTestdataOrVendoredPackages(t *testing.T) {
-	t.Parallel()
-	repo := initRepo(t)
-	for name, content := range map[string]string{"go.mod": "module r\n", "pkg/testdata/f.go": "package f\n", "vendor/v/v.go": "package v\n"} {
-		mustMkdirAll(t, filepath.Dir(filepath.Join(repo, name)))
-		mustWrite(t, filepath.Join(repo, name), content)
-	}
-	git(t, repo, "add", "-A")
-	h := newLintHarness(t, repo)
-	h.plantLinter("go1.27.4", DefaultGolangciLintVersion)
-	if code := h.run("pre-commit", "go"); code != 0 || len(h.calls) != 0 {
-		t.Fatalf("exit %d calls %q", code, h.calls)
 	}
 }
 
@@ -1095,7 +1131,6 @@ func TestGolangciPinRejectsUnsafeOrInexactWorkflowValues(t *testing.T) {
 		".hidden/repo/.github/workflows/w.yml@v1",
 		"owner/./.github/workflows/w.yml@v1",
 		"owner/-repo/.github/workflows/w.yml@v1",
-		"owner/.-x/.github/workflows/w.yml@v1",
 	} {
 		if _, ok := golangciPinFromReusable(uses, projects, capture); ok {
 			t.Errorf("%q resolved", uses)
@@ -1106,7 +1141,7 @@ func TestGolangciPinRejectsUnsafeOrInexactWorkflowValues(t *testing.T) {
 	}
 	for _, uses := range []string{"owner/repo/.github/workflows/w.yml@v1.2.3", "sneat-dev/.github/.github/workflows/w.yml@v1.2.3"} {
 		gitCalls = nil
-		if _, ok := golangciPinFromReusable(uses, projects, capture); ok || len(gitCalls) != 2 {
+		if _, ok := golangciPinFromReusable(uses, projects, capture); ok || len(gitCalls) != 1 {
 			t.Fatalf("%s was not looked up: %q", uses, gitCalls)
 		}
 		for _, call := range gitCalls {
@@ -1122,33 +1157,6 @@ func TestLockFileReportsALockTheFilesystemRefuses(t *testing.T) {
 	refuse := func(int, int) error { return errors.New("locks unsupported") }
 	if _, err := lockFileWith(filepath.Join(t.TempDir(), "x.lock"), refuse); err == nil || err.Error() != "locks unsupported" {
 		t.Fatalf("err %v", err)
-	}
-}
-
-func TestPushedFilesFallsBackWhenThePushedTipIsUnknown(t *testing.T) {
-	t.Parallel()
-	repo := lintRepo(t)
-	h := newLintHarness(t, repo)
-	runner := lintRunner{options: withLintDefaults(h.options("pre-push", "go"))}
-	if files, all := runner.pushedFiles([]RefUpdate{{LocalSHA: strings.Repeat("e", 40), RemoteSHA: git(t, repo, "rev-parse", "HEAD")}}); !all || files != nil {
-		t.Fatalf("files %q all %v", files, all)
-	}
-}
-
-func TestGoPrePushLeavesAVetThatRanPastItsDeadlineToCI(t *testing.T) {
-	t.Parallel()
-	repo := lintRepo(t)
-	head := commitFiles(t, repo, map[string]string{"go.mod": "module r\n", "a.go": "package r\n"})
-	h := newLintHarness(t, repo)
-	h.plantLinter("go1.27.4", DefaultGolangciLintVersion)
-	h.exit = func(args []string) (int, error) {
-		if args[0] == "go" {
-			return 0, fmt.Errorf("go %w (10m0s)", errCheckTimedOut)
-		}
-		return 0, nil
-	}
-	if code := h.runWithStdin("pre-push", "go", pushLine("f", head)); code != 0 || !strings.Contains(h.stderr.String(), "go vet did not finish in the root module") {
-		t.Fatalf("exit %d stderr %q", code, h.stderr.String())
 	}
 }
 

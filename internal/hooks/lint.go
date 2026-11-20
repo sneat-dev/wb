@@ -18,6 +18,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/process"
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/streambranch"
 )
 
@@ -72,8 +73,8 @@ const (
 func Lint(options LintOptions) int {
 	options = withLintDefaults(options)
 	runner := lintRunner{options: options}
-	root, err := RepositoryRoot(firstNonEmpty(options.RepoRoot, "."))
-	if err != nil {
+	root, err := options.Tools.Capture(firstNonEmpty(options.RepoRoot, "."), nil, "git", "rev-parse", "--show-toplevel")
+	if root = strings.TrimSpace(root); err != nil || root == "" {
 		runner.say("WB hook: lint must run inside a Git checkout: %v", err)
 		return 2
 	}
@@ -111,7 +112,10 @@ func withLintDefaults(options LintOptions) LintOptions {
 	}
 	tools := &options.Tools
 	if tools.Capture == nil {
-		tools.Capture = captureCommand
+		real := runner.New()
+		tools.Capture = func(dir string, env []string, name string, args ...string) (string, error) {
+			return captureWith(real, dir, env, name, args...)
+		}
 	}
 	if tools.Governed == nil {
 		executable, projectsRoot := options.WBExecutable, options.ProjectsRoot
@@ -144,19 +148,16 @@ const (
 	preCommitTimeout    = 2 * time.Minute
 )
 
-func captureCommand(dir string, env []string, name string, args ...string) (string, error) {
+// captureWith runs one helper (git, go env) through the task-8 command
+// runner and returns its stdout.
+func captureWith(commands runner.Runner, dir string, env []string, name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), captureTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), env...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
+	result, err := commands.RunOpts(ctx, dir, runner.RunOptions{Env: append(os.Environ(), env...)}, name, args...)
 	if err != nil {
-		return "", fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+		return "", fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(result.Stderr))
 	}
-	return string(out), nil
+	return result.Stdout, nil
 }
 
 // gatewayGrace is how long past a check's own deadline the hook waits for
@@ -356,7 +357,7 @@ func (r lintRunner) pushBase(update RefUpdate) (string, bool) {
 			return update.RemoteSHA, true
 		}
 	}
-	defaultBranch := DetectDefaultBranch(r.options.RepoRoot)
+	defaultBranch := detectDefaultBranchWith(r.git)
 	if defaultBranch == "" {
 		return "", false
 	}
