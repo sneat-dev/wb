@@ -17,14 +17,14 @@ import (
 func New(snapshot func() buildinfo.Report) *cobra.Command { return NewWithStale(snapshot, nil) }
 
 // NewWithStale is New plus a scan for older wb copies on PATH. scan receives the
-// running version; nil, or a version that is not a release, skips it.
+// running version; nil skips it.
 func NewWithStale(snapshot func() buildinfo.Report, scan func(context.Context, string) []stalewb.Binary) *cobra.Command {
 	var asJSON bool
 	command := &cobra.Command{Use: "version", Short: "Print the wb version, build revision, and toolchain", Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			info := snapshot()
 			var stale []stalewb.Binary
-			if scan != nil && !stalewb.Disabled() {
+			if scan != nil {
 				stale = scan(command.Context(), info.JSONVersion)
 			}
 			return WriteWithStale(command.OutOrStdout(), command.ErrOrStderr(), info, stale, asJSON)

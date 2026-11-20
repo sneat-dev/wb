@@ -230,12 +230,9 @@ func TestDaemonRestartSummaryCoversPartialAndUnreadableReceipts(t *testing.T) {
 
 func TestAfterUpdateWarnsAboutStaleWbCopiesAndNeverTouchesThem(t *testing.T) {
 	t.Parallel()
-	stale := filepath.Join(t.TempDir(), "wb")
-	if err := testenv.WriteExecutableFile(stale, []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	stale := stubWb(t)
 	scanner := func() stalewb.Scanner {
-		return stalewb.Scanner{PathEnv: filepath.Dir(stale), Probe: func(context.Context, string) (string, error) { return "0.198.2", nil }}
+		return stalewb.Scanner{Executable: stubExecutable, PathEnv: filepath.Dir(stale), Probe: func(context.Context, string) (string, error) { return "0.198.2", nil }}
 	}
 	for name, test := range map[string]struct {
 		update selfupdate.AfterUpdate
@@ -268,17 +265,14 @@ func TestAfterUpdateWarnsAboutStaleWbCopiesAndNeverTouchesThem(t *testing.T) {
 
 func TestAfterUpdateRunsTheStaleCopyWarningAfterSyncingSkills(t *testing.T) {
 	t.Parallel()
-	binary := filepath.Join(t.TempDir(), "wb")
-	if err := testenv.WriteExecutableFile(binary, []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	binary := stubWb(t)
 	var stderr bytes.Buffer
 	service := testService()
 	service.RunChild = func(context.Context, ChildRequest) (ChildResult, error) {
 		return ChildResult{Stdout: []byte("ok")}, nil
 	}
 	service.StaleScanner = func() stalewb.Scanner {
-		return stalewb.Scanner{PathEnv: filepath.Dir(binary), Probe: func(context.Context, string) (string, error) { return "0.1.0", nil }}
+		return stalewb.Scanner{Executable: stubExecutable, PathEnv: filepath.Dir(binary), Probe: func(context.Context, string) (string, error) { return "0.1.0", nil }}
 	}
 	update := successfulSelfUpdate(binary)
 	update.Outcome.Target = "0.96.3"
@@ -289,3 +283,18 @@ func TestAfterUpdateRunsTheStaleCopyWarningAfterSyncingSkills(t *testing.T) {
 		t.Fatalf("stderr = %q", stderr.String())
 	}
 }
+
+// stubWb writes a non-empty file named wb under a temp dir. It is only found on
+// a fake PATH through stubExecutable, never run: the probe is a seam.
+func stubWb(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "wb")
+	if err := os.WriteFile(path, []byte("stub"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// stubExecutable counts a non-empty stub as executable; tests never set an
+// execute bit.
+func stubExecutable(info os.FileInfo) bool { return info.Size() > 0 }

@@ -12,11 +12,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/runner"
 	"golang.org/x/mod/semver"
 )
 
@@ -48,6 +49,17 @@ type Scanner struct {
 	// Skip names an executable, by real path, that is not to be probed: the
 	// running binary.
 	Skip string
+	// Executable decides from a file's info whether it can be run; nil uses
+	// the platform rule (an execute bit, or any regular file on Windows).
+	Executable func(os.FileInfo) bool
+}
+
+func executableFile(info os.FileInfo) bool { return isExecutable(info.Mode(), runtime.GOOS) }
+
+// isExecutable reports whether a regular file's mode is runnable: Windows has
+// no execute bit, everywhere else one must be set.
+func isExecutable(mode os.FileMode, goos string) bool {
+	return mode.IsRegular() && (goos == "windows" || mode.Perm()&0o111 != 0)
 }
 
 // New returns the scanner production uses: the process PATH, a probe that
@@ -57,24 +69,32 @@ func New() Scanner {
 	if resolved, err := filepath.EvalSymlinks(skip); err == nil {
 		skip = resolved
 	}
-	return Scanner{PathEnv: os.Getenv("PATH"), Probe: ExecProbe, Skip: skip}
+	return Scanner{PathEnv: os.Getenv("PATH"), Probe: ProbeWith(runner.New()), Skip: skip}
 }
 
 // Disabled reports whether this process is itself a probe child.
-func Disabled() bool { return os.Getenv(SkipEnv) != "" }
+func Disabled() bool { return disabledBy(os.Getenv(SkipEnv)) }
 
-// ExecProbe runs `path version --json` with a bounded timeout and returns its
-// reported version. Only Find hands it a regular executable file named wb.
-func ExecProbe(ctx context.Context, path string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, ProbeTimeout)
-	defer cancel()
-	command := exec.CommandContext(ctx, path, "version", "--json") //nolint:gosec // a regular executable file named wb found on PATH
-	command.Env = append(os.Environ(), SkipEnv+"=1")
-	output, err := command.Output()
-	if err != nil {
-		return "", err
+func disabledBy(marker string) bool { return marker != "" }
+
+// ProbeWith returns a probe that runs `path version --json` through run with a
+// bounded timeout and the probe marker in the child's environment, and returns
+// the version it reports. Only Find hands it a regular executable file named
+// wb.
+func ProbeWith(run runner.Runner) func(context.Context, string) (string, error) {
+	return func(ctx context.Context, path string) (string, error) {
+		ctx, cancel := context.WithTimeout(ctx, ProbeTimeout)
+		defer cancel()
+		result, err := run.RunOpts(ctx, "", runner.RunOptions{
+			Env:           append(os.Environ(), SkipEnv+"=1"),
+			StdoutLimit:   1 << 16,
+			DiscardStderr: true,
+		}, path, "version", "--json")
+		if err != nil {
+			return "", err
+		}
+		return ParseVersion([]byte(result.Stdout))
 	}
-	return ParseVersion(output)
 }
 
 // ParseVersion reads the `version` key of a `version --json` document.
@@ -99,6 +119,10 @@ type Candidate struct{ Path, Real string }
 // with an execute bit; a directory, a device, a dangling symlink or a
 // non-executable file is never probed.
 func (scanner Scanner) Find() []Candidate {
+	executable := scanner.Executable
+	if executable == nil {
+		executable = executableFile
+	}
 	seen := map[string]bool{}
 	var found []Candidate
 	for _, directory := range filepath.SplitList(scanner.PathEnv) {
@@ -112,7 +136,7 @@ func (scanner Scanner) Find() []Candidate {
 				continue
 			}
 			info, err := os.Stat(real)
-			if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+			if err != nil || !info.Mode().IsRegular() || !executable(info) {
 				continue
 			}
 			seen[real] = true

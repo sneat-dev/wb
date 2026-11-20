@@ -199,25 +199,16 @@ func TestVersionReportsStaleWbCopiesInJSONAndAsAHumanWarning(t *testing.T) {
 	}
 }
 
-func TestVersionJSONOmitsTheStaleKeyWhenThereIsNoneAndAProbeChildNeverScans(t *testing.T) {
-	// Not parallel: it sets the process environment.
+func TestVersionJSONOmitsTheStaleKeyWhenThereIsNone(t *testing.T) {
+	t.Parallel()
 	scans := 0
-	scan := func(context.Context, string) []stalewb.Binary { scans++; return nil }
-	command := NewWithStale(func() buildinfo.Report { return report() }, scan)
+	command := NewWithStale(func() buildinfo.Report { return report() }, func(context.Context, string) []stalewb.Binary { scans++; return nil })
 	var out bytes.Buffer
 	command.SetOut(&out)
 	command.SetErr(io.Discard)
 	command.SetArgs([]string{"--json"})
 	if err := command.Execute(); err != nil || strings.Contains(out.String(), "stale_binaries") || scans != 1 {
 		t.Fatalf("out = %s, err = %v, scans = %d", out.String(), err, scans)
-	}
-	t.Setenv(stalewb.SkipEnv, "1")
-	command = NewWithStale(func() buildinfo.Report { return report() }, scan)
-	command.SetOut(io.Discard)
-	command.SetErr(io.Discard)
-	command.SetArgs(nil)
-	if err := command.Execute(); err != nil || scans != 1 {
-		t.Fatalf("a probe child scanned: err = %v, scans = %d", err, scans)
 	}
 }
 

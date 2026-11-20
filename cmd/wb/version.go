@@ -14,6 +14,9 @@ type versionInfo = buildinfo.Report
 
 func newVersionCmd() *cobra.Command {
 	return cmdversion.NewWithStale(buildinfo.Snapshot, func(ctx context.Context, current string) []stalewb.Binary {
+		if stalewb.Disabled() {
+			return nil
+		}
 		return stalewb.New().Stale(ctx, current)
 	})
 }
