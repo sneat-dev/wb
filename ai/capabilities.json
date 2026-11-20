@@ -6156,7 +6156,7 @@
             {
               "path": "internal/dependencycache/cache_e2e_test.go",
               "name": "TestE2EArchivePolicyFilesystemAndInheritedLeaseRegressions",
-              "kind": "unit"
+              "kind": "integration"
             }
           ],
           "limitation": null

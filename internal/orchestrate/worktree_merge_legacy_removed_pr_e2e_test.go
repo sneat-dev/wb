@@ -12,11 +12,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sneat-dev/wb/internal/runner"
-	"github.com/sneat-dev/wb/internal/worktrees"
-
 	"github.com/sneat-dev/wb/internal/githubchecks"
+	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/testenv"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 //nolint:paralleltest // The native GitHub shim uses process-wide environment variables.
@@ -301,13 +300,13 @@ func (r *legacyRemovedMutationRunner) RunOpts(ctx context.Context, dir string, o
 	return r.Runner.RunOpts(ctx, dir, o, name, args...)
 }
 
-// TestContractLegacyRemovedPRAcknowledgementRefusesAmbiguousCanonicalRepository
+// TestE2ELegacyRemovedPRAcknowledgementRefusesAmbiguousCanonicalRepository
 // proves recovery cannot pick one of two real canonical clones for the same
 // coordinate and that the refusal happens before any acknowledgement or receipt
 // bytes are written. The existing malformed-repository case is refused by the
 // shared pull request validator earlier, so only an actual ambiguity reaches
 // this resolver.
-func TestContractLegacyRemovedPRAcknowledgementRefusesAmbiguousCanonicalRepository(t *testing.T) {
+func TestE2ELegacyRemovedPRAcknowledgementRefusesAmbiguousCanonicalRepository(t *testing.T) {
 	t.Parallel()
 	r, _ := historicalObservedAcknowledgement(t)
 	r.Route.Route = WorktreeMergeRoutePullRequest

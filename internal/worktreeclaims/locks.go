@@ -5,12 +5,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"github.com/sneat-dev/wb/internal/repopath"
-	"github.com/sneat-dev/wb/internal/worktreelayout"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/sneat-dev/wb/internal/repopath"
+	"github.com/sneat-dev/wb/internal/worktreelayout"
 
 	"github.com/sneat-dev/wb/internal/filewrite"
 	unix "github.com/sneat-dev/wb/internal/unixcompat"
@@ -135,7 +136,7 @@ func (lock *HeldOperationLock) Preserve() {
 	if lock == nil || lock.lock == nil {
 		return
 	}
-	_ = lock.lock.file.Close()
+	unlockAndClose(lock.lock.file)
 	lock.lock = nil
 }
 
@@ -198,16 +199,16 @@ func AcquireLockAtReclaimingInterrupted(operationDirectory *os.File, reclaimInte
 		statDirectory = ports.StatDirectory
 	}
 	if err := statDirectory(int(operationDirectory.Fd()), &directory); err != nil {
-		_ = file.Close()
+		unlockAndClose(file)
 		return OperationLock{}, fmt.Errorf("inspect secure worktree operation directory: %w", err)
 	}
 	if directory.Nlink == 0 {
-		_ = file.Close()
+		unlockAndClose(file)
 		return OperationLock{}, fmt.Errorf("worktree operation directory was retired while this operation was starting; run the command again")
 	}
 	var stat unix.Stat_t
 	if err := unix.Fstat(int(file.Fd()), &stat); err != nil {
-		_ = file.Close()
+		unlockAndClose(file)
 		return OperationLock{}, fmt.Errorf("inspect secure worktree operation lock: %w", err)
 	}
 	lock := OperationLock{
@@ -223,7 +224,7 @@ func AcquireLockAtReclaimingInterrupted(operationDirectory *os.File, reclaimInte
 	// interrupted remnants keep their original metadata for that proof.
 	if strings.TrimSpace(operation) != "" {
 		if err := WriteOperationLockMetadata(file, operation, pid); err != nil {
-			_ = file.Close()
+			unlockAndClose(file)
 			return OperationLock{}, err
 		}
 	}
@@ -355,7 +356,7 @@ func ReclaimInterruptedLock(operationDirectory *os.File, reclaimInterrupted bool
 	// Re-verify the entry still names this exact file now that the lock is
 	// held, so a swap between open and lock cannot be inherited.
 	if !LockEntryStillMatches(operationDirectory, ".lock", identity) {
-		_ = file.Close()
+		unlockAndClose(file)
 		return OperationLock{}, fmt.Errorf("secure worktree operation lock changed while being reclaimed")
 	}
 	return OperationLock{directory: operationDirectory, file: file, identity: identity, interrupted: true}, nil
@@ -414,7 +415,10 @@ func (lock OperationLock) Release(options ...OperationLockPorts) error {
 	if lock.file == nil || lock.directory == nil {
 		return nil
 	}
-	defer func() { _ = lock.file.Close() }()
+	// Every return gives up ownership. Close alone can leave the flock held
+	// through a forked child's copy of this open file description, so the
+	// deferred cleanup unlocks before closing even when retirement failed.
+	defer unlockAndClose(lock.file)
 	if !LockEntryStillMatches(lock.directory, ".lock", lock.identity) {
 		return fmt.Errorf("operation lock changed before retirement")
 	}
@@ -430,6 +434,15 @@ func (lock OperationLock) Release(options ...OperationLockPorts) error {
 		return fmt.Errorf("unlock retired operation lock: %w", err)
 	}
 	return nil
+}
+
+// unlockAndClose drops this process's flock on a held lock descriptor and
+// closes it. Close alone leaves the flock in place while a concurrently forked
+// child (between fork and exec) still shares the open file description, which
+// makes a following acquisition see a live holder.
+func unlockAndClose(file *os.File) {
+	_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
+	_ = file.Close()
 }
 
 func LockEntryStillMatches(directory *os.File, name string, expected ManagedLockIdentity) bool {

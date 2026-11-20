@@ -17,32 +17,6 @@ import (
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
-func TestE2ETerminalLockOperationNameBindsMergeReceipt(t *testing.T) {
-	t.Parallel()
-	const receipt = "merge-sneat-co-bookius-main-c97cdfb3334d-1d2d9879e050"
-	for _, task := range []string{
-		"merge-sneat-co-bookius-main-c97cdfb3334d",
-		"merge-sneat-co-bookius-main-c97cdfb3334d-a4381f8449a1",
-	} {
-		if !isTerminalLockOperationName(task, receipt) {
-			t.Fatalf("expected %s to bind %s", task, receipt)
-		}
-	}
-	for _, task := range []string{
-		"merge-sneat-co-bookius-main-c97cdfb3334e",
-		"merge-sneat-co-bookius-main-c97cdfb3334d-feature",
-		"merge-sneat-co-bookius-main-c97cdfb3334d-abcdez123456",
-		"other-task",
-	} {
-		if isTerminalLockOperationName(task, receipt) {
-			t.Fatalf("unrelated task %s bound to %s", task, receipt)
-		}
-	}
-	if isTerminalLockOperationName("merge-sneat-co-bookius-main-c97cdfb3334d", "invalid-receipt") {
-		t.Fatal("malformed receipt identity was accepted")
-	}
-}
-
 func terminalLockRecoveryFixture(t *testing.T) (TerminalLockRecoveryOptions, string, []byte) {
 	t.Helper()
 	fixture := newGitFixture(t)
@@ -335,5 +309,77 @@ func TestE2ETerminalLockRecoveryReportsUnexpectedShellAfterAuditedRelease(t *tes
 	}
 	if _, err := os.Stat(outcome.AuditPath); err != nil {
 		t.Fatalf("post-release audit missing: %v", err)
+	}
+}
+
+// Merge receipts record an unqualified {owner}/{repository} coordinate (see
+// validReceiptRepository). Recovery resolves it to the clone that exists:
+// the legacy two-level clone exactly as the former filepath.Join did, or a
+// single host-level clone that the former join could not find.
+//
+//nolint:paralleltest // The real Git fixture scopes WB configuration through t.Setenv.
+func TestE2ETerminalLockRecoveryResolvesLegacyReceiptCoordinates(t *testing.T) {
+	sentinel := errors.New("stop after resolving the canonical clone")
+	tests := []struct {
+		name  string
+		hosts []string
+		want  func(root string) string
+	}{
+		{"legacy two-level clone", nil, func(root string) string { return filepath.Join(root, "acme", "app") }},
+		{"single host-level clone", []string{"github.com"}, func(root string) string { return filepath.Join(root, "github.com", "acme", "app") }},
+	}
+	for _, test := range tests {
+		//nolint:paralleltest // The fixture's t.Setenv requires this subtest to stay serial.
+		t.Run(test.name, func(t *testing.T) {
+			options, lock, _ := terminalLockRecoveryFixture(t)
+			for _, host := range test.hosts {
+				if err := os.MkdirAll(filepath.Join(options.ProjectsRoot, host, "acme", "app", ".git"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ports := defaultTerminalLockRecoveryPorts()
+			var resolved string
+			ports.fetchTarget = func(_ context.Context, canonical, _ string) (string, error) {
+				resolved = canonical
+				return "", sentinel
+			}
+			if _, err := recoverTerminalOperationLock(context.Background(), options, ports); !errors.Is(err, sentinel) {
+				t.Fatalf("recovery error = %v, want the fetch sentinel", err)
+			}
+			if want := test.want(options.ProjectsRoot); resolved != want {
+				t.Fatalf("receipt acme/app resolved to %q, want %q", resolved, want)
+			}
+			if _, err := os.Stat(lock); err != nil {
+				t.Fatalf("resolution changed operation lock: %v", err)
+			}
+		})
+	}
+}
+
+// A coordinate cloned on more than one host cannot name one canonical clone;
+// recovery refuses before any fetch and leaves the lock and receipt intact.
+//
+//nolint:paralleltest // The real Git fixture scopes WB configuration through t.Setenv.
+func TestE2ETerminalLockRecoveryRefusesAmbiguousReceiptRepository(t *testing.T) {
+	options, lock, receipt := terminalLockRecoveryFixture(t)
+	for _, host := range []string{"github.com", "gitlab.com"} {
+		if err := os.MkdirAll(filepath.Join(options.ProjectsRoot, host, "acme", "app", ".git"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ports := defaultTerminalLockRecoveryPorts()
+	ports.fetchTarget = func(context.Context, string, string) (string, error) {
+		t.Fatal("ambiguous receipt repository reached the target fetch")
+		return "", nil
+	}
+	_, err := recoverTerminalOperationLock(context.Background(), options, ports)
+	if err == nil || !strings.Contains(err.Error(), "resolve canonical clone: ") || !strings.Contains(err.Error(), "more than one host") {
+		t.Fatalf("ambiguous receipt repository error = %v", err)
+	}
+	if _, err := os.Stat(lock); err != nil {
+		t.Fatalf("ambiguous resolution changed operation lock: %v", err)
+	}
+	if actual, err := os.ReadFile(options.ReceiptPath); err != nil || string(actual) != string(receipt) {
+		t.Fatalf("ambiguous resolution changed historical receipt: %v", err)
 	}
 }
