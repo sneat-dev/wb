@@ -32,10 +32,10 @@ func TestHookRegistrationAndArgumentRejectionNeverDelegates(t *testing.T) {
 	t.Parallel()
 	f := fakeCommands()
 	root := New(f.runtime, f.git, f.life, f.agent)
-	if len(root.Commands()) != 9 {
+	if len(root.Commands()) != 10 {
 		t.Fatal(root.Commands())
 	}
-	for _, args := range [][]string{{"install", "one", "two"}, {"repair", "--fleet", "path"}, {"install", "--fleet", "path"}, {"check", "--fleet", "path"}, {"run"}, {"push-tier", "extra"}, {"agent", "install", "extra"}, {"agent", "pre-tool-use", "extra"}, {"lifecycle", "retry"}, {"lifecycle", "check", "extra"}, {"lifecycle", "run-pending"}} {
+	for _, args := range [][]string{{"install", "one", "two"}, {"repair", "--fleet", "path"}, {"install", "--fleet", "path"}, {"check", "--fleet", "path"}, {"run"}, {"push-tier", "extra"}, {"lint", "extra"}, {"agent", "install", "extra"}, {"agent", "pre-tool-use", "extra"}, {"lifecycle", "retry"}, {"lifecycle", "check", "extra"}, {"lifecycle", "run-pending"}} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			t.Parallel()
 			g := fakeCommands()

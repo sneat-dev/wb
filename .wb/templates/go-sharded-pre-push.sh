@@ -1,6 +1,15 @@
 #!/bin/sh
 set -eu
 
+# `wb hooks lint` classifies the push (the push-tier contract), then runs go
+# vet and the CI-pinned golangci-lint over every Go module the pushed commits
+# touch, each through `wb run --`.
+if "$WB_EXECUTABLE" hooks lint --help 2>/dev/null | grep -q -- "--language"; then
+    exec "$WB_EXECUTABLE" --projects-root "$WB_PROJECTS_ROOT" hooks lint --hook pre-push --language go
+fi
+
+# One-release bootstrap: an installed WB predating `wb hooks lint` must still
+# be able to push the release that introduces it.
 tier=2
 set +e
 "$WB_EXECUTABLE" hooks push-tier
@@ -16,10 +25,4 @@ esac
 if [ "$tier" -eq 0 ]; then
     exit 0
 fi
-
-if "$WB_EXECUTABLE" run --help 2>/dev/null | grep -q 'run -- <command>'; then
-    "$WB_EXECUTABLE" --projects-root "$WB_PROJECTS_ROOT" run -- go vet ./...
-else
-    # One-release bootstrap for the installed WB that is pushing this change.
-    go vet ./...
-fi
+"$WB_EXECUTABLE" --projects-root "$WB_PROJECTS_ROOT" run -- go vet ./...

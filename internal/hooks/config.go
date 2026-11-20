@@ -461,9 +461,6 @@ if [ -n "$unformatted" ]; then
     echo "$unformatted" >&2
     exit 1
 fi
-if [ ! -f go.mod ]; then
-    exit 0
-fi
 if ! command -v go >/dev/null 2>&1; then
     exit 0
 fi
@@ -474,8 +471,8 @@ fi
 # module (its own go.mod, no go.work) is not part of the root module, so its
 # packages cannot be loaded from the repository root: they are grouped by
 # module and each group is vetted from its own module directory. A staged file
-# under no go.mod at all is not vetted, and a repository with no go.mod at its
-# root is not vetted at all (exit above). (WB-831)
+# under no go.mod at all is not vetted; a repository whose modules all live in
+# subdirectories is vetted module by module. (WB-831)
 nearest_module() {
     candidate="$1"
     while :; do
@@ -542,6 +539,12 @@ EOF_TARGETS
 done <<EOF_MODULES
 $modules
 EOF_MODULES
+# Changed-line lint with the CI-pinned golangci-lint, over the same staged
+# packages, through ` + "`wb run --`" + `. It reports only issues on new or changed
+# lines, and never builds a linter (pre-push does), so it stays in seconds.
+if ! "$WB_EXECUTABLE" --projects-root "$WB_PROJECTS_ROOT" hooks lint --hook pre-commit --language go; then
+    failed=1
+fi
 if [ "$failed" -ne 0 ]; then
     exit 1
 fi
@@ -549,100 +552,29 @@ fi
 	case BuiltinGoPrePush:
 		// profiles.include forces a profile on unconditionally for every
 		// repository a policy governs — it never consults the profile's own
-		// Detection rule the way auto-detection does. A fleet-wide policy
-		// naming "go" once, to cover its Go repositories, forces this on for
-		// every other repository too, so it must tolerate running somewhere
-		// with no go.mod rather than assume Detection already screened it out.
+		// Detection rule the way auto-detection does — so `wb hooks lint`
+		// must tolerate a repository with no Go module at all.
 		//
-		// Tiering: `wb hooks push-tier` reads the same pushed-ref list Git
-		// streams on stdin and decides whether this exact push needs static
-		// validation, printing its decision and reason
-		// on stdout before this script acts on it. Its exit code is the fixed
-		// contract: 0 skips both (a deletion-only or WB checkpoint-ref push),
-		// 1 runs vet (a feature branch with no open pull request), and 2 also
-		// runs vet while marking a publication push for telemetry and downstream
-		// policy. Tests and coverage belong to landing/CI. Tier 0 — the
+		// `wb hooks lint` reads the pushed-ref list Git streams on stdin,
+		// classifies the push with the same tier contract as `wb hooks
+		// push-tier` (printing its decision), and for Tier 1 and Tier 2 runs
+		// go vet and the CI-pinned golangci-lint over every Go module the
+		// pushed commits touch, nested go.mod included, each through
+		// `wb run --`. Tests and coverage belong to landing/CI. Tier 0 — the
 		// base diff-check, worktree admission, and canonical-clone guard
 		// blocks — is a different, always-on layer this script never touches.
 		return `#!/bin/sh
 set -eu
-if [ ! -f go.mod ]; then
-    exit 0
-fi
-tier=2
-set +e
-"$WB_EXECUTABLE" hooks push-tier
-tier=$?
-set -e
-case "$tier" in
-    0|1|2) ;;
-    *)
-        echo "WB hook: push-tier classifier exited $tier unexpectedly; running go vet as a safe default." >&2
-        tier=2
-        ;;
-esac
-if [ "$tier" -eq 0 ]; then
-    exit 0
-fi
-if "$WB_EXECUTABLE" run --help 2>/dev/null | grep -q 'run -- <command>'; then
-    "$WB_EXECUTABLE" --projects-root "$WB_PROJECTS_ROOT" run -- go vet ./...
-else
-    # One-release bootstrap: an installed WB predating the command gateway
-    # must still be able to push the release that introduces it.
-    go vet ./...
-fi
+exec "$WB_EXECUTABLE" --projects-root "$WB_PROJECTS_ROOT" hooks lint --hook pre-push --language go
 `, true
 	case BuiltinNodePrePush:
+		// Lint only, and only when the push changes JS/TS sources: an Nx
+		// workspace runs `nx affected -t lint` against the push base, any
+		// other package its own lint script. Builds and tests belong to
+		// landing/CI. The tier contract is the go-pre-push one above.
 		return `#!/bin/sh
 set -eu
-if [ -f pnpm-lock.yaml ]; then
-    package_manager=pnpm
-elif [ -f yarn.lock ]; then
-    package_manager=yarn
-elif [ -f bun.lock ] || [ -f bun.lockb ]; then
-    package_manager=bun
-else
-    package_manager=npm
-fi
-if ! command -v "$package_manager" >/dev/null 2>&1; then
-    echo "Required Node package manager not found: $package_manager" >&2
-    exit 1
-fi
-if ! command -v node >/dev/null 2>&1; then
-    echo "Required Node runtime not found: node" >&2
-    exit 1
-fi
-run_if_present() {
-    script_name="$1"
-    if node -e 'const p=require("./package.json"); process.exit(p.scripts && p.scripts[process.argv[1]] ? 0 : 1)' "$script_name"; then
-        if "$WB_EXECUTABLE" run --help 2>/dev/null | grep -q 'run -- <command>'; then
-            "$WB_EXECUTABLE" --projects-root "$WB_PROJECTS_ROOT" run -- "$package_manager" run "$script_name"
-        else
-            "$package_manager" run "$script_name"
-        fi
-    fi
-}
-# See the go-pre-push template for the full tiering contract: 'wb hooks
-# push-tier' reads the pushed-ref list from stdin and exits 0 (skip lint),
-# 1 (feature push), or 2 (publication push). Both nonzero tiers run static
-# checks only. Tests and builds belong to landing/CI. Tier 0 is the separate,
-# always-on base/worktree-admission layer.
-tier=2
-set +e
-"$WB_EXECUTABLE" hooks push-tier
-tier=$?
-set -e
-case "$tier" in
-    0|1|2) ;;
-    *)
-        echo "WB hook: push-tier classifier exited $tier unexpectedly; running lint as a safe default." >&2
-        tier=2
-        ;;
-esac
-if [ "$tier" -eq 0 ]; then
-    exit 0
-fi
-run_if_present lint
+exec "$WB_EXECUTABLE" --projects-root "$WB_PROJECTS_ROOT" hooks lint --hook pre-push --language node
 `, true
 	case BuiltinWorktreeGuard:
 		return `#!/bin/sh
