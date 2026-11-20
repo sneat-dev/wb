@@ -16,6 +16,45 @@ type PullRequest struct {
 	// Title is the pull request title; a bot names the dependency and the
 	// target version in it.
 	Title string
+	// CommitsByBot is true only when every commit on the pull request was
+	// authored by a dependency bot (see AllCommitsByDependencyBot). The
+	// author of the pull request is not enough: in this fleet other bots and
+	// people push repair commits onto a Renovate branch, and the pull request
+	// still reads as Renovate's. Unset (including when the commit list could
+	// not be read) the bot-only shapes are refused.
+	CommitsByBot bool
+}
+
+// CommitActors are the GitHub logins of one commit's author and committer, as
+// the pull request commits API reports them (empty when GitHub has no account
+// for the git identity).
+type CommitActors struct {
+	Author    string
+	Committer string
+}
+
+// AllCommitsByDependencyBot reports whether every commit was authored by a
+// dependency bot. The committer may also be `web-flow`: a bot that commits
+// through the GitHub API (Renovate does) shows `web-flow` as committer, and a
+// person's web-UI edit still carries that person as author.
+func AllCommitsByDependencyBot(commits []CommitActors) bool {
+	if len(commits) == 0 {
+		return false
+	}
+	for _, commit := range commits {
+		if !IsDependencyBotLogin(commit.Author) {
+			return false
+		}
+		if committer := strings.ToLower(strings.TrimSpace(commit.Committer)); committer != "web-flow" && !IsDependencyBotLogin(committer) {
+			return false
+		}
+	}
+	return true
+}
+
+// IsDependencyBotLogin reports whether login is a dependency bot account.
+func IsDependencyBotLogin(login string) bool {
+	return dependencyBotLogins[strings.ToLower(strings.TrimSpace(login))]
 }
 
 // dependencyBotLogins are the authors whose pull requests are dependency
@@ -30,13 +69,13 @@ var dependencyBotLogins = map[string]bool{
 }
 
 func (pr PullRequest) byDependencyBot() bool {
-	return dependencyBotLogins[strings.ToLower(strings.TrimSpace(pr.Author))]
+	return pr.CommitsByBot && IsDependencyBotLogin(pr.Author)
 }
 
 var (
 	// `uses: owner/action[/path]@ref`, optionally a list item, optionally
 	// followed by a `# vX` comment. Quoted values and expressions do not match.
-	workflowUsesLine = regexp.MustCompile(`^\s*(?:-\s+)?uses:\s*([A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+)@([A-Za-z0-9_.+-]+)\s*(?:#.*)?$`)
+	workflowUsesLine = regexp.MustCompile(`^\s*(?:-\s+)?uses:\s*([A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+)@([A-Za-z0-9_.+-]+)\s*(?:#\s*(.*))?$`)
 	// `some-version: 1.2.3`, with optional quotes and trailing comment.
 	workflowVersionLine = regexp.MustCompile(`^\s*(?:-\s+)?([A-Za-z0-9_-]+):\s*["']?([^"'#\s]+)["']?\s*(?:#.*)?$`)
 	workflowTagRef      = regexp.MustCompile(`^(?:[0-9a-fA-F]{40}|v?\d+(?:\.\d+){0,3}(?:[-+][0-9A-Za-z.]+)?)$`)
@@ -99,6 +138,9 @@ func workflowPairRefusal(name, before, after string, pr PullRequest) string {
 		if !workflowTagRef.MatchString(oldUses[2]) || !workflowTagRef.MatchString(newUses[2]) {
 			return name + " moves " + newUses[1] + " to a ref that is not a version tag or commit SHA: " + trimForMessage(newUses[2])
 		}
+		if !usesNamedByTitle(newUses, pr.Title) {
+			return name + " moves " + newUses[1] + " to " + newUses[2] + ", which the pull request title does not name"
+		}
 		return ""
 	}
 	oldVersion, newVersion := workflowVersionLine.FindStringSubmatch(before), workflowVersionLine.FindStringSubmatch(after)
@@ -118,4 +160,21 @@ func workflowPairRefusal(name, before, after string, pr PullRequest) string {
 func versionKey(key string) bool {
 	lower := strings.ToLower(key)
 	return lower == "version" || strings.HasSuffix(lower, "-version") || strings.HasSuffix(lower, "_version")
+}
+
+// usesNamedByTitle ties a `uses:` ref change to the pull request: the action's
+// `owner/repo` is in the title, or the new tag is, or (for a commit SHA) the
+// version in the trailing `# vX` comment is.
+func usesNamedByTitle(uses []string, title string) bool {
+	title = strings.ToLower(title)
+	segments := strings.SplitN(uses[1], "/", 3)
+	if strings.Contains(title, strings.ToLower(segments[0]+"/"+segments[1])) {
+		return true
+	}
+	ref := uses[2]
+	if len(ref) != 40 || strings.Trim(ref, "0123456789abcdefABCDEF") != "" {
+		return strings.Contains(title, strings.ToLower(strings.TrimPrefix(ref, "v")))
+	}
+	comment := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(strings.SplitN(strings.TrimSpace(uses[3]), " ", 2)[0])), "v")
+	return comment != "" && strings.Contains(title, comment)
 }

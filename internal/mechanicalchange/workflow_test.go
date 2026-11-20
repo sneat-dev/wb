@@ -18,7 +18,7 @@ const sha40 = "4b73464bb391d4059bd26b0524d20df3927bd417"
 
 func TestBotWorkflowEditsAreMechanicalOnlyWhenEveryLineIsAVersionRefOrValue(t *testing.T) {
 	t.Parallel()
-	renovate := PullRequest{Author: "renovate[bot]", Title: "chore(deps): update dependency golangci/golangci-lint to v2.1.5"}
+	renovate := PullRequest{Author: "renovate[bot]", CommitsByBot: true, Title: "chore(deps): update dependency golangci/golangci-lint to v2.1.5 and actions/checkout, actions/setup-go, github/codeql-action"}
 	for _, test := range []struct {
 		name   string
 		pr     PullRequest
@@ -32,9 +32,16 @@ func TestBotWorkflowEditsAreMechanicalOnlyWhenEveryLineIsAVersionRefOrValue(t *t
 		{name: "action with a path", pr: renovate, patch: workflowPatch("      - uses: github/codeql-action/init@v3", "      - uses: github/codeql-action/init@v4")},
 		{name: "version input named by the title", pr: renovate, patch: workflowPatch("          version: v2.1.4", "          version: v2.1.5")},
 		{name: "quoted version input", pr: renovate, patch: workflowPatch("          version: 'v2.1.4'", "          version: \"v2.1.5\" # pinned")},
-		{name: "go-version input", pr: PullRequest{Author: "app/renovate", Title: "chore(deps): update dependency go to v1.25"}, patch: workflowPatch("          go-version: 1.24", "          go-version: 1.25")},
-		{name: "env version variable", pr: PullRequest{Author: "dependabot[bot]", Title: "Bump node from 22 to 24"}, patch: workflowPatch("  NODE_VERSION: 22", "  NODE_VERSION: 24")},
+		{name: "go-version input", pr: PullRequest{Author: "app/renovate", CommitsByBot: true, Title: "chore(deps): update dependency go to v1.25"}, patch: workflowPatch("          go-version: 1.24", "          go-version: 1.25")},
+		{name: "env version variable", pr: PullRequest{Author: "dependabot[bot]", CommitsByBot: true, Title: "Bump node from 22 to 24"}, patch: workflowPatch("  NODE_VERSION: 22", "  NODE_VERSION: 24")},
 
+		{name: "bot author but a non-bot commit on the branch", pr: PullRequest{Author: "renovate[bot]", Title: renovate.Title}, patch: workflowPatch("      - uses: actions/checkout@v4", "      - uses: actions/checkout@v5"), want: "is not a dependency manifest"},
+		{name: "uses of an unrelated action", pr: PullRequest{Author: "renovate[bot]", CommitsByBot: true, Title: "chore(deps): update dependency vitest to v5.1.1"}, patch: workflowPatch("      - uses: acme/tool@v1.2.0", "      - uses: acme/tool@v9.9.9"), want: "does not name"},
+		{name: "uses named by its owner/repo in the title", pr: PullRequest{Author: "renovate[bot]", CommitsByBot: true, Title: "update ACME/Tool to latest"}, patch: workflowPatch("      - uses: acme/tool/sub@v1.2.0", "      - uses: acme/tool/sub@v9.9.9")},
+		{name: "uses named by its new tag in the title", pr: PullRequest{Author: "renovate[bot]", CommitsByBot: true, Title: "update tools to v9.9.9"}, patch: workflowPatch("      - uses: acme/tool@v1.2.0", "      - uses: acme/tool@v9.9.9")},
+		{name: "sha pin named by the version comment", pr: PullRequest{Author: "renovate[bot]", CommitsByBot: true, Title: "update tools to v5.1.0"}, patch: workflowPatch("      - uses: acme/tool@"+sha40+" # v5.0.0", "      - uses: acme/tool@"+strings.Repeat("b", 40)+" # v5.1.0 pinned")},
+		{name: "sha pin whose comment the title does not name", pr: PullRequest{Author: "renovate[bot]", CommitsByBot: true, Title: "update tools to v5.1.0"}, patch: workflowPatch("      - uses: acme/tool@"+sha40+" # v5.0.0", "      - uses: acme/tool@"+strings.Repeat("b", 40)+" # v7.7.7"), want: "does not name"},
+		{name: "sha pin with no version comment", pr: PullRequest{Author: "renovate[bot]", CommitsByBot: true, Title: "update tools to v5.1.0"}, patch: workflowPatch("      - uses: acme/tool@"+sha40, "      - uses: acme/tool@"+strings.Repeat("b", 40)), want: "does not name"},
 		{name: "a person's identical edit", pr: PullRequest{Author: "someone", Title: renovate.Title}, patch: workflowPatch("      - uses: actions/checkout@v4", "      - uses: actions/checkout@v5"), want: "is not a dependency manifest"},
 		{name: "no author", patch: workflowPatch("      - uses: actions/checkout@v4", "      - uses: actions/checkout@v5"), want: "is not a dependency manifest"},
 		{name: "a different action", pr: renovate, patch: workflowPatch("      - uses: actions/checkout@v4", "      - uses: evil/checkout@v4"), want: "different action"},
@@ -89,17 +96,44 @@ func TestBotAuthorsAreNormalisedAndPeopleAreNot(t *testing.T) {
 	t.Parallel()
 	for login, want := range map[string]bool{
 		"renovate[bot]": true, " Renovate[bot] ": true, "dependabot[bot]": true, "app/renovate": true, "app/dependabot": true,
-		"renovate": false, "alex": false, "": false,
+		"renovate": false, "alex": false, "Copilot": false, "": false,
 	} {
-		if got := (PullRequest{Author: login}).byDependencyBot(); got != want {
-			t.Errorf("byDependencyBot(%q) = %t, want %t", login, got, want)
+		if got := IsDependencyBotLogin(login); got != want {
+			t.Errorf("IsDependencyBotLogin(%q) = %t, want %t", login, got, want)
+		}
+		if got := (PullRequest{Author: login, CommitsByBot: true}).byDependencyBot(); got != want {
+			t.Errorf("byDependencyBot(%q, all commits bot) = %t, want %t", login, got, want)
+		}
+		if (PullRequest{Author: login}).byDependencyBot() {
+			t.Errorf("byDependencyBot(%q) without commit verification must be false", login)
+		}
+	}
+}
+
+func TestEveryCommitMustBeByABotForTheBotOnlyShapes(t *testing.T) {
+	t.Parallel()
+	bot := CommitActors{Author: "renovate[bot]", Committer: "web-flow"}
+	for name, test := range map[string]struct {
+		commits []CommitActors
+		want    bool
+	}{
+		"all bot commits, web-flow committer": {[]CommitActors{bot, bot}, true},
+		"bot committer":                       {[]CommitActors{{Author: "dependabot[bot]", Committer: "dependabot[bot]"}}, true},
+		"a Copilot repair commit":             {[]CommitActors{bot, {Author: "Copilot", Committer: "web-flow"}}, false},
+		"a human commit":                      {[]CommitActors{bot, {Author: "alex", Committer: "alex"}}, false},
+		"a bot author with a human committer": {[]CommitActors{{Author: "renovate[bot]", Committer: "alex"}}, false},
+		"an author GitHub cannot map":         {[]CommitActors{{Author: "", Committer: "web-flow"}}, false},
+		"no commits":                          {nil, false},
+	} {
+		if got := AllCommitsByDependencyBot(test.commits); got != test.want {
+			t.Errorf("%s: = %t, want %t", name, got, test.want)
 		}
 	}
 }
 
 func TestBotGoFixtureManifestsAreMechanicalButOtherFixturesStayCode(t *testing.T) {
 	t.Parallel()
-	bot := PullRequest{Author: "renovate[bot]"}
+	bot := PullRequest{Author: "renovate[bot]", CommitsByBot: true}
 	bump := "@@ -7,3 +7,3 @@ go 1.27.0\n require (\n-\tgithub.com/a/b v0.95.4\n+\tgithub.com/a/b v0.102.6\n )"
 	for _, test := range []struct {
 		name string

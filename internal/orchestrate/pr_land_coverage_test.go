@@ -15,6 +15,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/githubchecks"
 	"github.com/sneat-dev/wb/internal/githubobserver/testfixture"
+	"github.com/sneat-dev/wb/internal/mechanicalchange"
 
 	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/testenv"
@@ -952,5 +953,47 @@ func TestPullRequestChangedFilesLeaveContentEmptyWhenTheHeadFileCannotBeRead(t *
 	}
 	if len(files) != 1 || files[0].Content != "" {
 		t.Fatalf("unreadable head file produced content: %+v", files)
+	}
+}
+
+func classifyTestView(login, title string) githubchecks.PullRequestView {
+	var view githubchecks.PullRequestView
+	view.Title = title
+	view.User.Login = login
+	return view
+}
+
+var classifyWorkflowFiles = []mechanicalchange.ChangedFile{{
+	Filename: ".github/workflows/ci.yml", Status: "modified",
+	Patch: "@@ -1,2 +1,2 @@\n-      - uses: actions/checkout@v4\n+      - uses: actions/checkout@v5\n",
+}}
+
+func TestClassifyPullRequestChangeAcceptsBotWorkflowBumpOnlyWhenEveryCommitIsByABot(t *testing.T) {
+	for name, test := range map[string]struct {
+		login string
+		body  string
+		exit  string
+		want  bool
+	}{
+		"all bot commits": {"renovate[bot]",
+			`[{"author":{"login":"renovate[bot]"},"committer":{"login":"web-flow"}},{"author":{"login":"renovate[bot]"},"committer":{"login":"renovate[bot]"}}]`, "0", true},
+		"a commit with no committer account": {"renovate[bot]", `[{"author":{"login":"renovate[bot]"},"committer":null}]`, "0", false},
+		"a Copilot repair commit": {"renovate[bot]",
+			`[{"author":{"login":"renovate[bot]"},"committer":{"login":"web-flow"}},{"author":{"login":"Copilot"},"committer":{"login":"web-flow"}}]`, "0", false},
+		"a commit with no GitHub account": {"renovate[bot]", `[{"author":null,"committer":{"login":"web-flow"}}]`, "0", false},
+		"the commits API fails":           {"renovate[bot]", `[]`, "1", false},
+		"the commits are not JSON":        {"renovate[bot]", `not json`, "0", false},
+		"a person's pull request":         {"alex", `[{"author":{"login":"renovate[bot]"},"committer":{"login":"web-flow"}}]`, "0", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			state := testfixture.ScriptState(t, orchCovPagesScript)
+			state.Answer(t, "body", test.body)
+			state.Answer(t, "exit", test.exit)
+			verdict := classifyPullRequestChange(context.Background(), "acme/app", "7",
+				classifyTestView(test.login, "chore(deps): update actions/checkout to v5"), classifyWorkflowFiles)
+			if verdict.Mechanical != test.want {
+				t.Fatalf("mechanical = %t, want %t (%s)", verdict.Mechanical, test.want, verdict.Summary())
+			}
+		})
 	}
 }
