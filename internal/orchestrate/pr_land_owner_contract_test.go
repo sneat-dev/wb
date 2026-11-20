@@ -77,7 +77,8 @@ func (p *landOwnerProtocol) get(_ context.Context, request githubobserver.GetReq
 		}
 		body = raw
 	case "repos/acme/app/pulls/7/files?per_page=100":
-		body = p.files
+		// GitHub names the head each file was read at in its contents_url.
+		body = []byte(strings.ReplaceAll(string(p.files), `{"filename"`, `{"contents_url":"https://api.github.com/repos/acme/app/contents/f?ref=`+p.head+`","filename"`))
 	case "repos/acme/app/pulls/7/commits?per_page=100":
 		body = p.commits
 	case "repos/acme/app/branches/main":

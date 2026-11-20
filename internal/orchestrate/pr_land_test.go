@@ -210,7 +210,7 @@ case "$*" in
       rm -f "$S/pending-force-push"
       printf '%s' "$raced" >"$S/head"
     fi ;;
-  'api repos/acme/app/pulls/7/files?per_page=100 --include'|'api repos/acme/app/pulls/7/files?per_page=100') cat "$S/files" ;;
+  'api repos/acme/app/pulls/7/files?per_page=100 --include'|'api repos/acme/app/pulls/7/files?per_page=100') sed "s#{\"filename\"#{\"contents_url\":\"https://api.github.com/repos/acme/app/contents/f?ref=$head\",\"filename\"#g" "$S/files" ;;
   'api repos/acme/app/pulls/7/commits?per_page=100 --include'|'api repos/acme/app/pulls/7/commits?per_page=100') cat "$S/commits" ;;
   'api repos/acme/app/pulls?state=all&per_page=1&base='*|'api repos/acme/app/pulls?state=all&per_page=1&base='*' --include')
     # Pull requests onto the head branch; a test may name some.

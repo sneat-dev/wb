@@ -5,8 +5,6 @@ import (
 	"testing"
 )
 
-const newDirectReason = "adds new direct dependency"
-
 // classifyFile runs one manifest through the classifier and returns the refusal
 // summary, or "" when it is mechanical.
 func classifyFile(file ChangedFile) string {
