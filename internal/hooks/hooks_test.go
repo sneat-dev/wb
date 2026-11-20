@@ -3,7 +3,6 @@ package hooks
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +18,9 @@ import (
 func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == SecureHooksGitHelperArgument {
 		os.Exit(RunSecureHooksGitHelper(os.Args[2:]))
+	}
+	if code, ok := actAsWBForHookTemplates(os.Args[1:]); ok {
+		os.Exit(code)
 	}
 	// See internal/testenv: strip inherited WB_AGENT_* and pin GOWORK=off
 	// before any hooks test runs.
@@ -1892,7 +1894,7 @@ func TestBuiltInGoPrePushStillRunsVetAndTestWithGoMod(t *testing.T) {
 	mustMkdirAll(t, configDir)
 	mustWrite(t, filepath.Join(configDir, "hooks.yaml"), "version: 1\nprofiles:\n  include: [go]\nmetrics:\n  enabled: false\n")
 
-	result, err := Run(RunOptions{RepoPath: repo, Hook: "pre-push", Stdin: strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, WBExecutable: testPushTierExecutable(t, 2)})
+	result, err := Run(RunOptions{RepoPath: repo, Hook: "pre-push", Stdin: strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
 	if err != nil || result.ExitCode != 0 {
 		t.Fatalf("valid Go module pre-push should pass: result = %#v, error = %v", result, err)
 	}
@@ -1900,7 +1902,7 @@ func TestBuiltInGoPrePushStillRunsVetAndTestWithGoMod(t *testing.T) {
 	mustWrite(t, filepath.Join(repo, "main.go"), "package main\n\nimport \"fmt\"\n\nfunc main() { fmt.Printf(\"%d\", \"not a number\") }\n")
 	git(t, repo, "add", "main.go")
 	git(t, repo, "commit", "-m", "introduce a go vet violation")
-	result, err = Run(RunOptions{RepoPath: repo, Hook: "pre-push", Stdin: strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, WBExecutable: testPushTierExecutable(t, 2)})
+	result, err = Run(RunOptions{RepoPath: repo, Hook: "pre-push", Stdin: strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
 	if err == nil || result.ExitCode == 0 {
 		t.Fatalf("a real go vet violation should still block pre-push: result = %#v, error = %v", result, err)
 	}
@@ -1930,12 +1932,11 @@ func TestBuiltInGoPrePushSkipsPublicationTestsOnlyForPureRefDeletion(t *testing.
 		strings.Repeat("0", 64),
 	} {
 		result, err := Run(RunOptions{
-			RepoPath:     repo,
-			Hook:         "pre-push",
-			Stdin:        strings.NewReader("(delete) " + zero + " refs/heads/task " + strings.Repeat("a", len(zero)) + "\n"),
-			Stdout:       &bytes.Buffer{},
-			Stderr:       &bytes.Buffer{},
-			WBExecutable: testPushTierExecutable(t, 0),
+			RepoPath: repo,
+			Hook:     "pre-push",
+			Stdin:    strings.NewReader("(delete) " + zero + " refs/heads/task " + strings.Repeat("a", len(zero)) + "\n"),
+			Stdout:   &bytes.Buffer{},
+			Stderr:   &bytes.Buffer{},
 		})
 		if err != nil || result.ExitCode != 0 {
 			t.Fatalf("deletion-only pre-push = %#v, error=%v", result, err)
@@ -1952,15 +1953,15 @@ func TestBuiltInGoPrePushSkipsPublicationTestsOnlyForPureRefDeletion(t *testing.
 			"(delete) " + strings.Repeat("0", 40) + " refs/heads/old " + strings.Repeat("a", 40) + "\n" +
 				"refs/heads/main " + strings.Repeat("b", 40) + " refs/heads/main " + strings.Repeat("a", 40) + "\n",
 		),
-		Stdout:       &bytes.Buffer{},
-		Stderr:       &bytes.Buffer{},
-		WBExecutable: testPushTierExecutable(t, 2),
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
 	})
-	if err == nil || result.ExitCode != 97 {
+	if err == nil || result.ExitCode != 1 {
 		t.Fatalf("mixed publication bypassed Go checks: result=%#v error=%v", result, err)
 	}
-	if data, readErr := os.ReadFile(goLog); readErr != nil || string(data) != "called\n" {
-		t.Fatalf("mixed publication did not invoke Go checks exactly once: data=%q err=%v", data, readErr)
+	// go vet, then `go env GOVERSION` to pick the pinned linter's build.
+	if data, readErr := os.ReadFile(goLog); readErr != nil || string(data) != "called\ncalled\n" {
+		t.Fatalf("mixed publication did not invoke the Go checks: data=%q err=%v", data, readErr)
 	}
 }
 
@@ -2213,23 +2214,6 @@ func testWBExecutable(t *testing.T, name string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), name)
 	mustWriteExecutable(t, path, "#!/bin/sh\nexit 0\n")
-	resolved, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return resolved
-}
-
-// testPushTierExecutable fakes $WB_EXECUTABLE for a BuiltinGoPrePush or
-// BuiltinNodePrePush template under test: it answers "hooks push-tier" with a
-// fixed exit code and otherwise exits 0, so a plumbing test can pin exactly
-// which tier the template's own vet/test (or lint/test) gating obeys without
-// exercising the real classifier -- that logic has its own direct unit tests
-// against ClassifyPushTier.
-func testPushTierExecutable(t *testing.T, tier int) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "wb")
-	mustWriteExecutable(t, path, fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = hooks ] && [ \"$2\" = push-tier ]; then\n    exit %d\nfi\nexit 0\n", tier))
 	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		t.Fatal(err)

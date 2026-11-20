@@ -18,6 +18,7 @@ func (family commands) newHooksCmd() *cobra.Command {
 	cmd.AddCommand(family.newHooksMetricsCmd())
 	cmd.AddCommand(family.newHooksMeasureCmd())
 	cmd.AddCommand(family.newHooksPushTierCmd())
+	cmd.AddCommand(family.newHooksLintCmd())
 	cmd.AddCommand(family.newHooksLifecycleCmd())
 	return cmd
 }

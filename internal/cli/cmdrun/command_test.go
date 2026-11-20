@@ -33,7 +33,7 @@ func TestModeRefusalsCallNoOperation(t *testing.T) {
 		"queue apply": {"--queue", "--apply"}, "queue async": {"--queue", "--async"}, "queue config": {"--queue", "--config", "x"}, "queue key": {"--queue", "--idempotency-key", "x"}, "queue list": {"--queue", "--list"}, "queue history": {"--queue", "--history"}, "queue quiet": {"--queue", "--quiet"}, "queue changed": {"--queue", "--changed"}, "queue target": {"--queue", "--target", "main"},
 		"history apply": {"--history", "--apply"}, "history async": {"--history", "--async"}, "history config": {"--history", "--config", "x"}, "history key": {"--history", "--idempotency-key", "x"}, "history list": {"--history", "--list"}, "history quiet": {"--history", "--quiet"}, "history changed": {"--history", "--changed"}, "history target": {"--history", "--target", "x"}, "history days": {"--history", "--days", "0"},
 		"command apply": {"--apply", "--", "true"}, "command config": {"--config", "x", "--", "true"}, "command list": {"--list", "--", "true"}, "command days": {"--days", "2", "--", "true"}, "command format": {"--format", "json", "--", "true"}, "changed async": {"--changed", "--async", "--", "true"}, "command target": {"--target", "main", "--", "true"}, "async no worker": {"--async", "--worker", " ", "--", "true"}, "worker sync": {"--worker", "w", "--", "true"}, "key sync": {"--idempotency-key", "k", "--", "true"},
-		"recipe async": {"--async"}, "recipe worker": {"--worker", "w"}, "recipe key": {"--idempotency-key", "k"}, "recipe saturated": {"--allow-saturated-host"}, "recipe quiet": {"--quiet"}, "recipe changed": {"--changed"}, "recipe target": {"--target", "x"}, "recipe days": {"--days", "2"}, "recipe format": {"--json"}, "history argument": {"--history", "unexpected"}, "queue argument": {"--queue", "unexpected"}, "empty command": {"--"}, "two recipes": {"a", "b"},
+		"recipe async": {"--async"}, "recipe worker": {"--worker", "w"}, "recipe key": {"--idempotency-key", "k"}, "recipe saturated": {"--allow-saturated-host"}, "recipe quiet": {"--quiet"}, "recipe changed": {"--changed"}, "recipe target": {"--target", "x"}, "recipe days": {"--days", "2"}, "recipe format": {"--json"}, "history argument": {"--history", "unexpected"}, "queue timeout": {"--queue", "--timeout", "1s"}, "history timeout": {"--history", "--timeout", "1s"}, "recipe timeout": {"--timeout", "1s"}, "async timeout": {"--async", "--worker", "w", "--timeout", "1s", "--", "true"}, "negative timeout": {"--timeout", "-1s", "--", "true"}, "queue argument": {"--queue", "unexpected"}, "empty command": {"--"}, "two recipes": {"a", "b"},
 	}
 	for name, args := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -256,5 +256,50 @@ func TestAsyncJSONWriterErrorIsObservable(t *testing.T) {
 	command.SilenceUsage = true
 	if err := command.Execute(); err != sentinel {
 		t.Fatal(err)
+	}
+}
+
+func TestCommandModeTimeoutStopsTheCommandAndSaysSo(t *testing.T) {
+	t.Parallel()
+	deps := fakeDependencies()
+	var hadDeadline bool
+	deps.Execute = func(ctx context.Context, _ runexec.ExecuteRequest) (runexec.ExecuteResult, error) {
+		_, hadDeadline = ctx.Deadline()
+		<-ctx.Done()
+		return runexec.ExecuteResult{ChildFailed: true, ExitCode: -1}, ctx.Err()
+	}
+	_, _, err := executeTestCommand(t, []string{"--timeout", "20ms", "--", "golangci-lint", "run"}, deps)
+	coded, ok := err.(*codedError)
+	if !hadDeadline || !ok || coded.code != 1 || coded.message != "golangci-lint did not finish within 20ms and was stopped" {
+		t.Fatalf("deadline %v err %#v", hadDeadline, err)
+	}
+
+	deps.Execute = func(ctx context.Context, _ runexec.ExecuteRequest) (runexec.ExecuteResult, error) {
+		_, hadDeadline = ctx.Deadline()
+		return runexec.ExecuteResult{}, nil
+	}
+	if _, _, err := executeTestCommand(t, []string{"--timeout", "1m", "--", "true"}, deps); err != nil || !hadDeadline {
+		t.Fatalf("err %v deadline %v", err, hadDeadline)
+	}
+}
+
+func TestCommandModeKeepsTheResultOfACommandThatFinishedAtTheDeadline(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		result runexec.ExecuteResult
+		code   int
+	}{{runexec.ExecuteResult{}, 0}, {runexec.ExecuteResult{ChildFailed: true, ExitCode: 1}, 1}} {
+		deps := fakeDependencies()
+		deps.Execute = func(ctx context.Context, _ runexec.ExecuteRequest) (runexec.ExecuteResult, error) {
+			<-ctx.Done() // the deadline passes during receipt bookkeeping
+			return test.result, nil
+		}
+		_, _, err := executeTestCommand(t, []string{"--timeout", "10ms", "--", "golangci-lint", "run"}, deps)
+		if test.code == 0 && err != nil {
+			t.Fatalf("finished run reported %v", err)
+		}
+		if coded, ok := err.(*codedError); test.code != 0 && (!ok || coded.code != 1 || coded.message != "golangci-lint exited with status 1") {
+			t.Fatalf("finished exit 1 reported %#v", err)
+		}
 	}
 }

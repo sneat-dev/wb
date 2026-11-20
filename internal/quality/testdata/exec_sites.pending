@@ -32,7 +32,7 @@ internal/herdr/runner.go	1	task-8
 internal/hooks/git.go	5	task-15
 internal/hooks/manager.go	1	task-15
 internal/hooks/metrics.go	2	task-15
-internal/hooks/pushtier_classify.go	2	task-15
+internal/hooks/pushtier_classify.go	1	task-15
 internal/hooks/run.go	1	task-15
 internal/hostload/hostload.go	1	task-15
 internal/hostload/loadavg_darwin.go	1	task-15

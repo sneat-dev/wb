@@ -55,16 +55,23 @@ func classifyPendingPushWithTerminal(stdin io.Reader, repoRoot string, isTermina
 // means the default-branch publication test never matches, not that
 // classification fails.
 func DetectDefaultBranch(repoRoot string) string {
+	return detectDefaultBranchWith(func(args ...string) (string, error) { return gitOutput(repoRoot, args...) })
+}
+
+// detectDefaultBranchWith is DetectDefaultBranch over any git seam, so a
+// caller with its own command runner (wb hooks lint) resolves the default
+// branch through it.
+func detectDefaultBranchWith(git func(args ...string) (string, error)) string {
 	if override := strings.TrimSpace(os.Getenv(DefaultBranchEnv)); override != "" {
 		return override
 	}
-	if symref, err := gitOutput(repoRoot, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"); err == nil {
+	if symref, err := git("symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"); err == nil {
 		if name := strings.TrimPrefix(strings.TrimSpace(symref), "origin/"); name != "" {
 			return name
 		}
 	}
 	for _, candidate := range []string{"main", "master"} {
-		if _, err := gitOutput(repoRoot, "show-ref", "--verify", "--quiet", "refs/remotes/origin/"+candidate); err == nil {
+		if _, err := git("show-ref", "--verify", "--quiet", "refs/remotes/origin/"+candidate); err == nil {
 			return candidate
 		}
 	}

@@ -62,14 +62,41 @@ layer above always runs first, regardless of tier):
 
 - **Tier 0** (always, sub-second): base `git diff --check`, worktree
   admission, canonical-clone guard, custom policy, metrics. Never skippable.
-- **Tier 1** (`go vet` / `lint`): runs on any push that is not a pure
-  remote-ref deletion (40- or 64-zero-SHA) and not confined to the
-  `refs/wb/checkpoints/*` checkpoint namespace.
+- **Tier 1** (static checks via `wb hooks lint`): runs on any push that is
+  not a pure remote-ref deletion (40- or 64-zero-SHA) and not confined to the
+  `refs/wb/checkpoints/*` checkpoint namespace. Go: `go vet ./...` and
+  `golangci-lint run ./...` in every module the pushed commits touch, nested
+  `go.mod` included. Node: lint only, only when the push changes JS/TS —
+  `nx affected -t lint` against the push base in an Nx workspace, otherwise
+  each touched package's own `lint` script. Every check runs through
+  `wb run --`.
 - **Tier 2** marks a *publication* push — the default branch, a tag, or a branch
   with an open pull request — but runs the same static checks as Tier 1. Tests,
   builds, coverage, and race belong to the landing receipt and CI. An
   unresolved PR status (no network, or the bounded `gh` lookup timed out or
   missed) degrades to Tier 1; CI remains the publication gate.
+
+golangci-lint is the version the repository's CI pins: a
+`golangci/golangci-lint-action` `version` input in `.github/workflows/*`, or in
+a reusable workflow it calls (for example `strongo/cicd/...@<sha>`), read from
+that repository's local clone at the pinned ref without fetching;
+`v2.15.0` otherwise. It is built once per machine and Go toolchain into
+`<user cache>/wb/golangci-lint/<go version>/<version>/` by the first pre-push
+that needs it (seconds with a warm module cache, about a minute cold). Any
+non-zero exit of a lint step blocks — a finding, a crash, or `wb run` itself
+failing (repair wb; never skip the hook). Just two cases warn and leave lint
+to CI: every reported issue is golangci-lint's typecheck failure to load the
+toolchain's export data (a pin older than the local Go), or the step ran past
+its deadline (`wb run --timeout`; on Darwin and Linux the whole process group
+is stopped). A linter that cannot be built offline, and missing
+`node_modules`, also skip with a note.
+
+The Go pre-commit block also runs that linter over the staged packages only,
+reporting issues on new or changed lines (`--new-from-rev=HEAD`). It never
+builds the linter: until the first pre-push has, it says so and skips.
+Pre-push still lints whole modules, because a changed-line lint can miss
+cross-file issues. The Node pre-commit block already runs ESLint on the staged
+JS/TS files with the repository's own config.
 
 Every invocation prints one line naming the tier and the reason. There is no
 Git-hook-bypass escape hatch: Tier 0 is mandatory on every push, including a

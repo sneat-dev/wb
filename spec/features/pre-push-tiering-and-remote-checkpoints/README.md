@@ -45,12 +45,34 @@ The managed pre-push hook MUST have exactly three tiers. Tier 0 (the base
 `git diff --check`, worktree admission, canonical-clone guard, custom policy,
 and metrics blocks) MUST run unconditionally on every push and MUST stay
 sub-second; it is never skippable by any push classification. Tier 1
-(`go vet ./...` / the Node profile's `lint`) MUST run on every push that is
+(static checks: `go vet` and golangci-lint for Go, `lint` for Node — see
+tier-1-lint-scope) MUST run on every push that is
 not a pure remote-ref deletion and not confined to the
 `refs/wb/checkpoints/*` namespace. Tier 2 MUST identify a publication push for
 telemetry and downstream policy, but MUST run the same static checks as Tier 1.
 Local pre-push hooks MUST NOT run tests, builds, coverage, or race; landing and
 CI own those gates.
+
+#### REQ: tier-1-lint-scope
+
+Tier 1 MUST check every Go module the pushed commits touch — each nested
+`go.mod` included, a repository with no root module included — with `go vet
+./...` and `golangci-lint run ./...` from that module's directory, and every
+JS/TS package they touch with lint only (`nx affected -t lint` against the push
+base in an Nx workspace, otherwise the nearest package's own `lint` script).
+Each check MUST run through `wb run --`. golangci-lint MUST be the version the
+repository's own CI pins (a golangci-lint-action `version` input in its
+workflows, or in a reusable workflow it calls, read from that workflow
+repository's local clone at the pinned ref), built once per machine with the Go
+toolchain the module selects. Any non-zero exit of a check MUST block,
+except when every reported issue is golangci-lint's typecheck failure to load
+the toolchain's export data, or the check ran past its deadline; those are
+reported and left to CI. A linter that cannot be built offline, and missing
+JS dependencies (`node_modules`), skip lint with a note.
+
+The managed pre-commit hook MUST additionally run that pinned golangci-lint
+over the staged Go packages only, reporting issues on new or changed lines
+(`--new-from-rev=HEAD`), and MUST never build a linter.
 
 #### REQ: publication-definition
 

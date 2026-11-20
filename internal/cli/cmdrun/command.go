@@ -11,6 +11,7 @@ import (
 	"github.com/sneat-dev/wb/internal/runqueue"
 	"github.com/spf13/cobra"
 	"strings"
+	"time"
 )
 
 type Dependencies struct {
@@ -37,6 +38,7 @@ func New(runtime shared.Runtime, deps Dependencies) *cobra.Command {
 		workerID           string
 		allowSaturatedHost bool
 		quiet              bool
+		timeout            time.Duration
 		queueFlag          bool
 		changed            bool
 		changedTarget      string
@@ -146,14 +148,14 @@ wb run --changed --target origin/main -- go vet`,
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if queueFlag {
-				if apply || async || configPath != "" || idempotencyKey != "" || list || history || quiet || changed || changedTarget != "" {
-					return usage("--apply, --async, --changed, --config, --history, --idempotency-key, --list, --quiet, and --target cannot be used with --queue")
+				if apply || async || configPath != "" || idempotencyKey != "" || list || history || quiet || changed || changedTarget != "" || timeout != 0 {
+					return usage("--apply, --async, --changed, --config, --history, --idempotency-key, --list, --quiet, --target, and --timeout cannot be used with --queue")
 				}
 				return printQueue(cmd.OutOrStdout(), deps.Queue(runexec.QueueRequest{ProjectsRoot: runtime.Flags().ProjectsRoot}), jsonOut)
 			}
 			if history {
-				if apply || async || configPath != "" || idempotencyKey != "" || list || quiet || changed || changedTarget != "" {
-					return usage("--apply, --async, --changed, --config, --idempotency-key, --list, --quiet, and --target cannot be used with --history")
+				if apply || async || configPath != "" || idempotencyKey != "" || list || quiet || changed || changedTarget != "" || timeout != 0 {
+					return usage("--apply, --async, --changed, --config, --idempotency-key, --list, --quiet, --target, and --timeout cannot be used with --history")
 				}
 				if days < 1 {
 					return usage("--days must be at least 1")
@@ -183,7 +185,13 @@ wb run --changed --target origin/main -- go vet`,
 				} else if changedTarget != "" {
 					return usage("--target requires --changed")
 				}
+				if timeout < 0 {
+					return usage("--timeout must not be negative")
+				}
 				if async {
+					if timeout != 0 {
+						return usage("--timeout cannot be combined with --async")
+					}
 					if strings.TrimSpace(workerID) == "" {
 						return usage("--async requires --worker <stable-id>; WB never guesses which sandbox may execute the job")
 					}
@@ -202,7 +210,21 @@ wb run --changed --target origin/main -- go vet`,
 					return usage("--idempotency-key requires --async command mode")
 				}
 				progress := newQueueProgress(cmd.ErrOrStderr(), !quiet, configPath, deps.LoadHint)
-				result, err := deps.Execute(cmd.Context(), runexec.ExecuteRequest{Argv: append([]string(nil), args...), ProjectsRoot: runtime.Flags().ProjectsRoot, ConfigPath: configPath, AllowSaturatedHost: allowSaturatedHost, Stdin: cmd.InOrStdin(), Stdout: cmd.OutOrStdout(), Stderr: cmd.ErrOrStderr(), Observe: progress.report})
+				ctx := cmd.Context()
+				if timeout > 0 {
+					// The deadline is enforced here, where the child is started,
+					// so cancellation owns the child's whole process group.
+					var cancel context.CancelFunc
+					ctx, cancel = context.WithTimeout(ctx, timeout)
+					defer cancel()
+				}
+				result, err := deps.Execute(ctx, runexec.ExecuteRequest{Argv: append([]string(nil), args...), ProjectsRoot: runtime.Flags().ProjectsRoot, ConfigPath: configPath, AllowSaturatedHost: allowSaturatedHost, Stdin: cmd.InOrStdin(), Stdout: cmd.OutOrStdout(), Stderr: cmd.ErrOrStderr(), Observe: progress.report})
+				// Only a run the deadline actually cut short is a timeout: a
+				// command that finished (exit 0, or its own non-zero exit) just
+				// as the deadline passed keeps its result.
+				if timeout > 0 && errors.Is(ctx.Err(), context.DeadlineExceeded) && (err != nil || (result.ChildFailed && result.ExitCode < 0)) {
+					return runtime.ExitError(1, fmt.Sprintf("%s did not finish within %s and was stopped", args[0], timeout))
+				}
 				if err != nil {
 					return err
 				}
@@ -225,6 +247,9 @@ wb run --changed --target origin/main -- go vet`,
 			}
 			if quiet {
 				return usage("--quiet requires command mode with run --")
+			}
+			if timeout != 0 {
+				return usage("--timeout requires synchronous command mode with run --")
 			}
 			if changed || changedTarget != "" {
 				return usage("--changed and --target require command mode with run --")
@@ -278,6 +303,7 @@ wb run --changed --target origin/main -- go vet`,
 	shared.AddJSONFormatFlags(cmd, &jsonOut)
 	cmd.Flags().BoolVar(&list, "list", false, "list configured recipes and exit")
 	cmd.Flags().BoolVar(&quiet, "quiet", false, "command mode: silence the queued/admitted/done receipt lines on stderr")
+	cmd.Flags().DurationVar(&timeout, "timeout", 0, "synchronous command mode: stop the command and its process group after this long, queue wait included, and exit 1 (0: no limit)")
 	cmd.Flags().BoolVar(&queueFlag, "queue", false, "list this machine's CPU lease queue (running and waiting governed commands) and exit")
 	cmd.Flags().BoolVar(&changed, "changed", false, "command mode: append the Go packages a local diff touches (against --target) to the command instead of running it as given; exits 0 without running when nothing changed")
 	cmd.Flags().StringVar(&changedTarget, "target", "", "merge-base branch or ref for --changed (default: the repository's detected default branch)")

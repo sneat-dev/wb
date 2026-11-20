@@ -18,7 +18,7 @@ import (
 func newHooksCmd(inv *invocation) *cobra.Command {
 	return cmdhooks.New(newCLIRuntime(inv), cmdhooks.GitOperations{
 		Apply: hooks.Apply, Check: hooks.Check, LocalRepos: hooks.LocalRepos, Run: hooks.Run,
-		Classify: hooks.ClassifyPendingPush, LoadPolicy: hooks.LoadPolicy, ReadEvents: hooks.ReadEvents,
+		Classify: hooks.ClassifyPendingPush, Lint: hooks.Lint, LoadPolicy: hooks.LoadPolicy, ReadEvents: hooks.ReadEvents,
 		Executable: hookExecutable, Now: time.Now, Exit: os.Exit,
 	}, cmdhooks.LifecycleOperations{
 		Check: func(config string) (lifecyclehooks.CheckReport, error) {

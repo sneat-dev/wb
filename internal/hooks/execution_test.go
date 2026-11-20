@@ -30,18 +30,16 @@ func TestBuiltInNodePrePushSelectsPackageManager(t *testing.T) {
 			repo, toolLog := prepareNodeProfileTest(t, test.lockfile, "lint,test", "node", "npm", "pnpm", "yarn", "bun")
 
 			result, err := Run(RunOptions{
-				RepoPath:     repo,
-				Hook:         "pre-push",
-				Stdin:        strings.NewReader("refs/heads/main\n"),
-				Stdout:       &bytes.Buffer{},
-				Stderr:       &bytes.Buffer{},
-				WBExecutable: testPushTierExecutable(t, 2),
+				RepoPath: repo,
+				Hook:     "pre-push",
+				Stdin:    strings.NewReader("refs/heads/main\n"),
+				Stdout:   &bytes.Buffer{},
+				Stderr:   &bytes.Buffer{},
 			})
 			if err != nil || result.ExitCode != 0 {
 				t.Fatalf("run result = %#v, error = %v", result, err)
 			}
 			if got, want := readLogLines(t, toolLog), []string{
-				"node:lint",
 				test.manager + ":run lint",
 			}; !reflect.DeepEqual(got, want) {
 				t.Fatalf("tool calls = %v, want %v", got, want)
@@ -52,11 +50,11 @@ func TestBuiltInNodePrePushSelectsPackageManager(t *testing.T) {
 
 func TestBuiltInNodePrePushSkipsUndefinedScripts(t *testing.T) {
 	repo, toolLog := prepareNodeProfileTest(t, "", "lint", "node", "npm")
-	result, err := Run(RunOptions{RepoPath: repo, Hook: "pre-push", Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, WBExecutable: testPushTierExecutable(t, 2)})
+	result, err := Run(RunOptions{RepoPath: repo, Hook: "pre-push", Stdin: strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
 	if err != nil || result.ExitCode != 0 {
 		t.Fatalf("run result = %#v, error = %v", result, err)
 	}
-	if got, want := readLogLines(t, toolLog), []string{"node:lint", "npm:run lint"}; !reflect.DeepEqual(got, want) {
+	if got, want := readLogLines(t, toolLog), []string{"npm:run lint"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("tool calls = %v, want %v", got, want)
 	}
 }
@@ -68,13 +66,13 @@ func TestBuiltInNodePrePushReportsMissingTools(t *testing.T) {
 		tools     []string
 		wantError string
 	}{
-		{name: "package manager", lockfile: "pnpm-lock.yaml", tools: []string{"node"}, wantError: "Required Node package manager not found: pnpm"},
-		{name: "runtime", tools: []string{"npm"}, wantError: "Required Node runtime not found: node"},
+		{name: "package manager", lockfile: "pnpm-lock.yaml", tools: []string{"node"}, wantError: "required Node tool not found on PATH: pnpm"},
+		{name: "runtime", tools: []string{"npm"}, wantError: "required Node tool not found on PATH: node"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			repo, _ := prepareNodeProfileTest(t, test.lockfile, "lint,test", test.tools...)
 			var stderr bytes.Buffer
-			result, err := Run(RunOptions{RepoPath: repo, Hook: "pre-push", Stdout: &bytes.Buffer{}, Stderr: &stderr})
+			result, err := Run(RunOptions{RepoPath: repo, Hook: "pre-push", Stdin: strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &stderr})
 			if err == nil || result.ExitCode != 1 || !strings.Contains(stderr.String(), test.wantError) {
 				t.Fatalf("run result = %#v, error = %v, stderr = %q", result, err, stderr.String())
 			}
@@ -294,6 +292,9 @@ func prepareNodeProfileTest(t *testing.T, lockfile, scripts string, tools ...str
 	if lockfile != "" {
 		mustWrite(t, filepath.Join(repo, lockfile), "test\n")
 	}
+	// With no origin to diff the push against, the lint-only node pre-push
+	// lints every package; its linter needs installed dependencies.
+	mustMkdirAll(t, filepath.Join(repo, "node_modules"))
 	configDir := filepath.Join(repo, ".wb")
 	mustMkdirAll(t, configDir)
 	mustWrite(t, filepath.Join(configDir, "noop.sh"), "#!/bin/sh\nexit 0\n")

@@ -1,0 +1,672 @@
+package hooks
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/sneat-dev/wb/internal/console"
+	"github.com/sneat-dev/wb/internal/process"
+	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/streambranch"
+)
+
+// LintOptions drive `wb hooks lint`, the static-check step the built-in Go
+// and Node profiles run at pre-commit and pre-push.
+//
+// Pre-push lints every Go module (nested go.mod included) and every JS/TS
+// package the pushed commits touch, with the linter version the repository's
+// own CI pins. Pre-commit runs golangci-lint over the staged packages only,
+// reporting issues on new or changed lines, and never builds a linter: a
+// commit is a save point measured in seconds.
+type LintOptions struct {
+	RepoRoot     string
+	Hook         string
+	Language     string
+	ProjectsRoot string
+	WBExecutable string
+	Stdin        io.Reader
+	Stdout       io.Writer
+	Stderr       io.Writer
+	Tools        LintTools
+}
+
+// LintTools are the process seams `wb hooks lint` uses. Zero fields take
+// their production behaviour; tests replace them to pin exactly what runs.
+type LintTools struct {
+	// Capture runs a plain helper (git, go env) and returns its stdout.
+	Capture func(dir string, env []string, name string, args ...string) (string, error)
+	// Governed runs one check through `wb run --`, streaming its output to
+	// stdout and stderr, and returns the checked command's exit code. A
+	// check still running after timeout is killed and reported as an error.
+	Governed func(dir string, env []string, timeout time.Duration, stdout, stderr io.Writer, args ...string) (int, error)
+	// Classify decides the push tier for the pushed-ref list.
+	Classify func(stdin io.Reader, repoRoot string) (Classification, error)
+	LookPath func(string) (string, error)
+	// CacheRoot is where pinned linter binaries are kept.
+	CacheRoot func() (string, error)
+	// IsTerminal reports whether stdin is an interactive terminal.
+	IsTerminal func(any) bool
+	// GOOS overrides runtime.GOOS for the linter's executable name.
+	GOOS string
+}
+
+const (
+	lintLanguageGo   = "go"
+	lintLanguageNode = "node"
+)
+
+// Lint runs the requested hook's static checks and returns the process exit
+// code: 0 when the checks pass or have nothing to check, 1 on findings, 2 on
+// a usage error.
+func Lint(options LintOptions) int {
+	options = withLintDefaults(options)
+	runner := lintRunner{options: options}
+	root, err := options.Tools.Capture(firstNonEmpty(options.RepoRoot, "."), nil, "git", "rev-parse", "--show-toplevel")
+	if root = strings.TrimSpace(root); err != nil || root == "" {
+		runner.say("WB hook: lint must run inside a Git checkout: %v", err)
+		return 2
+	}
+	runner.options.RepoRoot = root
+	switch {
+	case options.Hook == "pre-push" && options.Language == lintLanguageGo:
+		return runner.prePushGo()
+	case options.Hook == "pre-push" && options.Language == lintLanguageNode:
+		return runner.prePushNode()
+	case options.Hook == "pre-commit" && options.Language == lintLanguageGo:
+		return runner.preCommitGo()
+	}
+	runner.say("WB hook: unsupported lint target --hook %q --language %q (want pre-push with go or node, or pre-commit with go).", options.Hook, options.Language)
+	return 2
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func withLintDefaults(options LintOptions) LintOptions {
+	if options.Stdin == nil {
+		options.Stdin = os.Stdin
+	}
+	if options.Stdout == nil {
+		options.Stdout = os.Stdout
+	}
+	if options.Stderr == nil {
+		options.Stderr = os.Stderr
+	}
+	tools := &options.Tools
+	if tools.Capture == nil {
+		real := runner.New()
+		tools.Capture = func(dir string, env []string, name string, args ...string) (string, error) {
+			return captureWith(real, dir, env, name, args...)
+		}
+	}
+	if tools.Governed == nil {
+		executable, projectsRoot := options.WBExecutable, options.ProjectsRoot
+		tools.Governed = func(dir string, env []string, timeout time.Duration, stdout, stderr io.Writer, args ...string) (int, error) {
+			return governedCommand(executable, projectsRoot, timeout, stdout, stderr, dir, env, args...)
+		}
+	}
+	if tools.Classify == nil {
+		tools.Classify = ClassifyPendingPush
+	}
+	if tools.LookPath == nil {
+		tools.LookPath = exec.LookPath
+	}
+	if tools.CacheRoot == nil {
+		tools.CacheRoot = os.UserCacheDir
+	}
+	if tools.IsTerminal == nil {
+		tools.IsTerminal = console.IsTerminal
+	}
+	return options
+}
+
+// Every check a hook runs is bounded, so a stalled network or a hung linter
+// daemon can never hold a commit or push open indefinitely — a hook that
+// hangs is a hook people learn to bypass.
+const (
+	captureTimeout      = time.Minute
+	buildTimeout        = 10 * time.Minute
+	prePushCheckTimeout = 10 * time.Minute
+	preCommitTimeout    = 2 * time.Minute
+)
+
+// captureWith runs one helper (git, go env) through the task-8 command
+// runner and returns its stdout.
+func captureWith(commands runner.Runner, dir string, env []string, name string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), captureTimeout)
+	defer cancel()
+	result, err := commands.RunOpts(ctx, dir, runner.RunOptions{Env: append(os.Environ(), env...)}, name, args...)
+	if err != nil {
+		return "", fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(result.Stderr))
+	}
+	return result.Stdout, nil
+}
+
+// gatewayGrace is how long past a check's own deadline the hook waits for
+// `wb run --timeout` to stop the check before stopping wb itself.
+const gatewayGrace = 15 * time.Second
+
+// errCheckTimedOut marks a check the hook itself stopped at its deadline: the
+// only governed-command failure that is left to CI rather than blocking.
+var errCheckTimedOut = errors.New("did not finish within its deadline")
+
+// governedCommand routes one check through `wb run --` so it is admitted
+// against the shared CPU budget and recorded like every other governed
+// command, returning the exit code wb reports.
+//
+// The deadline is passed to `wb run --timeout`, which on Darwin and Linux
+// stops the check's whole process group. As a backstop the hook runs wb in
+// its own process group (never attached to the terminal: a hook check reads
+// no input) and stops that group gatewayGrace later, with a bounded wait for
+// any descendant still holding an output pipe. A non-zero exit at or past
+// the deadline is the hook's own timeout and returns errCheckTimedOut; any
+// other non-zero exit is returned as is, and the caller blocks on it.
+func governedCommand(executable, projectsRoot string, timeout time.Duration, stdout, stderr io.Writer, dir string, env []string, args ...string) (int, error) {
+	return governedCommandWithGrace(executable, projectsRoot, timeout, gatewayGrace, stdout, stderr, dir, env, args...)
+}
+
+func governedCommandWithGrace(executable, projectsRoot string, timeout, grace time.Duration, stdout, stderr io.Writer, dir string, env []string, args ...string) (int, error) {
+	if len(args) == 0 {
+		return 0, errors.New("no command to run")
+	}
+	if timeout <= 0 {
+		return 0, fmt.Errorf("invalid deadline %s for %s", timeout, args[0])
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout+grace)
+	defer cancel()
+	full := []string{}
+	if projectsRoot != "" {
+		full = append(full, "--projects-root", projectsRoot)
+	}
+	full = append(append(full, "run", "--quiet", "--timeout", timeout.String(), "--"), args...)
+	cmd := process.CommandContext(ctx, executable, full...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), env...)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	started := time.Now()
+	err := cmd.Run()
+	var exitErr *exec.ExitError
+	switch {
+	case err == nil:
+		return 0, nil
+	case ctx.Err() != nil || (errors.As(err, &exitErr) && time.Since(started) >= timeout):
+		return 0, fmt.Errorf("%s %w (%s)", args[0], errCheckTimedOut, timeout)
+	case errors.As(err, &exitErr):
+		return exitErr.ExitCode(), nil
+	}
+	return 0, err
+}
+
+type lintRunner struct {
+	options LintOptions
+}
+
+func (r lintRunner) say(format string, args ...any) {
+	_, _ = fmt.Fprintf(r.options.Stderr, format+"\n", args...)
+}
+
+// governed runs one check through `wb run --` with the hook's own output.
+func (r lintRunner) governed(dir string, env []string, timeout time.Duration, args ...string) (int, error) {
+	return r.options.Tools.Governed(dir, env, timeout, r.options.Stdout, r.options.Stderr, args...)
+}
+
+// checkFailed runs one governed check and reports whether it blocks: any
+// non-zero exit, and any failure to run it, blocks; only the hook's own
+// deadline expiring is left to CI.
+func (r lintRunner) checkFailed(check, where string, run func() (int, error)) bool {
+	code, err := run()
+	switch {
+	case errors.Is(err, errCheckTimedOut):
+		r.say("WB hook: %s did not finish in %s (%v); CI remains the gate.", check, where, err)
+		return false
+	case err != nil:
+		r.say("WB hook: %s could not be run through wb in %s (%v). This is a WB problem, not a lint result: repair wb rather than skipping the hook.", check, where, err)
+		return true
+	case code != 0:
+		r.say("WB hook: %s failed in %s (exit %d). If the output above is a wb error rather than %s's, repair wb rather than skipping the hook.", check, where, code, check)
+		return true
+	}
+	return false
+}
+
+// syncBuffer is a bytes.Buffer two process-output copiers may write at once:
+// exec copies stdout and stderr on separate goroutines when they differ.
+type syncBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.String()
+}
+
+// splitNUL splits `git -z` output. Paths are taken exactly as Git wrote
+// them: a name may legitimately begin or end with a space.
+func splitNUL(out string) []string {
+	var parts []string
+	for _, part := range strings.Split(out, "\x00") {
+		if part = strings.TrimRight(part, "\r\n"); part != "" {
+			parts = append(parts, part)
+		}
+	}
+	return parts
+}
+
+func (r lintRunner) git(args ...string) (string, error) {
+	return r.options.Tools.Capture(r.options.RepoRoot, nil, "git", args...)
+}
+
+// pushScope reads the pushed-ref list, prints the tier decision, and returns
+// the ref updates whose commits must be checked. skip is true for a Tier 0
+// push (deletions, checkpoint refs, stream branches only).
+func (r lintRunner) pushScope() (updates []RefUpdate, skip bool) {
+	classifyInput := r.options.Stdin
+	if !r.options.Tools.IsTerminal(r.options.Stdin) {
+		input, _ := io.ReadAll(r.options.Stdin)
+		updates, _ = ParseRefUpdates(bytes.NewReader(input))
+		classifyInput = bytes.NewReader(input)
+	}
+	classification, err := r.options.Tools.Classify(classifyInput, r.options.RepoRoot)
+	if err != nil {
+		classification = Classification{Tier: TierLint, Reason: fmt.Sprintf("classification failed (%v); defaulting to the fast lane, CI is the real gate", err)}
+	}
+	_, _ = fmt.Fprintf(r.options.Stdout, "WB hook: tier %d — %s\n", classification.ExitCode(), classification.Reason)
+	if classification.Tier == TierSkip {
+		return nil, true
+	}
+	checked := updates[:0:0]
+	for _, update := range updates {
+		if isDeletion(update) || isCheckpointRef(update.RemoteRef) || streambranch.Is(update.RemoteRef) {
+			continue
+		}
+		checked = append(checked, update)
+	}
+	if len(checked) == 0 {
+		// An interactive or unparsable invocation names no refs: check what
+		// HEAD would publish.
+		checked = []RefUpdate{{LocalRef: "HEAD", LocalSHA: "HEAD", RemoteSHA: zeroOID40}}
+	}
+	return checked, false
+}
+
+// pushedFiles lists the repository-relative paths each pushed ref changes:
+// the tree diff from the remote's current tip (or, for a new branch or a
+// remote tip this checkout lacks, from the merge base with the default
+// branch) to the pushed tip. A tree diff covers merge commits, a force push
+// that drops commits, and commits already on some other remote ref (a stream
+// branch pushed at Tier 0), none of which a "commits not on any remote" log
+// would report. Renames count both paths, since removing a file can break
+// the package it left. all is true when no base is known, and the caller
+// must then check everything.
+func (r lintRunner) pushedFiles(updates []RefUpdate) (files []string, all bool) {
+	seen := map[string]bool{}
+	for _, update := range updates {
+		base, ok := r.pushBase(update)
+		if !ok {
+			return nil, true
+		}
+		out, err := r.git("diff", "--name-only", "-z", "--no-renames", base, update.LocalSHA, "--")
+		if err != nil {
+			return nil, true
+		}
+		for _, file := range splitNUL(out) {
+			if !seen[file] {
+				seen[file] = true
+				files = append(files, file)
+			}
+		}
+	}
+	sort.Strings(files)
+	return files, false
+}
+
+// pushBase names the commit a pushed tip is compared against: the
+// remote's current tip when this checkout has it, otherwise the merge base
+// with the default branch's remote-tracking ref. ok is false when neither is
+// known locally.
+func (r lintRunner) pushBase(update RefUpdate) (string, bool) {
+	if !isZeroOID(update.RemoteSHA) {
+		if _, err := r.git("cat-file", "-e", update.RemoteSHA+"^{commit}"); err == nil {
+			return update.RemoteSHA, true
+		}
+	}
+	defaultBranch := detectDefaultBranchWith(r.git)
+	if defaultBranch == "" {
+		return "", false
+	}
+	base, err := r.git("merge-base", update.LocalSHA, "refs/remotes/origin/"+defaultBranch)
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(base), true
+}
+
+// ignoredGoDir reports whether the go command itself ignores a directory:
+// testdata, vendor, and names starting with "." or "_" (plus node_modules,
+// which is never Go source).
+func ignoredGoDir(rel string) bool {
+	if rel == "." {
+		return false
+	}
+	for _, segment := range strings.Split(filepath.ToSlash(rel), "/") {
+		if segment == "testdata" || segment == "vendor" || segment == "node_modules" ||
+			strings.HasPrefix(segment, ".") || strings.HasPrefix(segment, "_") {
+			return true
+		}
+	}
+	return false
+}
+
+// nearestMarkerDir walks up from a repository-relative directory to the
+// closest directory holding marker, stopping at the repository root.
+func nearestMarkerDir(repoRoot, dir, marker string) (string, bool) {
+	candidate := path.Clean(filepath.ToSlash(dir))
+	for {
+		if info, err := os.Stat(filepath.Join(repoRoot, filepath.FromSlash(candidate), marker)); err == nil && !info.IsDir() {
+			return candidate, true
+		}
+		if candidate == "." {
+			return "", false
+		}
+		candidate = path.Dir(candidate)
+	}
+}
+
+func isGolangciConfig(file string) bool {
+	switch path.Base(file) {
+	case ".golangci.yml", ".golangci.yaml", ".golangci.toml", ".golangci.json":
+		return true
+	}
+	return false
+}
+
+func isGoModuleInput(file string) bool {
+	switch path.Base(file) {
+	case "go.mod", "go.sum":
+		return true
+	}
+	return isGolangciConfig(file) || strings.HasSuffix(file, ".go")
+}
+
+// moduleRelative expresses a repository-relative directory relative to the
+// module that contains it.
+func moduleRelative(module, dir string) string {
+	switch {
+	case dir == module:
+		return "."
+	case module == ".":
+		return dir
+	}
+	return strings.TrimPrefix(dir, module+"/")
+}
+
+// goModulesFor maps changed files to the Go modules that own them, each
+// module a repository-relative directory. A file in a directory the go
+// command ignores (testdata, vendor, _x, .x) touches no module. A golangci
+// configuration file touches every module at or beneath its directory, since
+// golangci-lint finds it by walking up from each. With all set, every module
+// in the repository is returned.
+func goModulesFor(repoRoot string, files []string, all bool) []string {
+	if all {
+		return allMarkerDirs(repoRoot, "go.mod", ignoredGoDir)
+	}
+	var modulesInRepo []string
+	walked := false
+	seen := map[string]bool{}
+	var modules []string
+	add := func(module string) {
+		if !seen[module] {
+			seen[module] = true
+			modules = append(modules, module)
+		}
+	}
+	for _, file := range files {
+		if !isGoModuleInput(file) {
+			continue
+		}
+		dir := path.Dir(file)
+		if isGolangciConfig(file) {
+			if !walked {
+				// Walk the repository only when a linter configuration changed.
+				modulesInRepo, walked = allMarkerDirs(repoRoot, "go.mod", ignoredGoDir), true
+			}
+			for _, module := range modulesInRepo {
+				if dir == "." || module == dir || strings.HasPrefix(module, dir+"/") {
+					add(module)
+				}
+			}
+		}
+		module, ok := nearestMarkerDir(repoRoot, dir, "go.mod")
+		if !ok || ignoredGoDir(module) || ignoredGoDir(moduleRelative(module, dir)) {
+			continue
+		}
+		add(module)
+	}
+	sort.Strings(modules)
+	return modules
+}
+
+// allMarkerDirs lists every repository-relative directory holding marker,
+// skipping .git and any directory ignored reports.
+func allMarkerDirs(repoRoot, marker string, ignored func(string) bool) []string {
+	var dirs []string
+	_ = filepath.WalkDir(repoRoot, func(current string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		rel, _ := filepath.Rel(repoRoot, current)
+		rel = filepath.ToSlash(rel)
+		if entry.IsDir() {
+			if rel != "." && (entry.Name() == ".git" || ignored(rel)) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if entry.Name() == marker {
+			dirs = append(dirs, path.Dir(rel))
+		}
+		return nil
+	})
+	sort.Strings(dirs)
+	return dirs
+}
+
+func moduleLabel(module string) string {
+	if module == "." {
+		return "the root module"
+	}
+	return "module " + module
+}
+
+func (r lintRunner) moduleDir(module string) string {
+	return filepath.Join(r.options.RepoRoot, filepath.FromSlash(module))
+}
+
+// prePushGo vets and lints every Go module the pushed commits touch.
+func (r lintRunner) prePushGo() int {
+	updates, skip := r.pushScope()
+	if skip {
+		return 0
+	}
+	files, all := r.pushedFiles(updates)
+	modules := goModulesFor(r.options.RepoRoot, files, all)
+	if len(modules) == 0 {
+		r.say("WB hook: this push changes no Go module; skipping go vet and golangci-lint.")
+		return 0
+	}
+	if _, err := r.options.Tools.LookPath("go"); err != nil {
+		r.say("WB hook: go is not on PATH; skipping go vet and golangci-lint (CI remains the gate).")
+		return 0
+	}
+	pin := resolveGolangciPin(r.options.RepoRoot, r.options.ProjectsRoot, r.options.Tools.Capture)
+	failed := false
+	for _, module := range modules {
+		dir := r.moduleDir(module)
+		if r.checkFailed("go vet", moduleLabel(module), func() (int, error) {
+			return r.governed(dir, nil, prePushCheckTimeout, "go", "vet", "./...")
+		}) {
+			failed = true
+		}
+		linter, ok := r.golangciBinary(pin, dir, true)
+		if !ok {
+			continue
+		}
+		if r.runGolangci(linter, pin, module, dir, prePushCheckTimeout, "run", "./...") {
+			failed = true
+		}
+	}
+	if failed {
+		return 1
+	}
+	return 0
+}
+
+// golangciIssue is one issue line in golangci-lint's default text format,
+// "<file>.go:<line>[:col]: <message> (<linter>)".
+var (
+	golangciIssue = regexp.MustCompile(`^(\S+\.go):\d+(?::\d+)?: (.*) \(([A-Za-z0-9_-]+)\)$`)
+	ansiEscape    = regexp.MustCompile(`\x1b\[[0-9;?]*[A-Za-z]`)
+)
+
+// onlyExportDataIssues reports whether golangci-lint's issues are the
+// signature of a pinned linter older than the local Go: every issue line is
+// from typecheck (one unreadable package cascades into typecheck errors in
+// its importers) and at least one says it could not load export data. Any
+// other linter's issue, or no issue at all, means the run is a verdict on
+// the code.
+func onlyExportDataIssues(output string) bool {
+	exportData := false
+	for _, line := range strings.Split(strings.ReplaceAll(ansiEscape.ReplaceAllString(output, ""), "\r", ""), "\n") {
+		match := golangciIssue.FindStringSubmatch(line)
+		if match == nil {
+			continue
+		}
+		if match[3] != "typecheck" {
+			return false
+		}
+		exportData = exportData || strings.Contains(match[2], "could not load export data")
+	}
+	return exportData
+}
+
+// runGolangci runs one golangci-lint invocation and reports whether it
+// blocks. Any non-zero exit blocks, except two positively identified cases
+// that are reported and left to CI: every reported issue is the export-data
+// typecheck failure of a pin older than this toolchain, or the hook's own
+// deadline expired.
+func (r lintRunner) runGolangci(linter string, pin golangciPin, module, dir string, timeout time.Duration, args ...string) bool {
+	var output syncBuffer
+	check := "golangci-lint " + pin.Version
+	return r.checkFailed(check, moduleLabel(module), func() (int, error) {
+		code, err := r.options.Tools.Governed(dir, nil, timeout,
+			io.MultiWriter(r.options.Stdout, &output), io.MultiWriter(r.options.Stderr, &output),
+			append([]string{linter}, args...)...)
+		switch {
+		case err == nil && code == 5 && strings.Contains(strings.ToLower(output.String()), "no go files"):
+			// A go.mod-only, tools, or build-tag-gated module: nothing to lint.
+			r.say("WB hook: golangci-lint found no Go files to lint in %s; skipped.", moduleLabel(module))
+			return 0, nil
+		case err == nil && code != 0 && onlyExportDataIssues(output.String()):
+			r.say("WB hook: golangci-lint %s cannot read this Go toolchain's export data; its typecheck errors are not findings. Bump the pin in %s (CI uses it too). Skipping golangci-lint in %s, CI remains the lint gate.", pin.Version, pin.Source, moduleLabel(module))
+			return 0, nil
+		}
+		return code, err
+	})
+}
+
+// preCommitGo lints the staged Go packages, reporting only issues on new or
+// changed lines. It uses an already-built pinned linter only: building one
+// is a pre-push job, never a commit's.
+func (r lintRunner) preCommitGo() int {
+	out, err := r.git("diff", "--cached", "--name-only", "--diff-filter=ACMR", "-z", "--", "*.go")
+	if err != nil {
+		r.say("WB hook: could not list the staged Go files (%v); skipping golangci-lint for this commit.", err)
+		return 0
+	}
+	packages := map[string][]string{}
+	var modules []string
+	for _, file := range splitNUL(out) {
+		dir := path.Dir(file)
+		if info, err := os.Stat(r.moduleDir(dir)); err != nil || !info.IsDir() {
+			// A staged package whose directory is gone no longer resolves.
+			continue
+		}
+		module, ok := nearestMarkerDir(r.options.RepoRoot, dir, "go.mod")
+		relative := moduleRelative(module, dir)
+		if !ok || ignoredGoDir(module) || ignoredGoDir(relative) {
+			continue
+		}
+		pkg := "."
+		if relative != "." {
+			pkg = "./" + relative
+		}
+		if _, ok := packages[module]; !ok {
+			modules = append(modules, module)
+		}
+		if !containsExact(packages[module], pkg) {
+			packages[module] = append(packages[module], pkg)
+		}
+	}
+	if len(modules) == 0 {
+		return 0
+	}
+	sort.Strings(modules)
+	pin := resolveGolangciPin(r.options.RepoRoot, r.options.ProjectsRoot, r.options.Tools.Capture)
+	args := []string{"run"}
+	if _, err := r.git("rev-parse", "--verify", "--quiet", "HEAD^{commit}"); err == nil {
+		args = append(args, "--new-from-rev=HEAD")
+	}
+	failed := false
+	for _, module := range modules {
+		dir := r.moduleDir(module)
+		linter, ok := r.golangciBinary(pin, dir, false)
+		if !ok {
+			continue
+		}
+		targets := packages[module]
+		sort.Strings(targets)
+		if r.runGolangci(linter, pin, module, dir, preCommitTimeout, append(append([]string(nil), args...), targets...)...) {
+			failed = true
+		}
+	}
+	if failed {
+		return 1
+	}
+	return 0
+}
+
+func containsExact(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
