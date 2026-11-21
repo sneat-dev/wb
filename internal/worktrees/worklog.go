@@ -237,14 +237,14 @@ func terminalHistoryPorts() worktreeclaims.HistoryPorts {
 		OpenHome: openAbsoluteDirectoryNoFollow, OpenChild: openPrivateChild,
 		OpenRun: openWorkLogRun, OpenOutbox: openWorkLogOutbox, ReadJSON: readJSONAt,
 		ValidSegment: validSafeSegment, ExpectedClaimID: expectedWorkLogClaimID,
-		IdentityFromClaim: identityFromClaim, Warn: warnSkippedTerminalEvidence,
+		IdentityFromClaim: identityFromClaim, Warn: warnTo(os.Stderr),
 	}
 }
 
-// warnSkippedTerminalEvidence makes a skipped sibling binding visible on
-// stderr, so it never disappears silently from an audited recovery.
-func warnSkippedTerminalEvidence(message string) {
-	_, _ = fmt.Fprintln(os.Stderr, "wb: warning: "+message)
+// warnTo makes skipped terminal evidence visible (stderr in production), so a
+// skipped sibling binding never disappears silently from an audited recovery.
+func warnTo(w io.Writer) func(string) {
+	return func(message string) { _, _ = fmt.Fprintln(w, "wb: warning: "+message) }
 }
 
 func validateStaticWorkLogClaim(claim workLogClaim, effort, run string) error {

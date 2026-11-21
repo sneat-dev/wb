@@ -217,11 +217,11 @@ func (p HistoryPorts) validateRemovedTerminalWorkLogRun(home string, expectation
 				// so it is skipped with a warning instead of poisoning every
 				// task that shares the effort (sneat-dev/wb#1007).
 				var owner Claim
-				if ownerErr := p.ReadJSON(claims, claimID+".json", &owner); ownerErr == nil && owner.Task != "" && owner.Task != expectation.Task {
+				if ownerErr := p.ReadJSON(claims, claimID+".json", &owner); ownerErr == nil && owner.Task != "" && owner.Repository != "" && (owner.Task != expectation.Task || owner.Repository != expectation.Repository) {
 					_ = claims.Close()
 					if p.Warn != nil {
-						p.Warn(fmt.Sprintf("skipped malformed pull request binding %s of task %s (Work Log run %s/%s) while reading the terminal Work Log of task %s: %v",
-							name, owner.Task, effort, run, expectation.Task, readErr))
+						p.Warn(fmt.Sprintf("skipped malformed pull request binding %s of task %s in %s (Work Log run %s/%s) while reading the terminal Work Log of task %s: %v",
+							name, owner.Task, owner.Repository, effort, run, expectation.Task, readErr))
 					}
 					continue
 				}

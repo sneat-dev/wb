@@ -147,7 +147,7 @@ func readValidatedClaimPullRequestBinding(claims *os.File, claimID string, readJ
 	if err := readJSON(claims, claimID+".json", &boundClaim); err != nil {
 		return err
 	}
-	if boundClaim.ClaimID != claimID || strings.TrimSpace(binding.Repository) == "" || binding.Repository != boundClaim.Repository || binding.PullRequest <= 0 || strings.TrimSpace(binding.URL) == "" || binding.RecordedAt.IsZero() {
+	if boundClaim.ClaimID != claimID || binding.Repository != boundClaim.Repository || ValidatePullRequestBindingFields(binding) != nil || binding.RecordedAt.IsZero() {
 		return fmt.Errorf("invalid pull request binding for claim %s", claimID)
 	}
 	return nil

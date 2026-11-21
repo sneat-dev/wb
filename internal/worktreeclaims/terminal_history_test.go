@@ -655,7 +655,7 @@ func TestRemovedTerminalHistorySkipsAnotherTasksMalformedBindingWithWarning(t *t
 	if err != nil || base != claim.BaseSHA {
 		t.Fatalf("another task's malformed binding blocked proof: base=%q err=%v", base, err)
 	}
-	if len(warnings) != 1 || !strings.Contains(warnings[0], file) || !strings.Contains(warnings[0], "task other-task") || !strings.Contains(warnings[0], expectation.Task) {
+	if len(warnings) != 1 || !strings.Contains(warnings[0], file) || !strings.Contains(warnings[0], "task other-task in acme/other") || !strings.Contains(warnings[0], expectation.Task) {
 		t.Fatalf("warnings = %q", warnings)
 	}
 	// Without a warning sink the skip still happens; nothing panics.
@@ -666,15 +666,45 @@ func TestRemovedTerminalHistorySkipsAnotherTasksMalformedBindingWithWarning(t *t
 
 func TestRemovedTerminalHistoryRefusesTheEvaluatedTasksMalformedBinding(t *testing.T) {
 	t.Parallel()
+	// The second shape carries a positive number beside notice text: the
+	// reader applies the writer's field rules, not just "number > 0".
+	for name, binding := range map[string]ClaimPullRequestBinding{
+		"notice without number": {URL: "- Event subscriptions are in preview and may not be enabled for your account."},
+		"notice with number":    {PullRequest: 9, URL: "- Event subscriptions are in preview and may not be enabled for your account."},
+	} {
+		home, expectation, claim := terminalHistoryFixture(t)
+		addRemovedHistoryRun(t, home, expectation, claim)
+		claimsDir := filepath.Join(home, "worklogs", claim.EffortID, "runs", claim.RunID, "claims")
+		binding.Repository, binding.RecordedAt = claim.Repository, time.Unix(456, 0).UTC()
+		writeHistoryJSON(t, filepath.Join(claimsDir, claim.ClaimID+PullRequestBindingSuffix), binding)
+		ports := terminalHistoryTestPorts()
+		ports.Warn = func(message string) { t.Fatalf("%s: same-task binding was skipped: %s", name, message) }
+		if _, err := ports.ReadRemovedTerminalWorkLogClaimBase(home, expectation); err == nil || !strings.Contains(err.Error(), "invalid pull request binding") {
+			t.Fatalf("%s: same-task malformed binding error = %v", name, err)
+		}
+	}
+}
+
+// A multi-repository task shares its name across repositories in one effort;
+// its sibling repository's malformed binding is no evidence about this one.
+func TestRemovedTerminalHistorySkipsSameTaskOtherRepositoryMalformedBinding(t *testing.T) {
+	t.Parallel()
 	home, expectation, claim := terminalHistoryFixture(t)
 	addRemovedHistoryRun(t, home, expectation, claim)
+	sibling := claim
+	sibling.Repository = "acme/other"
+	sibling.Worktree = filepath.Join(home, "same-task-other-repo")
+	sibling.ClaimID = WorkLogClaimID(sibling.EffortID, CreationResult{Repository: sibling.Repository,
+		WorktreeDir: sibling.Worktree, Branch: sibling.Branch, Base: sibling.Base, BaseSHA: sibling.BaseSHA})
 	claimsDir := filepath.Join(home, "worklogs", claim.EffortID, "runs", claim.RunID, "claims")
-	writeHistoryJSON(t, filepath.Join(claimsDir, claim.ClaimID+PullRequestBindingSuffix), ClaimPullRequestBinding{
-		Repository: claim.Repository, URL: "- Event subscriptions are in preview and may not be enabled for your account.", RecordedAt: time.Unix(456, 0).UTC(),
+	writeHistoryJSON(t, filepath.Join(claimsDir, sibling.ClaimID+".json"), sibling)
+	writeHistoryJSON(t, filepath.Join(claimsDir, sibling.ClaimID+PullRequestBindingSuffix), ClaimPullRequestBinding{
+		Repository: sibling.Repository, PullRequest: 9, URL: "- Event subscriptions are in preview and may not be enabled for your account.", RecordedAt: time.Unix(456, 0).UTC(),
 	})
+	warned := 0
 	ports := terminalHistoryTestPorts()
-	ports.Warn = func(message string) { t.Fatalf("same-task binding was skipped: %s", message) }
-	if _, err := ports.ReadRemovedTerminalWorkLogClaimBase(home, expectation); err == nil || !strings.Contains(err.Error(), "invalid pull request binding") {
-		t.Fatalf("same-task malformed binding error = %v", err)
+	ports.Warn = func(string) { warned++ }
+	if base, err := ports.ReadRemovedTerminalWorkLogClaimBase(home, expectation); err != nil || base != claim.BaseSHA || warned != 1 {
+		t.Fatalf("base=%q err=%v warned=%d", base, err, warned)
 	}
 }

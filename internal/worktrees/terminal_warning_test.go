@@ -1,13 +1,18 @@
 package worktrees
 
-import "testing"
+import (
+	"bytes"
+	"testing"
+)
 
-func TestTerminalHistoryPortsWarnSkippedEvidenceOnStderr(t *testing.T) {
+func TestTerminalHistoryWarningsArePrefixedLinesOnTheirSink(t *testing.T) {
 	t.Parallel()
-	ports := terminalHistoryPorts()
-	if ports.Warn == nil {
+	if terminalHistoryPorts().Warn == nil {
 		t.Fatal("production terminal history has no warning sink, so a skipped binding would vanish")
 	}
-	// The sink writes one prefixed line to stderr and returns.
-	ports.Warn("skipped malformed pull request binding x of task other while reading the terminal Work Log of task t")
+	var out bytes.Buffer
+	warnTo(&out)("skipped malformed pull request binding x.pull_request.json of task other")
+	if got := out.String(); got != "wb: warning: skipped malformed pull request binding x.pull_request.json of task other\n" {
+		t.Fatalf("warning line = %q", got)
+	}
 }

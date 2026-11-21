@@ -25,6 +25,7 @@ func TestPRCreatePublicationAdoptionContracts(t *testing.T) {
 		draft, adopt       bool
 		issues             []int
 		edit, errText      string
+		wantURL            string
 	}{
 		{name: "adopt absent body", list: "https://example/pull/41\tmain", adopt: true},
 		{name: "adopt existing closes", list: "https://example/pull/41\tmain\tCloses #7", adopt: true, issues: []int{7}},
@@ -36,6 +37,8 @@ func TestPRCreatePublicationAdoptionContracts(t *testing.T) {
 		{name: "malformed falls back", list: "missing tabs", output: "https://example/pull/41"},
 		{name: "create refusal", runErr: sentinel},
 		{name: "create missing URL", output: " \n", errText: `gh pr create returned no pull request URL: ""`},
+		{name: "create enterprise host URL", output: "https://ghe.example.com/acme/app/pull/41\n", wantURL: "https://ghe.example.com/acme/app/pull/41"},
+		{name: "create URL with trailing path", output: "https://example/pull/41/files\n", errText: `gh pr create returned no pull request URL: "https://example/pull/41/files"`},
 		{name: "create notice after URL", output: "https://example/pull/41\n- Event subscriptions are in preview and may not be enabled for your account.\n"},
 		{name: "create notice only", output: "- Event subscriptions are in preview and may not be enabled for your account.\n", errText: `gh pr create returned no pull request URL: "- Event subscriptions are in preview and may not be enabled for your account."`},
 		{name: "create zero number", output: "https://example/pull/0\n", errText: `gh pr create returned no pull request URL: "https://example/pull/0"`},
@@ -98,7 +101,7 @@ func TestPRCreatePublicationAdoptionContracts(t *testing.T) {
 						t.Fatalf("type=%T", err)
 					}
 				}
-			} else if err != nil || url != "https://example/pull/41" || adopted != tc.adopt {
+			} else if want := tc.wantURL; err != nil || (want == "" && url != "https://example/pull/41") || (want != "" && url != want) || adopted != tc.adopt {
 				t.Fatalf("url=%q adopted=%v err=%v", url, adopted, err)
 			}
 			wantCalls := 0
