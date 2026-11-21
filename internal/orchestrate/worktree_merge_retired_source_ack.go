@@ -129,7 +129,29 @@ func proveRetiredSourcesSuperseded(ctx context.Context, run runner.Runner, obser
 		return nil, fmt.Errorf("superseding target head %s checks are %s, not passed (%s); wait with wb ci wait --repo %s --target %s --head %s, then retry",
 			currentTarget, result.Status, result.Reason, receipt.Repository, receipt.Target, currentTarget)
 	}
+	if missing := failedChecksNotRepassed(receipt.Checks.Checks, result.Checks); len(result.Checks) == 0 || len(missing) > 0 {
+		return nil, fmt.Errorf("superseding target head %s does not re-pass the receipt's failed checks %v (observed %d checks)", currentTarget, missing, len(result.Checks))
+	}
 	return &WorktreeMergeSupersedingTargetChecks{Head: currentTarget, Status: result.Status, Reason: result.Reason, ObservedAt: time.Now().UTC()}, nil
+}
+
+// failedChecksNotRepassed names every check the failed receipt recorded as
+// failed or cancelled that did not execute and pass on the superseding head.
+// A skipped or absent rerun proves nothing about the recorded failure.
+func failedChecksNotRepassed(failed, observed []githubchecks.RemoteCheck) []string {
+	passed := make(map[string]bool, len(observed))
+	for _, check := range observed {
+		if check.Bucket == "pass" {
+			passed[githubchecks.NormalizeCheckName(check.Name)] = true
+		}
+	}
+	var missing []string
+	for _, check := range failed {
+		if (check.Bucket == "fail" || check.Bucket == "cancel") && !passed[githubchecks.NormalizeCheckName(check.Name)] {
+			missing = append(missing, check.Name)
+		}
+	}
+	return missing
 }
 
 // writeRetiredSourceEvidenceID binds retired-source evidence into the

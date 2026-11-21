@@ -276,8 +276,14 @@ task, path and branch, worktree and branch gone), its sealed terminal Work Log
 claim base, and fresh proof that the current remote target contains the cleaned
 head, the source and the landing. It also requires the failure to be
 superseded by green: the current target head must be a strict descendant of the
-failed landing whose exact-head checks pass. A target still at the failed
-landing, or a pending or red superseding head, refuses (wait with `wb ci wait
+failed landing whose exact-head checks pass, and every check the receipt
+recorded as failed must have executed and passed there (a skipped rerun, or a
+head with no checks at all, proves nothing). The dry run already observes
+GitHub for up to two minutes. Only this partially retired state needs the
+green proof: with the source checkout gone there is no live custody evidence
+left, while the other forms still prove the exact clean source and candidate.
+A target still at the failed landing, or a pending or red superseding head,
+refuses (wait with `wb ci wait
 --repo <owner/repo> --target <target> --head <head>`, then retry). The
 acknowledgement records the actor, reason, cleanup report digest and the
 superseding head's check result. A source removed without a WB cleanup record

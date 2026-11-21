@@ -41,7 +41,8 @@ func newRetiredSourceFailure(t *testing.T, advanceSource, supersede bool) retire
 	receipt.Phase = WorktreeMergePhaseLand
 	receipt.Status = WorktreeMergePostTargetCIFailed
 	receipt.LandingSHA = receipt.Candidate.SHA
-	receipt.Checks = githubchecks.PullRequestWaitResult{Status: githubchecks.PullRequestWaitFailed, Head: receipt.LandingSHA, Reason: "inherited target check failed"}
+	receipt.Checks = githubchecks.PullRequestWaitResult{Status: githubchecks.PullRequestWaitFailed, Head: receipt.LandingSHA, Reason: "inherited target check failed",
+		Checks: []githubchecks.RemoteCheck{{Name: "check-run:ci / test", Bucket: "fail"}, {Name: "check-run:lint", Bucket: "pass"}}}
 	receipt.Failure = "post-target CI failed"
 	if err := persistWorktreeMergeReceipt(receipt); err != nil {
 		t.Fatal(err)
@@ -81,7 +82,8 @@ func (f retiredSourceFailure) options(observe targetChecksObserver) WorktreeMerg
 
 func checksResult(status githubchecks.PullRequestWaitStatus) targetChecksObserver {
 	return func(_ context.Context, _, _, head string) (githubchecks.PullRequestWaitResult, error) {
-		return githubchecks.PullRequestWaitResult{Status: status, Head: head, Reason: "observed " + string(status)}, nil
+		return githubchecks.PullRequestWaitResult{Status: status, Head: head, Reason: "observed " + string(status),
+			Checks: []githubchecks.RemoteCheck{{Name: "check-run:ci / test", Bucket: "pass"}}}, nil
 	}
 }
 
@@ -156,24 +158,47 @@ func TestAcknowledgeRetiredSourcePostTargetFailureReleasesLaneWhenSupersededByGr
 	if _, err := readLandedFailureAcknowledgement(ack.AcknowledgementPath, failure.receipt); err == nil || !strings.Contains(err.Error(), "incomplete retired-source evidence") {
 		t.Fatalf("tampered acknowledgement error = %v", err)
 	}
+
+	// A shape-valid edit to the bound evidence breaks the acknowledgement ID.
+	rebound := ack
+	rebound.RetiredSources = []WorktreeMergeCleanedSourceProof{ack.RetiredSources[0]}
+	rebound.RetiredSources[0].CleanupReportSHA256 = strings.Repeat("d", 64)
+	if err := os.Remove(ack.AcknowledgementPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := persistLandedFailureAcknowledgement(ack.AcknowledgementPath, rebound); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readLandedFailureAcknowledgement(ack.AcknowledgementPath, failure.receipt); err == nil || !strings.Contains(err.Error(), "invalid receipt identity") {
+		t.Fatalf("rebound evidence error = %v", err)
+	}
+}
+
+const goldenLandedFailureAcknowledgementID = "061cdd3eb7c795c2aabc73cbd501992baa75998d26bd8cf0f826e9df1ad66bee"
+
+func TestLandedFailureAcknowledgementIDIsUnchangedWithoutRetiredEvidence(t *testing.T) {
+	t.Parallel()
+	ack := WorktreeMergeLandedFailureAcknowledgement{
+		ReceiptID: "r", ReceiptPath: "/p", ReceiptStatus: WorktreeMergePostTargetCIFailed, ReceiptTargetSHA: "t", ReceiptLandingSHA: "l",
+		CurrentTargetSHA: "c", CandidateSHA: "d", Sources: []WorktreeMergeSource{{Task: "s", Worktree: "/w", Branch: "b", SHA: "x"}},
+	}
+	// Golden value computed before retired-source evidence existed.
+	if got := landedFailureAcknowledgementID(ack); got != goldenLandedFailureAcknowledgementID {
+		t.Fatalf("ID changed for an acknowledgement without retired evidence: %s", got)
+	}
 }
 
 // The public verb observes the superseding head through the real GitHub check
-// observer (here the package's fake gh), not a stub.
+// observer (here the package's fake gh, which reports no checks at all). A
+// "passed" observation with no executed checks is vacuous and must refuse.
 //
-//nolint:paralleltest // Cleanup reads the fake gh through process environment.
 //nolint:paralleltest // Cleanup and the fake gh read process environment.
-func TestAcknowledgeLandedMergeFailureObservesSupersedingHeadThroughGitHub(t *testing.T) {
+func TestAcknowledgeLandedMergeFailureRefusesVacuousGreenObservedThroughGitHub(t *testing.T) {
 	failure := newRetiredSourceFailure(t, false, true)
 	t.Setenv("WB_TEST_TARGET_SHA", failure.superseder)
-	options := failure.options(nil)
-	options.Apply = false
-	ack, err := AcknowledgeLandedMergeFailure(context.Background(), options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ack.SupersedingTargetChecks == nil || ack.SupersedingTargetChecks.Head != failure.superseder || ack.SupersedingTargetChecks.Status != githubchecks.PullRequestWaitPassed {
-		t.Fatalf("observed superseding checks = %+v", ack.SupersedingTargetChecks)
+	_, err := AcknowledgeLandedMergeFailure(context.Background(), failure.options(nil))
+	if err == nil || !strings.Contains(err.Error(), "observed 0 checks") {
+		t.Fatalf("vacuous green error = %v", err)
 	}
 	requireNoAcknowledgement(t, failure.receipt)
 }
@@ -202,6 +227,13 @@ func TestAcknowledgeRetiredSourceRefusesWithoutGreenSupersedingHead(t *testing.T
 		"unbound head": func(context.Context, string, string, string) (githubchecks.PullRequestWaitResult, error) {
 			return githubchecks.PullRequestWaitResult{Status: githubchecks.PullRequestWaitPassed}, nil
 		},
+		"no checks observed": func(_ context.Context, _, _, head string) (githubchecks.PullRequestWaitResult, error) {
+			return githubchecks.PullRequestWaitResult{Status: githubchecks.PullRequestWaitPassed, Head: head}, nil
+		},
+		"failed check skipped": func(_ context.Context, _, _, head string) (githubchecks.PullRequestWaitResult, error) {
+			return githubchecks.PullRequestWaitResult{Status: githubchecks.PullRequestWaitPassed, Head: head,
+				Checks: []githubchecks.RemoteCheck{{Name: "ci / test", Bucket: "skipping"}, {Name: "lint", Bucket: "pass"}}}, nil
+		},
 		"other head": func(context.Context, string, string, string) (githubchecks.PullRequestWaitResult, error) {
 			return githubchecks.PullRequestWaitResult{Status: githubchecks.PullRequestWaitPassed, Head: strings.Repeat("f", 40)}, nil
 		},
@@ -224,18 +256,6 @@ func TestAcknowledgeRetiredSourceRefusesWhileTargetIsStillTheFailedLanding(t *te
 	}
 	requireNoAcknowledgement(t, failure.receipt)
 
-	// A source path that cannot be inspected is neither present nor retired.
-	file := filepath.Join(t.TempDir(), "file")
-	if err := os.WriteFile(file, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	failure.receipt.Sources[0].Worktree = filepath.Join(file, "child")
-	if err := persistWorktreeMergeReceipt(failure.receipt); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := failure.acknowledge(t, failure.options(checksResult(githubchecks.PullRequestWaitPassed)), nil); err == nil || !strings.Contains(err.Error(), "inspect receipted source") {
-		t.Fatalf("uninspectable source error = %v", err)
-	}
 }
 
 // ancestryFaultRunner answers chosen merge-base questions as not contained,
@@ -254,6 +274,23 @@ func (r ancestryFaultRunner) RunOpts(ctx context.Context, dir string, opts runne
 		return runner.Result{Stdout: strings.Repeat("0", 40) + "\n"}, nil
 	}
 	return r.Runner.RunOpts(ctx, dir, opts, name, args...)
+}
+
+//nolint:paralleltest // Cleanup reads the fake gh through process environment.
+func TestAcknowledgeRetiredSourceRefusesUninspectableSourcePath(t *testing.T) {
+	failure := newRetiredSourceFailure(t, false, true)
+	// A source path that cannot be inspected is neither present nor retired.
+	file := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	failure.receipt.Sources[0].Worktree = filepath.Join(file, "child")
+	if err := persistWorktreeMergeReceipt(failure.receipt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := failure.acknowledge(t, failure.options(checksResult(githubchecks.PullRequestWaitPassed)), nil); err == nil || !strings.Contains(err.Error(), "inspect receipted source") {
+		t.Fatalf("uninspectable source error = %v", err)
+	}
 }
 
 //nolint:paralleltest // Cleanup reads the fake gh through process environment.
