@@ -41,6 +41,7 @@ func TestPRCreatePublicationAdoptionContracts(t *testing.T) {
 		{name: "create URL with trailing path", output: "https://example/pull/41/files\n", errText: `gh pr create returned no pull request URL: "https://example/pull/41/files"`},
 		{name: "create notice after URL", output: "https://example/pull/41\n- Event subscriptions are in preview and may not be enabled for your account.\n"},
 		{name: "create notice only", output: "- Event subscriptions are in preview and may not be enabled for your account.\n", errText: `gh pr create returned no pull request URL: "- Event subscriptions are in preview and may not be enabled for your account."`},
+		{name: "create overflowing number", output: "https://example/pull/1234567890123456789\n", errText: `gh pr create returned no pull request URL: "https://example/pull/1234567890123456789"`},
 		{name: "create zero number", output: "https://example/pull/0\n", errText: `gh pr create returned no pull request URL: "https://example/pull/0"`},
 		{name: "draft missing manifest", draft: true, output: "https://example/pull/41"},
 		{name: "draft refusal", draft: true, runErr: sentinel},

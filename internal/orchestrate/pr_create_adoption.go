@@ -121,8 +121,9 @@ func openOrAdoptPullRequest(ctx context.Context, worktree, repository, branch, b
 }
 
 // pullRequestURLPattern is the canonical shape gh prints for a created pull
-// request on any host: https://<host>/<owner>/<repo>/pull/<positive number>.
-var pullRequestURLPattern = regexp.MustCompile(`^https://[^\s/]+(?:/[^\s/]+)*/pull/[1-9][0-9]*$`)
+// request on any host: https://<host>[/<path>]/pull/<positive number>, the
+// number bounded so it always fits an int.
+var pullRequestURLPattern = regexp.MustCompile(`^https://[^\s/]+(?:/[^\s/]+)*/pull/[1-9][0-9]{0,17}$`)
 
 // pullRequestURLFromOutput returns the last line of gh's output that is a pull
 // request URL. gh can print notices (for example "Event subscriptions are in
