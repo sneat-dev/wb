@@ -451,6 +451,11 @@ immediately using `--take-over-lane --lane-reason "<reason>"`.
 - **Acknowledge post-target failures**: If post-target checks fail (`landed_post_target_ci_failed`),
   acknowledge the failure receipt immediately (`wb worktree merge acknowledge-landed-failed <receipt> --apply`)
   and release the lane with `wb lane release owner/repository --target main`.
+  A non-terminal receipt holds the merger lane by itself, so `wb lane release`
+  can report the lane absent while merges are still refused; the acknowledgement
+  is what frees it. If the receipt's source worktree was already retired by WB
+  cleanup, the acknowledgement additionally requires a later target head whose
+  exact-head checks pass; wait for it with `wb ci wait`, never edit the receipt.
 - **Settlement verification**: Before ending a session or moving to another task, run
   `wb lane release owner/repository --target main` to verify the landing lane is clean
   (`already absent` or `released`).

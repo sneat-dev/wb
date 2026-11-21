@@ -180,29 +180,35 @@ type WorktreeMergeLandedFailureAcknowledgement struct {
 	LegacyRemovedPR  string                               `json:"legacy_removed_pr,omitempty"`
 	// Historical descendant acknowledgements bind these optional fields into ID.
 	// Readers retain them; current acknowledgement generation remains unchanged.
-	ReceiptSHA256       string                `json:"receipt_sha256,omitempty"`
-	ObservedSources     []WorktreeMergeSource `json:"observed_sources,omitempty"`
-	SchemaVersion       int                   `json:"schema_version"`
-	ID                  string                `json:"id"`
-	Status              string                `json:"status"`
-	ReceiptPath         string                `json:"receipt_path"`
-	AcknowledgementPath string                `json:"acknowledgement_path"`
-	ReceiptID           string                `json:"receipt_id"`
-	ReceiptStatus       WorktreeMergeStatus   `json:"receipt_status"`
-	Lane                string                `json:"lane"`
-	Repository          string                `json:"repository"`
-	Target              string                `json:"target"`
-	ReceiptTargetSHA    string                `json:"receipt_target_sha"`
-	ReceiptLandingSHA   string                `json:"receipt_landing_sha,omitempty"`
-	CurrentTargetSHA    string                `json:"current_target_sha"`
-	CandidateSHA        string                `json:"candidate_sha"`
-	ClaimBaseSHA        string                `json:"claim_base_sha"`
-	CandidateWorktree   string                `json:"candidate_worktree"`
-	CandidateBranch     string                `json:"candidate_branch"`
-	Sources             []WorktreeMergeSource `json:"sources"`
-	Actor               string                `json:"actor"`
-	Reason              string                `json:"reason"`
-	RecordedAt          time.Time             `json:"recorded_at"`
+	ReceiptSHA256   string                `json:"receipt_sha256,omitempty"`
+	ObservedSources []WorktreeMergeSource `json:"observed_sources,omitempty"`
+	// RetiredSources and SupersedingTargetChecks are set only when a
+	// post-target CI receipt's source checkout was retired by an applied WB
+	// cleanup: they replace the live-checkout proof with the cleanup record
+	// and a later target head whose exact-head checks passed.
+	RetiredSources          []WorktreeMergeCleanedSourceProof     `json:"retired_sources,omitempty"`
+	SupersedingTargetChecks *WorktreeMergeSupersedingTargetChecks `json:"superseding_target_checks,omitempty"`
+	SchemaVersion           int                                   `json:"schema_version"`
+	ID                      string                                `json:"id"`
+	Status                  string                                `json:"status"`
+	ReceiptPath             string                                `json:"receipt_path"`
+	AcknowledgementPath     string                                `json:"acknowledgement_path"`
+	ReceiptID               string                                `json:"receipt_id"`
+	ReceiptStatus           WorktreeMergeStatus                   `json:"receipt_status"`
+	Lane                    string                                `json:"lane"`
+	Repository              string                                `json:"repository"`
+	Target                  string                                `json:"target"`
+	ReceiptTargetSHA        string                                `json:"receipt_target_sha"`
+	ReceiptLandingSHA       string                                `json:"receipt_landing_sha,omitempty"`
+	CurrentTargetSHA        string                                `json:"current_target_sha"`
+	CandidateSHA            string                                `json:"candidate_sha"`
+	ClaimBaseSHA            string                                `json:"claim_base_sha"`
+	CandidateWorktree       string                                `json:"candidate_worktree"`
+	CandidateBranch         string                                `json:"candidate_branch"`
+	Sources                 []WorktreeMergeSource                 `json:"sources"`
+	Actor                   string                                `json:"actor"`
+	Reason                  string                                `json:"reason"`
+	RecordedAt              time.Time                             `json:"recorded_at"`
 }
 
 type WorktreeMergeLandedFailureAcknowledgementOptions struct {
@@ -212,6 +218,9 @@ type WorktreeMergeLandedFailureAcknowledgementOptions struct {
 	Apply           bool
 	Actor           string
 	Reason          string
+	// observeTargetChecks is the GitHub seam for a retired source's
+	// superseding-head proof; nil observes GitHub.
+	observeTargetChecks targetChecksObserver
 }
 
 // WorktreeMergeValidationFailureSupersession is a separate, append-only
@@ -1006,6 +1015,7 @@ func landedFailureAcknowledgementID(ack WorktreeMergeLandedFailureAcknowledgemen
 			}
 		}
 	}
+	writeRetiredSourceEvidenceID(hash, ack)
 	if ack.LegacyRemovedPR != "" {
 		evidence, _ := json.Marshal([]string{ack.LegacyRemovedPR, ack.ReceiptSHA256, ack.CandidateWorktree, ack.CandidateBranch, ack.Actor, ack.Reason, ack.RecordedAt.UTC().Format(time.RFC3339Nano)})
 		_, _ = hash.Write(append([]byte("legacy_removed_pr\x00"), evidence...))
@@ -1051,6 +1061,9 @@ func readLandedFailureAcknowledgement(path string, receipt WorktreeMergeReceipt)
 		return WorktreeMergeLandedFailureAcknowledgement{}, fmt.Errorf("landed-failure acknowledgement %s: %w", path, err)
 	}
 	if err := validateLandedFailureObservedSources(ack, effective); err != nil {
+		return WorktreeMergeLandedFailureAcknowledgement{}, fmt.Errorf("landed-failure acknowledgement %s: %w", path, err)
+	}
+	if err := validateRetiredSourceEvidence(ack, receipt); err != nil {
 		return WorktreeMergeLandedFailureAcknowledgement{}, fmt.Errorf("landed-failure acknowledgement %s: %w", path, err)
 	}
 	if ack.SchemaVersion != worktreeMergeLandedFailureAcknowledgementSchemaVersion || ack.Status != "landed_failure_acknowledged" ||
