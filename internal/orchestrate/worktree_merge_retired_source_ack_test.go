@@ -158,6 +158,26 @@ func TestAcknowledgeRetiredSourcePostTargetFailureReleasesLaneWhenSupersededByGr
 	}
 }
 
+// The public verb observes the superseding head through the real GitHub check
+// observer (here the package's fake gh), not a stub.
+//
+//nolint:paralleltest // Cleanup reads the fake gh through process environment.
+//nolint:paralleltest // Cleanup and the fake gh read process environment.
+func TestAcknowledgeLandedMergeFailureObservesSupersedingHeadThroughGitHub(t *testing.T) {
+	failure := newRetiredSourceFailure(t, false, true)
+	t.Setenv("WB_TEST_TARGET_SHA", failure.superseder)
+	options := failure.options(nil)
+	options.Apply = false
+	ack, err := AcknowledgeLandedMergeFailure(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ack.SupersedingTargetChecks == nil || ack.SupersedingTargetChecks.Head != failure.superseder || ack.SupersedingTargetChecks.Status != githubchecks.PullRequestWaitPassed {
+		t.Fatalf("observed superseding checks = %+v", ack.SupersedingTargetChecks)
+	}
+	requireNoAcknowledgement(t, failure.receipt)
+}
+
 //nolint:paralleltest // Cleanup reads the fake gh through process environment.
 func TestAcknowledgeRetiredSourceAcceptsCleanedDescendantContainedInTarget(t *testing.T) {
 	failure := newRetiredSourceFailure(t, true, false)
@@ -178,6 +198,9 @@ func TestAcknowledgeRetiredSourceRefusesWithoutGreenSupersedingHead(t *testing.T
 		"failed":  checksResult(githubchecks.PullRequestWaitFailed),
 		"read error": func(context.Context, string, string, string) (githubchecks.PullRequestWaitResult, error) {
 			return githubchecks.PullRequestWaitResult{}, errors.New("checks unavailable")
+		},
+		"unbound head": func(context.Context, string, string, string) (githubchecks.PullRequestWaitResult, error) {
+			return githubchecks.PullRequestWaitResult{Status: githubchecks.PullRequestWaitPassed}, nil
 		},
 		"other head": func(context.Context, string, string, string) (githubchecks.PullRequestWaitResult, error) {
 			return githubchecks.PullRequestWaitResult{Status: githubchecks.PullRequestWaitPassed, Head: strings.Repeat("f", 40)}, nil
@@ -349,7 +372,19 @@ func TestRetiredSourceEvidenceMustMatchItsReceipt(t *testing.T) {
 	noChecks.SupersedingTargetChecks = nil
 	duplicated := valid
 	duplicated.RetiredSources = append(append([]WorktreeMergeCleanedSourceProof(nil), valid.RetiredSources...), valid.RetiredSources...)
-	for name, ack := range map[string]WorktreeMergeLandedFailureAcknowledgement{"no checks": noChecks, "duplicate source": duplicated} {
+	landingChecks := valid
+	landingChecks.SupersedingTargetChecks = &WorktreeMergeSupersedingTargetChecks{Head: landing, Status: githubchecks.PullRequestWaitPassed, ObservedAt: time.Now()}
+	landingChecks.CurrentTargetSHA = landing
+	shortDigest := valid
+	shortDigest.RetiredSources = []WorktreeMergeCleanedSourceProof{valid.RetiredSources[0]}
+	shortDigest.RetiredSources[0].CleanupReportSHA256 = "abc"
+	otherSource := valid
+	otherSource.RetiredSources = []WorktreeMergeCleanedSourceProof{valid.RetiredSources[0]}
+	otherSource.RetiredSources[0].SHA = current
+	for name, ack := range map[string]WorktreeMergeLandedFailureAcknowledgement{
+		"no checks": noChecks, "duplicate source": duplicated, "checks on failed landing": landingChecks,
+		"short cleanup digest": shortDigest, "source mismatch": otherSource,
+	} {
 		if err := validateRetiredSourceEvidence(ack, receipt); err == nil {
 			t.Fatalf("%s accepted", name)
 		}

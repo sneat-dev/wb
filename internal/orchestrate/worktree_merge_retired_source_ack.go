@@ -122,7 +122,7 @@ func proveRetiredSourcesSuperseded(ctx context.Context, run runner.Runner, obser
 	if err != nil {
 		return nil, fmt.Errorf("observe checks on superseding target head %s: %w", currentTarget, err)
 	}
-	if result.Head != "" && result.Head != currentTarget {
+	if result.Head != currentTarget {
 		return nil, fmt.Errorf("check observation for %s reported head %s", currentTarget, result.Head)
 	}
 	if result.Status != githubchecks.PullRequestWaitPassed {
