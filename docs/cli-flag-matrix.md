@@ -120,6 +120,9 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `remote claim`, `remote release`, `remote claims` | yes | rejected | rejected | yes |
 | `peers invite`, `join`, `list`, `get`, `block`, `unblock`, `disconnect` | yes | rejected | rejected | yes |
 | `session register`, `list`, `prune`, `move`, `receive`, `park`, `resume` (`pickup` alias), `recall` (`request-handoff` alias), `send`, `receive-message` | yes | rejected | rejected | yes |
+| `message send` (`--projects-root` only with `--local`) | yes | rejected | rejected | yes |
+| `message deliver`, `message receive`, `message ack`, `message relay` | yes | rejected | rejected | yes |
+| `message bind`, `message unbind` | yes | rejected | rejected | yes |
 | `task offload`, `task park`, `task pickup` | yes | rejected | rejected | yes |
 | `agent dispatch`, `run`, `compare`, `experiment`, `profiles`, `task-types`, `diff`, `review`, `prune`, `status`, `await`, `list`, `stats`, `logs`, `stop` | yes | rejected | rejected | yes |
 | `stream start`, `stream join`, `stream status`, `stream end`, `stream delete`, `stream sync` | yes | rejected | rejected | yes |
