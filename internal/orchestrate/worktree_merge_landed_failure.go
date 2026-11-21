@@ -17,6 +17,7 @@ import (
 // distinct audited acknowledgement. It never rewrites the historical receipt
 // or any Work Log record. A failed proof is always a refusal.
 func AcknowledgeLandedMergeFailure(ctx context.Context, options WorktreeMergeLandedFailureAcknowledgementOptions) (WorktreeMergeLandedFailureAcknowledgement, error) {
+	options.observeTargetChecks = observeSupersedingTargetChecks
 	return acknowledgeLandedMergeFailure(ctx, options, defaultRunner, readWorktreeMergeReceipt, persistLandedFailureAcknowledgement)
 }
 
@@ -91,8 +92,19 @@ func acknowledgeLandedMergeFailure(ctx context.Context, options WorktreeMergeLan
 		}
 		return WorktreeMergeLandedFailureAcknowledgement{}, err
 	}
+	var retiredSources []WorktreeMergeCleanedSourceProof
 	for _, source := range receipt.Sources {
-		if isLandedFailedValidationReceipt(receipt) {
+		retired, retiredErr := sourceCheckoutRetired(receipt, source)
+		if retiredErr != nil {
+			return WorktreeMergeLandedFailureAcknowledgement{}, retiredErr
+		}
+		if retired {
+			proof, proofErr := proveRetiredLandedFailureSource(ctx, run, worktrees.ReadRemovedTerminalWorkLogClaimBase, options.ProjectsRoot, receipt.Candidate.Worktree, receipt, source)
+			if proofErr != nil {
+				return WorktreeMergeLandedFailureAcknowledgement{}, proofErr
+			}
+			retiredSources = append(retiredSources, proof)
+		} else if isLandedFailedValidationReceipt(receipt) {
 			if err := validatePreservedLandedFailureAcknowledgementSource(ctx, options.ProjectsRoot, receipt, source); err != nil {
 				return WorktreeMergeLandedFailureAcknowledgement{}, err
 			}
@@ -126,7 +138,16 @@ func acknowledgeLandedMergeFailure(ctx context.Context, options WorktreeMergeLan
 		}
 	}
 
+	var superseding *WorktreeMergeSupersedingTargetChecks
+	if len(retiredSources) > 0 {
+		superseding, err = proveRetiredSourcesSuperseded(ctx, run, options.observeTargetChecks, receipt.Candidate.Worktree, receipt, retiredSources, currentTarget)
+		if err != nil {
+			return WorktreeMergeLandedFailureAcknowledgement{}, err
+		}
+	}
+
 	ack := WorktreeMergeLandedFailureAcknowledgement{
+		RetiredSources: retiredSources, SupersedingTargetChecks: superseding,
 		SchemaVersion: worktreeMergeLandedFailureAcknowledgementSchemaVersion,
 		Status:        "landed_failure_acknowledged",
 		ReceiptPath:   receiptPath, ReceiptID: receipt.ID, ReceiptStatus: receipt.Status, Lane: receipt.Lane,

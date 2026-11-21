@@ -267,6 +267,22 @@ landing that is not an ancestor of the current target, a missing active claim,
 or any dirty/drifted receipt/source identity refuses closed; branch names,
 patch similarity, and PR state are never substitutes for the ancestry proof.
 
+A `landed_post_target_ci_failed` receipt whose source checkout an applied WB
+cleanup already retired, while the merger's own candidate checkout survives,
+cannot use the live-source proof, and `resume` only re-observes the red landed
+head, which never changes. `acknowledge-landed-failed` accepts that retired
+source only through its exact applied cleanup record (same repository, target,
+task, path and branch, worktree and branch gone), its sealed terminal Work Log
+claim base, and fresh proof that the current remote target contains the cleaned
+head, the source and the landing. It also requires the failure to be
+superseded by green: the current target head must be a strict descendant of the
+failed landing whose exact-head checks pass. A target still at the failed
+landing, or a pending or red superseding head, refuses (wait with `wb ci wait
+--repo <owner/repo> --target <target> --head <head>`, then retry). The
+acknowledgement records the actor, reason, cleanup report digest and the
+superseding head's check result. A source removed without a WB cleanup record
+refuses closed: absence is never evidence.
+
 The legacy prepare `validation_failed` shape that omitted `candidate.SHA` has
 a narrower compatibility proof: correlate its immutable validation revision,
 require that historical revision on the fresh remote target, and preserve the

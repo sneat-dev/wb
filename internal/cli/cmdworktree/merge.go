@@ -638,7 +638,11 @@ compatibility path correlates the immutable validation revision, preserves its
 clean same-claim descendant checkout, and authenticates every retired source
 through its exact descendant terminal cleanup and merged PR. Both identity and
 landed acknowledgement artifacts are required; the preserved descendant is not
-declared landed or retired. Post-target CI receipts must also prove their exact failed landing. The immutable
+declared landed or retired. Post-target CI receipts must also prove their exact failed landing.
+A post-target CI receipt whose source worktree was retired by an applied WB
+cleanup substitutes that exact cleanup record and sealed Work Log for the live
+source, and additionally requires the current target head to be a later
+descendant of the failed landing whose exact-head checks pass. The immutable
 Work Log and historical merge receipt are never rewritten. This is a dry-run by
 default; --apply requires --actor and --reason and writes only the new
 acknowledgement artifacts. Any missing claim, target, ancestry, or cleanliness
