@@ -625,3 +625,56 @@ func TestRemovedHistoryAbsenceDistinguishesUnrelatedAndMismatchedTaskEvidence(t 
 		t.Fatalf("mismatched selected evidence cannot become absence: %v", err)
 	}
 }
+
+func addOtherTaskMalformedBinding(t *testing.T, home string, claim Claim) string {
+	t.Helper()
+	other := claim
+	other.Task = "other-task"
+	other.Repository = "acme/other"
+	other.Worktree = filepath.Join(home, "other-task-removed")
+	other.ClaimID = WorkLogClaimID(other.EffortID, CreationResult{Repository: other.Repository,
+		WorktreeDir: other.Worktree, Branch: other.Branch, Base: other.Base, BaseSHA: other.BaseSHA})
+	claimsDir := filepath.Join(home, "worklogs", claim.EffortID, "runs", claim.RunID, "claims")
+	writeHistoryJSON(t, filepath.Join(claimsDir, other.ClaimID+".json"), other)
+	// The corrupt shape wb pr create once wrote: gh's notice line as the URL.
+	writeHistoryJSON(t, filepath.Join(claimsDir, other.ClaimID+PullRequestBindingSuffix), ClaimPullRequestBinding{
+		Repository: other.Repository, URL: "- Event subscriptions are in preview and may not be enabled for your account.", RecordedAt: time.Unix(456, 0).UTC(),
+	})
+	return other.ClaimID + PullRequestBindingSuffix
+}
+
+func TestRemovedTerminalHistorySkipsAnotherTasksMalformedBindingWithWarning(t *testing.T) {
+	t.Parallel()
+	home, expectation, claim := terminalHistoryFixture(t)
+	addRemovedHistoryRun(t, home, expectation, claim)
+	file := addOtherTaskMalformedBinding(t, home, claim)
+	var warnings []string
+	ports := terminalHistoryTestPorts()
+	ports.Warn = func(message string) { warnings = append(warnings, message) }
+	base, err := ports.ReadRemovedTerminalWorkLogClaimBase(home, expectation)
+	if err != nil || base != claim.BaseSHA {
+		t.Fatalf("another task's malformed binding blocked proof: base=%q err=%v", base, err)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], file) || !strings.Contains(warnings[0], "task other-task") || !strings.Contains(warnings[0], expectation.Task) {
+		t.Fatalf("warnings = %q", warnings)
+	}
+	// Without a warning sink the skip still happens; nothing panics.
+	if base, err := terminalHistoryTestPorts().ReadRemovedTerminalWorkLogClaimBase(home, expectation); err != nil || base != claim.BaseSHA {
+		t.Fatalf("nil warning sink: base=%q err=%v", base, err)
+	}
+}
+
+func TestRemovedTerminalHistoryRefusesTheEvaluatedTasksMalformedBinding(t *testing.T) {
+	t.Parallel()
+	home, expectation, claim := terminalHistoryFixture(t)
+	addRemovedHistoryRun(t, home, expectation, claim)
+	claimsDir := filepath.Join(home, "worklogs", claim.EffortID, "runs", claim.RunID, "claims")
+	writeHistoryJSON(t, filepath.Join(claimsDir, claim.ClaimID+PullRequestBindingSuffix), ClaimPullRequestBinding{
+		Repository: claim.Repository, URL: "- Event subscriptions are in preview and may not be enabled for your account.", RecordedAt: time.Unix(456, 0).UTC(),
+	})
+	ports := terminalHistoryTestPorts()
+	ports.Warn = func(message string) { t.Fatalf("same-task binding was skipped: %s", message) }
+	if _, err := ports.ReadRemovedTerminalWorkLogClaimBase(home, expectation); err == nil || !strings.Contains(err.Error(), "invalid pull request binding") {
+		t.Fatalf("same-task malformed binding error = %v", err)
+	}
+}

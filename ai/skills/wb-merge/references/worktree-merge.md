@@ -289,6 +289,13 @@ acknowledgement records the actor, reason, cleanup report digest and the
 superseding head's check result. A source removed without a WB cleanup record
 refuses closed: absence is never evidence.
 
+Sealed terminal Work Log reads stay fail-closed for the task being proved. A
+malformed pull-request binding that belongs to a *different* task in the same
+effort is skipped with a `wb: warning: skipped malformed pull request binding
+<file> of task <task> ...` line on stderr instead of blocking every task that
+shares the effort. `wb pr create` now refuses to record a binding without a
+real PR URL and number, so gh notice text can no longer be stored as one.
+
 The legacy prepare `validation_failed` shape that omitted `candidate.SHA` has
 a narrower compatibility proof: correlate its immutable validation revision,
 require that historical revision on the fresh remote target, and preserve the

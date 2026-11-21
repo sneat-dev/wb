@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -45,6 +46,9 @@ func (p BindingPorts) RecordClaimPullRequestBinding(projectsRoot, worktree strin
 	claim, err := p.Active(home, worktree)
 	if err != nil {
 		return "", "", fmt.Errorf("resolve active work-log claim for %s: %w", worktree, err)
+	}
+	if err := ValidatePullRequestBindingFields(binding); err != nil {
+		return "", "", err
 	}
 	if binding.RecordedAt.IsZero() {
 		binding.RecordedAt = time.Now().UTC()
@@ -107,6 +111,18 @@ func (p BindingPorts) ListRegisteredPullRequestBindingsInHome(home string) ([]Re
 		return nil, err
 	}
 	return result, nil
+}
+
+// ValidatePullRequestBindingFields refuses a binding no reader could accept:
+// one without a repository, a positive pull-request number, and a URL that
+// ends in that pull request's number. The writer checks it before persisting so a
+// corrupt sidecar is never written (sneat-dev/wb#1007).
+func ValidatePullRequestBindingFields(binding ClaimPullRequestBinding) error {
+	if strings.TrimSpace(binding.Repository) == "" || binding.PullRequest <= 0 ||
+		!strings.HasSuffix(strings.TrimSpace(binding.URL), "/pull/"+strconv.Itoa(binding.PullRequest)) {
+		return fmt.Errorf("refusing to record pull request binding with repository %q, number %d, URL %q", binding.Repository, binding.PullRequest, binding.URL)
+	}
+	return nil
 }
 
 // ValidatePullRequestBindingEntry proves that name, listed in a claims

@@ -33,6 +33,9 @@ type HistoryPorts struct {
 	ValidSegment      func(string) bool
 	ExpectedClaimID   func(Claim) (string, error)
 	IdentityFromClaim func(Claim) ExecutionIdentity
+	// Warn reports evidence a terminal read skipped. It must name the task
+	// and file; nil means the caller discards warnings.
+	Warn func(string)
 }
 
 func (p HistoryPorts) ValidateRemovedTerminalWorkLogs(home string, expectations []TerminalWorkLogExpectation) error {
@@ -208,10 +211,24 @@ func (p HistoryPorts) validateRemovedTerminalWorkLogRun(home string, expectation
 				return "", fmt.Errorf("reopen terminal Work Log claims for task %s: %w", expectation.Task, err)
 			}
 			readErr = readValidatedClaimPullRequestBinding(claims, claimID, p.ReadJSON)
-			_ = claims.Close()
 			if readErr != nil {
+				// A malformed binding stays fatal for the task being read. A
+				// sibling claim's bad sidecar is no evidence about this task,
+				// so it is skipped with a warning instead of poisoning every
+				// task that shares the effort (sneat-dev/wb#1007).
+				var owner Claim
+				if ownerErr := p.ReadJSON(claims, claimID+".json", &owner); ownerErr == nil && owner.Task != "" && owner.Task != expectation.Task {
+					_ = claims.Close()
+					if p.Warn != nil {
+						p.Warn(fmt.Sprintf("skipped malformed pull request binding %s of task %s (Work Log run %s/%s) while reading the terminal Work Log of task %s: %v",
+							name, owner.Task, effort, run, expectation.Task, readErr))
+					}
+					continue
+				}
+				_ = claims.Close()
 				return "", fmt.Errorf("read terminal Work Log pull request binding %q for task %s: %w", name, expectation.Task, readErr)
 			}
+			_ = claims.Close()
 			continue
 		}
 		claimID := strings.TrimSuffix(name, ".json")

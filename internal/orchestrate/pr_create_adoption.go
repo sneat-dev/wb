@@ -110,11 +110,28 @@ func openOrAdoptPullRequest(ctx context.Context, worktree, repository, branch, b
 	if createErr != nil {
 		return "", false, createErr
 	}
-	if createdURL := lastNonEmptyLine(created); createdURL != "" {
+	if createdURL := pullRequestURLFromOutput(created); createdURL != "" {
 		return createdURL, false, nil
 	}
 	if draft {
 		return "", false, fmt.Errorf("gh pr create --draft returned no pull request URL")
 	}
-	return "", false, fmt.Errorf("gh pr create returned no pull request URL")
+	return "", false, fmt.Errorf("gh pr create returned no pull request URL: %q", strings.TrimSpace(created))
+}
+
+// pullRequestURLFromOutput returns the last line of gh's output that is a pull
+// request URL. gh can print notices (for example "Event subscriptions are in
+// preview") around the URL, and such text must never be taken as the URL.
+func pullRequestURLFromOutput(output string) string {
+	lines := strings.Split(output, "\n")
+	for index := len(lines) - 1; index >= 0; index-- {
+		line := strings.TrimSpace(lines[index])
+		if !strings.HasPrefix(line, "https://") || strings.ContainsAny(line, " \t") {
+			continue
+		}
+		if number, err := githubchecks.PullRequestNumber(line); err == nil && strings.Contains(line, "/pull/"+number) && strings.Trim(number, "0") != "" {
+			return line
+		}
+	}
+	return ""
 }
