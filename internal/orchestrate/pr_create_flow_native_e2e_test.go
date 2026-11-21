@@ -220,12 +220,17 @@ func TestE2EPRCreateFlowNativePublicationContracts(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
+			// gh output that is not a usable pull-request URL is refused
+			// loudly and never recorded as a binding (sneat-dev/wb#1007).
 			case "nondecimal URL":
 				r.url = "https://github.com/acme/app/pull/not-a-number"
+				wantError = true
 			case "empty URL tail":
 				r.url = "https://github.com/acme/app/pull/"
+				wantError = true
 			case "overflow URL":
 				r.url = "https://github.com/acme/app/pull/99999999999999999999999999999999999"
+				wantError = true
 			case "land preflight":
 				opts.Land = true
 				opts.AutoMerge = true
@@ -254,6 +259,13 @@ func TestE2EPRCreateFlowNativePublicationContracts(t *testing.T) {
 					var pe *os.PathError
 					if !errors.As(err, &pe) || !strings.HasPrefix(err.Error(), "read --body-file "+opts.BodyFile+":") {
 						t.Fatalf("body error=%v", err)
+					}
+				} else if name == "nondecimal URL" || name == "empty URL tail" || name == "overflow URL" {
+					if !strings.Contains(err.Error(), "gh pr create returned no pull request URL") || result.URL != "" {
+						t.Fatalf("unusable URL error=%v result=%+v", err, result)
+					}
+					if _, statErr := os.Stat(sidecar); !errors.Is(statErr, os.ErrNotExist) {
+						t.Fatalf("unusable URL recorded a binding: %v", statErr)
 					}
 				} else if !errors.Is(err, sentinel) {
 					t.Fatalf("error identity=%v", err)
@@ -313,9 +325,6 @@ func TestE2EPRCreateFlowNativePublicationContracts(t *testing.T) {
 						t.Fatal(err)
 					}
 					wantNumber := 42
-					if name == "nondecimal URL" || name == "empty URL tail" || name == "overflow URL" {
-						wantNumber = 0
-					}
 					if result.PullRequest != wantNumber || binding.PullRequest != wantNumber || binding.Repository != "acme/app" || binding.URL != r.url || binding.RecordedAt.IsZero() || result.ClaimID != view.Claim.ClaimID || result.Task == "" {
 						t.Fatalf("actual binding=%+v result=%+v", binding, result)
 					}

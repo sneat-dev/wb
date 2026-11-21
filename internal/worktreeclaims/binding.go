@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -45,6 +46,9 @@ func (p BindingPorts) RecordClaimPullRequestBinding(projectsRoot, worktree strin
 	claim, err := p.Active(home, worktree)
 	if err != nil {
 		return "", "", fmt.Errorf("resolve active work-log claim for %s: %w", worktree, err)
+	}
+	if err := ValidatePullRequestBindingFields(binding); err != nil {
+		return "", "", err
 	}
 	if binding.RecordedAt.IsZero() {
 		binding.RecordedAt = time.Now().UTC()
@@ -109,6 +113,18 @@ func (p BindingPorts) ListRegisteredPullRequestBindingsInHome(home string) ([]Re
 	return result, nil
 }
 
+// ValidatePullRequestBindingFields refuses a binding no reader could accept:
+// one without a repository, a positive pull-request number, and a URL that
+// ends in that pull request's number. The writer checks it before persisting so a
+// corrupt sidecar is never written (sneat-dev/wb#1007).
+func ValidatePullRequestBindingFields(binding ClaimPullRequestBinding) error {
+	if strings.TrimSpace(binding.Repository) == "" || binding.PullRequest <= 0 ||
+		!strings.HasSuffix(strings.TrimSpace(binding.URL), "/pull/"+strconv.Itoa(binding.PullRequest)) {
+		return fmt.Errorf("refusing to record pull request binding with repository %q, number %d, URL %q", binding.Repository, binding.PullRequest, binding.URL)
+	}
+	return nil
+}
+
 // ValidatePullRequestBindingEntry proves that name, listed in a claims
 // directory whose entries are claimFiles, is the registered pull request
 // sidecar of a listed sibling claim, read below the held descriptor.
@@ -131,7 +147,7 @@ func readValidatedClaimPullRequestBinding(claims *os.File, claimID string, readJ
 	if err := readJSON(claims, claimID+".json", &boundClaim); err != nil {
 		return err
 	}
-	if boundClaim.ClaimID != claimID || strings.TrimSpace(binding.Repository) == "" || binding.Repository != boundClaim.Repository || binding.PullRequest <= 0 || strings.TrimSpace(binding.URL) == "" || binding.RecordedAt.IsZero() {
+	if boundClaim.ClaimID != claimID || binding.Repository != boundClaim.Repository || ValidatePullRequestBindingFields(binding) != nil || binding.RecordedAt.IsZero() {
 		return fmt.Errorf("invalid pull request binding for claim %s", claimID)
 	}
 	return nil

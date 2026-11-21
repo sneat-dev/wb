@@ -3,6 +3,7 @@ package orchestrate
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -110,11 +111,29 @@ func openOrAdoptPullRequest(ctx context.Context, worktree, repository, branch, b
 	if createErr != nil {
 		return "", false, createErr
 	}
-	if createdURL := lastNonEmptyLine(created); createdURL != "" {
+	if createdURL := pullRequestURLFromOutput(created); createdURL != "" {
 		return createdURL, false, nil
 	}
 	if draft {
 		return "", false, fmt.Errorf("gh pr create --draft returned no pull request URL")
 	}
-	return "", false, fmt.Errorf("gh pr create returned no pull request URL")
+	return "", false, fmt.Errorf("gh pr create returned no pull request URL: %q", strings.TrimSpace(created))
+}
+
+// pullRequestURLPattern is the canonical shape gh prints for a created pull
+// request on any host: https://<host>[/<path>]/pull/<positive number>, the
+// number bounded so it always fits an int.
+var pullRequestURLPattern = regexp.MustCompile(`^https://[^\s/]+(?:/[^\s/]+)*/pull/[1-9][0-9]{0,17}$`)
+
+// pullRequestURLFromOutput returns the last line of gh's output that is a pull
+// request URL. gh can print notices (for example "Event subscriptions are in
+// preview") around the URL, and such text must never be taken as the URL.
+func pullRequestURLFromOutput(output string) string {
+	lines := strings.Split(output, "\n")
+	for index := len(lines) - 1; index >= 0; index-- {
+		if line := strings.TrimSpace(lines[index]); pullRequestURLPattern.MatchString(line) {
+			return line
+		}
+	}
+	return ""
 }

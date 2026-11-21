@@ -182,7 +182,7 @@ func TestClaimsBindingLookup(t *testing.T) {
 		},
 		ReadJSONAt: filewrite.ReadJSONAt,
 	}
-	task, id, err := p.RecordClaimPullRequestBinding(root, "wt", ClaimPullRequestBinding{Repository: "acme/app", PullRequest: 12, URL: "https://example.test/12"})
+	task, id, err := p.RecordClaimPullRequestBinding(root, "wt", ClaimPullRequestBinding{Repository: "acme/app", PullRequest: 12, URL: "https://example.test/acme/app/pull/12"})
 	if err != nil || task != "task" || id != "claim" {
 		t.Fatalf("record: %s %s %v", task, id, err)
 	}
@@ -299,17 +299,17 @@ func TestClaimsBindingErrorsAndOrdering(t *testing.T) {
 		t.Fatal("active error lost")
 	}
 	// A malformed time reaches the encoder even though all other fields are scalar.
-	if _, _, err := base.RecordClaimPullRequestBinding("", "wt", ClaimPullRequestBinding{RecordedAt: time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)}); err == nil {
+	if _, _, err := base.RecordClaimPullRequestBinding("", "wt", ClaimPullRequestBinding{Repository: "b", PullRequest: 1, URL: "https://example.test/b/pull/1", RecordedAt: time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)}); err == nil {
 		t.Fatal("encoder error lost")
 	}
 	missing := base
 	missing.Active = func(string, string) (ActiveClaim, error) {
 		return ActiveClaim{Task: "z", ClaimID: "c", Path: filepath.Join(root, "missing", "c.json")}, nil
 	}
-	if _, _, err := missing.RecordClaimPullRequestBinding("", "wt", ClaimPullRequestBinding{}); err == nil {
+	if _, _, err := missing.RecordClaimPullRequestBinding("", "wt", ClaimPullRequestBinding{Repository: "b", PullRequest: 1, URL: "https://example.test/b/pull/1"}); err == nil {
 		t.Fatal("write error lost")
 	}
-	if _, _, err := base.RecordClaimPullRequestBinding("", "wt", ClaimPullRequestBinding{Repository: "b", RecordedAt: time.Now()}); err != nil {
+	if _, _, err := base.RecordClaimPullRequestBinding("", "wt", ClaimPullRequestBinding{Repository: "b", PullRequest: 1, URL: "https://example.test/b/pull/1", RecordedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	fail = base
@@ -650,5 +650,33 @@ func TestClaimsPromptOrdinalStopsAtFourDigits(t *testing.T) {
 	}
 	if written != "" {
 		t.Fatalf("overflow wrote %q", written)
+	}
+}
+
+// gh can print a notice where wb expected the PR URL (sneat-dev/wb#1007). A
+// binding no reader would accept is refused before anything is written.
+func TestRecordClaimPullRequestBindingRefusesBindingNoReaderAccepts(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	sidecar := filepath.Join(dir, "c"+PullRequestBindingSuffix)
+	ports := BindingPorts{
+		Root: func(string) (string, error) { return dir, nil },
+		Active: func(string, string) (ActiveClaim, error) {
+			return ActiveClaim{Task: "z", ClaimID: "c", Path: filepath.Join(dir, "c.json")}, nil
+		},
+	}
+	notice := "- Event subscriptions are in preview and may not be enabled for your account."
+	for name, binding := range map[string]ClaimPullRequestBinding{
+		"gh notice as URL":     {Repository: "acme/app", PullRequest: 0, URL: notice},
+		"number not in URL":    {Repository: "acme/app", PullRequest: 7, URL: "https://github.com/acme/app/pull/8"},
+		"missing repository":   {PullRequest: 7, URL: "https://github.com/acme/app/pull/7"},
+		"notice with a number": {Repository: "acme/app", PullRequest: 7, URL: notice},
+	} {
+		if _, _, err := ports.RecordClaimPullRequestBinding("", "wt", binding); err == nil || !strings.Contains(err.Error(), "refusing to record pull request binding") {
+			t.Fatalf("%s: err=%v", name, err)
+		}
+	}
+	if _, err := os.Stat(sidecar); !os.IsNotExist(err) {
+		t.Fatalf("refused binding was written: %v", err)
 	}
 }
