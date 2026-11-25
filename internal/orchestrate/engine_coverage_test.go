@@ -375,7 +375,7 @@ exit 30
 	t.Run("creates one", func(t *testing.T) {
 		state := testfixture.ScriptState(t, script)
 		state.Answer(t, "list", "\n")
-		state.Answer(t, "create", "Creating pull request...\nhttps://example.test/acme/app/pull/42\n")
+		state.Answer(t, "create", "Creating pull request...\nhttps://example.test/acme/app/pull/42\n- Event subscriptions are in preview and may not be enabled for your account.\n")
 		state.Answer(t, "create-exit", "0")
 		url, err := openPullRequest(context.Background(), t.TempDir(), "wb/deps", "main", "title", "body", options)
 		if err != nil || url != "https://example.test/acme/app/pull/42" {

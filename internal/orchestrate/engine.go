@@ -593,7 +593,7 @@ func openPullRequest(ctx context.Context, worktree, branch, base, title, body st
 	if err != nil {
 		return "", err
 	}
-	if url := lastNonEmptyLine(created); url != "" {
+	if url := githubobserver.PullRequestURLFromOutput(created); url != "" {
 		return url, nil
 	}
 	return "", fmt.Errorf("gh pr create returned no pull request URL")
