@@ -3,6 +3,7 @@ package discover
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -244,7 +245,7 @@ func TestReconcileTransfersFlagsAmbiguousTransfers(t *testing.T) {
 
 func TestListRemoteMapsRepositoryFields(t *testing.T) {
 	lgCovInstallFakeGh(t, lgCovGhCall{
-		args: "repo list acme --limit 1000 --json name,isArchived,isFork,sshUrl",
+		args: "repo list acme --limit 1000 --json name,isArchived,isFork,sshUrl,url",
 		stdout: `[{"name":"widgets","isArchived":false,"isFork":false,"sshUrl":"git@github.com:acme/widgets.git"},` +
 			`{"name":"legacy","isArchived":true,"isFork":true,"sshUrl":"git@github.com:acme/legacy.git"}]`,
 	})
@@ -266,7 +267,7 @@ func TestListRemoteMapsRepositoryFields(t *testing.T) {
 
 func TestListRemoteReturnsNoRepositoriesForAnEmptyOwner(t *testing.T) {
 	lgCovInstallFakeGh(t, lgCovGhCall{
-		args:   "repo list empty --limit 1000 --json name,isArchived,isFork,sshUrl",
+		args:   "repo list empty --limit 1000 --json name,isArchived,isFork,sshUrl,url",
 		stdout: `[]`,
 	})
 	repositories, err := ListRemote("empty")
@@ -279,7 +280,7 @@ func TestListRemoteReturnsNoRepositoriesForAnEmptyOwner(t *testing.T) {
 }
 
 func TestListRemoteReportsFailures(t *testing.T) {
-	const listCall = "repo list acme --limit 1000 --json name,isArchived,isFork,sshUrl"
+	const listCall = "repo list acme --limit 1000 --json name,isArchived,isFork,sshUrl,url"
 	t.Run("gh error", func(t *testing.T) {
 		lgCovInstallFakeGh(t, lgCovGhCall{args: listCall, stderr: "gh: not logged into any GitHub hosts", exit: 1})
 		if _, err := ListRemote("acme"); err == nil {
@@ -451,5 +452,32 @@ func TestScanLocalSkipsAnUnreadableOrganizationDirectory(t *testing.T) {
 	}
 	if len(repositories) != 1 || repositories[0].Slug() != "zzz-readable/widgets" {
 		t.Fatalf("ScanLocal() = %#v, want the readable organization scanned and the sealed one skipped", repositories)
+	}
+}
+
+func TestListRemoteHonorsGitHubProtocol(t *testing.T) {
+	for _, tc := range []struct {
+		protocol string
+		exit     int
+		want     string
+	}{
+		{"https", 0, "https://github.com/acme/widgets.git"},
+		{"ssh", 0, "git@github.com:acme/widgets.git"},
+		{"https", 1, "git@github.com:acme/widgets.git"},
+	} {
+		t.Run(fmt.Sprintf("%s/%d", tc.protocol, tc.exit), func(t *testing.T) {
+			lgCovInstallFakeGh(t,
+				lgCovGhCall{args: "repo list acme --limit 1000 --json name,isArchived,isFork,sshUrl,url",
+					stdout: `[{"name":"widgets","sshUrl":"git@github.com:acme/widgets.git","url":"https://github.com/acme/widgets"}]`},
+				lgCovGhCall{args: "config get git_protocol --host github.com", stdout: tc.protocol + "\n", exit: tc.exit},
+			)
+			repos, err := ListRemote("acme")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(repos) != 1 || repos[0].CloneURL != tc.want {
+				t.Fatalf("ListRemote() = %#v, want clone URL %q", repos, tc.want)
+			}
+		})
 	}
 }
