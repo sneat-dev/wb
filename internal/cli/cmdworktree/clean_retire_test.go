@@ -204,6 +204,63 @@ func TestRetireRetiresABareBranchNoCheckoutHolds(t *testing.T) {
 	}
 }
 
+func TestRetireNamespacedBranchUsesRepositoryScopedLandingProof(t *testing.T) {
+	t.Parallel()
+	root := "root"
+	branch := "renovate/javascript-dependencies"
+	deps := retireDeps()
+	deps.Run = func(context.Context, worktrees.CleanupOptions) (worktrees.CleanupOutcome, error) {
+		t.Fatal("a namespaced ref must not be passed to the task transaction")
+		return worktrees.CleanupOutcome{}, nil
+	}
+	deps.Branch = func(_ context.Context, options worktrees.BranchCleanupOptions) (worktrees.BranchCleanupOutcome, error) {
+		if options.Repository != "sneat-co/sneat-firebase" || options.Branch != branch ||
+			options.AbsorbedBy != "127" || options.Scope != worktrees.BranchScopeAll || !options.Receipts || options.Apply {
+			t.Fatalf("unexpected branch retirement options: %+v", options)
+		}
+		return worktrees.BranchCleanupOutcome{Results: []worktrees.BranchCleanupResult{
+			{BranchEntry: worktrees.BranchEntry{Branch: branch}, Eligible: true},
+		}}, nil
+	}
+	var out bytes.Buffer
+	args := []string{branch, "--repo=sneat-co/sneat-firebase", "--remote", "--absorbed-by=127", "--json"}
+	if err := retirementExecute(NewRetire(retirementRuntime(&root), deps), args, &out, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"eligible": true`) || !strings.Contains(out.String(), branch) {
+		t.Fatalf("unexpected plan: %s", out.String())
+	}
+}
+
+func TestRetireKeepsInvalidAndTaskRecoveryNamesOutOfBareBranchCleanup(t *testing.T) {
+	t.Parallel()
+	root := "root"
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"missing repository", []string{"renovate/javascript-dependencies"}},
+		{"invalid ref", []string{"renovate/../unsafe", "--repo=sneat-co/sneat-firebase"}},
+		{"task recovery", []string{"renovate/javascript-dependencies", "--repo=sneat-co/sneat-firebase", "--resume-interrupted"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			deps := retireDeps()
+			refused := errors.New("task name is invalid")
+			deps.Run = func(context.Context, worktrees.CleanupOptions) (worktrees.CleanupOutcome, error) {
+				return worktrees.CleanupOutcome{}, refused
+			}
+			deps.Branch = func(context.Context, worktrees.BranchCleanupOptions) (worktrees.BranchCleanupOutcome, error) {
+				t.Fatal("invalid or task-only input reached bare-branch cleanup")
+				return worktrees.BranchCleanupOutcome{}, nil
+			}
+			if err := retirementExecute(NewRetire(retirementRuntime(&root), deps), tc.args, io.Discard, io.Discard); !errors.Is(err, refused) {
+				t.Fatalf("got %v, want %v", err, refused)
+			}
+		})
+	}
+}
+
 func TestFirstNonEmptyPicksTheFirstReason(t *testing.T) {
 	t.Parallel()
 	if firstNonEmpty("", "b", "c") != "b" || firstNonEmpty() != "" {

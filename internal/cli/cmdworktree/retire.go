@@ -64,6 +64,8 @@ A name that is not a task is resolved as a branch: the task whose checkout
 has that branch is retired (task batch5-assembly for branch batch5), and a
 branch no checkout holds is retired as a bare ref on the same landing
 evidence wb clean uses (--repo narrows it to one repository).
+For a branch name containing a slash, use --repo to select an exact bare
+ref. If a worktree holds that branch, retire the worktree by its task name.
 
 --preserve branch|tag retires one task whose work did NOT land: it commits
 tracked and nonignored untracked changes on the branch with normal Git hooks
@@ -294,6 +296,17 @@ quarantines only the exact held inode and completes the usual terminal flow.
 				return fmt.Errorf("--resume-interrupted requires one explicit task")
 			}
 			now := time.Now()
+			retireBare := func(branch string) error {
+				return runBareBranchRetire(command, runtime, deps.Branch, worktrees.BranchCleanupOptions{
+					ProjectsRoot: flags.ProjectsRoot, Base: base, Filter: flags.Filter, Repository: repository,
+					Branch: branch, Apply: apply, OlderThan: olderThan, Receipts: true,
+					AbsorbedBy: absorbedBy, SupersededBy: supersededBy, ReportDir: reportDir,
+					Scope: bareBranchScope(deleteRemote), PeerEvidence: peerEvidence, RequireHosts: requireHosts,
+				}, format)
+			}
+			if len(tasks) == 1 && repository != "" && !resumeInterrupted && worktrees.IsQualifiedRetirementBranch(command.Context(), tasks[0]) {
+				return retireBare(tasks[0])
+			}
 			progress := deps.Progress(command, verbose)
 			defer progress.Finish()
 			run := func(tasks []string) (worktrees.CleanupOutcome, error) {
@@ -339,12 +352,7 @@ quarantines only the exact held inode and completes the usual terminal flow.
 					if len(tasks) != 1 {
 						return fmt.Errorf("%w; it is not a checkout's branch either. Retire a bare branch on its own: wb worktree retire %s", err, notFound.Task)
 					}
-					return runBareBranchRetire(command, runtime, deps.Branch, worktrees.BranchCleanupOptions{
-						ProjectsRoot: flags.ProjectsRoot, Base: base, Filter: flags.Filter, Repository: repository,
-						Branch: notFound.Task, Apply: apply, OlderThan: olderThan, Receipts: true,
-						AbsorbedBy: absorbedBy, SupersededBy: supersededBy, ReportDir: reportDir,
-						Scope: bareBranchScope(deleteRemote), PeerEvidence: peerEvidence, RequireHosts: requireHosts,
-					}, format)
+					return retireBare(notFound.Task)
 				}
 				if _, writeErr := fmt.Fprintf(command.ErrOrStderr(), "note: %s is the branch of task %s; retiring task %s\n", notFound.Task, task, task); writeErr != nil {
 					return writeErr
