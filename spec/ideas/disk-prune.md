@@ -62,7 +62,7 @@ worktree references) and stops once `--until-free` is met. Anything held
 open, owned by a live task or locked by a running build is skipped, and the
 skip is reported.
 
-Revise the disk-reclaim Draft into this feature instead of writing a second
+Revise the disk-reclaim Draft (now [disk-prune](../features/disk-prune/README.md)) into this feature instead of writing a second
 one. Because the incident keeps recurring, the daemon's below-floor trigger
 stays in scope: a manual verb nobody remembers to run does not stop the
 eleventh incident. The trigger runs only the subset that is safe to run
@@ -89,17 +89,20 @@ hand-made report is finished, so it deletes none of them.
 ## MVP Scope
 
 One verb, `wb disk prune [--apply] [--until-free] [--category]
-[--older-than] [--format json]`. It covers scratch, go-build-cache,
-node-package-store and go-module-cache, and wb-state as a report. Docker is
-opt-in. It works against hermetic fakes and passes a real-directory dry run.
-The daemon trigger follows in a second phase of the same Plan.
+[--older-than] [--allow-full-clean] [--format json]`. By default it covers
+scratch from known producers, the Go build-cache trim and the pnpm store.
+Go module versions are pruned only with `--category go-module-cache`, and
+only when re-download is provable. wb-state is a report. It works against
+hermetic fakes and passes a real-directory dry run. The daemon trigger ships
+in the same pull request, default off (founder, 2026-11-27). Docker and npm
+are deferred.
 
 ## Not Doing (and Why)
 
 - Worktree retirement — wb clean owns it; the two verbs stay separate (founder, 2026-11-27)
 - Pruning wb-state — report-only until each subdirectory has a provable owner and retention
 - Blanket go clean -modcache — only with an explicit user request
-- Docker by default — opt-in via --category docker only
+- Docker and npm — deferred; Docker needs run-record ownership checks, npm cannot be detected as idle (founder, 2026-11-27)
 
 ## Key Assumptions to Validate
 
@@ -114,7 +117,7 @@ The daemon trigger follows in a second phase of the same Plan.
 ## SpecScore Integration
 
 - **New Features this would create:** none; it revises [disk-prune](../features/disk-prune/README.md)
-- **Existing Features affected:** disk-reclaim (rename to `wb disk prune`, scope per this Idea)
+- **Existing Features affected:** disk-reclaim, renamed to [disk-prune](../features/disk-prune/README.md) and rescoped per this Idea; cleanup-orchestration (`progress-off-terminal`)
 - **Dependencies:** worktree-lifecycle, daemon-lifecycle
 
 ## Open Questions

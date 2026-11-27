@@ -9,7 +9,7 @@ import (
 func TestMeasureMissingRootReturnsNilError(t *testing.T) {
 	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
-	usage, inodes, err := measure(context.Background(), missing)
+	usage, inodes, err := measure(context.Background(), missing, nil)
 	if err != nil {
 		t.Fatalf("measure on missing root returned error: %v", err)
 	}

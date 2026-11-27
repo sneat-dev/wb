@@ -246,3 +246,36 @@ func TestAddSumsTwoMeasurements(t *testing.T) {
 		t.Fatalf("total = %#v", total)
 	}
 }
+
+// A root that contains another measured root must leave that subtree to it,
+// or the walk attributes the same bytes to both and every per-root figure
+// over-reports.
+func TestMeasureExcludingLeavesNestedRootsToTheirOwnTree(t *testing.T) {
+	t.Parallel()
+	outer := t.TempDir()
+	inner := filepath.Join(outer, "worktrees")
+	if err := os.MkdirAll(inner, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(inner, "big"), make([]byte, 64<<10), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outer, "small"), make([]byte, 4<<10), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	walk := NewWalk()
+	innerUsage, err := walk.Measure(context.Background(), inner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outerUsage, err := walk.MeasureExcluding(context.Background(), outer, []string{inner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if innerUsage.ApparentBytes != 64<<10 || outerUsage.ApparentBytes != 4<<10 {
+		t.Fatalf("inner %d, outer %d; want 65536 and 4096", innerUsage.ApparentBytes, outerUsage.ApparentBytes)
+	}
+	if total := walk.Total(); total.Files != 2 {
+		t.Fatalf("total files = %d, want each file counted once", total.Files)
+	}
+}

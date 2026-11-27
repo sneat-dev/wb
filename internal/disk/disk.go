@@ -37,7 +37,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/diskusage"
+	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
 // Filesystem is the capacity of the volume a path lives on.
@@ -95,7 +97,9 @@ type Report struct {
 type Options struct {
 	// ProjectsRoot is the {org}/{repo} checkout root.
 	ProjectsRoot string
-	// WBHome is WB's own state directory; empty resolves to ~/.wb.
+	// WBHome is WB's own state directory; empty resolves it from the projects
+	// root through wbhome, which is <root>/.wb. It is never $HOME/.wb: that
+	// directory is retired and is reported as legacy-wb-home instead.
 	WBHome string
 	// SkipSizes reports the roots and the filesystem without walking trees.
 	// Measuring a 22 GB build cache costs minutes of IO, and the free-space
@@ -129,11 +133,14 @@ func collectWithDiscovery(ctx context.Context, options Options, userHomeDir func
 	}
 	home := options.WBHome
 	if home == "" {
-		userHome, err := userHomeDir()
-		if err != nil {
+		if _, err := userHomeDir(); err != nil {
 			return Report{}, fmt.Errorf("resolve home directory: %w", err)
 		}
-		home = filepath.Join(userHome, ".wb")
+		resolution, err := resolveLayout(projectsRoot)
+		if err != nil {
+			return Report{}, fmt.Errorf("resolve WB state directory: %w", err)
+		}
+		home = resolution.Write.Home
 	}
 	minimum := options.MinimumAvailableRatio
 	if minimum <= 0 {
@@ -152,6 +159,7 @@ func collectWithDiscovery(ctx context.Context, options Options, userHomeDir func
 	report.Filesystem = filesystem
 
 	groups := discoverGroups(projectsRoot, home)
+	nested := nestedRoots(groups)
 
 	// One walk across every category: a pnpm store hard-linked into a worktree
 	// belongs to whichever category is measured first and must not be added
@@ -171,7 +179,7 @@ func collectWithDiscovery(ctx context.Context, options Options, userHomeDir func
 			if options.SkipSizes {
 				continue
 			}
-			usage, err := walk.Measure(ctx, root)
+			usage, err := walk.MeasureExcluding(ctx, root, nested[filepath.Clean(root)])
 			if err != nil {
 				report.Skipped = append(report.Skipped, fmt.Sprintf("%s: %v", root, err))
 				continue
@@ -216,29 +224,44 @@ type group struct {
 
 // candidateGroups names every place WB is known to put bytes. A path that does
 // not exist is dropped later rather than here, so the set stays declarative.
+//
+// Every WB root comes from the projects root, never from $HOME: state lives in
+// <root>/.wb and checkouts in <root>/.worktrees. The retired $HOME/.wb is its
+// own category, because what it holds — legacy checkouts, a hub store,
+// hand-made artifacts — is neither the current state nor anything prune may
+// touch, and on 2026-11-27 reporting it as wb-state made 10 GB of it look like
+// WB's own records.
 func candidateGroups(projectsRoot, home string) []group {
 	userHome, _ := os.UserHomeDir()
+	legacyHome := legacyWBHome(userHome, home)
 	groups := []group{
 		{
 			name: "worktrees", kind: "worktree",
-			roots: append(worktreeRoots(projectsRoot), filepath.Join(home, "worktrees")),
+			roots: checkoutStores(projectsRoot, legacyHome),
 			note:  "may hold unlanded work; retire with wb clean, never rm",
 		},
 		{
 			name: "go-build-cache", kind: "cache",
 			roots: []string{goEnv("GOCACHE")},
-			note:  "regenerable; shared across every worktree, so per-task copies multiply it",
+			note:  "regenerable; shared across every worktree, so per-task copies multiply it; wb disk prune trims it",
 		},
 		{
 			name: "go-module-cache", kind: "cache",
 			roots: []string{goEnv("GOMODCACHE")},
-			note:  "regenerable; re-downloading costs network, not correctness",
+			note:  "regenerable; re-downloading costs network, not correctness; wb disk prune removes versions no go.sum references",
 		},
 		{
 			name: "wb-state", kind: "state",
 			roots: []string{home},
-			note:  "work logs, receipts, hub store; not regenerable",
+			note:  "work logs, locks, claims, receipts; not regenerable; reported, never pruned",
 		},
+	}
+	if legacyHome != "" {
+		groups = append(groups, group{
+			name: "legacy-wb-home", kind: "state",
+			roots: []string{legacyHome},
+			note:  "the retired $HOME/.wb: hub store, legacy reports and hand-made artifacts; legacy checkouts are counted under worktrees; a person decides",
+		})
 	}
 	if userHome != "" {
 		groups = append(groups, group{
@@ -248,15 +271,102 @@ func candidateGroups(projectsRoot, home string) []group {
 				filepath.Join(userHome, "Library", "pnpm", "store"),
 				filepath.Join(userHome, ".npm"),
 			},
-			note: "hard-linked into consumers, so apparent size far exceeds what removal reclaims",
+			note: "hard-linked into consumers, so apparent size far exceeds what removal reclaims; wb disk prune runs pnpm store prune",
 		})
 	}
 	groups = append(groups, group{
 		name: "scratch", kind: "scratch",
 		roots: scratchRoots(),
-		note:  "per-task temporary space with no owner; 46 GB of it filled this machine on 2026-09-17",
+		note:  "per-task temporary space with no owner; 46 GB of it filled this machine on 2026-09-17; wb disk prune removes what nothing holds",
 	})
 	return groups
+}
+
+// legacyWBHome returns the retired $HOME/.wb when it exists and is not the
+// state directory this run already measures as wb-state.
+func legacyWBHome(userHome, stateHome string) string {
+	if userHome == "" {
+		return ""
+	}
+	legacy := filepath.Join(userHome, ".wb")
+	if info, err := os.Stat(legacy); err != nil || !info.IsDir() {
+		return ""
+	}
+	if sameDir(legacy, stateHome) {
+		return ""
+	}
+	return legacy
+}
+
+func sameDir(a, b string) bool {
+	if filepath.Clean(a) == filepath.Clean(b) {
+		return true
+	}
+	ra, errA := filepath.EvalSymlinks(a)
+	rb, errB := filepath.EvalSymlinks(b)
+	return errA == nil && errB == nil && ra == rb
+}
+
+// checkoutStores lists every place a WB checkout can physically be: the central
+// store <root>/.worktrees, the retired home's worktrees, the repository-local
+// .worktrees of every canonical clone at whatever depth its placement uses,
+// and the {org}/{repo}/.worktrees layout older fleets still have. Before this,
+// only the last was scanned, so a {host}/{org}/{repo} fleet's checkouts — 2.7
+// GB on the machine this was fixed on — were not reported at all.
+func checkoutStores(projectsRoot, legacyHome string) []string {
+	candidates := []string{filepath.Join(projectsRoot, ".worktrees")}
+	if legacyHome != "" {
+		candidates = append(candidates, filepath.Join(legacyHome, "worktrees"))
+	}
+	if repositories, err := scanLocal(projectsRoot); err == nil {
+		for _, repository := range repositories {
+			if repository.Path != "" {
+				candidates = append(candidates, filepath.Join(repository.Path, ".worktrees"))
+			}
+		}
+	}
+	candidates = append(candidates, worktreeRoots(projectsRoot)...)
+	seen := map[string]bool{}
+	var roots []string
+	for _, candidate := range candidates {
+		clean := filepath.Clean(candidate)
+		if seen[clean] {
+			continue
+		}
+		seen[clean] = true
+		roots = append(roots, clean)
+	}
+	return roots
+}
+
+// scanLocal is discover.ScanLocal behind a seam, so tests can describe a fleet
+// without real Git clones.
+var scanLocal = discover.ScanLocal
+
+// resolveLayout is wbhome.Resolve behind the same kind of seam.
+var resolveLayout = wbhome.Resolve
+
+// nestedRoots maps each root to the other roots strictly inside it, across
+// every category. The walk skips those subtrees under the outer root, so a
+// checkout store inside the retired home is counted once, as worktrees.
+func nestedRoots(groups []group) map[string][]string {
+	var all []string
+	for _, group := range groups {
+		for _, root := range group.roots {
+			if root != "" {
+				all = append(all, filepath.Clean(root))
+			}
+		}
+	}
+	nested := map[string][]string{}
+	for _, outer := range all {
+		for _, inner := range all {
+			if inner != outer && strings.HasPrefix(inner, outer+string(filepath.Separator)) {
+				nested[outer] = append(nested[outer], inner)
+			}
+		}
+	}
+	return nested
 }
 
 // worktreeRoots finds every .worktrees directory two levels under the projects
@@ -337,7 +447,7 @@ func findings(report Report, minimumRatio float64, skippedSizes bool) []string {
 	ratio := report.Filesystem.AvailableRatio()
 	if report.Filesystem.TotalBytes > 0 && ratio < minimumRatio {
 		found = append(found, fmt.Sprintf(
-			"only %s of %s available (%.1f%%, floor %.0f%%) on the filesystem holding %s",
+			"only %s of %s available (%.1f%%, floor %.0f%%) on the filesystem holding %s; wb disk prune plans what can go",
 			diskusage.Human(report.Filesystem.AvailableBytes),
 			diskusage.Human(report.Filesystem.TotalBytes),
 			ratio*100, minimumRatio*100, report.Filesystem.Path))
@@ -348,8 +458,13 @@ func findings(report Report, minimumRatio float64, skippedSizes bool) []string {
 	for _, category := range report.Categories {
 		if category.Kind == "scratch" && category.UnsharedBytes > 0 {
 			found = append(found, fmt.Sprintf(
-				"%s of scratch has no owning task; nothing retires it today",
+				"%s of scratch has no owning task; wb disk prune removes what nothing holds open",
 				diskusage.Human(category.UnsharedBytes)))
+		}
+		if category.Name == "legacy-wb-home" && category.UnsharedBytes > 0 {
+			found = append(found, fmt.Sprintf(
+				"%s in the retired %s is not WB state and no verb manages it; a person decides what to keep (its legacy checkouts are under worktrees, retired with wb clean)",
+				diskusage.Human(category.UnsharedBytes), category.Roots[0]))
 		}
 	}
 	if len(report.Skipped) > 0 {
