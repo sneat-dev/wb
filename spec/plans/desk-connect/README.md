@@ -182,8 +182,6 @@ Add `internal/cli/cmddesk` (Operations struct) and `internal/deskrun`.
   A failed reconnect leaves the previous configuration in place. `--detail` on a connected
   machine changes the level without re-enrolling.
 - **`status`**, reading the daemon's Desk state when it is running and the config otherwise.
-- **`push`**, which asks the running daemon to publish now and fails with a finding when it
-  isn't running.
 - **`disconnect`**: revoke, then clear, then restart. It reports `revoked: false` and exits 1
   when Desk is unreachable.
 - **`task-key export`**, which refuses a terminal stdout.
@@ -213,8 +211,10 @@ Add `internal/deskpublish.Publisher`, implementing `fleet.RemotePublisher`:
 Add a `fleet` fan-out publisher so that `Options.Publisher` carries both the `remote:` and the
 Desk publishers, each with its own diagnostic. Add `Machine.DeskError` (a new metadata field,
 added to the sentinel's metadata list and to the Cockpit spec's closed set) and surface it in
-fleet health with the fix command. Expose the Desk state on a daemon route that
-`wb desk status` and `wb desk push` use.
+fleet health with the fix command. Add `wb desk push`, which asks the running daemon to
+publish now through a daemon route and fails with a finding when the daemon isn't running.
+`push` moved here from task 5 because it needs this publisher. `wb desk status` reads `wb.yaml`
+and Desk's `machines/self` directly, so it needs no daemon route.
 
 ### Task 7: Journey test
 
