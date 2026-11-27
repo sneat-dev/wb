@@ -30,7 +30,7 @@ func TestScratchRemovesOnlyKnownUnusedProducers(t *testing.T) {
 	mustWrite(t, filepath.Join(notCache, "README"), "", 0o644)
 	mustWrite(t, filepath.Join(notCache, "notes.txt"), "mine", 0o644)
 	held := filepath.Join(tw.tmp, "wb-pr1-test-cache")
-	mustWrite(t, filepath.Join(held, "README"), "", 0o644)
+	mustWrite(t, filepath.Join(held, "README"), goCacheReadme+"\n", 0o644)
 	mustWrite(t, filepath.Join(tw.tmp, "wb-index-9", "repo", ".git", "HEAD"), "ref", 0o644)
 	mustWrite(t, filepath.Join(tw.tmp, "wb-wt-x", ".git"), "gitdir: /x", 0o644)
 	mustWrite(t, filepath.Join(tw.tmp, "wb", "old-task", "f"), "x", 0o644)

@@ -16,8 +16,9 @@ type Report struct {
 
 // LockReport says whether the per-user run lock was held.
 type LockReport struct {
-	Held      bool `json:"held"`
-	HolderPID int  `json:"holder_pid,omitempty"`
+	Held      bool   `json:"held"`
+	HolderPID int    `json:"holder_pid,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
 
 // AdmissionReport says how the run got past WB's admission queue.
@@ -152,6 +153,7 @@ var failClosedReasons = map[string]bool{
 	"unknown": true, "busy-unverified": true, "unsupported-platform": true,
 	"incomplete-reference-set": true, "partial-scan": true,
 	"requested-step-skipped": true, "target-unreachable": true,
+	"lock-unavailable": true, "probe-failed": true,
 }
 
 // IsFinding reports whether the report should exit 1.

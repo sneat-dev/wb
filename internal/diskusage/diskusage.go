@@ -31,6 +31,9 @@ type Usage struct {
 	UnsharedBytes int64 `json:"unshared_bytes"`
 	SharedBytes   int64 `json:"shared_bytes"`
 	Files         int64 `json:"files"`
+	// Unreadable counts entries the walk could not read, so the figures
+	// are a lower bound whenever it is not zero.
+	Unreadable int64 `json:"unreadable,omitempty"`
 }
 
 // Add sums two measurements. Summing per-tree measurements is only exact when
@@ -41,6 +44,7 @@ func (u Usage) Add(other Usage) Usage {
 		UnsharedBytes: u.UnsharedBytes + other.UnsharedBytes,
 		SharedBytes:   u.SharedBytes + other.SharedBytes,
 		Files:         u.Files + other.Files,
+		Unreadable:    u.Unreadable + other.Unreadable,
 	}
 }
 
@@ -64,6 +68,7 @@ func measure(ctx context.Context, root string, exclude []string) (Usage, map[ino
 
 func measureStat(ctx context.Context, root string, exclude []string, lstat func(string, *unix.Stat_t) error) (Usage, map[inodeKey]*seenInode, error) {
 	inodes := map[inodeKey]*seenInode{}
+	var unreadable int64
 	excluded := make(map[string]bool, len(exclude))
 	for _, path := range exclude {
 		excluded[filepath.Clean(path)] = true
@@ -78,6 +83,9 @@ func measureStat(ctx context.Context, root string, exclude []string, lstat func(
 			return fs.SkipDir
 		}
 		if err != nil {
+			if errors.Is(err, os.ErrPermission) {
+				unreadable++
+			}
 			if errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission) {
 				if entry != nil && entry.IsDir() {
 					return fs.SkipDir
@@ -91,6 +99,9 @@ func measureStat(ctx context.Context, root string, exclude []string, lstat func(
 		}
 		var stat unix.Stat_t
 		if statErr := lstat(path, &stat); statErr != nil {
+			if !errors.Is(statErr, os.ErrNotExist) {
+				unreadable++
+			}
 			return nil
 		}
 		if stat.Mode&unix.S_IFMT != unix.S_IFREG {
@@ -112,7 +123,7 @@ func measureStat(ctx context.Context, root string, exclude []string, lstat func(
 		// The callback absorbs missing paths; only other errors escape WalkDir.
 		return Usage{}, nil, fmt.Errorf("measure %s: %w", root, walkErr)
 	}
-	usage := Usage{}
+	usage := Usage{Unreadable: unreadable}
 	for _, record := range inodes {
 		usage.ApparentBytes += record.size
 		usage.Files += int64(record.seen)

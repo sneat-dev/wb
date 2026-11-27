@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/mod/module"
@@ -38,8 +39,17 @@ var alwaysKeptModules = map[string]bool{"golang.org/toolchain": true, "golang.or
 func referenceSet(checkouts, ignore []string) (map[string]bool, []string, error) {
 	refs := map[string]bool{}
 	var ignored []string
-	for _, checkout := range checkouts {
-		err := filepath.WalkDir(checkout, func(path string, entry fs.DirEntry, err error) error {
+	for _, original := range checkouts {
+		// WalkDir does not follow a symlinked root; a checkout reached through
+		// one would otherwise contribute no references at all.
+		checkout, err := filepath.EvalSymlinks(original)
+		if err != nil {
+			return nil, ignored, fmt.Errorf("%s: %w", original, err)
+		}
+		if info, err := os.Stat(checkout); err != nil || !info.IsDir() {
+			return nil, ignored, fmt.Errorf("%s is not a directory", original)
+		}
+		err = filepath.WalkDir(checkout, func(path string, entry fs.DirEntry, err error) error {
 			if err != nil {
 				return fmt.Errorf("%s: %w", path, err)
 			}
@@ -49,7 +59,11 @@ func referenceSet(checkouts, ignore []string) (map[string]bool, []string, error)
 				}
 				return nil
 			}
-			if !isSumFile(path, entry.Name()) {
+			sum, err := isSumFile(path, entry.Name())
+			if err != nil {
+				return err
+			}
+			if !sum {
 				return nil
 			}
 			rel, _ := filepath.Rel(checkout, path)
@@ -70,16 +84,22 @@ func referenceSet(checkouts, ignore []string) (map[string]bool, []string, error)
 
 // isSumFile accepts go.sum, go.work.sum, and <name>.sum beside <name>.mod,
 // which is what -modfile=<name>.mod reads.
-func isSumFile(path, name string) bool {
+func isSumFile(path, name string) (bool, error) {
 	if name == "go.sum" || name == "go.work.sum" {
-		return true
+		return true, nil
 	}
 	base, ok := strings.CutSuffix(name, ".sum")
 	if !ok {
-		return false
+		return false, nil
 	}
 	_, err := os.Stat(filepath.Join(filepath.Dir(path), base+".mod"))
-	return err == nil
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("%s: %w", path, err)
+	}
+	return true, nil
 }
 
 func readSumFile(path string, refs map[string]bool) error {
@@ -88,6 +108,7 @@ func readSumFile(path string, refs map[string]bool) error {
 		return err
 	}
 	scanner := bufio.NewScanner(bytes.NewReader(raw))
+	scanner.Buffer(make([]byte, 64<<10), 4<<20)
 	for line := 1; scanner.Scan(); line++ {
 		text := strings.TrimSpace(scanner.Text())
 		if text == "" {
@@ -98,6 +119,9 @@ func readSumFile(path string, refs map[string]bool) error {
 			return fmt.Errorf("%s:%d: not a go.sum line", path, line)
 		}
 		refs[match[1]+"@"+match[2]] = true
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("%s: %w", path, err)
 	}
 	return nil
 }
@@ -111,6 +135,10 @@ type moduleVersion struct {
 	newest                time.Time
 	files                 map[string]Identity // download files by extension
 	hasZip, hasExtraction bool
+	// extractedID and ziphash are what the plan checked, so apply deletes
+	// only that tree and only while its recorded hash is unchanged.
+	extractedID Identity
+	ziphash     string
 }
 
 func (v moduleVersion) key() string { return v.path + "@" + v.version }
@@ -174,6 +202,14 @@ func readModuleCache(w *World, root string) ([]moduleVersion, error) {
 	for _, v := range versions {
 		if info, err := os.Lstat(v.extracted); err == nil && info.IsDir() {
 			v.hasExtraction = true
+			identity, err := w.Identity(v.extracted)
+			if err != nil {
+				return nil, err
+			}
+			v.extractedID = identity
+		}
+		if raw, err := os.ReadFile(filepath.Join(v.downloadDir, v.escVersion+".ziphash")); err == nil {
+			v.ziphash = strings.TrimSpace(string(raw))
 		}
 		out = append(out, *v)
 	}
@@ -200,7 +236,7 @@ func refetchProblem(env GoEnv, modulePath string) string {
 	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" {
 		return "not-refetchable: proxy " + proxy + " is not https"
 	}
-	if host := parsed.Hostname(); host == "localhost" || (net.ParseIP(host) != nil && net.ParseIP(host).IsLoopback()) {
+	if host := strings.TrimSuffix(parsed.Hostname(), "."); host == "localhost" || strings.HasSuffix(host, ".localhost") || (net.ParseIP(host) != nil && net.ParseIP(host).IsLoopback()) {
 		return "not-refetchable: proxy " + proxy + " is loopback and may serve this cache"
 	}
 	return ""
@@ -229,6 +265,13 @@ func (moduleCategory) plan(ctx context.Context, w *World, o Options) *categoryPl
 	plan := &categoryPlan{applicable: true, EstimateIsUpperBound: true, locks: []string{root}}
 	floor := maxDuration(floorModules, o.OlderThan)
 	plan.EffectiveFloor = floor.String()
+	if !o.selected(CategoryModules) {
+		// Opt-in: an unselected module cache is not walked at all, so a
+		// default or --auto run never pays for the fleet-wide reference
+		// scan nor reports its problems.
+		plan.Status, plan.Reason, plan.applicable = StatusRequiresCategory, "requires --category go-module-cache", false
+		return plan
+	}
 	if info, err := os.Stat(root); err != nil || !info.IsDir() || !filepath.IsAbs(root) {
 		plan.skip("unsupported-cache: GOMODCACHE " + root + " is not a directory")
 		return plan
@@ -271,12 +314,21 @@ func (moduleCategory) plan(ctx context.Context, w *World, o Options) *categoryPl
 	}
 	accumulator := newReclaimAccumulator()
 	budget := &probeClock{remaining: probeBudget}
+	// The reference set is read again once at apply, so a sum file changed
+	// between plan and apply is still honoured.
+	var once sync.Once
+	var freshRefs map[string]bool
+	var freshErr error
+	current := func() (map[string]bool, error) {
+		once.Do(func() { freshRefs, _, freshErr = referenceSet(w.Checkouts, w.IgnoreSumFiles) })
+		return freshRefs, freshErr
+	}
 	var estimate int64
 	for _, v := range versions {
 		if alwaysKeptModules[v.path] || refs[v.key()] || w.Now().Sub(v.newest) < floor {
 			continue
 		}
-		it := &item{ItemReport: ItemReport{Path: v.extracted, Status: StatusKeep}, device: rootIdentity.Dev}
+		it := &item{ItemReport: ItemReport{Path: v.extracted, Status: StatusKeep}, root: root, device: rootIdentity.Dev}
 		plan.items = append(plan.items, it)
 		if reason := refetchProblem(w.Go, v.path); reason != "" {
 			it.Reason = reason
@@ -293,6 +345,13 @@ func (moduleCategory) plan(ctx context.Context, w *World, o Options) *categoryPl
 		it.Reason = "no sum file in the fleet names " + v.key() + "; downloaded " + w.Now().Sub(v.newest).Round(time.Hour).String() + " ago"
 		version := v
 		it.apply = func(ctx context.Context) itemResult {
+			refs, err := current()
+			if err != nil {
+				return itemResult{status: StatusSkipped, reason: "incomplete-reference-set: " + err.Error()}
+			}
+			if refs[version.key()] {
+				return itemResult{status: StatusSkipped, reason: "referenced: a sum file now names " + version.key()}
+			}
 			return applyModule(ctx, w, version, rootIdentity.MountID, budget)
 		}
 		estimate += released
@@ -358,7 +417,11 @@ type probeClock struct{ remaining time.Duration }
 // applyModule proves the version can come back, then deletes it under Go's
 // own lock in an order Go recovers from if prune is killed at any step.
 func applyModule(ctx context.Context, w *World, v moduleVersion, mount uint64, budget *probeClock) itemResult {
-	if reason, pids := moduleBusy(w.freshTable()); reason != "" {
+	table := w.freshTable()
+	if reason := processEvidence(table, w.Go.GOMODCACHE); reason != "" {
+		return itemResult{status: StatusSkipped, reason: reason}
+	}
+	if reason, pids := moduleBusy(table); reason != "" {
 		return itemResult{status: StatusSkipped, reason: reason, pids: pids}
 	}
 	if reason := proveRefetch(ctx, w, v, budget); reason != "" {
@@ -372,6 +435,11 @@ func applyModule(ctx context.Context, w *World, v moduleVersion, mount uint64, b
 		return itemResult{err: err}
 	}
 	defer release()
+	// Under Go's lock: the version must still be exactly what the plan
+	// checked, unedited, or Go has touched it since.
+	if reason := unchangedSincePlan(w, v); reason != "" {
+		return itemResult{status: StatusSkipped, reason: reason}
+	}
 	var result itemResult
 	remove := func(ext string) error {
 		identity, ok := v.files[ext]
@@ -387,16 +455,12 @@ func applyModule(ctx context.Context, w *World, v moduleVersion, mount uint64, b
 		return changedOr(result, err)
 	}
 	partial := filepath.Join(v.downloadDir, v.escVersion+".partial")
-	_ = os.WriteFile(partial, nil, 0o644)
+	writeMarker(partial)
 	if v.hasExtraction {
-		identity, err := w.Identity(v.extracted)
-		if err != nil {
-			return itemResult{unlinked: result.unlinked, err: err}
-		}
-		if identity.MountID != mount {
+		if v.extractedID.MountID != mount {
 			return itemResult{unlinked: result.unlinked, status: StatusSkipped, reason: "contains-mount"}
 		}
-		outcome, err := w.RemoveTree(filepath.Dir(v.extracted), filepath.Base(v.extracted), identity)
+		outcome, err := w.RemoveTree(filepath.Dir(v.extracted), filepath.Base(v.extracted), v.extractedID)
 		tree := treeResult(outcome, err)
 		result.unlinked += tree.unlinked
 		if tree.err != nil || tree.status != "" {
@@ -431,8 +495,16 @@ func proveRefetch(ctx context.Context, w *World, v moduleVersion, budget *probeC
 	base := strings.TrimSuffix(firstProxy(w.Go.GOPROXY), "/") + "/" + v.escPath + "/@v/" + v.escVersion
 	started := time.Now()
 	defer func() { budget.remaining -= time.Since(started) }()
+	if reason := loopbackProxy(ctx, w); reason != "" {
+		return reason
+	}
 	local, err := os.ReadFile(filepath.Join(v.downloadDir, v.escVersion+".mod"))
-	if err == nil {
+	if err != nil {
+		// Without the cached go.mod there is nothing to prove the proxy
+		// serves the same version against.
+		return "not-refetchable: no readable cached go.mod to compare with the proxy"
+	}
+	{
 		status, body, err := w.HTTP(ctx, "GET", base+".mod")
 		switch {
 		case err != nil:
@@ -455,4 +527,52 @@ func proveRefetch(ctx context.Context, w *World, v moduleVersion, budget *probeC
 		}
 	}
 	return ""
+}
+
+// unchangedSincePlan re-verifies, under Go's lock, what the plan checked.
+func unchangedSincePlan(w *World, v moduleVersion) string {
+	if v.ziphash != "" {
+		raw, err := os.ReadFile(filepath.Join(v.downloadDir, v.escVersion+".ziphash"))
+		if err != nil || strings.TrimSpace(string(raw)) != v.ziphash {
+			return "changed: the version's ziphash changed since the plan"
+		}
+	}
+	if v.hasExtraction {
+		identity, err := w.Identity(v.extracted)
+		if err != nil || identity.Dev != v.extractedID.Dev || identity.Ino != v.extractedID.Ino {
+			return "changed: the extracted tree is not the one the plan checked"
+		}
+		if v.ziphash != "" {
+			if reason := locallyModified(v); reason != "" {
+				return reason
+			}
+		}
+	}
+	return ""
+}
+
+// loopbackProxy resolves the proxy's host at apply: a name that resolves to
+// a loopback address may be serving the very cache being pruned.
+func loopbackProxy(ctx context.Context, w *World) string {
+	host := strings.TrimSuffix(mustHost(firstProxy(w.Go.GOPROXY)), ".")
+	addresses, err := w.LookupHost(ctx, host)
+	if err != nil {
+		return "not-refetchable: " + err.Error()
+	}
+	for _, address := range addresses {
+		if ip := net.ParseIP(address); ip != nil && ip.IsLoopback() {
+			return "not-refetchable: proxy " + host + " resolves to loopback " + address
+		}
+	}
+	return ""
+}
+
+// mustHost is a proxy URL's host; refetchProblem already rejected any URL
+// that does not parse, so a parse failure here yields "".
+func mustHost(raw string) string {
+	parsed, _ := url.Parse(raw)
+	if parsed == nil {
+		return ""
+	}
+	return parsed.Hostname()
 }

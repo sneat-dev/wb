@@ -32,12 +32,15 @@ type PruneDependencies struct {
 	Ticker func(time.Duration) (<-chan time.Time, func())
 	// Interactive reports whether stderr is a terminal.
 	Interactive func(nonInteractive bool) bool
+	// WriteReceipt records an --apply or --auto run under the state
+	// directory (disk-prune#req:daemon-auto-prune); nil records nothing.
+	WriteReceipt func(stateDir string, receipt diskprune.Receipt) error
 }
 
 // DefaultPruneDependencies are the real operations.
 func DefaultPruneDependencies() PruneDependencies {
 	return PruneDependencies{
-		World: diskprune.NewWorld, Run: diskprune.Run, ConfigPath: wbconfig.DefaultPath,
+		World: diskprune.NewWorld, Run: diskprune.Run, ConfigPath: wbconfig.DefaultPath, WriteReceipt: diskprune.WriteReceipt,
 		Ticker: func(interval time.Duration) (<-chan time.Time, func()) {
 			ticker := time.NewTicker(interval)
 			return ticker.C, ticker.Stop
@@ -110,6 +113,17 @@ unmet, a failure or a fail-closed skip; see "outcome"), 2 usage.
 			w.Progress = progress.event
 			report := deps.Run(cmd.Context(), w, o)
 			progress.finish(report)
+			if (o.Apply || o.Auto) && deps.WriteReceipt != nil {
+				trigger := "manual"
+				if o.Auto {
+					trigger = "manual-auto"
+				}
+				// Best-effort, after deletion: on a full disk the write may fail,
+				// and that is reported, never fatal.
+				if err := deps.WriteReceipt(w.StateDir, diskprune.ReceiptFor(trigger, time.Now(), w, report)); err != nil {
+					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "wb disk prune: receipt not written:", err)
+				}
+			}
 			if err := writePruneReport(cmd.OutOrStdout(), options.format, options.verbose, report); err != nil {
 				return err
 			}

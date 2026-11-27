@@ -124,7 +124,7 @@ func isGoBuildCacheShape(path string) bool {
 		name := entry.Name()
 		switch {
 		case name == "README" && !entry.IsDir():
-			sawReadme = true
+			sawReadme = isGoCacheReadme(filepath.Join(path, name))
 		case (name == "trim.txt" || name == "testexpire.txt") && !entry.IsDir():
 		case name == "fuzz" && entry.IsDir():
 		case hexShard.MatchString(name) && entry.IsDir():
@@ -139,6 +139,14 @@ func isGoBuildCacheShape(path string) bool {
 }
 
 var cacheEntry = regexp.MustCompile(`^[0-9a-f]+-[ad]$`)
+
+// goCacheReadme is how the README cmd/go writes into every build cache begins.
+const goCacheReadme = "This directory holds cached build artifacts from the Go build system."
+
+func isGoCacheReadme(path string) bool {
+	raw, err := os.ReadFile(path)
+	return err == nil && strings.HasPrefix(string(raw), goCacheReadme)
+}
 
 func onlyEntryFiles(dir string) bool {
 	entries, err := os.ReadDir(dir)
@@ -171,12 +179,18 @@ func accessibleToOthers(path string) bool {
 	return err != nil || info.Mode().Perm()&0o007 != 0
 }
 
-// references lists the processes using path. An unreadable process counts
-// when its name marks it as a tool that may use anything prune manages.
-func references(table Table, path string) (pids []PIDReport, unverified bool) {
+// references lists the processes using path, under any of its spellings
+// (a temporary directory reached through a symlink is named both ways). An
+// unreadable process counts when its name marks it as a tool that may use
+// anything prune manages.
+func references(table Table, path string, aliases ...string) (pids []PIDReport, unverified bool) {
 	for _, process := range table.Processes {
+		named := process.References(path)
+		for _, alias := range aliases {
+			named = named || (alias != "" && process.References(alias))
+		}
 		switch {
-		case process.References(path):
+		case named:
 			pids = append(pids, PIDReport{PID: process.PID, Command: process.Command()})
 		case !process.Readable && (process.IsGoTool() || process.IsPnpm()):
 			pids = append(pids, PIDReport{PID: process.PID, Command: process.Command()})
@@ -210,6 +224,7 @@ func (scratchCategory) plan(ctx context.Context, w *World, o Options) *categoryP
 		entries, err := os.ReadDir(root)
 		if err != nil {
 			plan.Partial = true
+			plan.items = append(plan.items, &item{ItemReport: ItemReport{Path: root, Status: StatusKeep, Reason: "partial-scan: " + err.Error()}})
 			continue
 		}
 		for _, entry := range entries {
@@ -238,9 +253,12 @@ func planScratchEntry(w *World, o Options, table Table, root, name string, accum
 	if !ours {
 		return nil
 	}
-	it := &item{ItemReport: ItemReport{Path: path, Status: StatusKeep}}
+	it := &item{ItemReport: ItemReport{Path: path, Status: StatusKeep}, root: root}
 	info, err := os.Lstat(path)
 	switch {
+	case errors.Is(err, os.ErrNotExist):
+		// Gone between the listing and now: routine for go-build*.
+		return nil
 	case err != nil:
 		it.Reason = "partial-scan: " + err.Error()
 		return it
@@ -261,7 +279,7 @@ func planScratchEntry(w *World, o Options, table Table, root, name string, accum
 	}
 	it.device = identity.Dev
 	scan := w.Scan(path, identity.MountID, w.Protected)
-	if reason := scanVerdict(path, w.Protected, scan); reason != "" {
+	if reason := scanVerdict(path, w.Protected, w.cacheRoots(), scan); reason != "" {
 		it.Reason = reason
 		return it
 	}
@@ -270,7 +288,7 @@ func planScratchEntry(w *World, o Options, table Table, root, name string, accum
 		it.Reason = "too-young: " + age.Round(time.Minute).String() + " < " + floor.String()
 		return it
 	}
-	if pids, unverified := references(table, path); len(pids) > 0 {
+	if pids, unverified := references(table, path, w.alias(path)); len(pids) > 0 {
 		it.PIDs = pids
 		it.Reason = "held-open"
 		if unverified {
@@ -290,10 +308,14 @@ func planScratchEntry(w *World, o Options, table Table, root, name string, accum
 }
 
 // scanVerdict is the never-removed list.
-func scanVerdict(path string, protected []string, scan scanResult) string {
+func scanVerdict(path string, protected, caches []string, scan scanResult) string {
 	switch {
 	case insideAny(path, protected) != "":
 		return "protected: " + insideAny(path, protected)
+	case insideAny(path, caches) != "":
+		// The resolved GOCACHE or GOMODCACHE, or a directory holding one:
+		// scratch never deletes what another category manages.
+		return "contains-cache-data: " + insideAny(path, caches)
 	case scan.Protected != "":
 		return "protected: " + scan.Protected
 	case scan.Partial:
@@ -315,7 +337,10 @@ func scanVerdict(path string, protected []string, scan scanResult) string {
 func applyScratch(w *World, floor time.Duration, root, name string, identity Identity) itemResult {
 	path := filepath.Join(root, name)
 	table := w.freshTable()
-	if pids, unverified := references(table, path); len(pids) > 0 {
+	if reason := processEvidence(table, root); reason != "" {
+		return itemResult{status: StatusSkipped, reason: reason}
+	}
+	if pids, unverified := references(table, path, w.alias(path)); len(pids) > 0 {
 		reason := "held-open"
 		if unverified {
 			reason = "busy-unverified"
@@ -323,7 +348,7 @@ func applyScratch(w *World, floor time.Duration, root, name string, identity Ide
 		return itemResult{status: StatusSkipped, reason: reason, pids: pids}
 	}
 	scan := w.Scan(path, identity.MountID, w.Protected)
-	if reason := scanVerdict(path, w.Protected, scan); reason != "" {
+	if reason := scanVerdict(path, w.Protected, w.cacheRoots(), scan); reason != "" {
 		return itemResult{status: StatusSkipped, reason: reason}
 	}
 	if w.Now().Sub(scan.Newest) < floor {
@@ -359,4 +384,20 @@ func maxDuration(a, b time.Duration) time.Duration {
 		return b
 	}
 	return a
+}
+
+// cacheRoots are the resolved caches other categories manage.
+func (w *World) cacheRoots() []string {
+	return []string{w.Go.GOCACHE, w.Go.GOMODCACHE}
+}
+
+// alias is path under the unresolved spelling of its temporary directory,
+// or "" when that spelling is the resolved one.
+func (w *World) alias(path string) string {
+	for resolved, original := range w.TempAliases {
+		if within(path, resolved) {
+			return original + strings.TrimPrefix(path, resolved)
+		}
+	}
+	return ""
 }

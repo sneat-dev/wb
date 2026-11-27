@@ -344,7 +344,7 @@ func TestDaemonStatusReportsTheLastAutomaticPrune(t *testing.T) {
 	if result, err := controller.Status(context.Background()); err != nil || result.DiskAutoPrune != "" {
 		t.Fatalf("no receipt: %q, %v", result.DiskAutoPrune, err)
 	}
-	if err := diskprune.WriteReceipt(location.Home, diskprune.Receipt{Time: time.Unix(10, 0), Trigger: "daemon", Outcome: diskprune.OutcomeTargetUnmet}); err != nil {
+	if err := diskprune.WriteReceipt(location.Home, diskprune.Receipt{Time: time.Now(), Trigger: "daemon", Outcome: diskprune.OutcomeTargetUnmet}); err != nil {
 		t.Fatal(err)
 	}
 	result, err := controller.Status(context.Background())

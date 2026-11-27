@@ -18,7 +18,8 @@ import (
 type treeRemover struct {
 	sys treeSyscalls
 	// mountIDAt returns the mount ID of name relative to dirfd, not following
-	// a final symlink.
+	// a final symlink; name "" means dirfd itself (AT_EMPTY_PATH), which is
+	// how every opened directory is checked.
 	mountIDAt func(dirfd int, name string) (uint64, error)
 	// fdPath returns the current path of an open descriptor.
 	fdPath func(fd int) (string, error)
@@ -97,11 +98,11 @@ func (r treeRemover) remove(parent, name string, expect Identity) (TreeOutcome, 
 	if uint64(stat.Dev) != expect.Dev || uint64(stat.Ino) != expect.Ino {
 		return outcome, ErrChanged
 	}
-	parentMount, err := r.mountIDAt(parentfd, ".")
+	parentMount, err := r.mountIDAt(parentfd, "")
 	if err != nil {
 		return outcome, fmt.Errorf("mount id of %s: %w", parent, err)
 	}
-	mount, err := r.mountIDAt(parentfd, name)
+	mount, err := r.mountIDAt(fd, "")
 	if err != nil {
 		return outcome, fmt.Errorf("mount id of %s/%s: %w", parent, name, err)
 	}
@@ -109,6 +110,11 @@ func (r treeRemover) remove(parent, name string, expect Identity) (TreeOutcome, 
 		return outcome, ErrContainsMount
 	}
 	want := filepath.Join(parent, name)
+	// A flat candidate has no subdirectory to re-check before, so its own
+	// place is confirmed once before anything is removed.
+	if err := r.stillAt(fd, want); err != nil {
+		return outcome, err
+	}
 	if err := r.empty(fd, mount, want, &outcome); err != nil {
 		return outcome, err
 	}
@@ -151,15 +157,10 @@ func (r treeRemover) empty(fd int, mount uint64, top string, outcome *TreeOutcom
 				return err
 			}
 			outcome.Files++
-			outcome.Bytes += int64(child.Blocks) * 512
+			if child.Nlink <= 1 {
+				outcome.Bytes += int64(child.Blocks) * 512
+			}
 			continue
-		}
-		childMount, err := r.mountIDAt(fd, name)
-		if err != nil {
-			return err
-		}
-		if childMount != mount {
-			return ErrContainsMount
 		}
 		if err := r.stillAt(fd, top); err != nil {
 			return err
@@ -167,6 +168,17 @@ func (r treeRemover) empty(fd int, mount uint64, top string, outcome *TreeOutcom
 		childfd, err := r.sys.openat(fd, name)
 		if err != nil {
 			return err
+		}
+		// The mount is checked on the opened directory itself, so a mount
+		// placed between the stat and the open is still seen.
+		childMount, err := r.mountIDAt(childfd, "")
+		if err != nil {
+			_ = unix.Close(childfd)
+			return err
+		}
+		if childMount != mount {
+			_ = unix.Close(childfd)
+			return ErrContainsMount
 		}
 		err = r.empty(childfd, mount, top, outcome)
 		_ = unix.Close(childfd)
@@ -199,8 +211,8 @@ func (r treeRemover) stillAt(fd int, top string) error {
 func statxMountID(dirfd int, name string) (uint64, error) {
 	var stx unix.Statx_t
 	flags := unix.AT_SYMLINK_NOFOLLOW
-	if name == "." {
-		flags = 0
+	if name == "" {
+		flags |= unix.AT_EMPTY_PATH
 	}
 	if err := statx(dirfd, name, flags, unix.STATX_MNT_ID, &stx); err != nil {
 		return 0, err

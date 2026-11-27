@@ -5,7 +5,9 @@ package diskprune
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -13,8 +15,12 @@ import (
 // AC real-directory-dry-run: a plan against this machine's real caches,
 // temporary directory and projects root completes with every category and
 // never reaches a mutating operation. Each mutating seam fails the test if it
-// is called at all.
+// is called at all, and wrappers on PATH record every git, go and pnpm the
+// plan runs: only git worktree list is allowed.
+//
+//nolint:paralleltest // replaces PATH with recording wrappers
 func TestRealMachineDryRunNeverMutates(t *testing.T) {
+	recorder := installRecorder(t, "git", "go", "pnpm")
 	root := os.Getenv("WB_PROJECTS_ROOT")
 	if root == "" {
 		home, _ := os.UserHomeDir()
@@ -52,4 +58,39 @@ func TestRealMachineDryRunNeverMutates(t *testing.T) {
 	if report.Mode != "plan" || report.Lock.Held {
 		t.Fatalf("report = %#v", report)
 	}
+	if ctx.Err() != nil {
+		t.Fatalf("the real plan did not finish: %v", ctx.Err())
+	}
+	raw, _ := os.ReadFile(recorder)
+	if len(w.Checkouts) > 0 && !strings.Contains(string(raw), "worktree list --porcelain") {
+		t.Fatalf("the recorder saw no git call although %d checkouts were found: %q", len(w.Checkouts), raw)
+	}
+	for _, call := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		if call != "" && !strings.HasPrefix(call, "git -C ") {
+			t.Errorf("the plan ran %q", call)
+		}
+		if call != "" && !strings.HasSuffix(call, " worktree list --porcelain") {
+			t.Errorf("the plan ran %q", call)
+		}
+	}
+}
+
+// installRecorder puts wrappers for the named tools first on PATH. Each
+// appends its command line to the returned log, then runs the real tool.
+func installRecorder(t *testing.T, tools ...string) string {
+	t.Helper()
+	bin := t.TempDir()
+	log := filepath.Join(t.TempDir(), "calls.log")
+	for _, tool := range tools {
+		real, err := exec.LookPath(tool)
+		if err != nil {
+			continue
+		}
+		script := "#!/bin/sh\necho \"" + tool + " $*\" >> '" + log + "'\nexec '" + real + "' \"$@\"\n"
+		if err := os.WriteFile(filepath.Join(bin, tool), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return log
 }

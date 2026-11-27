@@ -268,17 +268,17 @@ func TestProcessTableEvidence(t *testing.T) {
 func TestProcessStatParsingTolerance(t *testing.T) {
 	t.Parallel()
 	src := procSource{now: time.Now, clockTick: 100}
-	if comm, age := parseStat("garbage", time.Unix(1, 0), src); comm != "" || age != 0 {
+	if comm, age := parseStat("garbage", time.Unix(1, 0), src); comm != "" || age != AgeUnknown {
 		t.Fatalf("garbage = %q %v", comm, age)
 	}
-	if comm, age := parseStat("1 (a (b)) S 1", time.Unix(1, 0), src); comm != "a (b)" || age != 0 {
+	if comm, age := parseStat("1 (a (b)) S 1", time.Unix(1, 0), src); comm != "a (b)" || age != AgeUnknown {
 		t.Fatalf("short = %q %v", comm, age)
 	}
 	fields := strings.Repeat("0 ", 19) + "notanumber"
-	if _, age := parseStat("1 (x) "+fields, time.Unix(1, 0), src); age != 0 {
+	if _, age := parseStat("1 (x) "+fields, time.Unix(1, 0), src); age != AgeUnknown {
 		t.Fatalf("bad starttime age = %v", age)
 	}
-	if _, age := parseStat("1 (x) "+strings.Repeat("0 ", 20), time.Time{}, src); age != 0 {
+	if _, age := parseStat("1 (x) "+strings.Repeat("0 ", 20), time.Time{}, src); age != AgeUnknown {
 		t.Fatal("unknown boot time must give no age")
 	}
 

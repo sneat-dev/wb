@@ -122,7 +122,7 @@ func TestBuildCacheFullClean(t *testing.T) {
 		started.processes = []Process{{PID: 88, Comm: "go", Readable: true}}
 	}}}
 	got = started.run(Options{Apply: true, Categories: []string{CategoryBuild}, AllowFullClean: true, Floor: 0.01})
-	if cat := categoryByName(t, got, categoryFullClean); len(cat.Shards) == 0 || cat.Shards[0].Status != StatusSkipped {
+	if cat := categoryByName(t, got, categoryFullClean); len(cat.Items) != 1 || !strings.HasPrefix(cat.Items[0].Reason, "requested-step-skipped") || got.Outcome != OutcomeFailClosed {
 		t.Fatalf("go started before the full clean applied: %#v", cat)
 	}
 }
@@ -189,7 +189,7 @@ func TestBuildCacheEdgeCases(t *testing.T) {
 	if report.Outcome != OutcomeFailed || calls != 2 {
 		t.Fatalf("removal failure outcome %q calls %d", report.Outcome, calls)
 	}
-	if _, _, partial := readShards(tw.World, filepath.Join(t.TempDir(), "absent")); !partial {
+	if _, partial := readCacheFiles(tw.World, filepath.Join(t.TempDir(), "absent")); !partial {
 		t.Fatal("a missing cache must read as partial")
 	}
 }

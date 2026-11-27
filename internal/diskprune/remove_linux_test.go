@@ -132,8 +132,10 @@ func TestRemoveTreeNeverCrossesAMount(t *testing.T) {
 	checked := identityOf(t, candidate)
 
 	alias := newTreeRemover()
+	calls := 0
 	alias.mountIDAt = func(dirfd int, name string) (uint64, error) {
-		if name == "." {
+		calls++
+		if calls == 1 { // the parent: a candidate on another mount than it is a bind alias
 			return checked.MountID + 1, nil
 		}
 		return statxMountID(dirfd, name)
@@ -142,8 +144,10 @@ func TestRemoveTreeNeverCrossesAMount(t *testing.T) {
 		t.Fatalf("bind alias: %v", err)
 	}
 	nested := newTreeRemover()
+	nestedCalls := 0
 	nested.mountIDAt = func(dirfd int, name string) (uint64, error) {
-		if name == "inner" {
+		nestedCalls++
+		if nestedCalls == 3 { // the opened "inner" directory
 			return checked.MountID + 7, nil
 		}
 		return statxMountID(dirfd, name)
@@ -291,23 +295,9 @@ func TestRemoveTreeReportsLookupFailures(t *testing.T) {
 		"parent mount": func(r *treeRemover) {
 			r.mountIDAt = func(int, string) (uint64, error) { return 0, failure }
 		},
-		"candidate mount": func(r *treeRemover) {
-			r.mountIDAt = func(dirfd int, name string) (uint64, error) {
-				if name == "c" {
-					return 0, failure
-				}
-				return statxMountID(dirfd, name)
-			}
-		},
-		"child mount": func(r *treeRemover) {
-			r.mountIDAt = func(dirfd int, name string) (uint64, error) {
-				if name == "sub" {
-					return 0, failure
-				}
-				return statxMountID(dirfd, name)
-			}
-		},
-		"fd path": func(r *treeRemover) { r.fdPath = func(int) (string, error) { return "", failure } },
+		"candidate mount": func(r *treeRemover) { r.mountIDAt = failOnCall(2, failure) },
+		"child mount":     func(r *treeRemover) { r.mountIDAt = failOnCall(3, failure) },
+		"fd path":         func(r *treeRemover) { r.fdPath = func(int) (string, error) { return "", failure } },
 	} {
 		parent := t.TempDir()
 		mustWrite(t, filepath.Join(parent, "c", "sub", "f"), "x", 0o644)
@@ -412,5 +402,18 @@ func TestMountIDFallsBackToMountinfo(t *testing.T) {
 	mountIDOf = func(string) (uint64, error) { return 0, errors.New("injected") }
 	if _, err := StatIdentity(dir); err == nil {
 		t.Fatal("identity without a mount id succeeded")
+	}
+}
+
+// failOnCall fails the nth mount-ID lookup: 1 is the parent, 2 the opened
+// candidate, 3 its first opened subdirectory.
+func failOnCall(n int, failure error) func(int, string) (uint64, error) {
+	calls := 0
+	return func(dirfd int, name string) (uint64, error) {
+		calls++
+		if calls == n {
+			return 0, failure
+		}
+		return statxMountID(dirfd, name)
 	}
 }

@@ -3,7 +3,8 @@ package diskprune
 import (
 	"context"
 	"errors"
-	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"time"
@@ -90,7 +91,10 @@ type World struct {
 	StateDir     string
 	LegacyHome   string
 	TempDirs     []string
-	Go           GoEnv
+	// TempAliases maps a resolved temporary directory to the spelling the
+	// environment used, when they differ, so processes naming either count.
+	TempAliases map[string]string
+	Go          GoEnv
 	// Protected are roots no category may delete inside or around.
 	Protected []string
 	// ProtectedGap is non-empty when the protected inventory is incomplete.
@@ -110,6 +114,8 @@ type World struct {
 	IgnoreSumFiles []string
 	// HTTP fetches a proxy URL for re-fetch proofs; only apply calls it.
 	HTTP func(ctx context.Context, method, url string) (int, []byte, error)
+	// LookupHost resolves the proxy host at apply, to refuse a loopback one.
+	LookupHost func(ctx context.Context, host string) ([]string, error)
 	// LockModuleVersion takes Go's own per-version lock without blocking.
 	LockModuleVersion func(path string) (func(), error)
 	// PnpmStores are the store directories measured for the plan.
@@ -121,6 +127,9 @@ type World struct {
 	// belowTarget reports whether path's filesystem is still below its
 	// target; set by Run before applying.
 	belowTarget func(path string) bool
+	// targetMet reports whether path's filesystem has reached the target,
+	// or cannot be measured; set by Run before applying.
+	targetMet func(path string) bool
 
 	categories []category
 	table      *Table
@@ -142,6 +151,9 @@ func (w *World) progress(event Event) {
 // item is one deletion candidate or kept entry.
 type item struct {
 	ItemReport
+	// root is the directory whose filesystem the item frees: its temporary
+	// directory, GOCACHE, the store or GOMODCACHE.
+	root     string
 	device   uint64
 	estimate int64
 	known    bool
@@ -161,22 +173,16 @@ type itemResult struct {
 type categoryPlan struct {
 	CategoryReport
 	items []*item
-	// asShards reports items as build-cache shards instead of items.
-	asShards bool
 	// locks are the resource directories held while the category applies.
 	locks []string
 	// applicable is false for a category skipped, report-only or not
 	// selected: its items are never applied.
 	applicable bool
-}
-
-// root names the category's filesystem in reports: its first resource
-// directory (the temporary directory, GOCACHE, the store, GOMODCACHE).
-func (p *categoryPlan) root() string {
-	if len(p.locks) > 0 {
-		return p.locks[0]
-	}
-	return ""
+	// selected is whether the invocation asked for the category; only a
+	// selected category's skips and failures shape the outcome.
+	selected bool
+	// shards, when set, reports a build-cache category per shard.
+	shards func() []ShardReport
 }
 
 func (p *categoryPlan) skip(reason string) {
@@ -215,8 +221,13 @@ func Run(ctx context.Context, w *World, o Options) Report {
 			var locked *LockedError
 			if errors.As(err, &locked) {
 				report.Lock.HolderPID = locked.PID
+				reasons[OutcomeLocked] = true
+			} else {
+				// flock unsupported, or a home that cannot be opened: nothing
+				// may be deleted, and the reason is not another prune.
+				report.Lock.Error = err.Error()
+				reasons[OutcomeFailClosed] = true
 			}
-			reasons[OutcomeLocked] = true
 			return finish(report, reasons)
 		}
 		defer lock.Release()
@@ -232,6 +243,7 @@ func Run(ctx context.Context, w *World, o Options) Report {
 		plan := c.plan(ctx, w, o)
 		plan.Name = c.name()
 		plan.Order = index + 1
+		plan.selected = o.selected(plan.Name) || plan.Name == categoryFullClean
 		if !o.selected(plan.Name) && plan.Name != categoryFullClean {
 			if plan.Name == CategoryModules && plan.Status != StatusSkipped {
 				plan.Status = StatusRequiresCategory
@@ -245,8 +257,14 @@ func Run(ctx context.Context, w *World, o Options) Report {
 	project(w, o, plans, filesystems)
 
 	w.belowTarget = func(path string) bool {
-		fs, err := w.Probe(path)
+		fs, err := w.Probe(existingAncestor(path))
 		return err == nil && !o.Target.Met(fs) && !o.Target.Unreachable(fs)
+	}
+	// targetMet lets a category that deletes many small files stop as soon
+	// as its filesystem reaches the target; a probe that fails stops it too.
+	w.targetMet = func(path string) bool {
+		fs, err := w.Probe(path)
+		return err != nil || o.Target.Met(fs)
 	}
 	if o.Apply && ctx.Err() == nil {
 		admitted := admit(ctx, w, o, filesystems, &report)
@@ -254,7 +272,9 @@ func Run(ctx context.Context, w *World, o Options) Report {
 		admitted()
 	}
 	for _, plan := range plans {
-		collectReasons(plan, reasons, o.Apply)
+		if plan.selected {
+			collectReasons(plan, reasons, o.Apply)
+		}
 		report.Categories = append(report.Categories, plan.render())
 	}
 	report.Filesystems = finalFilesystems(w, o, filesystems, reasons)
@@ -289,7 +309,7 @@ func project(w *World, o Options, plans []*categoryPlan, filesystems map[uint64]
 			if it.Status != StatusDelete {
 				continue
 			}
-			state := filesystemFor(w, o, it, plan.root(), filesystems)
+			state := filesystemFor(w, o, it, it.root, filesystems)
 			if state == nil {
 				continue
 			}
@@ -380,26 +400,41 @@ func applyPlans(ctx context.Context, w *World, o Options, plans []*categoryPlan,
 			reason := "lock-unavailable"
 			if errors.Is(err, ErrLocked) {
 				reason = "locked"
+				reasons[OutcomeLocked] = true
 			}
 			plan.skip(reason + ": " + err.Error())
+			for _, it := range plan.items {
+				if it.Status == StatusDelete || it.Status == StatusBeyondTarget {
+					it.Status, it.Reason = StatusSkipped, reason
+				}
+			}
 			continue
 		}
 		w.progress(Event{Phase: "apply", Category: plan.Name})
 		for _, state := range filesystems {
 			state.catStart = state.report.UnlinkedBytes
-			state.catAvail = currentAvailable(w, state)
+			state.catAvail, _ = currentAvailable(w, state)
 		}
 		applied := false
 		for _, it := range plan.items {
-			if it.Status != StatusDelete || ctx.Err() != nil {
+			// An item the plan placed beyond the target is reconsidered: an
+			// earlier item may have been skipped at apply, leaving the
+			// filesystem short.
+			if (it.Status != StatusDelete && it.Status != StatusBeyondTarget) || it.apply == nil || ctx.Err() != nil {
 				continue
 			}
+			// Every item still marked delete or beyond-target was given its
+			// filesystem by project; a failed probe there marks it failed.
 			state := filesystems[it.device]
 			if state.stopped {
 				it.Status, it.Reason = StatusSkipped, "space-not-returned"
 				continue
 			}
-			current := currentAvailable(w, state)
+			current, probed := currentAvailable(w, state)
+			if !probed {
+				it.Status, it.Reason = StatusSkipped, "probe-failed"
+				continue
+			}
 			if o.Target.Met(disk.Filesystem{TotalBytes: state.fs.TotalBytes, AvailableBytes: current}) {
 				it.Status = StatusBeyondTarget
 				continue
@@ -417,7 +452,8 @@ func applyPlans(ctx context.Context, w *World, o Options, plans []*categoryPlan,
 		}
 		for _, state := range filesystems {
 			unlinked := state.report.UnlinkedBytes - state.catStart
-			gain := currentAvailable(w, state) - state.catAvail
+			now, _ := currentAvailable(w, state)
+			gain := now - state.catAvail
 			if unlinked > spaceNotReturnedThreshold && gain < unlinked/10 {
 				state.stopped = true
 				state.report.Note = "space-not-returned"
@@ -427,12 +463,25 @@ func applyPlans(ctx context.Context, w *World, o Options, plans []*categoryPlan,
 	}
 }
 
-func currentAvailable(w *World, state *filesystemState) int64 {
+// currentAvailable re-probes a filesystem; ok is false when it cannot be
+// measured, which stops deletion on it.
+func currentAvailable(w *World, state *filesystemState) (int64, bool) {
 	fs, err := w.Probe(state.report.Path)
 	if err != nil {
-		return state.fs.AvailableBytes
+		return state.fs.AvailableBytes, false
 	}
-	return fs.AvailableBytes
+	return fs.AvailableBytes, true
+}
+
+// existingAncestor is path, or its nearest ancestor that exists, so a
+// directory a tool has yet to create is judged by the filesystem it will be
+// created on.
+func existingAncestor(path string) string {
+	for current := filepath.Clean(path); ; current = filepath.Dir(current) {
+		if _, err := os.Stat(current); err == nil || current == filepath.Dir(current) {
+			return current
+		}
+	}
 }
 
 func applyResult(it *item, result itemResult) {
@@ -521,22 +570,26 @@ func (p *categoryPlan) render() CategoryReport {
 	if report.Status == "" {
 		report.Status = StatusPlanned
 	}
-	for _, it := range p.items {
-		if p.asShards {
-			report.Shards = append(report.Shards, ShardReport{Path: it.Path, Entries: it.estimateEntries(), Bytes: it.Bytes, Status: it.Status})
-			continue
+	if p.shards != nil {
+		report.Shards = p.shards()
+		// A trim that never ran (skipped, beyond the target, failed before
+		// starting) reports that status on its shards, not "delete".
+		if len(p.items) == 1 && p.items[0].Status != StatusDelete && p.items[0].Status != StatusDeleted {
+			for i := range report.Shards {
+				if report.Shards[i].Status == StatusDelete {
+					report.Shards[i].Status = p.items[0].Status
+				}
+			}
 		}
+		for _, it := range p.items {
+			if it.Status == StatusFailed || it.Status == StatusSkipped {
+				report.Items = append(report.Items, it.ItemReport)
+			}
+		}
+		return report
+	}
+	for _, it := range p.items {
 		report.Items = append(report.Items, it.ItemReport)
 	}
 	return report
-}
-
-// estimateEntries is the number of entry files a shard item stands for; it
-// is carried in the reason as "<n> entries".
-func (it *item) estimateEntries() int64 {
-	var n int64
-	if _, err := fmt.Sscanf(it.Reason, "%d entries", &n); err != nil {
-		return 0
-	}
-	return n
 }

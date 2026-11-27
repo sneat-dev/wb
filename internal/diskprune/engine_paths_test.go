@@ -98,8 +98,11 @@ func TestApplyReprobesAndReportsState(t *testing.T) {
 		t.Fatal(err)
 	}
 	report = flaky.run(Options{Apply: true, Floor: 0.01})
-	if itemsByName(report, CategoryScratch)["go-build1"].Status != StatusDeleted || len(report.State) != 1 {
-		t.Fatalf("flaky probe report = %#v", report)
+	if it := itemsByName(report, CategoryScratch)["go-build1"]; it.Status != StatusSkipped || it.Reason != "probe-failed" || report.Outcome != OutcomeFailClosed || len(report.State) != 1 {
+		t.Fatalf("a probe failure must stop deletion: %#v", report)
+	}
+	if !exists(filepath.Join(flaky.tmp, "go-build1")) {
+		t.Fatal("deleted on a filesystem that could not be measured")
 	}
 
 	idle := newTestWorld(t)
@@ -250,10 +253,19 @@ func TestScratchShapeChecks(t *testing.T) {
 	if isGoBuildCacheShape(foreign) || onlyEntryFiles(filepath.Join(dir, "absent")) {
 		t.Fatal("a shard with a subdirectory passed")
 	}
-	if planScratchEntry(newTestWorld(t).World, Options{}, Table{}, dir, "go-build404", newReclaimAccumulator()).Reason[:12] != "partial-scan" {
-		t.Fatal("a vanished entry must be partial-scan")
+	if it := planScratchEntry(newTestWorld(t).World, Options{}, Table{}, dir, "go-build404", newReclaimAccumulator()); it != nil {
+		t.Fatalf("a vanished entry was listed: %#v", it)
 	}
-	if scanVerdict("/tmp/x", nil, scanResult{Protected: "/tmp/x/clone"}) != "protected: /tmp/x/clone" || scanVerdict("/tmp/x", nil, scanResult{ContainsMount: true}) != "contains-mount" {
+	locked := filepath.Join(t.TempDir(), "locked")
+	mustWrite(t, filepath.Join(locked, "go-build1", "f"), "x", 0o644)
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	if it := planScratchEntry(newTestWorld(t).World, Options{}, Table{}, locked, "go-build1", newReclaimAccumulator()); os.Geteuid() != 0 && (it == nil || !strings.HasPrefix(it.Reason, "partial-scan")) {
+		t.Fatalf("an unreadable entry = %#v", it)
+	}
+	if scanVerdict("/tmp/x", nil, nil, scanResult{Protected: "/tmp/x/clone"}) != "protected: /tmp/x/clone" || scanVerdict("/tmp/x", nil, nil, scanResult{ContainsMount: true}) != "contains-mount" {
 		t.Fatal("scan verdicts")
 	}
 	ctx, cancel := context.WithCancel(context.Background())

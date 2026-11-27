@@ -1,4 +1,4 @@
-package diskprune
+package goenv
 
 import (
 	"errors"
@@ -30,7 +30,7 @@ func TestGoEnvDefaultsMatchGo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := GoEnv{
+	want := Env{
 		GOCACHE: "/home/u/.cache/go-build", GOMODCACHE: "/home/u/go/pkg/mod",
 		GOPROXY: "https://proxy.golang.org,direct", GOSUMDB: "sum.golang.org",
 	}
@@ -97,7 +97,7 @@ func TestGoEnvFailures(t *testing.T) {
 	if _, err := resolveGoEnv(src); !errors.Is(err, failure) {
 		t.Fatalf("no home: %v", err)
 	}
-	if _, err := ResolveGoEnv(); err != nil {
+	if _, err := Resolve(); err != nil {
 		t.Fatalf("real resolution: %v", err)
 	}
 }

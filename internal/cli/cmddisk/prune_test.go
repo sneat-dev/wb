@@ -307,3 +307,42 @@ func TestPruneReportsAWriteFailure(t *testing.T) {
 		t.Fatalf("write failure = %v", err)
 	}
 }
+
+// Every --apply and --auto run records a receipt; one that cannot be written
+// (a full disk) is reported on stderr and never changes the exit.
+func TestPruneWritesAReceiptForEveryApply(t *testing.T) {
+	t.Parallel()
+	h := newPruneHarness(t)
+	var triggers []string
+	deps := h.deps(false)
+	deps.WriteReceipt = func(stateDir string, receipt diskprune.Receipt) error {
+		triggers = append(triggers, receipt.Trigger)
+		return nil
+	}
+	runtime := shared.Runtime{
+		Flags:     func() shared.Flags { return shared.Flags{Quiet: true} },
+		ExitError: func(code int, message string) error { return &codedError{code, message} },
+	}
+	run := func(deps PruneDependencies, args ...string) (string, error) {
+		command := New(runtime, Dependencies{Prune: deps})
+		var errOut bytes.Buffer
+		command.SilenceUsage, command.SilenceErrors = true, true
+		command.SetOut(io.Discard)
+		command.SetErr(&errOut)
+		command.SetArgs(append([]string{"prune"}, args...))
+		err := command.Execute()
+		return errOut.String(), err
+	}
+	for _, args := range [][]string{{}, {"--apply"}, {"--auto"}} {
+		if _, err := run(deps, args...); err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+	}
+	if strings.Join(triggers, ",") != "manual,manual-auto" {
+		t.Fatalf("triggers = %v; a plan must write none", triggers)
+	}
+	deps.WriteReceipt = func(string, diskprune.Receipt) error { return errors.New("no space left on device") }
+	if errOut, err := run(deps, "--apply"); err != nil || !strings.Contains(errOut, "receipt not written: no space left on device") {
+		t.Fatalf("stderr %q err %v", errOut, err)
+	}
+}

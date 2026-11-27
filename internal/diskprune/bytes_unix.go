@@ -14,3 +14,12 @@ func diskBytes(info os.FileInfo) int64 {
 	}
 	return info.Size()
 }
+
+// unlinkBytes is what unlinking this name frees: the blocks when it is the
+// last link, nothing when another link keeps the file.
+func unlinkBytes(info os.FileInfo) int64 {
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok && stat.Nlink > 1 {
+		return 0
+	}
+	return diskBytes(info)
+}

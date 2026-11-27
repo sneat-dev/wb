@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/runqueue"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
@@ -23,7 +22,7 @@ func fakeWorldDeps(t *testing.T) (worldDeps, string, string) {
 	root := filepath.Join(home, "projects")
 	clone := filepath.Join(root, "github.com", "acme", "app")
 	external := filepath.Join(t.TempDir(), "elsewhere")
-	for _, dir := range []string{clone, external, filepath.Join(home, ".wb")} {
+	for _, dir := range []string{filepath.Join(clone, ".git"), external, filepath.Join(home, ".wb")} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -34,9 +33,7 @@ func fakeWorldDeps(t *testing.T) (worldDeps, string, string) {
 			write := wbhome.Layout{Home: filepath.Join(root, ".wb"), WorktreesRoot: filepath.Join(root, ".worktrees")}
 			return wbhome.Resolution{Root: root, Write: write, Read: []wbhome.Layout{write, {Home: filepath.Join(home, ".wb"), WorktreesRoot: filepath.Join(home, ".wb", "worktrees"), Legacy: true}}}, nil
 		},
-		scanLocal: func(string) ([]discover.Repo, error) {
-			return []discover.Repo{{Org: "acme", Name: "app", Path: clone}, {Org: "acme", Name: "remote-only"}}, nil
-		},
+		readDir: os.ReadDir,
 		git: func(ctx context.Context, dir string, args ...string) (string, error) {
 			return "worktree " + clone + "\nHEAD abc\n\nworktree " + external + "\nbranch refs/heads/x\n\nworktree /gone/away\n", nil
 		},
@@ -98,7 +95,7 @@ func TestNewWorldFailures(t *testing.T) {
 		}
 	}
 	deps, _, _ := fakeWorldDeps(t)
-	deps.scanLocal = func(string) ([]discover.Repo, error) { return nil, failure }
+	deps.readDir = func(string) ([]os.DirEntry, error) { return nil, failure }
 	if w, _ := newWorld(context.Background(), "/r", nil, deps); !strings.Contains(w.ProtectedGap, "canonical clones") {
 		t.Fatalf("scan gap = %q", w.ProtectedGap)
 	}

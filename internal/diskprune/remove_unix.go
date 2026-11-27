@@ -4,6 +4,7 @@ package diskprune
 
 import (
 	"fmt"
+	"os"
 
 	"golang.org/x/sys/unix"
 )
@@ -32,6 +33,10 @@ func RemoveFileAt(dir, name string, expect Identity) (int64, error) {
 	if err := unix.Unlinkat(dirfd, name, 0); err != nil {
 		return 0, fmt.Errorf("unlink %s/%s: %w", dir, name, err)
 	}
+	if stat.Nlink > 1 {
+		// Another link keeps the blocks; nothing came back.
+		return 0, nil
+	}
 	return int64(stat.Blocks) * 512, nil
 }
 
@@ -49,4 +54,13 @@ func StatIdentity(path string) (Identity, error) {
 	}
 	identity.MountID = mount
 	return identity, nil
+}
+
+// writeMarker creates Go's .partial marker best-effort, never following a
+// symlink a hostile entry might have planted.
+func writeMarker(path string) {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|unix.O_NOFOLLOW, 0o644)
+	if err == nil {
+		_ = file.Close()
+	}
 }

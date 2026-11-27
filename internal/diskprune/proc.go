@@ -2,11 +2,14 @@ package diskprune
 
 import (
 	"bufio"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -23,8 +26,13 @@ type Process struct {
 	Cwd      string
 	Files    []string // open file descriptor targets and mapped files
 	Readable bool
-	Age      time.Duration
+	// Age is how long the process has run; AgeUnknown when it cannot be
+	// read, which the build-cache floor treats as fail-closed.
+	Age time.Duration
 }
+
+// AgeUnknown marks a process whose start time could not be read.
+const AgeUnknown time.Duration = -1
 
 // Command is the process's command line for reports, or its name when the
 // command line is empty (a kernel thread or a zombie).
@@ -80,7 +88,11 @@ func readProcessTable(src procSource) Table {
 	if err != nil {
 		return Table{Evidence: Evidence{Unknown: "the process table cannot be listed: " + err.Error()}}
 	}
-	table := Table{Evidence: Evidence{HidePID: procHidesPIDs(src)}}
+	hidden, known := procHidesPIDs(src)
+	table := Table{Evidence: Evidence{HidePID: hidden}}
+	if !known {
+		table.Evidence.Unknown = "the procfs mount options cannot be read, so hidden processes cannot be ruled out"
+	}
 	if reason := untrustedNamespace(src); reason != "" {
 		table.Evidence.Unknown = reason
 	}
@@ -90,7 +102,15 @@ func readProcessTable(src procSource) Table {
 		if err != nil || pid <= 0 {
 			continue
 		}
-		if process, ok := readProcess(src, pid, boot); ok {
+		process, ok, err := readProcess(src, pid, boot)
+		if err != nil {
+			// Anything but "the process exited" (fd exhaustion, ENOMEM) makes
+			// the table incomplete: a silently missing process is exactly the
+			// one prune must not overlook.
+			table.Evidence.Unknown = "the process table could not be read completely: " + err.Error()
+			continue
+		}
+		if ok {
 			table.Processes = append(table.Processes, process)
 		}
 	}
@@ -99,11 +119,14 @@ func readProcessTable(src procSource) Table {
 
 // readProcess reads one process. A process that exited mid-read is dropped;
 // one whose private views are unreadable is kept with Readable false.
-func readProcess(src procSource, pid int, boot time.Time) (Process, bool) {
+func readProcess(src procSource, pid int, boot time.Time) (Process, bool, error) {
 	dir := filepath.Join(src.procRoot, strconv.Itoa(pid))
 	stat, err := os.ReadFile(filepath.Join(dir, "stat"))
+	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ESRCH) {
+		return Process{}, false, nil
+	}
 	if err != nil {
-		return Process{}, false
+		return Process{}, false, err
 	}
 	process := Process{PID: pid, UID: -1, Readable: true}
 	process.Comm, process.Age = parseStat(string(stat), boot, src)
@@ -126,7 +149,7 @@ func readProcess(src procSource, pid int, boot time.Time) (Process, bool) {
 	maps, mapsErr := os.ReadFile(filepath.Join(dir, "maps"))
 	process.Files = append(process.Files, mappedFiles(string(maps))...)
 	process.Readable = cwdErr == nil && fdErr == nil && mapsErr == nil
-	return process, true
+	return process, true, nil
 }
 
 // parseStat returns the command name and the process's age. The name is in
@@ -136,17 +159,17 @@ func parseStat(stat string, boot time.Time, src procSource) (string, time.Durati
 	open := strings.IndexByte(stat, '(')
 	closing := strings.LastIndexByte(stat, ')')
 	if open < 0 || closing < open {
-		return "", 0
+		return "", AgeUnknown
 	}
 	comm := stat[open+1 : closing]
 	fields := strings.Fields(stat[closing+1:])
 	// starttime is field 22 overall; after the name, field 3 is index 0.
 	if len(fields) < 20 || boot.IsZero() {
-		return comm, 0
+		return comm, AgeUnknown
 	}
 	ticks, err := strconv.ParseInt(fields[19], 10, 64)
 	if err != nil {
-		return comm, 0
+		return comm, AgeUnknown
 	}
 	started := boot.Add(time.Duration(ticks) * time.Second / time.Duration(src.clockTick))
 	return comm, src.now().Sub(started)
@@ -216,11 +239,12 @@ func mappedFiles(maps string) []string {
 }
 
 // procHidesPIDs reports whether the procfs at procRoot is mounted with a
-// hidepid option other than 0, which hides other users' processes.
-func procHidesPIDs(src procSource) bool {
+// hidepid option other than 0, which hides other users' processes, and
+// whether that could be determined at all.
+func procHidesPIDs(src procSource) (hidden, known bool) {
 	raw, err := os.ReadFile(filepath.Join(src.procRoot, src.selfPID, "mountinfo"))
 	if err != nil {
-		return false
+		return false, false
 	}
 	scanner := bufio.NewScanner(strings.NewReader(string(raw)))
 	for scanner.Scan() {
@@ -236,11 +260,11 @@ func procHidesPIDs(src procSource) bool {
 		}
 		for _, option := range strings.Split(options[2], ",") {
 			if value, ok := strings.CutPrefix(option, "hidepid="); ok && value != "0" && value != "off" {
-				return true
+				return true, true
 			}
 		}
 	}
-	return false
+	return false, true
 }
 
 // untrustedNamespace names why the visible process table may omit processes
@@ -254,11 +278,20 @@ func untrustedNamespace(src procSource) string {
 			}
 		}
 	}
-	for _, marker := range []string{".dockerenv", filepath.Join("run", ".containerenv")} {
+	for _, marker := range []string{".dockerenv", filepath.Join("run", ".containerenv"), filepath.Join("run", "systemd", "container")} {
 		if _, err := os.Stat(filepath.Join(src.rootFS, marker)); err == nil {
 			return "prune runs in a container (" + marker + "), whose process table may omit host processes sharing its caches"
 		}
 	}
+	if raw, err := os.ReadFile(filepath.Join(src.procRoot, src.selfPID, "cgroup")); err == nil {
+		for _, runtime := range []string{"docker", "kubepods", "containerd", "libpod", "lxc"} {
+			if strings.Contains(string(raw), runtime) {
+				return "prune runs in a container (cgroup names " + runtime + "), whose process table may omit host processes sharing its caches"
+			}
+		}
+	}
+	// PID 1's environment is root-only on most hosts; when it is readable it
+	// names the container runtime.
 	if raw, err := os.ReadFile(filepath.Join(src.procRoot, "1", "environ")); err == nil {
 		for _, variable := range splitNUL(raw) {
 			if strings.HasPrefix(variable, "container=") {
@@ -385,11 +418,15 @@ func mentionsPath(text, path string) bool {
 		}
 		start := offset + index
 		end := start + len(path)
-		before := start == 0 || strings.ContainsRune("=: \"'", rune(text[start-1]))
-		after := end == len(text) || strings.ContainsRune("/: \"'", rune(text[end]))
+		before := start == 0 || strings.ContainsRune("=: \"',;@", rune(text[start-1])) ||
+			// a joined flag such as -I/tmp/go-build1/b001
+			(start >= 2 && text[start-2] == '-' && isLetter(text[start-1]))
+		after := end == len(text) || strings.ContainsRune("/: \"',;", rune(text[end]))
 		if before && after {
 			return true
 		}
 		offset = start + 1
 	}
 }
+
+func isLetter(b byte) bool { return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') }

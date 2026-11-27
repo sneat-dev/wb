@@ -171,8 +171,10 @@ test MUST fail when a non-test source file joins a string literal under
 Without `--apply`, prune MUST NOT create, delete, rename, truncate, chmod or
 lock anything in any root it measures or manages. The only external command it runs is
 `git worktree list --porcelain` in canonical clones. It reads `/proc`, and
-it runs neither `go` nor `pnpm`. This is enforced by structure: the planner
-receives a filesystem and command interface with no mutating operations.
+it runs neither `go` nor `pnpm`. Every mutation goes through a seam of the
+World (tree and file removal, locks, admission, pnpm, HTTP probes) that the
+planner never calls; a test against this machine's real directories fails if
+any is called, and records every external command the plan runs.
 
 The plan is grouped by filesystem, then by category in pruning order. For
 each candidate it lists:
@@ -226,8 +228,9 @@ Every pre-existing entry under the state directories is left unchanged.
   `legacy-wb-home`, `worktrees`) is a usage error.
 - **Modules are opt-in.** `go-module-cache` runs only when
   `--category go-module-cache` is given. A run without `--category` covers
-  the other three, and lists the module cache as `requires-category` with
-  its estimate.
+  the other three, and lists the module cache as `requires-category`
+  without walking it, so a default or `--auto` run never pays for the
+  fleet-wide reference scan.
 - **Age floors.** `--older-than <dur>` raises every category's age floor to
   at least `dur` and never lowers one. Each category's default floor is
   stated in its REQ. The pnpm store prune and the full build-cache clean
@@ -1129,8 +1132,8 @@ lines; with neither present, the locked version alone is skipped as
 **Given** an eligible module version
 **When** the user runs `wb disk prune --until-free max --apply` without
 `--category`
-**Then** no module file is removed and the category is listed as
-`requires-category` with its estimate.
+**Then** no module file is removed, the category is listed as
+`requires-category`, and no sum file is read.
 
 ### AC: state-reported-never-pruned
 

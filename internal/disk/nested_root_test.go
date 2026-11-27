@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/discover"
@@ -186,5 +187,61 @@ func TestProbeMeasuresTheFilesystem(t *testing.T) {
 	fs, err := Probe(t.TempDir())
 	if err != nil || fs.TotalBytes <= 0 || fs.AvailableBytes > fs.TotalBytes {
 		t.Fatalf("probe = %#v, %v", fs, err)
+	}
+}
+
+// AC nested-and-equal-roots-counted-once and symlinked-and-unreadable-roots:
+// two categories resolving to one directory measure it once; a root reached
+// through a symlink is measured at its target; an unreadable subtree marks
+// the category partial; a root that fails to stat for another reason than
+// not existing is reported.
+func TestDiskResolvesEqualSymlinkedAndUnreadableRoots(t *testing.T) {
+	isolate(t)
+	shared := t.TempDir()
+	if err := os.WriteFile(filepath.Join(shared, "entry"), make([]byte, 8192), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(shared, link); err != nil {
+		t.Fatal(err)
+	}
+	locked := filepath.Join(shared, "locked")
+	if err := os.MkdirAll(filepath.Join(locked, "x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	loop := filepath.Join(t.TempDir(), "loop")
+	if err := os.Symlink(loop, loop); err != nil {
+		t.Fatal(err)
+	}
+	groups := func(string, string) []group {
+		return []group{
+			{name: "first", kind: "cache", roots: []string{link}},
+			{name: "second", kind: "cache", roots: []string{shared}},
+			{name: "broken", kind: "cache", roots: []string{loop}},
+		}
+	}
+	report, err := collectWithDiscovery(context.Background(), Options{ProjectsRoot: t.TempDir(), WBHome: t.TempDir()}, os.UserHomeDir, groups)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := categoriesByName(report)
+	if first := byName["first"]; len(first.Roots) != 1 || first.Roots[0] != shared || first.ApparentBytes < 8192 {
+		t.Fatalf("symlinked root = %#v", first)
+	}
+	if second := byName["second"]; len(second.SameAs) != 1 || !strings.HasPrefix(second.SameAs[0], "first") || second.ApparentBytes != 0 {
+		t.Fatalf("equal root = %#v", second)
+	}
+	if os.Geteuid() != 0 && !byName["first"].Partial {
+		t.Fatal("an unreadable subtree did not mark the category partial")
+	}
+	if len(report.Skipped) == 0 || !strings.Contains(strings.Join(report.Skipped, " "), "loop") {
+		t.Fatalf("a root that cannot be statted was not reported: %v", report.Skipped)
+	}
+	if ownedByUser(filepath.Join(t.TempDir(), "absent")) {
+		t.Fatal("a missing path is owned")
 	}
 }

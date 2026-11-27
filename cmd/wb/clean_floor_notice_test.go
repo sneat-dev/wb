@@ -57,7 +57,7 @@ func TestDiskReceiptFindingReadsTheStateDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := diskprune.WriteReceipt(home, diskprune.Receipt{Time: time.Unix(5, 0), Trigger: "daemon", Outcome: diskprune.OutcomeFailed}); err != nil {
+	if err := diskprune.WriteReceipt(home, diskprune.Receipt{Time: time.Now(), Trigger: "daemon", Outcome: diskprune.OutcomeFailed}); err != nil {
 		t.Fatal(err)
 	}
 	if finding := diskReceiptFinding(root); !strings.Contains(finding, "ended failed") {

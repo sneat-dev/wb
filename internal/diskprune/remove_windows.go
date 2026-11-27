@@ -12,3 +12,6 @@ func RemoveTree(parent, name string, expect Identity) (TreeOutcome, error) {
 }
 
 func StatIdentity(path string) (Identity, error) { return Identity{}, ErrUnsupported }
+
+// writeMarker is a no-op on Windows, where prune deletes nothing.
+func writeMarker(path string) {}

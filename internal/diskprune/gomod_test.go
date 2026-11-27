@@ -81,6 +81,7 @@ func newModuleFixture(t *testing.T) *moduleFixture {
 	f := &moduleFixture{t: t, tw: tw, cache: cache, proxy: map[string]int{}, modBody: map[string]string{}}
 	tw.Go = GoEnv{GOMODCACHE: cache, GOPROXY: "https://proxy.example,direct", GOSUMDB: "sum.golang.org", GOPRIVATE: "corp.example", GONOPROXY: "corp.example", GONOSUMDB: "corp.example"}
 	tw.HTTP = f.http
+	tw.LookupHost = func(context.Context, string) ([]string, error) { return []string{"203.0.113.5"}, nil }
 	tw.LockModuleVersion = LockModuleVersion
 	tw.Now = func() time.Time { return time.Now().Add(30 * 24 * time.Hour) }
 	tw.categories = []category{moduleCategory{}}
@@ -295,7 +296,7 @@ func TestModulesEdgeCases(t *testing.T) {
 	f.add("example.com/a", "v1.0.0", true, true)
 	f.tw.categories = []category{moduleCategory{}, scratchCategory{}}
 	report := f.tw.run(Options{Apply: true, Floor: 0.01})
-	if cat := categoryByName(t, report, CategoryModules); cat.Status != StatusRequiresCategory || cat.EstimateBytes == nil || *cat.EstimateBytes <= 0 {
+	if cat := categoryByName(t, report, CategoryModules); cat.Status != StatusRequiresCategory || cat.EstimateBytes != nil {
 		t.Fatalf("default run = %#v", cat)
 	}
 	if !exists(filepath.Join(f.cache, "example.com", "a@v1.0.0")) {
@@ -376,12 +377,53 @@ func TestModulesEdgeCases(t *testing.T) {
 			f.tw.categories = []category{hookedCategory{inner: moduleCategory{}, after: func() {
 				f.tw.Identity = func(string) (Identity, error) { return Identity{}, errors.New("statx") }
 			}}}
-		}, StatusFailed, ""},
-		"remounted": {func(f *moduleFixture) {
+		}, StatusSkipped, "changed"},
+		"replaced tree": {func(f *moduleFixture) {
 			f.tw.categories = []category{hookedCategory{inner: moduleCategory{}, after: func() {
-				f.tw.Identity = func(path string) (Identity, error) { id, err := StatIdentity(path); id.MountID++; return id, err }
+				extracted := filepath.Join(f.cache, "example.com", "a@v1.0.0")
+				_ = os.Chmod(extracted, 0o755)
+				_ = os.Rename(extracted, extracted+".old")
+				mustWrite(f.t, filepath.Join(extracted, "go.mod"), "module example.com/a\n", 0o444)
 			}}}
-		}, StatusSkipped, "contains-mount"},
+		}, StatusSkipped, "changed"},
+		"edited after plan": {func(f *moduleFixture) {
+			f.tw.categories = []category{hookedCategory{inner: moduleCategory{}, after: func() {
+				extracted := filepath.Join(f.cache, "example.com", "a@v1.0.0")
+				_ = os.Chmod(extracted, 0o755)
+				mustWrite(f.t, filepath.Join(extracted, "local.go"), "package a // edited", 0o644)
+			}}}
+		}, StatusSkipped, "locally-modified"},
+		"ziphash rewritten": {func(f *moduleFixture) {
+			f.tw.categories = []category{hookedCategory{inner: moduleCategory{}, after: func() {
+				zh := filepath.Join(f.cache, "cache", "download", "example.com", "a", "@v", "v1.0.0.ziphash")
+				_ = os.Chmod(zh, 0o644)
+				mustWrite(f.t, zh, "h1:different", 0o644)
+			}}}
+		}, StatusSkipped, "changed"},
+		"referenced at apply": {func(f *moduleFixture) {
+			root := f.checkout(map[string]string{"go.sum": ""})
+			f.tw.categories = []category{hookedCategory{inner: moduleCategory{}, after: func() {
+				mustWrite(f.t, filepath.Join(root, "go.sum"), "example.com/a v1.0.0"+h+"\n", 0o644)
+			}}}
+		}, StatusSkipped, "referenced"},
+		"unreadable sum at apply": {func(f *moduleFixture) {
+			root := f.checkout(map[string]string{"go.sum": ""})
+			f.tw.categories = []category{hookedCategory{inner: moduleCategory{}, after: func() {
+				mustWrite(f.t, filepath.Join(root, "go.sum"), "<<<<<<< HEAD\n", 0o644)
+			}}}
+		}, StatusSkipped, "incomplete-reference-set"},
+		"evidence at apply": {func(f *moduleFixture) {
+			f.tw.categories = []category{hookedCategory{inner: moduleCategory{}, after: func() { f.tw.evidence = Evidence{Unknown: "fd exhaustion"} }}}
+		}, StatusSkipped, "unknown"},
+		"no cached go.mod": {func(f *moduleFixture) {
+			_ = os.Remove(filepath.Join(f.cache, "cache", "download", "example.com", "a", "@v", "v1.0.0.mod"))
+		}, StatusSkipped, "not-refetchable: no readable cached go.mod"},
+		"loopback by name": {func(f *moduleFixture) {
+			f.tw.LookupHost = func(context.Context, string) ([]string, error) { return []string{"127.0.0.1"}, nil }
+		}, StatusSkipped, "not-refetchable: proxy proxy.example resolves to loopback"},
+		"lookup fails": {func(f *moduleFixture) {
+			f.tw.LookupHost = func(context.Context, string) ([]string, error) { return nil, errors.New("no such host") }
+		}, StatusSkipped, "not-refetchable: no such host"},
 	} {
 		f := newModuleFixture(t)
 		f.add("example.com/a", "v1.0.0", true, true)

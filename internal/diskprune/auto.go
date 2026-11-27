@@ -95,11 +95,16 @@ func NewestReceipt(stateDir, trigger string) (Receipt, string, bool) {
 	return Receipt{}, "", false
 }
 
+// receiptFreshness is how long an unsuccessful receipt stays a finding: a
+// later successful run of any trigger replaces it sooner, and a stale one
+// no longer describes the machine.
+const receiptFreshness = 24 * time.Hour
+
 // ReceiptFinding is the line wb disk and wb daemon status show when the
-// newest receipt ended anything but done, or "" when there is nothing to say.
+// newest receipt, from the last day, ended anything but done; "" otherwise.
 func ReceiptFinding(stateDir string) string {
 	receipt, path, ok := NewestReceipt(stateDir, "")
-	if !ok || receipt.Outcome == OutcomeDone {
+	if !ok || receipt.Outcome == OutcomeDone || time.Since(receipt.Time) > receiptFreshness {
 		return ""
 	}
 	return fmt.Sprintf("the last automatic prune (%s, %s) ended %s; see %s", receipt.Trigger, receipt.Time.UTC().Format(time.RFC3339), receipt.Outcome, path)
@@ -131,17 +136,32 @@ func (a *AutoPruner) Run(ctx context.Context) {
 	if receipt, _, ok := NewestReceipt(a.StateDir, "daemon"); ok {
 		a.last = receipt.Time
 	}
-	config, _ := a.Config()
-	ticks, stop := a.Ticker(config.CheckInterval)
-	defer stop()
+	interval := a.interval()
+	ticks, stop := a.Ticker(interval)
+	defer func() { stop() }()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticks:
 			a.Tick(ctx)
+			if next := a.interval(); next != interval {
+				stop()
+				interval = next
+				ticks, stop = a.Ticker(interval)
+			}
 		}
 	}
+}
+
+// interval is disk.check_interval, or the default when the configuration
+// cannot be read: a broken wb.yaml must never stop the daemon.
+func (a *AutoPruner) interval() time.Duration {
+	config, err := a.Config()
+	if err != nil || config.CheckInterval <= 0 {
+		return wbconfig.DefaultDiskCheckInterval
+	}
+	return config.CheckInterval
 }
 
 // Tick is one check: off, above the floor, or rate-limited does nothing.
@@ -190,7 +210,8 @@ func newAutoPruner(projectsRoot, stateDir string, log func(string), configPath f
 		Roots: func() []string {
 			env, _ := ResolveGoEnv()
 			home, _ := os.UserHomeDir()
-			return append(tempDirs(realWorldDeps()), env.GOCACHE, filepath.Join(home, ".local", "share", "pnpm", "store"))
+			dirs, _ := tempDirs(realWorldDeps())
+			return append(dirs, env.GOCACHE, filepath.Join(home, ".local", "share", "pnpm", "store"))
 		},
 		Probe: disk.Probe,
 		Prune: func(ctx context.Context, floor float64) (*World, Report, error) {

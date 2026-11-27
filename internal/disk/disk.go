@@ -32,13 +32,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/diskusage"
+	"github.com/sneat-dev/wb/internal/goenv"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -77,6 +77,12 @@ type Category struct {
 	UnsharedBytes int64 `yaml:"unshared_bytes" json:"unshared_bytes"`
 	// Note explains anything a byte count alone would misrepresent.
 	Note string `yaml:"note,omitempty" json:"note,omitempty"`
+	// Partial is true when part of a root could not be read: the bytes are a
+	// lower bound.
+	Partial bool `yaml:"partial,omitempty" json:"partial,omitempty"`
+	// SameAs names an earlier category that resolves to the same directory,
+	// which owns its bytes; this one is not measured again.
+	SameAs []string `yaml:"same_as,omitempty" json:"same_as,omitempty"`
 }
 
 // Report is one machine's accounting.
@@ -158,8 +164,9 @@ func collectWithDiscovery(ctx context.Context, options Options, userHomeDir func
 	}
 	report.Filesystem = filesystem
 
-	groups := discoverGroups(projectsRoot, home)
+	groups := resolveGroups(discoverGroups(projectsRoot, home))
 	nested := nestedRoots(groups)
+	owner := map[string]string{}
 
 	// One walk across every category: a pnpm store hard-linked into a worktree
 	// belongs to whichever category is measured first and must not be added
@@ -173,8 +180,16 @@ func collectWithDiscovery(ctx context.Context, options Options, userHomeDir func
 				continue
 			}
 			if _, err := os.Stat(root); err != nil {
+				if !errors.Is(err, os.ErrNotExist) {
+					report.Skipped = append(report.Skipped, fmt.Sprintf("%s: %v", root, err))
+				}
 				continue
 			}
+			if first, taken := owner[root]; taken && first != group.name {
+				category.SameAs = append(category.SameAs, first+" ("+root+")")
+				continue
+			}
+			owner[root] = group.name
 			category.Roots = append(category.Roots, root)
 			if options.SkipSizes {
 				continue
@@ -185,9 +200,10 @@ func collectWithDiscovery(ctx context.Context, options Options, userHomeDir func
 				continue
 			}
 			category.ApparentBytes += usage.ApparentBytes
+			category.Partial = category.Partial || usage.Unreadable > 0
 			measured[group.name] = append(measured[group.name], root)
 		}
-		if len(category.Roots) == 0 {
+		if len(category.Roots) == 0 && len(category.SameAs) == 0 {
 			continue
 		}
 		report.Categories = append(report.Categories, category)
@@ -242,12 +258,12 @@ func candidateGroups(projectsRoot, home string) []group {
 		},
 		{
 			name: "go-build-cache", kind: "cache",
-			roots: []string{goEnv("GOCACHE")},
+			roots: []string{goRoot(func(env goenv.Env) string { return env.GOCACHE })},
 			note:  "regenerable; shared across every worktree, so per-task copies multiply it; wb disk prune trims it",
 		},
 		{
 			name: "go-module-cache", kind: "cache",
-			roots: []string{goEnv("GOMODCACHE")},
+			roots: []string{goRoot(func(env goenv.Env) string { return env.GOMODCACHE })},
 			note:  "regenerable; re-downloading costs network, not correctness; wb disk prune removes versions no go.sum references",
 		},
 		{
@@ -406,14 +422,25 @@ func worktreeRootsWithReadDir(projectsRoot string, readDir func(string) ([]os.Di
 // scratchRoots covers the location WB will own and the ad-hoc ones that exist
 // because it does not own one yet.
 func scratchRoots() []string {
-	temp := os.TempDir()
+	var roots []string
+	for _, temp := range []string{os.TempDir(), os.Getenv("GOTMPDIR")} {
+		if temp != "" {
+			roots = append(roots, scratchRootsIn(temp)...)
+		}
+	}
+	return roots
+}
+
+// scratchRootsIn lists one temporary directory's scratch-shaped entries the
+// invoking user owns; another user's are neither measurable nor prunable.
+func scratchRootsIn(temp string) []string {
 	roots := []string{filepath.Join(temp, "wb")}
 	entries, err := os.ReadDir(temp)
 	if err != nil {
 		return roots
 	}
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		if !entry.IsDir() || !ownedByUser(filepath.Join(temp, entry.Name())) {
 			continue
 		}
 		// wb-pr308-lint-go-cache, wb-sync-report-focused-cache and friends:
@@ -427,20 +454,22 @@ func scratchRoots() []string {
 	return roots
 }
 
-// goEnv asks the toolchain rather than guessing a path that varies by platform
-// and by GOPATH. A missing toolchain yields no root rather than a wrong one.
-func goEnv(name string) string {
-	return goEnvWithOutput(func() ([]byte, error) {
-		return exec.Command("go", "env", name).Output()
-	})
+// goRoot resolves a Go cache root without running go, which could write
+// telemetry counters; a configuration that cannot be resolved, or a value
+// such as GOCACHE=off, yields no root rather than a wrong one.
+func goRoot(pick func(goenv.Env) string) string {
+	return goRootWith(goenv.Resolve, pick)
 }
 
-func goEnvWithOutput(readOutput func() ([]byte, error)) string {
-	output, err := readOutput()
+func goRootWith(resolve func() (goenv.Env, error), pick func(goenv.Env) string) string {
+	env, err := resolve()
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(output))
+	if root := pick(env); filepath.IsAbs(root) {
+		return root
+	}
+	return ""
 }
 
 // findings converts the measurement into the few statements worth acting on.
@@ -519,4 +548,20 @@ func scratchShaped(name string) bool {
 		}
 	}
 	return false
+}
+
+// resolveGroups resolves every root through symlinks, so a symlinked
+// GOMODCACHE is measured at its target and nesting is decided on real paths.
+func resolveGroups(groups []group) []group {
+	for g := range groups {
+		for r, root := range groups[g].roots {
+			if root == "" {
+				continue
+			}
+			if real, err := filepath.EvalSymlinks(root); err == nil {
+				groups[g].roots[r] = real
+			}
+		}
+	}
+	return groups
 }
