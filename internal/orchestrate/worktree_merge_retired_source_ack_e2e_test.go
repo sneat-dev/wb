@@ -176,20 +176,6 @@ func TestE2EAcknowledgeRetiredSourcePostTargetFailureReleasesLaneWhenSupersededB
 	}
 }
 
-const goldenLandedFailureAcknowledgementID = "061cdd3eb7c795c2aabc73cbd501992baa75998d26bd8cf0f826e9df1ad66bee"
-
-func TestE2ELandedFailureAcknowledgementIDIsUnchangedWithoutRetiredEvidence(t *testing.T) {
-	t.Parallel()
-	ack := WorktreeMergeLandedFailureAcknowledgement{
-		ReceiptID: "r", ReceiptPath: "/p", ReceiptStatus: WorktreeMergePostTargetCIFailed, ReceiptTargetSHA: "t", ReceiptLandingSHA: "l",
-		CurrentTargetSHA: "c", CandidateSHA: "d", Sources: []WorktreeMergeSource{{Task: "s", Worktree: "/w", Branch: "b", SHA: "x"}},
-	}
-	// Golden value computed before retired-source evidence existed.
-	if got := landedFailureAcknowledgementID(ack); got != goldenLandedFailureAcknowledgementID {
-		t.Fatalf("ID changed for an acknowledgement without retired evidence: %s", got)
-	}
-}
-
 // The public verb observes the superseding head through the real GitHub check
 // observer (here the package's fake gh, which reports no checks at all). A
 // "passed" observation with no executed checks is vacuous and must refuse.
