@@ -240,17 +240,16 @@ func (scratchCategory) plan(ctx context.Context, w *World, o Options) *categoryP
 		plan.skip(reason)
 		return plan
 	}
-	for _, dir := range w.TempDirs {
-		// TMPDIR inside a clone (~/personal-repo/tmp): its entries are that
-		// checkout's tracked or untracked files, never scratch.
-		if checkout := insideCheckout(dir, w.Home); checkout != "" {
-			plan.skip("protected: " + dir + " is inside the checkout " + checkout)
-			return plan
-		}
-	}
 	accumulator := newReclaimAccumulator()
 	var estimate int64
 	for _, root := range w.TempDirs {
+		// A temporary directory inside a clone (~/personal-repo/tmp) holds
+		// that checkout's files, never scratch; the other temporary
+		// directories are still planned.
+		if checkout := insideCheckout(root, w.Home); checkout != "" {
+			plan.items = append(plan.items, &item{ItemReport: ItemReport{Path: root, Status: StatusKeep, Reason: "protected: inside the checkout " + checkout}})
+			continue
+		}
 		entries, err := os.ReadDir(root)
 		if err != nil {
 			plan.Partial = true
@@ -461,7 +460,13 @@ func (w *World) cacheRoots() []string {
 	// Report-only stores too: a scratch-shaped directory that is, resolved,
 	// the npm cache or a pnpm store (say ~/.npm symlinked into TMPDIR) is
 	// that store, never scratch.
-	roots := []string{w.Go.GOCACHE, w.Go.GOMODCACHE}
+	return append([]string{w.Go.GOCACHE}, w.reportOnlyStores()...)
+}
+
+// reportOnlyStores are the measured stores no category prunes: the Go
+// module cache, the npm cache and the pnpm stores, resolved.
+func (w *World) reportOnlyStores() []string {
+	roots := []string{w.Go.GOMODCACHE}
 	for _, store := range []string{
 		filepath.Join(w.Home, ".npm"),
 		filepath.Join(w.Home, ".local", "share", "pnpm", "store"),

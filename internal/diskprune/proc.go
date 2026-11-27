@@ -431,13 +431,15 @@ func (p Process) References(path string) bool {
 			return true
 		}
 	}
-	// A relative argument names a path below the working directory:
-	// "worker go-build77/input" run from /tmp names /tmp/go-build77/input.
-	if p.Cwd != "" {
-		for _, arg := range p.Argv {
-			if arg != "" && !filepath.IsAbs(arg) && !strings.HasPrefix(arg, "-") && within(filepath.Join(p.Cwd, arg), path) {
-				return true
-			}
+	// An absolute argument is compared cleaned too (/tmp/./x is /tmp/x); a
+	// relative one names a path below the working directory: "worker
+	// go-build77/input" run from /tmp names /tmp/go-build77/input.
+	for _, arg := range p.Argv {
+		switch {
+		case filepath.IsAbs(arg) && within(filepath.Clean(arg), path):
+			return true
+		case p.Cwd != "" && arg != "" && !filepath.IsAbs(arg) && !strings.HasPrefix(arg, "-") && within(filepath.Join(p.Cwd, arg), path):
+			return true
 		}
 	}
 	return false

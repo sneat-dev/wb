@@ -201,3 +201,24 @@ func TestGorootIsFoundWithoutRunningGo(t *testing.T) {
 		_ = realSources.goroot()
 	}
 }
+
+// GOROOT is chosen as cmd/go chooses it (process, then the user's env file,
+// then PATH), and values merge by key presence: an empty user value means
+// Go's default, not the toolchain's value.
+func TestGoEnvLayersMergeAsGoMergesThem(t *testing.T) {
+	t.Parallel()
+	src := fakeGoEnvSources(map[string]string{"GOENV": "/user/env", "GOPATH": "/srv/gopath"}, map[string]string{
+		"/user/env":             "GOROOT=/opt/custom-go\nGOMODCACHE=\n",
+		"/opt/custom-go/go.env": "GOCACHEPROG=/bin/cacher\nGOMODCACHE=/srv/other\n",
+		"/usr/local/go/go.env":  "",
+	})
+	src.goroot = func() string { return "/usr/local/go" }
+	env, err := resolveGoEnv(src)
+	if err != nil || env.GOCACHEPROG != "/bin/cacher" || env.GOMODCACHE != "/srv/gopath/pkg/mod" {
+		t.Fatalf("env = %#v %v", env, err)
+	}
+	process := fakeGoEnvSources(map[string]string{"GOROOT": "/opt/custom-go"}, map[string]string{"/opt/custom-go/go.env": "GOCACHEPROG=/bin/p\n"})
+	if env, err := resolveGoEnv(process); err != nil || env.GOCACHEPROG != "/bin/p" {
+		t.Fatalf("process GOROOT = %#v %v", env, err)
+	}
+}

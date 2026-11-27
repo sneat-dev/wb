@@ -144,10 +144,14 @@ write telemetry counters. Each of `GOCACHE`, `GOMODCACHE`, `GOPATH`,
 2. Go's environment file (`$GOENV`, else `<user config dir>/go/env`), parsed
    read-only exactly as cmd/go parses it (split at LF, nothing trimmed);
 3. the toolchain's `$GOROOT/go.env` (`GOROOT` from the environment, else
-   the directory above the `bin/` of the `go` on `PATH`);
+   from the user's env file, else the directory above the `bin/` of the
+   `go` on `PATH`);
 4. Go's documented default (`<user cache dir>/go-build`,
    `<first GOPATH entry>/pkg/mod`, `https://proxy.golang.org,direct`,
    `sum.golang.org`).
+
+A key present in the user's env file wins over the toolchain's file even
+when its value is empty; the empty value then takes Go's default.
 
 A value prune cannot parse makes the dependent category
 `unsupported-cache`.
@@ -377,7 +381,12 @@ category rules and finishes it or keeps it.
   and every one its `.git/worktrees/*/gitdir` names (git can list a clone
   successfully yet incompletely); a registration that cannot be read is an
   inventory gap;
-- a temporary directory or `GOCACHE` inside a git checkout below home.
+- a temporary directory or `GOCACHE` inside a git checkout below home (a
+  protected temporary directory is listed and the others are still
+  planned), and a build-cache shard that is a checkout of its own.
+
+`GOCACHE` overlapping a report-only store (the Go module cache, the npm
+cache, a pnpm store) is protected as well.
 
 A candidate is refused as `protected` when its resolved path lies inside a
 protected root, or when a protected root lies inside it. If the

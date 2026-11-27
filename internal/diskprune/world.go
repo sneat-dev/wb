@@ -148,7 +148,7 @@ func protectedInventory(ctx context.Context, w *World, resolution wbhome.Resolut
 	}
 	// The older per-repository stores, <root>/<org>/<repo>/.worktrees, are
 	// protected whether or not their clone is found.
-	legacyStores, _ := filepath.Glob(filepath.Join(resolution.Root, "*", "*", ".worktrees"))
+	legacyStores, _ := filepath.Glob(filepath.Join(globEscape(resolution.Root), "*", "*", ".worktrees"))
 	for _, store := range legacyStores {
 		if info, err := os.Stat(store); err == nil && info.IsDir() {
 			add(store)
@@ -380,4 +380,17 @@ func registeredWorktrees(clone string) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// globEscape quotes a literal path for filepath.Glob: a projects root named
+// "projects[1]" is that directory, not a character class.
+func globEscape(path string) string {
+	var out strings.Builder
+	for _, r := range path {
+		if strings.ContainsRune(`*?[\\`, r) {
+			out.WriteByte('\\')
+		}
+		out.WriteRune(r)
+	}
+	return out.String()
 }

@@ -595,12 +595,23 @@ func TestScratchKeepsAReportOnlyStore(t *testing.T) {
 func TestScratchInsideACheckoutIsProtected(t *testing.T) {
 	t.Parallel()
 	tw := newTestWorld(t)
-	tw.entry("go-build1", 8)
-	clone := filepath.Dir(tw.tmp)
+	tw.entry("go-build2", 8)
+	// A second temporary directory inside a clone: kept as protected (and
+	// listed); the first is still planned and pruned.
+	base := t.TempDir()
+	clone := filepath.Join(base, "personal-repo")
+	inClone := filepath.Join(clone, "tmp")
 	mustWrite(t, filepath.Join(clone, ".git", "HEAD"), "ref: refs/heads/main", 0o644)
-	tw.Home = filepath.Dir(clone)
-	if cat := categoryByName(t, tw.run(Options{Apply: true, Floor: 0.01}), CategoryScratch); !strings.Contains(cat.Reason, "inside the checkout") || !exists(filepath.Join(tw.tmp, "go-build1")) {
-		t.Fatalf("scratch in a checkout = %#v", cat)
+	mustWrite(t, filepath.Join(inClone, "go-build1", "001", "data"), "x", 0o644)
+	tw.Home = base
+	tw.TempDirs = append(tw.TempDirs, inClone)
+	report := tw.run(Options{Apply: true, Floor: 0.01, Target: Target{Kind: TargetMax}})
+	items := itemsByName(report, CategoryScratch)
+	if it := items["tmp"]; !strings.Contains(it.Reason, "inside the checkout") || !exists(filepath.Join(inClone, "go-build1")) {
+		t.Fatalf("scratch in a checkout = %#v", items)
+	}
+	if it := items["go-build2"]; it.Status != StatusDeleted {
+		t.Fatalf("another temporary directory = %#v", items)
 	}
 }
 
@@ -758,10 +769,56 @@ func TestBuildCacheInsideTheModuleCacheIsProtected(t *testing.T) {
 	root := buildCacheFixture(t, tw, map[string]time.Duration{"0a01-a": 100 * time.Hour})
 	tw.Go.GOMODCACHE = filepath.Dir(root)
 	report := tw.run(Options{Apply: true, AllowFullClean: true, Categories: []string{CategoryBuild}, Target: Target{Kind: TargetMax}})
-	if cat := categoryByName(t, report, CategoryBuild); !strings.Contains(cat.Reason, "overlaps the Go module cache") {
+	if cat := categoryByName(t, report, CategoryBuild); !strings.Contains(cat.Reason, "overlaps the report-only store") {
 		t.Errorf("trim = %#v", cat)
 	}
 	if cat := categoryByName(t, report, categoryFullClean); !strings.HasPrefix(cat.Reason, "requested-step-skipped: protected") {
 		t.Errorf("full clean = %#v", cat)
+	}
+}
+
+// A GOCACHE inside the npm cache (a fixture shipped by an npx package) is
+// npm data; a shard that is a checkout of its own is not cache; an
+// explicitly requested full clean inside a checkout is a finding.
+func TestBuildCacheRespectsStoresShardCheckoutsAndFindings(t *testing.T) {
+	t.Parallel()
+	tw := newTestWorld(t)
+	tw.Home = t.TempDir()
+	root := buildCacheFixture(t, tw, map[string]time.Duration{"0a01-a": 100 * time.Hour})
+	if err := os.Symlink(filepath.Dir(root), filepath.Join(tw.Home, ".npm")); err != nil {
+		t.Fatal(err)
+	}
+	if cat := categoryByName(t, tw.run(Options{Categories: []string{CategoryBuild}}), CategoryBuild); !strings.Contains(cat.Reason, "report-only store") {
+		t.Fatalf("a cache in the npm store = %#v", cat)
+	}
+	shard := newTestWorld(t)
+	shardRoot := buildCacheFixture(t, shard, map[string]time.Duration{"0a01-a": 100 * time.Hour})
+	mustWrite(t, filepath.Join(shardRoot, "0a", ".git", "HEAD"), "ref: x", 0o644)
+	if files, _, partial := readCacheFiles(shard.World, shardRoot); !partial || len(files) != 0 {
+		t.Fatalf("a shard that is a checkout: %v %t", files, partial)
+	}
+	clone := newTestWorld(t)
+	cloneRoot := buildCacheFixture(t, clone, map[string]time.Duration{"0a01-a": 100 * time.Hour})
+	mustWrite(t, filepath.Join(filepath.Dir(cloneRoot), ".git", "HEAD"), "ref: x", 0o644)
+	clone.Home = filepath.Dir(filepath.Dir(cloneRoot))
+	report := clone.run(Options{Apply: true, AllowFullClean: true, Categories: []string{CategoryBuild}, Target: Target{Kind: TargetMax}})
+	if cat := categoryByName(t, report, categoryFullClean); !strings.HasPrefix(cat.Reason, "requested-step-skipped: protected") || report.Outcome == OutcomeDone {
+		t.Fatalf("full clean in a checkout = %#v (outcome %s)", cat, report.Outcome)
+	}
+}
+
+// A projects root whose name holds glob characters is matched literally;
+// an absolute argument is compared cleaned.
+func TestGlobEscapeAndCleanedArguments(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "projects[1]")
+	if err := os.MkdirAll(filepath.Join(dir, "a", "b", ".worktrees"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if found, _ := filepath.Glob(filepath.Join(globEscape(dir), "*", "*", ".worktrees")); len(found) != 1 {
+		t.Fatalf("found = %v", found)
+	}
+	if !(Process{Argv: []string{"worker", "/tmp/./wb-index-77/input"}}).References("/tmp/wb-index-77") {
+		t.Fatal("an uncleaned absolute argument was not a reference")
 	}
 }

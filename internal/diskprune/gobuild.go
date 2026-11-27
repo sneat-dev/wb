@@ -123,6 +123,11 @@ func readCacheFiles(w *World, root string) ([]cacheFile, Anchor, bool) {
 			partial = true
 			continue
 		}
+		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+			// A shard that is a checkout of its own holds tracked files.
+			partial = true
+			continue
+		}
 		shard, err := os.ReadDir(dir)
 		if err != nil {
 			partial = true
@@ -322,10 +327,11 @@ func (buildCacheCategory) plan(ctx context.Context, w *World, o Options) *catego
 		plan.skip("protected: " + hit)
 		return plan
 	}
-	if w.Go.GOMODCACHE != "" && insideAny(root, []string{w.Go.GOMODCACHE}) != "" {
-		// A cache-shaped directory inside an unpacked module (or around the
-		// module cache) is module data, never the build cache.
-		plan.skip("protected: " + root + " overlaps the Go module cache")
+	if hit := insideAny(root, w.reportOnlyStores()); hit != "" {
+		// A cache-shaped directory inside an unpacked module or a package
+		// in the npm or pnpm store is that store's data, never the build
+		// cache.
+		plan.skip("protected: " + root + " overlaps the report-only store " + hit)
 		return plan
 	}
 	if w.ProtectedGap != "" {
@@ -396,14 +402,14 @@ func (fullCleanCategory) plan(ctx context.Context, w *World, o Options) *categor
 	case insideAny(root, w.Protected) != "":
 		plan.skip("requested-step-skipped: protected: " + insideAny(root, w.Protected))
 		return plan
-	case w.Go.GOMODCACHE != "" && insideAny(root, []string{w.Go.GOMODCACHE}) != "":
-		plan.skip("requested-step-skipped: protected: " + root + " overlaps the Go module cache")
+	case insideAny(root, w.reportOnlyStores()) != "":
+		plan.skip("requested-step-skipped: protected: " + root + " overlaps the report-only store " + insideAny(root, w.reportOnlyStores()))
 		return plan
 	case w.ProtectedGap != "":
 		plan.skip("unknown: " + w.ProtectedGap)
 		return plan
 	case insideCheckout(root, w.Home) != "":
-		plan.skip("protected: " + root + " is inside the checkout " + insideCheckout(root, w.Home))
+		plan.skip("requested-step-skipped: protected: " + root + " is inside the checkout " + insideCheckout(root, w.Home))
 		return plan
 	case w.bindProblem(root) != "":
 		plan.skip(w.bindProblem(root))

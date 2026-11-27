@@ -59,15 +59,18 @@ func resolveGoEnv(src goEnvSources) (Env, error) {
 	if err != nil {
 		return Env{}, err
 	}
-	toolchain, err := readGorootEnv(src)
+	toolchain, err := readGorootEnv(src, file["GOROOT"])
 	if err != nil {
 		return Env{}, err
 	}
+	// As cmd/go: a non-empty process variable wins; then the user's file by
+	// key presence (an explicitly empty value there means Go's default, not
+	// the toolchain's); then the toolchain's file.
 	lookup := func(key string) string {
 		if value := src.getenv(key); value != "" {
 			return value
 		}
-		if value := file[key]; value != "" {
+		if value, present := file[key]; present {
 			return value
 		}
 		return toolchain[key]
@@ -169,12 +172,17 @@ func gorootOf(getenv func(string) string, lookPath func(string) (string, error))
 // readGorootEnv reads $GOROOT/go.env, the toolchain's settings layer below
 // the user's env file (GOPROXY, GOSUMDB, and possibly GOCACHEPROG). A
 // toolchain without one, or no toolchain, has none.
-func readGorootEnv(src goEnvSources) (map[string]string, error) {
+func readGorootEnv(src goEnvSources, userGOROOT string) (map[string]string, error) {
 	values := map[string]string{}
-	if src.goroot == nil {
-		return values, nil
+	// cmd/go's order: GOROOT from the process, else from the user's env
+	// file, else the toolchain the go on PATH belongs to.
+	root := src.getenv("GOROOT")
+	if root == "" {
+		root = userGOROOT
 	}
-	root := src.goroot()
+	if root == "" && src.goroot != nil {
+		root = src.goroot()
+	}
 	if root == "" {
 		return values, nil
 	}
