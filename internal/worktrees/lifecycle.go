@@ -83,6 +83,12 @@ type ListOptions struct {
 	// takes. It is observation only: nothing about the walk depends on it, and
 	// a nil Progress costs nothing.
 	Progress func(ListProgress)
+	// ProgressDetail, when set, receives what Progress cannot carry without
+	// changing what its existing consumers see: how many candidates the walk
+	// has found so far, and which step each in-flight inspection is in. It is
+	// what lets a caller that is not a terminal print a periodic heartbeat
+	// instead of nothing.
+	ProgressDetail func(ListProgressDetail)
 	// Workers caps concurrent candidate inspections, mirroring wb sync's
 	// --workers. Zero means the default; one makes the walk serial again,
 	// which is the behaviour to fall back to if a repository ever proves
@@ -141,6 +147,44 @@ type ListProgress struct {
 	// Network is true when this candidate's inspection contacts origin, which
 	// is what makes the walk slow.
 	Network bool
+}
+
+// ListProgressDetail is one observation ListProgress does not carry.
+//
+// Found is the number of candidates queued for inspection so far across every
+// layout. Enumeration and inspection interleave per layout, so it grows while
+// the walk runs and is the final total only once the last layout is queued;
+// it is reported as "found", never as a total. Step, with Index, Task and
+// Path, names the step an in-flight inspection has reached: "git" while
+// local integration checks run and "pull requests" while GitHub is asked.
+// Phase, with PhaseDone and PhaseTotal, reports a post-walk phase such as
+// "work log" or "size".
+type ListProgressDetail struct {
+	Found      int
+	Index      int
+	Task       string
+	Path       string
+	Step       string
+	Phase      string
+	PhaseDone  int
+	PhaseTotal int
+}
+
+// inspectStepKey carries a candidate's step callback through the inspection
+// call tree, so the step can be reported from where it starts without
+// threading a parameter through every function between.
+type inspectStepKey struct{}
+
+func withInspectStep(ctx context.Context, report func(step string)) context.Context {
+	return context.WithValue(ctx, inspectStepKey{}, report)
+}
+
+// markInspectStep reports that the inspection running under ctx has reached
+// step. It is a no-op when nothing is listening.
+func markInspectStep(ctx context.Context, step string) {
+	if report, ok := ctx.Value(inspectStepKey{}).(func(string)); ok {
+		report(step)
+	}
 }
 
 // pendingInspect is one candidate the filesystem walk found, queued for the
@@ -213,7 +257,30 @@ func gitCommonDir(ctx context.Context, worktreePath string) string {
 type listProgressReporter struct {
 	mu     sync.Mutex
 	report func(ListProgress)
+	detail func(ListProgressDetail)
 	index  int
+	found  int
+}
+
+// discovered records n more candidates queued for inspection.
+func (r *listProgressReporter) discovered(n int) {
+	if r == nil || r.detail == nil || n == 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.found += n
+	r.detail(ListProgressDetail{Found: r.found})
+}
+
+// step records that the candidate token identifies has reached step.
+func (r *listProgressReporter) step(token progressToken, task, path, step string) {
+	if r == nil || r.detail == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.detail(ListProgressDetail{Found: r.found, Index: token.index, Task: task, Path: path, Step: step})
 }
 
 // progressToken ties a finish back to the start that issued it. The index
@@ -1148,7 +1215,7 @@ func newListInventoryOp(ctx context.Context, options ListOptions) (*listInventor
 	if lw.options.Workers < 1 {
 		lw.options.Workers = DefaultInspectWorkers
 	}
-	lw.reporter = &listProgressReporter{report: lw.options.Progress}
+	lw.reporter = &listProgressReporter{report: lw.options.Progress, detail: lw.options.ProgressDetail}
 	lw.policy = inspectPolicy{
 		includeDetached:    lw.options.IncludeDetached,
 		ttl:                lw.options.TTL,
@@ -2484,6 +2551,7 @@ func runInspections(
 		workers = len(pending)
 	}
 
+	reporter.discovered(len(pending))
 	locks := newCloneLocks()
 	jobs := make(chan pendingInspect)
 	var (
@@ -2506,11 +2574,13 @@ func runInspections(
 			defer wg.Done()
 			for job := range jobs {
 				token := reporter.start(job.task, job.path, withGitHub)
+				jobCtx := withInspectStep(ctx, func(step string) { reporter.step(token, job.task, job.path, step) })
+				markInspectStep(jobCtx, "git")
 
 				lock := locks.get(job.commonDir)
 				lock.Lock()
 				result, inspectErr := inspectLifecycleWorktree(
-					ctx, projectsRoot, home, layout, job.task, job.path, base, absorbedBy, withGitHub, job.locked, job.external, policy,
+					jobCtx, projectsRoot, home, layout, job.task, job.path, base, absorbedBy, withGitHub, job.locked, job.external, policy,
 				)
 				lock.Unlock()
 
@@ -4032,6 +4102,7 @@ func (i *lifecycleInspection) enrichOwnership() error {
 func (i *lifecycleInspection) checkGitHubIntegration() error {
 	var err error
 	if i.withGitHub {
+		markInspectStep(i.ctx, "pull requests")
 		var pullRequests []githubPullRequest
 		var known bool
 		integrationBase := i.base

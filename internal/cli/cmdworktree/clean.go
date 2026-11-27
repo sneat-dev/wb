@@ -130,7 +130,7 @@ wb clean --org datatug --format json`,
 				Base: base, OlderThan: olderThan, Apply: apply, AllowResidue: allowResidue,
 				SupersededBy: supersededBy, Workers: parallel, SkipSizes: skipSizes, SkipDetached: skipDetached,
 				TTL: ttl, SessionFreshness: disabledWhenZero(sessionFreshness), ResidueDepth: residueDepth,
-				Progress: progress.Report,
+				Progress: progress.Report, ProgressDetail: progress.Detail,
 			})
 			if errors.Is(err, worktrees.ErrNoRepositoriesMatched) {
 				return runtime.ExitError(shared.ExitFindings, err.Error())

@@ -22,7 +22,7 @@ func newWorktreeRetireCmd(inv *invocation) *cobra.Command {
 		},
 		RecoverTerminalLock: worktrees.RecoverTerminalOperationLock,
 		Progress: func(command *cobra.Command, verbose bool) cmdworktree.InventoryProgress {
-			p := newInventoryProgress(inv, command.ErrOrStderr(), verbose)
+			p := newInventoryProgressFor(inv, command.ErrOrStderr(), verbose, "wb worktree retire")
 			return cmdworktree.InventoryProgress{Report: p.report, Finish: p.finish}
 		},
 		Release: func(command *cobra.Command, root, task string) bool {
