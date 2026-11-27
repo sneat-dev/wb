@@ -81,7 +81,7 @@ func (r treeRemover) remove(parent, name string, expect Identity) (TreeOutcome, 
 	if err != nil {
 		return outcome, fmt.Errorf("open %s: %w", parent, err)
 	}
-	defer unix.Close(parentfd)
+	defer func() { _ = unix.Close(parentfd) }()
 	fd, err := r.sys.openat(parentfd, name)
 	if err != nil {
 		if err == unix.ELOOP || err == unix.ENOTDIR {
@@ -89,7 +89,7 @@ func (r treeRemover) remove(parent, name string, expect Identity) (TreeOutcome, 
 		}
 		return outcome, fmt.Errorf("open %s/%s: %w", parent, name, err)
 	}
-	defer unix.Close(fd)
+	defer func() { _ = unix.Close(fd) }()
 	var stat unix.Stat_t
 	if err := r.sys.fstat(fd, &stat); err != nil {
 		return outcome, fmt.Errorf("stat %s/%s: %w", parent, name, err)

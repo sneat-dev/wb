@@ -222,7 +222,7 @@ func (p *pruneProgress) event(event diskprune.Event) {
 	changed := event.Phase != p.phase || event.Category != p.category
 	p.phase, p.category, p.unlinked = event.Phase, event.Category, event.Unlinked
 	if p.enabled && p.perLine && changed {
-		fmt.Fprintf(p.out, "wb disk prune: %s\n", p.statusLocked())
+		_, _ = fmt.Fprintf(p.out, "wb disk prune: %s\n", p.statusLocked())
 	}
 }
 
@@ -245,7 +245,7 @@ func (p *pruneProgress) beat() {
 	if p.beats == 1 {
 		line += fmt.Sprintf(" (heartbeat every %s)", pruneHeartbeat)
 	}
-	fmt.Fprintln(p.out, line)
+	_, _ = fmt.Fprintln(p.out, line)
 }
 
 func (p *pruneProgress) finish(report diskprune.Report) {
@@ -259,7 +259,7 @@ func (p *pruneProgress) finish(report diskprune.Report) {
 		p.done = nil
 	}
 	if p.beats > 0 {
-		fmt.Fprintf(p.out, "wb disk prune: done; outcome %s in %s\n", report.Outcome, time.Since(p.started).Round(time.Second))
+		_, _ = fmt.Fprintf(p.out, "wb disk prune: done; outcome %s in %s\n", report.Outcome, time.Since(p.started).Round(time.Second))
 	}
 }
 

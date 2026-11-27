@@ -102,7 +102,7 @@ func TestScratchKeepsYoungProtectedAndCacheData(t *testing.T) {
 	}
 	if len(sock) < 100 {
 		if listener, err := net.Listen("unix", filepath.Join(sock, "s")); err == nil {
-			defer func() { _ = listener.Close() }()
+			t.Cleanup(func() { _ = listener.Close() })
 		}
 	}
 	tw.UID = os.Getuid() + 1

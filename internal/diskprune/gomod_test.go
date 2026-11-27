@@ -276,7 +276,7 @@ func TestModulesFailClosedAndBusy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = hold.Close() }()
+	t.Cleanup(func() { _ = hold.Close() })
 	held, err := LockModuleVersion(hold.Name())
 	if err != nil {
 		t.Fatal(err)

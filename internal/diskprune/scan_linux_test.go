@@ -66,7 +66,7 @@ func TestScanFindsWhatMustBeKept(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = listener.Close() }()
+	t.Cleanup(func() { _ = listener.Close() })
 	if !scanOf(t, sockDir).HasSpecial {
 		t.Fatal("socket missed")
 	}

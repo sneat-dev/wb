@@ -21,7 +21,7 @@ func RemoveFileAt(dir, name string, expect Identity) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("open %s: %w", dir, err)
 	}
-	defer unix.Close(dirfd)
+	defer func() { _ = unix.Close(dirfd) }()
 	var stat unix.Stat_t
 	if err := unix.Fstatat(dirfd, name, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 		return 0, fmt.Errorf("stat %s/%s: %w", dir, name, err)
