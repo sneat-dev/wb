@@ -136,6 +136,9 @@ func (p *inventoryProgress) statusLocked() string {
 	if p.phase != "" {
 		fmt.Fprintf(&line, "; %s", p.phase)
 	}
+	if p.beats == 1 {
+		fmt.Fprintf(&line, " (heartbeat every %s)", p.interval)
+	}
 	if len(p.inFlight) > 0 {
 		indexes := make([]int, 0, len(p.inFlight))
 		for index := range p.inFlight {

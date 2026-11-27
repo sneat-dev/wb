@@ -520,8 +520,21 @@ func applyGC(ctx context.Context, options GCOptions, outcome *GCOutcome) error {
 		return err
 	}
 	retiredThisPass := make([]bool, len(outcome.Entries))
+	var progressMu sync.Mutex
+	finished, eligible := 0, 0
+	for _, entry := range outcome.Entries {
+		if entry.Eligible {
+			eligible++
+		}
+	}
 	runGCApplyConcurrently(outcome.Entries, options.Workers, func(index int) {
 		retiredThisPass[index] = applyGCEntry(ctx, options, sweepRoot, &outcome.Entries[index])
+		if options.ProgressDetail != nil {
+			progressMu.Lock()
+			finished++
+			options.ProgressDetail(ListProgressDetail{Phase: "retire", PhaseDone: finished, PhaseTotal: eligible})
+			progressMu.Unlock()
+		}
 	})
 	for index := range outcome.Entries {
 		entry := &outcome.Entries[index]

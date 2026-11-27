@@ -849,10 +849,11 @@ from a tool whose stderr is a pipe, and on 2026-11-27 an agent on a full VM
 reported that "the dry run timed out": the run printed nothing, so it could
 not be told apart from a hung one.
 
-- On a terminal, or with `--verbose`, every candidate gets its own start and
-  finish line, as `#req:progress-liveness` requires. Each finish line names
-  its own candidate; a duration is never printed on another candidate's
-  line.
+- On a terminal, or with `--verbose`, every candidate's start and finish are
+  shown as `#req:progress-liveness` requires. When the finish directly
+  follows its own start, they share one physical line; otherwise each gets
+  its own line, naming its candidate. A duration is never printed on
+  another candidate's line.
 - `--quiet` suppresses all liveness in every mode, including with
   `--verbose`.
 - Otherwise, liveness is coalesced into one
@@ -868,7 +869,9 @@ not be told apart from a hung one.
 - The step is one of:
   - `git`: local integration checks;
   - `pull requests`: GitHub evidence;
-  - `work log and size`: the post-walk phase.
+  - `work log and size`: the post-walk phase;
+  - `retire`: the apply phase.
+- The first heartbeat states the interval: `(heartbeat every 10s)`.
 - "Found so far" is not a total. Enumeration and inspection interleave per
   layout, and enumerating purges terminal artifacts, so a separate counting
   pass would repeat that side effect. The exact up-front denominator of

@@ -77,3 +77,25 @@ func TestProgressDetailIsInertWithoutASink(t *testing.T) {
 		t.Fatalf("empty batch reported %d events", calls)
 	}
 }
+
+// The apply phase reports each finished entry against the number to retire,
+// so a long --apply run's heartbeat says how far retirement has got. Only
+// eligible entries are applied, so only they are counted.
+func TestGCApplyReportsTheRetirePhase(t *testing.T) {
+	t.Parallel()
+	var phases []ListProgressDetail
+	outcome := GCOutcome{Entries: []GCEntry{
+		{Task: "t1", Repository: "acme/app", Eligible: true, WorktreeDir: t.TempDir()},
+		{Task: "t2", Repository: "acme/app", Eligible: true, WorktreeDir: t.TempDir()},
+		{Task: "t3", Repository: "acme/app"},
+	}}
+	err := applyGC(context.Background(), GCOptions{ProjectsRoot: t.TempDir(), ProgressDetail: func(event ListProgressDetail) {
+		phases = append(phases, event)
+	}}, &outcome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(phases) != 2 || phases[1].Phase != "retire" || phases[1].PhaseDone != 2 || phases[1].PhaseTotal != 2 {
+		t.Fatalf("retire phases = %#v", phases)
+	}
+}
