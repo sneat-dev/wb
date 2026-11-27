@@ -19,11 +19,11 @@ import (
 
 // deskMachineName names this machine as the daemon's fleet document does:
 // remote.machine, else the hostname, else "local".
-func deskMachineName(configPath string) string {
+func deskMachineName(configPath string, hostname func() (string, error)) string {
 	if config, err := remotestate.LoadConfig(configPath); err == nil && config.Machine != "" {
 		return config.Machine
 	}
-	if host, err := os.Hostname(); err == nil && host != "" {
+	if host, err := hostname(); err == nil && host != "" {
 		return host
 	}
 	return "local"
@@ -33,7 +33,7 @@ func defaultDeskDependencies() deskrun.Dependencies {
 	return deskrun.DefaultPlatform(deskrun.Dependencies{
 		ConfigPath:  wbconfig.DefaultPath,
 		NewClient:   deskrun.NewDeskClient,
-		MachineName: deskMachineName,
+		MachineName: func(configPath string) string { return deskMachineName(configPath, os.Hostname) },
 		MachineID:   func(projectsRoot string) (string, error) { return nodeidentity.Load(projectsRoot, rand.Reader) },
 		OpenBrowser: openBrowser,
 		Restart:     remoterun.RestartDaemonAfterEnroll,
