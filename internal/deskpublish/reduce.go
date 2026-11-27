@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/sneat-dev/wb/api/desk"
@@ -81,14 +82,16 @@ type reducedDocument struct {
 
 type reducedEnvelope struct {
 	fleet.Envelope
-	Fleet *reducedDocument `json:"fleet,omitempty"`
+	ExportedAt *time.Time       `json:"exported_at,omitempty"`
+	Fleet      *reducedDocument `json:"fleet,omitempty"`
 }
 
 // fullEnvelope is the export with the local throughput block put back:
 // the export leaves it out, and it is in the metadata set.
 type fullEnvelope struct {
 	fleet.Envelope
-	Fleet *fleet.Document `json:"fleet,omitempty"`
+	ExportedAt *time.Time      `json:"exported_at,omitempty"`
+	Fleet      *fleet.Document `json:"fleet,omitempty"`
 }
 
 // Reduce applies level to an export envelope and this machine's throughput,
@@ -99,8 +102,11 @@ func Reduce(envelope fleet.Envelope, throughput *fleet.Throughput, level desk.Le
 	if envelope.Fleet == nil || envelope.Fleet.WarmingUp || fleet.Unlistable(*envelope.Fleet) {
 		return Snapshot{}, ErrNothingToPublish
 	}
-	document := *envelope.Fleet
+	document := stable(*envelope.Fleet)
 	document.Throughput = throughput
+	// The resource samples change on every pass and are not part of what a
+	// snapshot shows; the export time is the request's observed_at.
+	envelope.Metrics = nil
 	var value any
 	snapshot := Snapshot{Detail: level}
 	switch level {
@@ -123,6 +129,36 @@ func Reduce(envelope fleet.Envelope, throughput *fleet.Throughput, level desk.Le
 	snapshot.Envelope = encoded
 	snapshot.Hash = "sha256:" + hex.EncodeToString(sum[:])
 	return snapshot, nil
+}
+
+// stable is document without what changes on every pass although nothing in
+// the fleet did: the snapshot time, each entry's observation time and each
+// pull request's check time. Without them the hash changes only when the
+// fleet does, so an idle machine publishes nothing
+// (desk-connect#req:publish-on-change). The slices are copied, never changed.
+func stable(document fleet.Document) fleet.Document {
+	document.SnapshotAt = time.Time{}
+	document.Machines = slices.Clone(document.Machines)
+	for index := range document.Machines {
+		document.Machines[index].ObservedAt = time.Time{}
+	}
+	document.Repositories = slices.Clone(document.Repositories)
+	for index := range document.Repositories {
+		document.Repositories[index].ObservedAt = time.Time{}
+	}
+	document.Worktrees = slices.Clone(document.Worktrees)
+	for index := range document.Worktrees {
+		document.Worktrees[index].ObservedAt = time.Time{}
+	}
+	document.PullRequests = slices.Clone(document.PullRequests)
+	for index := range document.PullRequests {
+		document.PullRequests[index].ObservedAt, document.PullRequests[index].CheckedAt = time.Time{}, time.Time{}
+	}
+	document.Agents = slices.Clone(document.Agents)
+	for index := range document.Agents {
+		document.Agents[index].ObservedAt = time.Time{}
+	}
+	return document
 }
 
 func reduceDocument(document *fleet.Document, key TaskKey) *reducedDocument {

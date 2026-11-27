@@ -240,7 +240,7 @@ func TestStatusesMapToTypedCodesWithoutResponseText(t *testing.T) {
 		check   func(*Error) bool
 	}{
 		{"unauthorized", answer(401, "token revoked by admin"), desk.ErrorRevoked, nil},
-		{"forbidden", answer(403, ""), desk.ErrorRevoked, nil},
+		{"forbidden by a proxy", answer(403, ""), desk.ErrorUnreachable, nil},
 		{"too large", answer(413, ""), desk.ErrorTooLarge, nil},
 		{"bad request", answer(400, "secret detail"), desk.ErrorRejectedPayload, nil},
 		{"unprocessable", answer(422, ""), desk.ErrorRejectedPayload, nil},

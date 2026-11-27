@@ -96,3 +96,55 @@ func TestDeskReductionWithholdsNamesAtRepositoriesDetail(t *testing.T) {
 		}
 	}
 }
+
+// TestDeskSnapshotHashIgnoresWhatChangesEveryPass: two exports of an
+// unchanged fleet differ in their export time, observation times, check
+// times and live metrics; their snapshots must hash the same, or an idle
+// machine would publish on every pass (desk-connect#req:publish-on-change).
+func TestDeskSnapshotHashIgnoresWhatChangesEveryPass(t *testing.T) {
+	t.Parallel()
+	first := fleet.SentinelExport(t)
+	later := fleet.SentinelExport(t)
+	shift := func(at time.Time) time.Time { return at.Add(time.Minute) }
+	later.ExportedAt = shift(later.ExportedAt)
+	document := *later.Fleet
+	document.SnapshotAt = shift(document.SnapshotAt)
+	document.Machines = append([]fleet.Machine(nil), document.Machines...)
+	for index := range document.Machines {
+		document.Machines[index].ObservedAt = shift(document.Machines[index].ObservedAt)
+	}
+	document.Worktrees = append([]fleet.Worktree(nil), document.Worktrees...)
+	for index := range document.Worktrees {
+		document.Worktrees[index].ObservedAt = shift(document.Worktrees[index].ObservedAt)
+	}
+	document.PullRequests = append([]fleet.PullRequest(nil), document.PullRequests...)
+	for index := range document.PullRequests {
+		document.PullRequests[index].CheckedAt = shift(document.PullRequests[index].CheckedAt)
+	}
+	later.Fleet = &document
+	if first.Metrics == nil {
+		t.Fatal("the sentinel export carries metrics, so the test would prove nothing")
+	}
+	later.Metrics = nil
+	key, _ := deskpublish.NewTaskKey(strings.NewReader(strings.Repeat("k", deskpublish.TaskKeyBytes)))
+	for _, level := range []desk.Level{desk.LevelRepositories, desk.LevelFull} {
+		a, errA := deskpublish.Reduce(first, nil, level, key)
+		b, errB := deskpublish.Reduce(later, nil, level, key)
+		if errA != nil || errB != nil || a.Hash != b.Hash {
+			t.Fatalf("%s: an unchanged fleet hashed %s then %s (%v, %v)", level, a.Hash, b.Hash, errA, errB)
+		}
+		for _, volatile := range []string{`"exported_at"`, `"observed_at"`, `"checked_at"`, `"snapshot_at"`, `"metrics"`} {
+			if strings.Contains(string(a.Envelope), volatile) {
+				t.Errorf("%s detail sends %s", level, volatile)
+			}
+		}
+		changed := later
+		moved := *later.Fleet
+		moved.Repositories = append([]fleet.Repository(nil), moved.Repositories...)
+		moved.Repositories[0].Name = "acme/gadgets"
+		changed.Fleet = &moved
+		if c, _ := deskpublish.Reduce(changed, nil, level, key); c.Hash == a.Hash {
+			t.Fatalf("%s: a real change kept the hash", level)
+		}
+	}
+}

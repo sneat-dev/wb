@@ -181,7 +181,10 @@ func (client *Client) do(ctx context.Context, c call) (int, error) {
 
 func statusError(response *http.Response) error {
 	switch response.StatusCode {
-	case http.StatusUnauthorized, http.StatusForbidden:
+	case http.StatusUnauthorized:
+		// Only 401 says the credential is no longer valid
+		// (desk-connect#req:revocation-is-respected); a 403 may come from a
+		// proxy or firewall on the way, so it is retried like any outage.
 		return &Error{Code: desk.ErrorRevoked}
 	case http.StatusRequestEntityTooLarge:
 		return &Error{Code: desk.ErrorTooLarge}

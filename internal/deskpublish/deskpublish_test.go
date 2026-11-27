@@ -141,6 +141,7 @@ func publishableEnvelope() fleet.Envelope {
 	repository := fleet.Repository{Entry: fleet.Entry{ID: "rp-1"}, Name: "acme/widgets", DefaultBranch: "main"}
 	return fleet.Envelope{SchemaVersion: fleet.ExportSchemaVersion, Machine: "macbook", Fleet: &fleet.Document{
 		RepositoriesTotal: 1, Repositories: []fleet.Repository{repository},
+		Machines: []fleet.Machine{{Entry: fleet.Entry{ID: "mc-1", ObservedAt: time.Date(2026, 11, 27, 0, 0, 0, 0, time.UTC)}, WBVersion: "0.211.0"}},
 		Worktrees: []fleet.Worktree{
 			{Entry: fleet.Entry{ID: "wt-main"}, Repository: "rp-1", Name: "widgets", Task: "", Branch: "main"},
 			{Entry: fleet.Entry{ID: "wt-a"}, Repository: "rp-1", Name: "task-a", Task: "task-a", Branch: "feature/a"},
