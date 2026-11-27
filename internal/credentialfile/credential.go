@@ -63,3 +63,42 @@ func writePrivateInjected(path, token string, inj *filewrite.Injector) (bool, er
 	}
 	return true, nil
 }
+
+// ReplacePrivate installs token at path with mode 0600, atomically replacing
+// any existing credential: a reconnect rotates the credential, so unlike
+// WritePrivate it never refuses a different existing token. A failure leaves
+// the previous file in place (desk-connect#req:reconnect-rotates).
+func ReplacePrivate(path, token string) error {
+	return replacePrivateInjected(path, token, nil)
+}
+
+func replacePrivateInjected(path, token string, inj *filewrite.Injector) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create credential directory: %w", err)
+	}
+	temporary, err := filewrite.CreateTemp(filepath.Dir(path), ".credential-*", inj)
+	if err != nil {
+		return fmt.Errorf("stage credential file: %w", err)
+	}
+	name := temporary.Name()
+	defer func() { _ = os.Remove(name) }()
+	if err := filewrite.ChmodFile(temporary, 0o600, name, inj); err != nil {
+		_ = filewrite.Close(temporary, name, inj)
+		return fmt.Errorf("protect credential file: %w", err)
+	}
+	if err := filewrite.Write(temporary, []byte(token+"\n"), name, inj); err != nil {
+		_ = filewrite.Close(temporary, name, inj)
+		return fmt.Errorf("write credential file: %w", err)
+	}
+	if err := filewrite.Sync(temporary, name, inj); err != nil {
+		_ = filewrite.Close(temporary, name, inj)
+		return fmt.Errorf("sync credential file: %w", err)
+	}
+	if err := filewrite.Close(temporary, name, inj); err != nil {
+		return fmt.Errorf("close credential file: %w", err)
+	}
+	if err := filewrite.Rename(name, path, inj); err != nil {
+		return fmt.Errorf("install credential file: %w", err)
+	}
+	return nil
+}
