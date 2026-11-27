@@ -39,7 +39,7 @@ func ReceiptFor(trigger string, at time.Time, w *World, report Report) Receipt {
 	receipt := Receipt{
 		Time: at, Trigger: trigger, Outcome: report.Outcome, Reasons: report.Reasons,
 		Filesystems: report.Filesystems, Unlinked: map[string]int64{}, Skips: map[string]string{},
-		Roots: map[string]string{"GOCACHE": w.Go.GOCACHE, "GOMODCACHE": w.Go.GOMODCACHE},
+		Roots: map[string]string{"GOCACHE": w.Go.GOCACHE},
 	}
 	for i, dir := range w.TempDirs {
 		receipt.Roots["TMPDIR"+strconv.Itoa(i)] = dir
@@ -114,7 +114,7 @@ func NewestReceipt(stateDir, trigger string) (Receipt, string, bool) {
 		path := filepath.Join(ReceiptsDir(stateDir), name)
 		// A receipt is a small regular file; anything else under the name,
 		// a FIFO above all, is skipped rather than allowed to block.
-		raw, err := readRegularFile(path, 1<<20, false)
+		raw, err := readRegularFile(path, 1<<20)
 		if err != nil {
 			continue
 		}
@@ -243,17 +243,15 @@ func newAutoPruner(projectsRoot, stateDir string, log func(string), configPath f
 		Config: func() (wbconfig.DiskConfig, error) { return wbconfig.LoadDisk(configPath()) },
 		Roots: func() []string {
 			env, _ := ResolveGoEnv()
-			home, _ := os.UserHomeDir()
 			dirs, _ := tempDirs(realWorldDeps())
-			return append(dirs, env.GOCACHE, filepath.Join(home, ".local", "share", "pnpm", "store"))
+			// Exactly the roots --auto prunes: the temporary directories and
+			// GOCACHE. A low filesystem holding only report-only data never
+			// triggers it.
+			return append(dirs, env.GOCACHE)
 		},
 		Probe: disk.Probe,
 		Prune: func(ctx context.Context, floor float64) (*World, Report, error) {
-			config, err := wbconfig.LoadDisk(configPath())
-			if err != nil {
-				return nil, Report{}, err
-			}
-			w, err := NewWorld(ctx, projectsRoot, config.IgnoreSumFiles)
+			w, err := NewWorld(ctx, projectsRoot)
 			if err != nil {
 				return nil, Report{}, err
 			}

@@ -20,9 +20,6 @@ func RemoveTree(parent, name string, expect Identity) (TreeOutcome, error) {
 
 func StatIdentity(path string) (Identity, error) { return Identity{}, ErrUnsupported }
 
-// writeMarker is a no-op on Windows, where prune deletes nothing.
-func writeMarker(path string) error { return ErrUnsupported }
-
 // writeNewFile creates path exclusively.
 func writeNewFile(path string, raw []byte) error {
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
@@ -45,7 +42,7 @@ func bindOfSubdirectory(path string) (bool, error) { return false, nil }
 func mountIDOf(path string) (uint64, error) { return 0, ErrUnsupported }
 
 // readRegularFile reads a regular file of at most limit bytes.
-func readRegularFile(path string, limit int64, follow bool) ([]byte, error) {
+func readRegularFile(path string, limit int64) ([]byte, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return nil, err

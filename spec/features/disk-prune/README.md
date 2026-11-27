@@ -17,8 +17,8 @@ status: Draft
 and deletes only with `--apply`. It removes regenerable bytes that nothing is
 using, cheapest to rebuild first, and stops once each affected filesystem
 meets its free-space target. That covers scratch whose producer is known,
-and the Go build cache by last use; Go module versions only on request. WB
-state and the pnpm store are reported, never pruned.
+and the Go build cache by last use. WB state, the Go module cache and the
+pnpm store are reported, never pruned; Go module pruning is a later Feature.
 Worktrees stay with `wb clean`. Before any of that, `wb disk` must measure
 the right places, which today it does not.
 
@@ -221,18 +221,13 @@ Every pre-existing entry under the state directories is left unchanged.
   whole filesystem is reported `target-unreachable` and that filesystem is
   not pruned. It is a finding. Free space is probed again before each item
   that can be stopped independently: each scratch entry, each build-cache
-  shard and each module version.
+  shard.
 - **Categories.** `--category <name>` (repeatable) restricts the run. Valid
-  names are `scratch`, `go-build-cache` and `go-module-cache`. An unknown
-  or report-only name (`wb-state`, `legacy-wb-home`, `worktrees`,
-  `node-package-store`, `npm-cache`) is a usage error.
-- **Modules are opt-in.** `go-module-cache` runs only when
-  `--category go-module-cache` is given. A run without `--category` covers
-  the other two, and lists the module cache as `requires-category`
-  without walking it, so a default or `--auto` run never pays for the
-  fleet-wide reference scan. Any other category left out of `--category` is
-  not walked either and is reported `skipped: not-selected`, so the report
-  never lists candidates the run would not act on.
+  names are `scratch` and `go-build-cache`. An unknown or report-only name
+  (`wb-state`, `legacy-wb-home`, `worktrees`, `node-package-store`,
+  `npm-cache`, `go-module-cache`) is a usage error. A category left out of
+  `--category` is not walked and is reported `skipped: not-selected`, so the
+  report never lists candidates the run would not act on.
 - **Age floors.** `--older-than <dur>` raises every category's age floor to
   at least `dur` and never lowers one. Each category's default floor is
   stated in its REQ. The full build-cache clean is an indivisible
@@ -241,8 +236,7 @@ Every pre-existing entry under the state directories is left unchanged.
 - **Order.** The order is fixed, cheapest to rebuild first:
   1. `scratch`;
   2. `go-build-cache` trim;
-  3. `go-module-cache`;
-  4. `go-build-cache` full clean, when `--allow-full-clean` is given.
+  3. `go-build-cache` full clean, when `--allow-full-clean` is given.
 - **No escalation into nothing.** After each category, prune compares each
   filesystem's observed free-space gain with the bytes it unlinked there.
   When it unlinked more than 256 MiB and gained less than a tenth of that,
@@ -259,7 +253,7 @@ Every pre-existing entry under the state directories is left unchanged.
   reported from `/proc/locks` when it is visible. A run that cannot take the
   lock deletes nothing, reports `another prune is running`, and exits `1`.
 - **Resource locks.** Each category also takes an exclusive, non-blocking
-  `flock` on its root directory (`GOCACHE`, `GOMODCACHE`, each temporary
+  `flock` on its root directory (`GOCACHE`, each temporary
   directory) for as long as it works there. Two users or
   homes that share one physical cache are therefore serialised too. A
   category whose lock is held is skipped as `locked`.
@@ -294,7 +288,7 @@ Every pre-existing entry under the state directories is left unchanged.
   `vet`, `golangci-lint`, `staticcheck` or `govulncheck`, or ends in
   `.test`. `gopls` and `dlv` are *Go tools* but not build tools. They can
   run for weeks, so they do not set the build-cache floor, though they do
-  make the module cache busy.
+  block the full clean.
 - **pnpm processes.** A process is a *pnpm process* when its `exe` or
   `argv[0]` base name is `pnpm`, or it is `node` with a command-line
   argument whose base name starts with `pnpm`.
@@ -308,9 +302,12 @@ Every pre-existing entry under the state directories is left unchanged.
   floor of 72 h. Every other category is `unsupported-platform` or
   `unknown`. The help says that prune run inside a container or a
   PID-namespace sandbox reports `unknown` for most categories.
-- **Mount IDs.** Mount IDs come from `statx(STATX_MNT_ID)` (Linux 5.8 or
-  later), else from `/proc/self/mountinfo`. With neither, every category
-  that deletes directories is `unknown`.
+- **Mount IDs.** Mount IDs come from `statx(STATX_MNT_ID)`, so Linux 5.8 or
+  later is required. Earlier kernels give no mount ID, and which mount a
+  lookup reaches cannot be established from `/proc/self/mountinfo` alone (a
+  mount over a parent can hide a deeper one), so every category that
+  deletes is `unknown` there. A bind-mount check finds the line of
+  mountinfo carrying the statx mount ID.
 
 Every skip names its reason, the PIDs and command lines that caused it, and
 the bytes it left. These skips are fail-closed and count as findings:
@@ -391,7 +388,6 @@ Prune MUST work on a filesystem with no free bytes:
 
 - The run lock and resource locks are on existing directories.
 - Deletion creates nothing.
-- The module crash marker (REQ: go-module-cache) is best-effort.
 
 When admitted above the floor, only the runqueue admission files are
 written before deletion. Below the floor, admission is bypassed and nothing
@@ -515,105 +511,15 @@ is a usage error.
 
 ### REQ: go-module-cache
 
-This category runs only when `--category go-module-cache` is given.
-
-- **Reference set.** The set is every module version named in a sum file
-  inside every canonical clone, and inside every worktree that any clone's
-  `git worktree list --porcelain -z` registers or any worktrees root holds.
-  Sum files are `go.sum`, `go.work.sum`, and every `<name>.sum` beside a
-  `<name>.mod`, which covers alternate `-modfile`s. The search descends
-  everywhere below a checkout root except `node_modules/` and `.git/`, so
-  `testdata/`, `vendor/` and tool directories are included. Only current
-  working trees are read.
-- **Grammar.** A sum-file line is `<module> <version>[/go.mod] h1:<hash>`.
-  A non-empty line of any other form, including a merge-conflict marker,
-  is a parse failure.
-- **Fail closed.** If any directory in the enumeration cannot be read, or
-  any sum file cannot be read or parsed, the whole category is skipped as
-  `incomplete-reference-set`, with the paths.
-- **Ignore list.** `disk.prune.ignore_sum_files` in the user-level
-  `wb.yaml` lists paths, relative to a checkout root, of sum files to skip,
-  such as deliberately broken test fixtures. Every ignored file is reported.
-- **Busy.** The category is skipped as `busy` while any Go tool exists in
-  the process table, including a stopped one. Prune checks again before
-  each version. A build can use sum files outside any checkout, an
-  external `GOWORK`, or `-mod=mod`, so the reference set alone never
-  vouches for a running Go process.
-- **Provable re-fetch.** A version may be deleted only if it can provably
-  be downloaded again. All of these must hold:
-  - the first entry of `GOPROXY` before any `off` or `direct` is an
-    `https://` URL whose host is not a loopback address. A `file://` or
-    loopback proxy is rejected, because it may serve the very cache being
-    pruned;
-  - `GOSUMDB` is not `off`, so a wrong re-download fails Go's verification
-    instead of being trusted;
-  - `GOFLAGS` does not contain `-mod=vendor`;
-  - the module path is matched by none of `GOPRIVATE`, `GONOPROXY` and
-    `GONOSUMDB`;
-  - at apply time, `GET <proxy>/<escaped module>/@v/<escaped version>.mod`
-    returns 200 with exactly the local `.mod` bytes; and, when the local
-    version has a `.zip`, `HEAD …/<escaped version>.zip` (following
-    redirects) returns 200. Each request has 10 s. The probes connect
-    directly, never through an HTTP(S) forward proxy (through one the
-    destination could not be checked); follow only `https://` redirects, at
-    most five; refuse any connection that reaches a loopback address; and
-    reject a body over 1 MiB rather than compare a prefix. Where only a
-    forward proxy reaches the internet, every probe fails and no version is
-    deleted.
-
-  Otherwise the version is kept as `not-refetchable`, with the reason:
-  - `proxy-auth` for a 401 or 403;
-  - `missing-at-proxy` for a 404 or 410;
-  - `probe-budget` once the run's probes have used 120 s in total.
-
-  Probes run one at a time within that budget. Because the probe runs only at apply, the
-  plan's module estimate is an upper bound and is marked
-  `estimate_is_upper_bound`.
-- **Not locally modified.** When an extracted directory exists, its
-  `dirhash` (`h1:`) must equal the recorded `.ziphash`. Otherwise the
-  version is kept as `locally-modified`.
-- **Partial downloads.** Most versions hold only `.mod` and `.info`, used
-  for module-graph resolution. These, and a `.zip` with no extracted
-  directory, are deleted under the same lock and re-fetch rules. Their
-  steps that name a missing file are skipped.
-- **Candidates.** A version is a candidate when it is not in the reference
-  set, can be re-fetched, and the newest modification or status-change
-  time of its download files (`cache/download/<escaped>/@v/<version>.*`) is
-  older than `--older-than` (default 7 days). Go never refreshes module
-  files on use, so this is the download age. Paths are escaped with
-  `golang.org/x/mod/module`.
-- **Scope.** The reference set covers the fleet under this projects root
-  only. Tools installed with `go install`, other projects roots, and
-  checkouts elsewhere are not seen. Their unreferenced versions are
-  downloaded again on next use, which is why the category is opt-in.
-- **Always kept.**
-  - `cache/download/sumdb/` and `cache/vcs/`;
-  - every `@v/list` and `@v/<version>.lock` file;
-  - every version of `golang.org/toolchain` and `golang.org/fips140`, which
-    are selected by directives or special-cased by Go, not by sum files.
-- **Order.** For each candidate:
-  1. Take Go's own lock on `@v/<escaped version>.lock` with a non-blocking
-     `flock`. A version whose lock is held is skipped as `busy`. The lock
-     file is kept.
-  2. Under the lock, confirm that the version's files have the identities
-     and `.ziphash` content checked earlier. A version Go has re-downloaded
-     since is skipped as `changed`.
-  3. Remove `@v/<escaped version>.ziphash`. From this point Go treats the
-     version as not downloaded.
-  4. Create Go's marker `@v/<escaped version>.partial`, best-effort.
-  5. Remove the extracted `<escaped module>@<escaped version>/` directory
-     through REQ: deletion.
-  6. Remove `@v/<escaped version>.zip`, `.mod` and `.info`, then the
-     `.partial` marker. Release the lock.
-
-  Killed at any step, Go sees the version as missing or partial and
-  downloads it again. A version whose `.ziphash` is missing is finished by
-  a later prune only under the same reference, re-fetch and download-age
-  rules. A version Go has fully re-downloaded since is younger than the
-  floor, so it is never a candidate. Without a `.ziphash`, Go discards the
-  extracted tree on its next use anyway, so the local-modification check
-  does not apply.
-- **Never `-modcache`.** Prune MUST NOT run `go clean -modcache`.
+The Go module cache is measured by `wb disk` and MUST NOT be pruned by this
+version; `--category go-module-cache` is a usage error. Module pruning was
+specified, implemented and reviewed for three rounds (sum-file reference
+set, provable re-fetch from an independent proxy, Go's per-version lock,
+crash-safe ordering) and then moved to a later Feature by the founder on
+2026-11-27: its remaining review findings concerned edge cases the first
+version does not need, and the 2026-11 incidents are reclaimed by scratch
+and the build-cache trim. The implementation is preserved in this
+Feature's history (commit 715776ad) for that Feature.
 
 ### REQ: progress
 
@@ -702,8 +608,8 @@ stderr only.
   `wb disk prune --auto`, at most once per hour. Filesystems holding only
   report-only roots never trigger it.
 - **What `--auto` does.** `--auto` implies `--apply` with the floor as
-  target. It runs only scratch and the build-cache trim. It never prunes Go
-  modules and never runs the full clean.
+  target. It runs only scratch and the build-cache trim, and never the full
+  clean.
 - **Rate limit.** The hourly limit applies only to daemon-triggered runs; a
   manual `--auto` always runs, under the lock. The limit is kept in the
   daemon's memory and in the newest receipt. A daemon that restarts
@@ -791,7 +697,7 @@ worktree holding terminal artifact debris and a live claim, a Go env
 file setting `GOCACHE`, and fake `go`, `git` and `pnpm` binaries that
 record their arguments
 **When** the user runs every category with `--until-free max --format json`:
-`wb disk prune --category scratch --category go-build-cache --category go-module-cache --until-free max --format json`
+`wb disk prune --category scratch --category go-build-cache --until-free max --format json`
 **Then**:
 - a recursive listing of every root, the debris, the claim and the
   worktree's heartbeat, with modes and modification times, is identical
@@ -918,9 +824,9 @@ subdirectories
 - a `/proc` that cannot be listed, a `/proc` mounted with `hidepid=2`
   while `TMPDIR` is world-writable, and a nested PID namespace
 
-**When** prune plans scratch and the module cache
+**When** prune plans scratch and the build-cache full clean
 **Then**:
-- with the first table, Go-produced scratch and the module cache are
+- with the first table, Go-produced scratch and the full clean are
   `busy-unverified`;
 - with the second, scratch is unaffected;
 - with each case of the third, both categories are `unknown`;
@@ -960,29 +866,24 @@ subdirectories
 
 ### AC: interrupted-prune-is-completed
 
-**Requirements:** disk-prune#req:deletion, disk-prune#req:go-module-cache
+**Requirements:** disk-prune#req:deletion
 
-**Given** a prune killed after removing half of a scratch entry's contents,
-and another killed after removing a module version's `.ziphash`
-**When** the next prune runs with
-`--category scratch --category go-module-cache --until-free max --apply`
-**Then** the scratch entry is re-examined and removed; the module version
-is completed, with every file removed except its `.lock`, and the marker
-gone; and when real Go downloads that version from a local proxy before
-the second prune, the second prune skips it as `changed`.
+**Given** a prune killed after removing half of a scratch entry's contents
+**When** the next prune runs with `--category scratch --until-free max --apply`
+**Then** the scratch entry is re-examined and removed.
 
 ### AC: works-on-a-full-disk
 
 **Requirements:** disk-prune#req:zero-free-space, disk-prune#req:concurrency
 
 **Given** a fake filesystem on which every create fails with `ENOSPC`, with
-eligible build-cache entries, a scratch directory and a module version
-**When** `wb disk prune --category scratch --category go-build-cache --category go-module-cache --until-free max --apply`
+eligible build-cache entries and a scratch directory
+**When** `wb disk prune --category scratch --category go-build-cache --until-free max --apply`
 runs below the floor
 **Then**:
-- all three are deleted;
+- both are deleted;
 - admission is reported `bypassed`;
-- the failure to create the receipt and the module marker is reported;
+- the failure to create the receipt is reported;
 - exit reflects the target only.
 
 ### AC: go-cache-trimmed-by-last-use
@@ -1022,79 +923,6 @@ directory `ab/backup` inside a shard
    and exits `1`;
 4. skips it as `age-filter-unsupported`;
 5. exits `2`.
-
-### AC: modules-referenced-or-unrefetchable-kept
-
-**Requirements:** disk-prune#req:go-module-cache
-
-**Given** a fake `GOMODCACHE`, all read-only and downloaded 30 days ago,
-holding:
-- `example.com/a` v1.0.0 and v1.1.0;
-- `example.com/B` v2.0.0, escaped as `!b`;
-- `example.com/tools` v1.0.0;
-- `example.com/w` v1.0.0;
-- `corp.example/private` v1.0.0 under `GOPRIVATE=corp.example`;
-- `example.com/edited` v1.0.0 with a file changed in its extracted tree;
-- `example.com/gone` v1.0.0, whose `.mod` the fake HTTPS proxy answers
-  with 404;
-- `example.com/nozip` v1.0.0, whose `.mod` the proxy serves but whose
-  `.zip` it answers with 404;
-- `golang.org/toolchain` and `golang.org/fips140` versions;
-- `example.com/c` v1.0.0, downloaded 2 days ago;
-- `example.com/modonly` v1.0.0 with only `.mod` and `.info`.
-
-The references are:
-- a canonical clone whose `go.sum` names `example.com/a v1.1.0`;
-- a repository-local worktree, found only through `git worktree list`,
-  whose nested module's `go.sum` names `example.com/B v2.0.0/go.mod`;
-- `tools.sum` beside `tools.mod`, naming `example.com/tools`;
-- a `go.work.sum` naming `example.com/w`.
-
-**When** the user runs
-`wb disk prune --category go-module-cache --until-free max --apply`
-**Then**:
-- only `example.com/a@v1.0.0` (extracted tree and its `.zip`, `.ziphash`,
-  `.mod` and `.info`) and `example.com/modonly`'s two files are removed;
-- its `.lock` file, every `@v/list`, `sumdb/`, `vcs/`, the toolchain,
-  fips140, `tools`, `w` and `c` remain;
-- the private module, `gone` and `nozip` are `not-refetchable`;
-- `edited` is `locally-modified`;
-- nothing outside `GOMODCACHE` changed mode.
-
-**And given** `GOPROXY=file:///…/cache/download`, then
-`GOPROXY=https://127.0.0.1:8443`, then `GOSUMDB=off`
-**Then** every version is `not-refetchable` in each case.
-
-### AC: module-reference-set-fails-closed
-
-**Requirements:** disk-prune#req:go-module-cache
-
-**Given** one worktree whose `go.sum` holds a merge-conflict marker, then
-one whose directory cannot be read
-**When** prune runs on the module cache
-**Then** each run skips it as `incomplete-reference-set` naming the path,
-removes no module file, and exits `1`.
-
-### AC: module-busy-while-any-go-tool-exists
-
-**Requirements:** disk-prune#req:go-module-cache, disk-prune#req:concurrency
-
-**Given** a fake Go tool working in a fleet worktree; a stopped `go build`
-process; and Go's lock on one candidate's `.lock` held by another process
-**When** prune runs on the module cache
-**Then** the first two make the category `busy`, naming PIDs and command
-lines; with neither present, the locked version alone is skipped as
-`busy` and the rest proceed.
-
-### AC: modules-not-in-the-default-run
-
-**Requirements:** disk-prune#req:selection
-
-**Given** an eligible module version
-**When** the user runs `wb disk prune --until-free max --apply` without
-`--category`
-**Then** no module file is removed, the category is listed as
-`requires-category`, and no sum file is read.
 
 ### AC: state-reported-never-pruned
 
@@ -1136,8 +964,7 @@ second home that shares this user's `GOCACHE` and holds its resource lock
 `--older-than soon`, `--auto --category scratch`, and an explicitly empty
 `--category=`, `--until-free=` or `--older-than=`
 **Then** each exits `2` before any filesystem read; and `--older-than 100h`
-raises the scratch and trim floors to 100 h and leaves the module floor at
-7 days.
+raises the scratch and trim floors to 100 h.
 
 ### AC: outcome-precedence
 
@@ -1192,8 +1019,8 @@ and category, then a closing line, and stdout is only the report.
 **Requirements:** disk-prune#req:daemon-auto-prune
 
 **Given** `disk.auto_prune: on`, `disk.minimum_available: 0.99`,
-`disk.check_interval: 5s`, a stale build cache, an unreferenced module
-version and a landed worktree
+`disk.check_interval: 5s`, a stale build cache, an old Go module version
+and a landed worktree
 **When** the daemon runs for 15 s, and then the user runs
 `wb disk prune --auto --format json`
 **Then**:
@@ -1240,8 +1067,6 @@ Deferred to their own Features or slices:
 - Lifecycle artifacts in worktrees (`.codegraph` and similar, from
   code-index-freshness) were in the disk-reclaim Draft. They live inside
   worktrees, so they likely belong to `wb clean`.
-- Should the module reference set accept extra roots from `wb.yaml`, so
-  tool checkouts outside the projects root count?
 
 ---
 *This document follows the https://specscore.md/feature-specification*

@@ -16,17 +16,17 @@ import (
 const (
 	CategoryScratch   = "scratch"
 	CategoryBuild     = "go-build-cache"
-	CategoryModules   = "go-module-cache"
 	categoryFullClean = "go-build-cache-full-clean"
 )
 
 // SelectableCategories are the names --category accepts.
-var SelectableCategories = []string{CategoryScratch, CategoryBuild, CategoryModules}
+var SelectableCategories = []string{CategoryScratch, CategoryBuild}
 
 // ReportOnlyCategories are measured by wb disk but never pruned. The pnpm
 // store is among them: pruning it safely would mean depending on pnpm's
 // internal layout and walking the whole store, which costs more than it saves.
-var ReportOnlyCategories = []string{"wb-state", "legacy-wb-home", "worktrees", "node-package-store", "npm-cache"}
+// Go module pruning is a later feature (spec/features/disk-prune).
+var ReportOnlyCategories = []string{"wb-state", "legacy-wb-home", "worktrees", "node-package-store", "npm-cache", "go-module-cache"}
 
 // Options is one invocation's selection.
 type Options struct {
@@ -52,14 +52,11 @@ func (o Options) explicit(name string) bool {
 	return false
 }
 
-// selected reports whether a category runs. Modules run only when named;
-// the default run and --auto cover the other three.
+// selected reports whether a category runs: every one by default and under
+// --auto, otherwise those named.
 func (o Options) selected(name string) bool {
-	if o.Auto {
-		return name == CategoryScratch || name == CategoryBuild
-	}
-	if len(o.Categories) == 0 {
-		return name != CategoryModules
+	if o.Auto || len(o.Categories) == 0 {
+		return true
 	}
 	return o.explicit(name)
 }
@@ -106,10 +103,6 @@ type World struct {
 	// ProtectedIDs are the device and inode of each protected root, which a
 	// bind mount shares with the directory it shows.
 	ProtectedIDs map[[2]uint64]string
-	// RefreshCheckouts re-reads the fleet's checkouts (and reports a gap
-	// that makes the inventory incomplete), for module deletion's final
-	// reference check.
-	RefreshCheckouts func() ([]string, string)
 	// BindOfSubdirectory reports a root on a bind mount of a subdirectory,
 	// whose relationship to protected data cannot be established.
 	BindOfSubdirectory func(path string) (bool, error)
@@ -118,18 +111,7 @@ type World struct {
 	Admit              func(ctx context.Context) (status string, wait time.Duration, release func())
 	RemoveTree         func(parent, name string, id Identity) (TreeOutcome, error)
 	RemoveFile         func(anchor Anchor, rel, name string, id Identity) (int64, error)
-	// Checkouts are every canonical clone and worktree whose sum files form
-	// the module reference set; IgnoreSumFiles are checkout-relative paths
-	// to skip (disk.prune.ignore_sum_files).
-	Checkouts      []string
-	IgnoreSumFiles []string
-	// HTTP fetches a proxy URL for re-fetch proofs; only apply calls it.
-	HTTP func(ctx context.Context, method, url string) (int, []byte, error)
-	// LookupHost resolves the proxy host at apply, to refuse a loopback one.
-	LookupHost func(ctx context.Context, host string) ([]string, error)
-	// LockModuleVersion takes Go's own per-version lock without blocking.
-	LockModuleVersion func(path string) (func(), error)
-	Progress          func(Event)
+	Progress           func(Event)
 
 	// runCtx is the context of the Run in progress, so a long scan stops
 	// when the run is cancelled (daemon shutdown).
@@ -175,9 +157,6 @@ type itemResult struct {
 	err      error
 	// partial: apply's own fresh evidence was incomplete.
 	partial bool
-	// note is added to a successful item's reason: something best-effort
-	// that did not happen.
-	note string
 }
 
 // categoryPlan is a category's plan, filled by its planner and then by the
@@ -214,8 +193,10 @@ type filesystemState struct {
 	fs        disk.Filesystem
 	projected int64
 	stopped   bool
-	catStart  int64
-	catAvail  int64
+	// unmeasured: the filesystem's first probe failed.
+	unmeasured bool
+	catStart   int64
+	catAvail   int64
 }
 
 // Run plans, and with Apply executes, one prune.
@@ -258,9 +239,6 @@ func Run(ctx context.Context, w *World, o Options) Report {
 			w.progress(Event{Phase: "measure", Category: name})
 			plan = c.plan(ctx, w, o)
 			plan.selected = true
-		case name == CategoryModules:
-			// Opt-in, and never walked unless asked for.
-			plan = &categoryPlan{CategoryReport: CategoryReport{Status: StatusRequiresCategory, Reason: "requires --category go-module-cache"}}
 		default:
 			// Not planned at all, so the report never shows deletion
 			// candidates an unselected category would not act on.
@@ -327,10 +305,11 @@ func project(w *World, o Options, plans []*categoryPlan, filesystems map[uint64]
 				continue
 			}
 			state := filesystemFor(w, o, it, it.root, filesystems)
-			if state == nil {
+			it.Filesystem = state.report.Path
+			if state.unmeasured {
+				it.Status, it.Reason = StatusSkipped, "probe-failed"
 				continue
 			}
-			it.Filesystem = state.report.Path
 			if state.report.Note == "target-unreachable" {
 				it.Status, it.Reason = StatusSkipped, "target-unreachable"
 				continue
@@ -356,8 +335,15 @@ func filesystemFor(w *World, o Options, it *item, label string, filesystems map[
 	}
 	fs, err := w.Probe(label)
 	if err != nil {
-		it.Status, it.Error = StatusFailed, err.Error()
-		return nil
+		// The filesystem is stopped from its first failed probe: no later
+		// item on the same device may run on a measurement that happens to
+		// succeed.
+		state := &filesystemState{stopped: true, unmeasured: true, report: FilesystemReport{
+			Device: strconv.FormatUint(it.device, 10), Path: label, Note: "probe-failed",
+			Target: TargetReport{Kind: string(o.Target.Kind), Value: targetValue(o.Target)},
+		}}
+		filesystems[it.device] = state
+		return state
 	}
 	state := &filesystemState{fs: fs, projected: fs.AvailableBytes, report: FilesystemReport{
 		Device: strconv.FormatUint(it.device, 10), Path: label,
@@ -515,9 +501,6 @@ func applyResult(it *item, result itemResult) {
 		return
 	}
 	it.Status = StatusDeleted
-	if result.note != "" {
-		it.Reason += "; " + result.note
-	}
 }
 
 // collectReasons turns statuses into outcome reasons: failures, fail-closed
@@ -554,21 +537,22 @@ func finalFilesystems(w *World, o Options, filesystems map[uint64]*filesystemSta
 	var out []FilesystemReport
 	for _, state := range filesystems {
 		after := state.fs
-		if o.Apply {
+		measured := !state.unmeasured
+		if o.Apply && measured {
 			fs, err := w.Probe(state.report.Path)
-			if err != nil {
-				// No final measurement: no figures are invented, and the run
-				// cannot claim its target.
-				state.report.Note = "probe-failed"
-				state.report.After = SpaceReport{}
-				reasons[OutcomeFailClosed] = true
-				out = append(out, state.report)
-				continue
-			}
-			after = fs
+			measured, after = err == nil, fs
 		}
-		state.report.After = SpaceReport{TotalBytes: after.TotalBytes, AvailableBytes: after.AvailableBytes}
-		state.report.ObservedGainBytes = after.AvailableBytes - state.fs.AvailableBytes
+		if !measured {
+			// No measurement: no figures are invented, and the run cannot
+			// claim its target.
+			state.report.Note = "probe-failed"
+			reasons[OutcomeFailClosed] = true
+			out = append(out, state.report)
+			continue
+		}
+		gain := after.AvailableBytes - state.fs.AvailableBytes
+		state.report.After = &SpaceReport{TotalBytes: after.TotalBytes, AvailableBytes: after.AvailableBytes}
+		state.report.ObservedGainBytes = &gain
 		state.report.TargetMet = o.Target.Met(after)
 		if state.report.Note == "target-unreachable" {
 			reasons[OutcomeFailClosed] = true
@@ -673,7 +657,7 @@ func seedFilesystems(w *World, o Options, plans []*categoryPlan, filesystems map
 				continue
 			}
 			seed := &item{ItemReport: ItemReport{Path: root}, root: root, device: identity.Dev}
-			if filesystemFor(w, o, seed, root, filesystems) == nil {
+			if filesystemFor(w, o, seed, root, filesystems).unmeasured {
 				reasons[OutcomeFailClosed] = true
 			}
 		}

@@ -124,3 +124,23 @@ func TestGoEnvFileIsReadAsGoReadsIt(t *testing.T) {
 		t.Fatalf("env = %#v %v", env, err)
 	}
 }
+
+// The env file is read only when it is a regular file; a directory (or a
+// FIFO that would block) is an error, a missing file is not read.
+func TestGoEnvFileMustBeRegular(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if _, err := readRegular(dir); err == nil {
+		t.Fatal("a directory was read as the env file")
+	}
+	if _, err := readRegular(filepath.Join(dir, "absent")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a missing env file: %v", err)
+	}
+	file := filepath.Join(dir, "env")
+	if err := os.WriteFile(file, []byte("GOFLAGS=-x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := readRegular(file); err != nil || string(raw) != "GOFLAGS=-x\n" {
+		t.Fatalf("env file = %q, %v", raw, err)
+	}
+}

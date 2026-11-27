@@ -7,8 +7,6 @@ import (
 	"io"
 	"math"
 	"os"
-	"path/filepath"
-	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -33,18 +31,12 @@ type DiskConfig struct {
 	AutoPrune bool
 	// CheckInterval is how often the daemon checks free space.
 	CheckInterval time.Duration
-	// IgnoreSumFiles are checkout-relative paths of sum files the module
-	// reference scan skips, such as deliberately broken test fixtures.
-	IgnoreSumFiles []string
 }
 
 type diskSection struct {
 	MinimumAvailable *float64 `yaml:"minimum_available"`
 	AutoPrune        *bool    `yaml:"auto_prune"`
 	CheckInterval    *string  `yaml:"check_interval"`
-	Prune            *struct {
-		IgnoreSumFiles []string `yaml:"ignore_sum_files"`
-	} `yaml:"prune"`
 }
 
 // DefaultDiskConfig is the section's value when wb.yaml sets nothing.
@@ -88,25 +80,22 @@ func parseDisk(raw []byte) (DiskConfig, error) {
 		}
 		config.CheckInterval = interval
 	}
-	if section.Prune != nil {
-		for _, path := range section.Prune.IgnoreSumFiles {
-			clean := filepath.Clean(strings.TrimSpace(path))
-			if clean == "." || filepath.IsAbs(clean) || strings.HasPrefix(clean, "..") {
-				return DiskConfig{}, fmt.Errorf("disk.prune.ignore_sum_files entries must be paths relative to a checkout root, got %q", path)
-			}
-			config.IgnoreSumFiles = append(config.IgnoreSumFiles, clean)
-		}
-	}
 	return config, nil
 }
 
 // LoadDisk reads the disk: section from path. An absent file or section is
 // not an error: the defaults apply.
 func LoadDisk(path string) (DiskConfig, error) {
-	raw, err := os.ReadFile(path)
+	// Only a regular file is read: a FIFO under the name would block the
+	// daemon, which reads this file on every check, and its shutdown.
+	info, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return DefaultDiskConfig(), nil
 	}
+	if err == nil && !info.Mode().IsRegular() {
+		return DiskConfig{}, fmt.Errorf("config %s is not a regular file", path)
+	}
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		return DiskConfig{}, fmt.Errorf("read config %s: %w", path, err)
 	}

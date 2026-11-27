@@ -215,8 +215,9 @@ func (r treeRemover) stillAt(fd int, top string) error {
 }
 
 // statxMountID reads the mount ID with statx, which also distinguishes
-// same-device bind mounts. Before Linux 5.8 statx has no mount ID; then the
-// longest mount point in /proc/self/mountinfo that contains the path decides.
+// same-device bind mounts. Before Linux 5.8 statx has no mount ID, and which
+// mount a lookup reaches cannot be established from mountinfo alone (a mount
+// over a parent can hide a deeper one), so the mount is unknown.
 func statxMountID(dirfd int, name string) (uint64, error) {
 	var stx unix.Statx_t
 	flags := unix.AT_SYMLINK_NOFOLLOW
@@ -226,22 +227,10 @@ func statxMountID(dirfd int, name string) (uint64, error) {
 	if err := statx(dirfd, name, flags, unix.STATX_MNT_ID, &stx); err != nil {
 		return 0, err
 	}
-	if stx.Mask&unix.STATX_MNT_ID != 0 {
-		return stx.Mnt_id, nil
+	if stx.Mask&unix.STATX_MNT_ID == 0 {
+		return 0, fmt.Errorf("statx gives no mount ID (Linux 5.8 or later is required): %w", ErrUnsupported)
 	}
-	path := name
-	if !filepath.IsAbs(name) {
-		base, err := procFDPath(dirfd)
-		if err != nil {
-			return 0, err
-		}
-		path = filepath.Join(base, name)
-	}
-	raw, err := os.ReadFile(mountinfoPath)
-	if err != nil {
-		return 0, fmt.Errorf("no mount id from statx or mountinfo: %w", ErrUnsupported)
-	}
-	return mountIDFromMountinfo(string(raw), path)
+	return stx.Mnt_id, nil
 }
 
 // statx and mountinfoPath are seams for kernels this test machine is not.
@@ -271,41 +260,6 @@ func parseMountinfo(mountinfo string) []mountLine {
 		lines = append(lines, mountLine{id: id, root: unescapeMountinfo(fields[3]), point: unescapeMountinfo(fields[4])})
 	}
 	return lines
-}
-
-// visibleMount is the mount a lookup of path reaches, judged from mountinfo
-// alone: the longest mount point containing path. It is refused as
-// ambiguous when any mount point on the way is stacked (mounted more than
-// once): a mount over a lower one can hide a deeper mount the longest-prefix
-// rule would still pick.
-func visibleMount(mountinfo, path string) (mountLine, error) {
-	lines := parseMountinfo(mountinfo)
-	count := map[string]int{}
-	for _, line := range lines {
-		count[line.point]++
-	}
-	best, bestLen := mountLine{}, -1
-	for _, line := range lines {
-		if line.point != "/" && !within(path, line.point) {
-			continue
-		}
-		if count[line.point] > 1 {
-			return mountLine{}, fmt.Errorf("%s is stacked with another mount, so the mount of %s is ambiguous: %w", line.point, path, ErrUnsupported)
-		}
-		if len(line.point) > bestLen {
-			best, bestLen = line, len(line.point)
-		}
-	}
-	if bestLen < 0 {
-		return mountLine{}, fmt.Errorf("no mount in mountinfo contains %s: %w", path, ErrUnsupported)
-	}
-	return best, nil
-}
-
-// mountIDFromMountinfo is the fallback where statx gives no mount ID.
-func mountIDFromMountinfo(mountinfo, path string) (uint64, error) {
-	line, err := visibleMount(mountinfo, path)
-	return line.id, err
 }
 
 func procFDPath(fd int) (string, error) {
@@ -364,11 +318,7 @@ func bindOfSubdirectory(path string) (bool, error) {
 		}
 		return false, fmt.Errorf("mount %d of %s is not in mountinfo", stx.Mnt_id, path)
 	}
-	line, err := visibleMount(string(raw), path)
-	if err != nil {
-		return false, err
-	}
-	return line.root != "/", nil
+	return false, fmt.Errorf("statx gives no mount ID for %s: %w", path, ErrUnsupported)
 }
 
 // birthAt is the creation time of name under dirfd (dirfd itself when name is

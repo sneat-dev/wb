@@ -299,6 +299,13 @@ func planScratchEntry(w *World, o Options, table Table, root, name string, accum
 		it.Reason = "partial-scan: " + err.Error()
 		return it
 	}
+	// An entry that is itself a mount belongs to another filesystem: it is
+	// never planned against the temporary directory's free space (nor
+	// removed: removal refuses a mount too).
+	if parent, err := w.Identity(root); err != nil || parent.MountID != identity.MountID {
+		it.Reason = "contains-mount"
+		return it
+	}
 	it.device = identity.Dev
 	scan := w.Scan(path, identity.MountID, w.Protected)
 	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {

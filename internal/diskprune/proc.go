@@ -234,24 +234,41 @@ func splitNUL(raw []byte) []string {
 	return out
 }
 
-// mappedFiles returns the file paths in a maps listing: the sixth column,
-// when it is an absolute path.
+// mappedFiles returns the file paths in a maps listing. The pathname is
+// everything after the five fixed fields and their padding, byte for byte,
+// so a path with consecutive spaces is kept exactly; the kernel escapes only
+// a newline in it, as \012.
 func mappedFiles(maps string) []string {
 	var files []string
 	seen := map[string]bool{}
 	for _, line := range strings.Split(maps, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 6 || !strings.HasPrefix(fields[5], "/") {
+		path, ok := mapsPathname(line)
+		if !ok {
 			continue
 		}
-		path := strings.Join(fields[5:], " ")
-		path = strings.TrimSuffix(path, " (deleted)")
+		path = strings.ReplaceAll(strings.TrimSuffix(path, " (deleted)"), `\012`, "\n")
 		if !seen[path] {
 			seen[path] = true
 			files = append(files, path)
 		}
 	}
 	return files
+}
+
+// mapsPathname is a maps line's pathname column, when it is an absolute
+// path.
+func mapsPathname(line string) (string, bool) {
+	rest := line
+	for field := 0; field < 5; field++ {
+		rest = strings.TrimLeft(rest, " ")
+		end := strings.IndexByte(rest, ' ')
+		if end < 0 {
+			return "", false
+		}
+		rest = rest[end:]
+	}
+	rest = strings.TrimLeft(rest, " ")
+	return rest, strings.HasPrefix(rest, "/")
 }
 
 // procHidesPIDs reports whether the procfs at procRoot is mounted with a

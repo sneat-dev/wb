@@ -11,29 +11,27 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"golang.org/x/sys/unix"
 )
 
-// --auto is the daemon's unattended subset: apply to the floor, scratch and
-// the cheap caches only, never modules.
+// --auto is the daemon's unattended subset: scratch and the build-cache
+// trim applied to the floor, never the full clean.
 func TestAutoRunsTheUnattendedSubsetToTheFloor(t *testing.T) {
 	t.Parallel()
-	f := newModuleFixture(t)
-	f.add("example.com/a", "v1.0.0", true, true)
-	f.tw.entry("go-build1", 8)
-	f.tw.categories = []category{scratchCategory{}, moduleCategory{}}
+	tw := newTestWorld(t)
+	tw.entry("go-build1", 8)
+	root := buildCacheFixture(t, tw, map[string]time.Duration{"0a01-a": time.Hour})
+	tw.categories = []category{scratchCategory{}, fullCleanCategory{}}
 	var events []Event
-	f.tw.Progress = func(event Event) { events = append(events, event) }
-	report := f.tw.run(Options{Auto: true, Floor: 0.5, Categories: nil})
+	tw.Progress = func(event Event) { events = append(events, event) }
+	report := tw.run(Options{Auto: true, AllowFullClean: true, Floor: 0.5})
 	if report.Mode != "auto" || !report.Lock.Held || report.Filesystems[0].Target.Value != 0.5 {
 		t.Fatalf("auto report = %#v", report)
 	}
-	if !exists(filepath.Join(f.cache, "example.com", "a@v1.0.0")) || exists(filepath.Join(f.tw.tmp, "go-build1")) {
-		t.Fatal("auto pruned modules or kept scratch")
+	if !exists(filepath.Join(root, "0a", cacheName("0a01-a"))) || exists(filepath.Join(tw.tmp, "go-build1")) {
+		t.Fatal("auto ran the full clean or kept scratch")
 	}
-	if cat := categoryByName(t, report, CategoryModules); cat.Status != StatusRequiresCategory {
-		t.Fatalf("auto modules = %#v", cat)
+	if cat := categoryByName(t, report, categoryFullClean); cat.Reason != "never under --auto" {
+		t.Fatalf("auto full clean = %#v", cat)
 	}
 	sawPlan := false
 	for _, event := range events {
@@ -148,90 +146,6 @@ func TestBuildCacheShardEdges(t *testing.T) {
 	}
 }
 
-// Module cache walking skips the sum database, stray files and names Go
-// would never write, and fails on what it cannot read.
-func TestModuleCacheWalkEdges(t *testing.T) {
-	t.Parallel()
-	f := newModuleFixture(t)
-	f.add("example.com/a", "v1.0.0", true, true)
-	dl := filepath.Join(f.cache, "cache", "download")
-	mustWrite(t, filepath.Join(dl, "sumdb", "sum.golang.org", "lookup", "x"), "", 0o644)
-	mustWrite(t, filepath.Join(dl, "stray.txt"), "", 0o644)
-	mustWrite(t, filepath.Join(dl, "Bad", "@v", "v1.0.0.mod"), "", 0o644)
-	mustWrite(t, filepath.Join(dl, "example.com", "x", "@v", ".mod"), "", 0o644)
-	versions, err := readModuleCache(f.tw.World, f.cache)
-	if err != nil || len(versions) != 1 || versions[0].path != "example.com/a" {
-		t.Fatalf("versions = %#v, %v", versions, err)
-	}
-	f.tw.Identity = func(path string) (Identity, error) {
-		if strings.Contains(path, "@v") {
-			return Identity{}, errors.New("statx")
-		}
-		return StatIdentity(path)
-	}
-	if _, err := readModuleCache(f.tw.World, f.cache); err == nil {
-		t.Fatal("an identity failure was ignored")
-	}
-	if cat := categoryByName(t, f.tw.run(Options{Categories: []string{CategoryModules}}), CategoryModules); !strings.HasPrefix(cat.Reason, "partial-scan") {
-		t.Fatalf("walk failure = %#v", cat)
-	}
-	f.tw.Identity = func(path string) (Identity, error) {
-		if path == f.cache {
-			return Identity{}, errors.New("statx")
-		}
-		return StatIdentity(path)
-	}
-	if cat := categoryByName(t, f.tw.run(Options{Categories: []string{CategoryModules}}), CategoryModules); !strings.HasPrefix(cat.Reason, "partial-scan") {
-		t.Fatalf("root identity failure = %#v", cat)
-	}
-	if _, err := readModuleCache(f.tw.World, filepath.Join(t.TempDir(), "absent")); err == nil {
-		t.Fatal("a missing download directory was read")
-	}
-	missing := filepath.Join(t.TempDir(), "go.sum")
-	if err := readSumFile(missing, map[string]bool{}); err == nil {
-		t.Fatal("a missing sum file was read")
-	}
-	vanished := newModuleFixture(t)
-	vanished.add("example.com/a", "v1.0.0", true, false)
-	lstatTarget := filepath.Join(vanished.cache, "cache", "download", "example.com", "a", "@v", "v1.0.0.info")
-	if err := os.Remove(lstatTarget); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(filepath.Join(t.TempDir(), "absent"), lstatTarget); err != nil {
-		t.Fatal(err)
-	}
-	vanished.tw.Identity = func(path string) (Identity, error) {
-		if path == lstatTarget {
-			return Identity{}, fs.ErrNotExist
-		}
-		return StatIdentity(path)
-	}
-	if _, err := readModuleCache(vanished.tw.World, vanished.cache); err == nil {
-		t.Fatal("a vanished download file was ignored")
-	}
-}
-
-// Go's version lock: a symlinked lock is refused, and a flock failure other
-// than contention is an error.
-//
-//nolint:paralleltest // replaces the flock seam
-func TestLockModuleVersionFailures(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.Symlink(filepath.Join(dir, "elsewhere"), filepath.Join(dir, "v1.lock")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := LockModuleVersion(filepath.Join(dir, "v1.lock")); err == nil {
-		t.Fatal("a symlinked lock was opened")
-	}
-	mustWrite(t, filepath.Join(dir, "v2.lock"), "", 0o644)
-	realFlock := lockSyscalls.flock
-	t.Cleanup(func() { lockSyscalls.flock = realFlock })
-	lockSyscalls.flock = func(int, int) error { return unix.ENOLCK }
-	if _, err := LockModuleVersion(filepath.Join(dir, "v2.lock")); err == nil || errors.Is(err, ErrLocked) {
-		t.Fatalf("unsupported flock = %v", err)
-	}
-}
-
 // Shape checks refuse anything that is not exactly what its producer writes.
 func TestScratchShapeChecks(t *testing.T) {
 	t.Parallel()
@@ -279,7 +193,7 @@ func TestScratchShapeChecks(t *testing.T) {
 	if plan := (scratchCategory{}).plan(ctx, tw.World, Options{}); len(plan.items) != 0 {
 		t.Fatalf("a cancelled plan listed %d items", len(plan.items))
 	}
-	if diskBytes(fakeInfo{}) != 7 || !changeTime(fakeInfo{}).IsZero() {
+	if diskBytes(fakeInfo{}) != 7 {
 		t.Fatal("file info without a stat")
 	}
 }

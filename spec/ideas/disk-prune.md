@@ -56,9 +56,8 @@ under `~/.wb`.
 Add `wb disk prune`, which plans by default and runs the plan with
 `--apply`. It reuses `wb disk`'s single accounting walk, so each candidate is
 shown with its measured RECLAIM and a reason it is safe. It prunes in order
-of rebuild cost (orphaned scratch, Go build cache by last use, Go module
-versions no `go.sum` in a canonical clone or live
-worktree references) and stops once `--until-free` is met. Anything held
+of rebuild cost (orphaned scratch, then the Go build cache by last use) and
+stops once `--until-free` is met. Anything held
 open, owned by a live task or locked by a running build is skipped, and the
 skip is reported.
 
@@ -93,8 +92,9 @@ One verb, `wb disk prune [--apply] [--until-free] [--category]
 scratch from known producers and the Go build-cache trim. The pnpm store is
 report-only: founder decision of 2026-11-27, because running `pnpm store
 prune` safely would depend on pnpm's internal layout and a full store walk.
-Go module versions are pruned only with `--category go-module-cache`, and
-only when re-download is provable. wb-state is a report. It works against
+Go module pruning moved to a later Feature (founder, 2026-11-27, after
+three review rounds kept finding module edge cases); the module cache is a
+report. wb-state is a report. It works against
 hermetic fakes and passes a real-directory dry run. The daemon trigger ships
 in the same pull request, default off (founder, 2026-11-27). Docker and npm
 are deferred.

@@ -101,78 +101,6 @@ func TestTrimStopsAtTargetAndReportsPartialShards(t *testing.T) {
 	}
 }
 
-// The reference set fails closed on a checkout it cannot resolve, a checkout
-// that is not a directory, a sum file it cannot stat beside, and a line too
-// long to read.
-func TestReferenceSetFailsClosed(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	if err := os.Symlink(filepath.Join(dir, "absent"), filepath.Join(dir, "dangling")); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := referenceSet([]string{filepath.Join(dir, "dangling")}, nil); err == nil {
-		t.Fatal("a dangling checkout was accepted")
-	}
-	mustWrite(t, filepath.Join(dir, "file"), "x", 0o644)
-	if _, _, err := referenceSet([]string{filepath.Join(dir, "file")}, nil); err == nil || !strings.Contains(err.Error(), "not a directory") {
-		t.Fatalf("a file checkout = %v", err)
-	}
-	loop := filepath.Join(dir, "loop")
-	mustWrite(t, filepath.Join(loop, "tools.sum"), "", 0o644)
-	if err := os.Symlink("tools.mod", filepath.Join(loop, "tools.mod")); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := referenceSet([]string{loop}, nil); err == nil {
-		t.Fatal("an unstatable .mod beside a .sum was accepted")
-	}
-	long := filepath.Join(dir, "long")
-	mustWrite(t, filepath.Join(long, "go.sum"), strings.Repeat("x", 5<<20), 0o644)
-	if _, _, err := referenceSet([]string{long}, nil); err == nil {
-		t.Fatal("an over-long line was accepted")
-	}
-	linked := filepath.Join(dir, "linked")
-	if err := os.Symlink(long, linked); err != nil {
-		t.Fatal(err)
-	}
-	mustWrite(t, filepath.Join(long, "go.sum"), "example.com/x v1.0.0"+h+"\n", 0o644)
-	if refs, _, err := referenceSet([]string{linked}, nil); err != nil || !refs["example.com/x@v1.0.0"] {
-		t.Fatalf("a symlinked checkout = %v, %v", refs, err)
-	}
-	if mustHost("%zz") != "" {
-		t.Fatal("an unparsable proxy has a host")
-	}
-}
-
-// The extracted tree's identity is recorded at plan; a failure to record it
-// skips the category, and a tree on another mount than the cache is kept.
-func TestModuleExtractedIdentity(t *testing.T) {
-	t.Parallel()
-	f := newModuleFixture(t)
-	extracted := f.add("example.com/a", "v1.0.0", true, true)
-	f.tw.Identity = func(path string) (Identity, error) {
-		if path == extracted {
-			return Identity{}, errors.New("statx")
-		}
-		return StatIdentity(path)
-	}
-	if cat := categoryByName(t, f.tw.run(Options{Categories: []string{CategoryModules}}), CategoryModules); !strings.HasPrefix(cat.Reason, "partial-scan") {
-		t.Fatalf("identity failure = %#v", cat)
-	}
-	mounted := newModuleFixture(t)
-	tree := mounted.add("example.com/a", "v1.0.0", true, true)
-	mounted.tw.Identity = func(path string) (Identity, error) {
-		id, err := StatIdentity(path)
-		if path == tree {
-			id.MountID++
-		}
-		return id, err
-	}
-	report := mounted.tw.run(Options{Apply: true, Categories: []string{CategoryModules}, Floor: 0.01})
-	if it := categoryByName(t, report, CategoryModules).Items[0]; it.Reason != "contains-mount" || !exists(tree) {
-		t.Fatalf("a tree on another mount = %#v", it)
-	}
-}
-
 // Scratch counts a process naming the temporary directory's unresolved
 // spelling, keeps a candidate that is a resolved cache, keeps a real Go
 // cache that holds a fuzz corpus, and re-checks evidence at apply.
@@ -449,22 +377,6 @@ func (g ghostDir) Name() string             { return g.name }
 func (ghostDir) IsDir() bool                { return true }
 func (ghostDir) Type() os.FileMode          { return os.ModeDir }
 func (ghostDir) Info() (os.FileInfo, error) { return nil, os.ErrNotExist }
-
-// N2: a version Go completed between plan and apply gains a .ziphash; it is
-// changed, and nothing (not even the marker) is written.
-func TestModuleCompletedByGoSincePlanIsLeftAlone(t *testing.T) {
-	t.Parallel()
-	f := newModuleFixture(t)
-	f.add("example.com/a", "v1.0.0", true, false)
-	dl := filepath.Join(f.cache, "cache", "download", "example.com", "a", "@v")
-	f.tw.categories = []category{hookedCategory{inner: moduleCategory{}, after: func() {
-		mustWrite(t, filepath.Join(dl, "v1.0.0.ziphash"), "h1:new", 0o444)
-	}}}
-	report := f.tw.run(Options{Apply: true, Categories: []string{CategoryModules}, Floor: 0.01})
-	if it := categoryByName(t, report, CategoryModules).Items[0]; !strings.HasPrefix(it.Reason, "changed: Go completed") || exists(filepath.Join(dl, "v1.0.0.partial")) || !exists(filepath.Join(dl, "v1.0.0.zip")) {
-		t.Fatalf("completed version = %#v", it)
-	}
-}
 
 // N6: a probe that fails inside the trim stops it as probe-failed, and a
 // cancelled context stops it before anything is removed.

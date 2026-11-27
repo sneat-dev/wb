@@ -95,9 +95,16 @@ func readCacheFiles(w *World, root string) ([]cacheFile, Anchor, bool) {
 			continue
 		}
 		dir := filepath.Join(anchor.Root, entry.Name())
-		// A shard that is a mount (say, a bind of a checkout) is not the
-		// cache: none of its files are entries prune may unlink.
-		if mount, err := mountIDOf(dir); err != nil || mount != rootMount {
+		// A shard that is a mount (say, a bind of a checkout), or that is a
+		// protected root under another path (the directory a bind-mounted
+		// checkout shows), is not the cache: none of its files are entries
+		// prune may unlink.
+		shardID, idErr := w.Identity(dir)
+		if mount, err := mountIDOf(dir); err != nil || mount != rootMount || idErr != nil {
+			partial = true
+			continue
+		}
+		if _, hit := w.ProtectedIDs[[2]uint64{shardID.Dev, shardID.Ino}]; hit {
 			partial = true
 			continue
 		}
@@ -111,8 +118,14 @@ func readCacheFiles(w *World, root string) ([]cacheFile, Anchor, bool) {
 				continue
 			}
 			path := filepath.Join(dir, file.Name())
-			info, err := os.Lstat(path)
-			if err != nil || !info.Mode().IsRegular() {
+			info, err := lstatEntry(path)
+			if err != nil {
+				// An entry that cannot be inspected is not known to be
+				// absent: the enumeration is incomplete.
+				partial = partial || !errors.Is(err, os.ErrNotExist)
+				continue
+			}
+			if !info.Mode().IsRegular() {
 				continue
 			}
 			identity, err := w.Identity(path)
@@ -225,7 +238,13 @@ func trimEntries(ctx context.Context, w *World, root string, anchor Anchor, file
 			}
 		}
 		info, err := os.Lstat(filepath.Join(file.dir, file.name))
-		if err != nil || (!full && w.Now().Sub(info.ModTime()) < floor) {
+		if err != nil {
+			// Gone (Go trimmed it) is fine; anything else leaves the trim's
+			// evidence incomplete.
+			result.partial = result.partial || !errors.Is(err, os.ErrNotExist)
+			continue
+		}
+		if !full && w.Now().Sub(info.ModTime()) < floor {
 			continue
 		}
 		bytes, err := w.RemoveFile(anchor, file.shard, file.name, file.identity)
@@ -273,6 +292,11 @@ func (buildCacheCategory) plan(ctx context.Context, w *World, o Options) *catego
 	}
 	if hit := insideAny(root, w.Protected); hit != "" {
 		plan.skip("protected: " + hit)
+		return plan
+	}
+	if w.ProtectedGap != "" {
+		// GOCACHE could lie inside a checkout the incomplete inventory missed.
+		plan.skip("unknown: " + w.ProtectedGap)
 		return plan
 	}
 	if reason := w.bindProblem(root); reason != "" {
@@ -331,6 +355,9 @@ func (fullCleanCategory) plan(ctx context.Context, w *World, o Options) *categor
 		return plan
 	case insideAny(root, w.Protected) != "":
 		plan.skip("protected: " + insideAny(root, w.Protected))
+		return plan
+	case w.ProtectedGap != "":
+		plan.skip("unknown: " + w.ProtectedGap)
 		return plan
 	case w.bindProblem(root) != "":
 		plan.skip(w.bindProblem(root))
@@ -394,3 +421,7 @@ func goTools(table Table) []PIDReport {
 	}
 	return pids
 }
+
+// lstatEntry inspects a cache entry; a seam, because an entry that cannot be
+// inspected needs privileges a test does not have.
+var lstatEntry = os.Lstat

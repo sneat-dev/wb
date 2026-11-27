@@ -60,35 +60,3 @@ func LockDirs(paths []string) (*Lock, error) {
 		}
 	}}, nil
 }
-
-// LockModuleVersion takes Go's own lock on a module version's .lock file,
-// without blocking: a version Go is downloading is skipped, not waited on.
-// A version without one gets it created, exactly as cmd/go would before
-// locking, so deletion never proceeds unlocked. The lock file itself is
-// never removed: removing it while another process holds it would let two
-// processes lock different inodes.
-func LockModuleVersion(path string) (func(), error) {
-	// Go's own protocol (cmd/go's lockedfile.MutexAt) creates the .lock
-	// beside the version when it is missing; so does prune. The open never
-	// blocks, and only a regular file is a lock.
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CREAT|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0o666)
-	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", path, err)
-	}
-	var stat unix.Stat_t
-	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("%s is not a regular lock file", path)
-	}
-	if err := lockSyscalls.flock(fd, unix.LOCK_EX|unix.LOCK_NB); err != nil {
-		_ = unix.Close(fd)
-		if err == unix.EWOULDBLOCK {
-			return nil, &LockedError{Path: path}
-		}
-		return nil, fmt.Errorf("lock %s: %w", path, err)
-	}
-	return func() {
-		_ = unix.Flock(fd, unix.LOCK_UN)
-		_ = unix.Close(fd)
-	}, nil
-}

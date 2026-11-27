@@ -31,7 +31,7 @@ func TestRealMachineDryRunNeverMutates(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
-	w, err := NewWorld(ctx, root, nil)
+	w, err := NewWorld(ctx, root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,8 +39,6 @@ func TestRealMachineDryRunNeverMutates(t *testing.T) {
 	w.RemoveTree = func(string, string, Identity) (TreeOutcome, error) { forbid("RemoveTree"); return TreeOutcome{}, nil }
 	w.RemoveFile = func(Anchor, string, string, Identity) (int64, error) { forbid("RemoveFile"); return 0, nil }
 	w.LockDirs = func([]string) (*Lock, error) { forbid("LockDirs"); return &Lock{}, nil }
-	w.LockModuleVersion = func(string) (func(), error) { forbid("LockModuleVersion"); return func() {}, nil }
-	w.HTTP = func(context.Context, string, string) (int, []byte, error) { forbid("HTTP"); return 0, nil, nil }
 	w.Admit = func(context.Context) (string, time.Duration, func()) { forbid("Admit"); return "", 0, func() {} }
 	report := Run(ctx, w, Options{
 		Categories: SelectableCategories, Target: Target{Kind: TargetMax}, AllowFullClean: true, Floor: 0.1,
@@ -61,8 +59,8 @@ func TestRealMachineDryRunNeverMutates(t *testing.T) {
 		t.Fatalf("the real plan did not finish: %v", ctx.Err())
 	}
 	raw, _ := os.ReadFile(recorder)
-	if len(w.Checkouts) > 0 && !strings.Contains(string(raw), "worktree list --porcelain -z") {
-		t.Fatalf("the recorder saw no git call although %d checkouts were found: %q", len(w.Checkouts), raw)
+	if len(w.Protected) > 3 && !strings.Contains(string(raw), "worktree list --porcelain -z") {
+		t.Fatalf("the recorder saw no git call although %d roots are protected: %q", len(w.Protected), raw)
 	}
 	for _, call := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
 		if call != "" && !strings.HasPrefix(call, "git -C ") {

@@ -23,11 +23,3 @@ func unlinkBytes(info os.FileInfo) int64 {
 	}
 	return diskBytes(info)
 }
-
-// linkCount is the file's hard-link count.
-func linkCount(info os.FileInfo) uint64 {
-	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
-		return uint64(stat.Nlink)
-	}
-	return 1
-}

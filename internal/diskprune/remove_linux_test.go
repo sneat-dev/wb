@@ -357,47 +357,28 @@ func TestRemoveFileAtChecksIdentity(t *testing.T) {
 	}
 }
 
-// Before Linux 5.8 statx carries no mount ID; the longest containing mount
-// point in mountinfo decides instead, and with neither the lookup fails.
+// Before Linux 5.8 statx carries no mount ID: the mount is unknown, never
+// guessed from mountinfo, and identity without a mount ID fails.
 //
-//nolint:paralleltest // replaces the package's statx and mountinfo seams
-func TestMountIDFallsBackToMountinfo(t *testing.T) {
-	realStatx, realMountinfo, realMountIDOf := statx, mountinfoPath, mountIDOf
-	t.Cleanup(func() { statx, mountinfoPath, mountIDOf = realStatx, realMountinfo, realMountIDOf })
+//nolint:paralleltest // replaces the package's statx and mountIDOf seams
+func TestMountIDWithoutStatxIsUnknown(t *testing.T) {
+	realStatx, realMountIDOf := statx, mountIDOf
+	t.Cleanup(func() { statx, mountIDOf = realStatx, realMountIDOf })
 	statx = func(dirfd int, path string, flags int, mask int, stx *unix.Statx_t) error {
 		err := realStatx(dirfd, path, flags, mask, stx)
 		stx.Mask &^= unix.STATX_MNT_ID
 		return err
 	}
 	dir := t.TempDir()
-	mustWrite(t, filepath.Join(dir, "a"), "x", 0o644)
-	info := filepath.Join(t.TempDir(), "mountinfo")
-	mustWrite(t, info, "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n5 1 0:30 / "+dir+" rw - tmpfs t rw\nshort\nx 1 0:1 / /x rw - y y rw\n", 0o644)
-	mountinfoPath = info
-	if id, err := statxMountID(unix.AT_FDCWD, filepath.Join(dir, "a")); err != nil || id != 5 {
-		t.Fatalf("absolute = %d, %v", id, err)
-	}
-	fd, err := openDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = unix.Close(fd) }()
-	if id, err := statxMountID(fd, "."); err != nil || id != 5 {
-		t.Fatalf("relative = %d, %v", id, err)
-	}
-	if id, err := statxMountID(unix.AT_FDCWD, "/usr"); err != nil || id != 1 {
-		t.Fatalf("root mount = %d, %v", id, err)
-	}
-	if _, err := mountIDFromMountinfo("", "/x"); !errors.Is(err, ErrUnsupported) {
-		t.Fatalf("empty mountinfo: %v", err)
-	}
-	mountinfoPath = filepath.Join(dir, "absent")
 	if _, err := statxMountID(unix.AT_FDCWD, dir); !errors.Is(err, ErrUnsupported) {
-		t.Fatalf("no mountinfo: %v", err)
+		t.Fatalf("no statx mount ID: %v", err)
 	}
-	statx = func(int, string, int, int, *unix.Statx_t) error { return nil }
+	if _, err := bindOfSubdirectory(dir); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("bind check without statx mount ID: %v", err)
+	}
+	statx = func(int, string, int, int, *unix.Statx_t) error { return errors.New("EBADF") }
 	if _, err := statxMountID(9999, "rel"); err == nil {
-		t.Fatal("relative lookup on a bad descriptor succeeded")
+		t.Fatal("a failed statx gave a mount ID")
 	}
 	mountIDOf = func(string) (uint64, error) { return 0, errors.New("injected") }
 	if _, err := StatIdentity(dir); err == nil {

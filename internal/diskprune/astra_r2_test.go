@@ -5,12 +5,9 @@ package diskprune
 import (
 	"context"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -148,168 +145,23 @@ func TestRootUnderAProtectedAliasIsRefused(t *testing.T) {
 	}
 }
 
-// The extraction is revalidated under Go's lock: one that appeared since the
-// plan, one that went away, and one that cannot be inspected each refuse the
-// version; at plan, an uninspectable or non-directory extraction stops the
-// walk.
-func TestModuleExtractionPresenceIsRevalidated(t *testing.T) {
-	t.Parallel()
-	for name, c := range map[string]struct {
-		extracted bool
-		mutate    func(f *moduleFixture, tree string)
-		want      string
-	}{
-		"appeared": {false, func(f *moduleFixture, tree string) { mustWrite(f.t, filepath.Join(tree, "go.mod"), "module x", 0o644) }, "changed: the version was extracted"},
-		"gone": {true, func(f *moduleFixture, tree string) {
-			_ = filepath.WalkDir(tree, func(path string, _ os.DirEntry, _ error) error { return os.Chmod(path, 0o755) })
-			if err := os.RemoveAll(tree); err != nil {
-				f.t.Fatal(err)
-			}
-		}, "changed: the extracted tree is gone"},
-		"uninspectable": {false, func(f *moduleFixture, tree string) {
-			if err := os.MkdirAll(filepath.Dir(tree), 0o755); err != nil {
-				f.t.Fatal(err)
-			}
-			_ = os.Chmod(filepath.Dir(tree), 0o600)
-			f.t.Cleanup(func() { _ = os.Chmod(filepath.Dir(tree), 0o755) })
-		}, "changed: the extraction cannot be inspected"},
-	} {
-		if name == "uninspectable" && os.Geteuid() == 0 {
-			continue
-		}
-		f := newModuleFixture(t)
-		tree := f.add("example.com/a", "v1.0.0", true, c.extracted)
-		f.tw.categories = []category{hookedCategory{inner: moduleCategory{}, after: func() { c.mutate(f, tree) }}}
-		report := f.tw.run(Options{Apply: true, Categories: []string{CategoryModules}, Floor: 0.01})
-		if it := categoryByName(t, report, CategoryModules).Items[0]; !strings.HasPrefix(it.Reason, c.want) {
-			t.Errorf("%s: %#v", name, it)
-		}
-	}
-	file := newModuleFixture(t)
-	tree := file.add("example.com/a", "v1.0.0", true, false)
-	mustWrite(t, tree, "not a directory", 0o644)
-	if _, err := readModuleCache(file.tw.World, file.cache); err == nil {
-		t.Fatal("a file in place of the extraction was walked past")
-	}
-	notdir := newModuleFixture(t)
-	notdir.add("example.com/a", "v1.0.0", true, false)
-	mustWrite(t, filepath.Join(notdir.cache, "example.com"), "a file where a directory belongs", 0o644)
-	if _, err := readModuleCache(notdir.tw.World, notdir.cache); err == nil {
-		t.Fatal("an uninspectable extraction was treated as absent")
-	}
-}
-
-// Membership is refreshed when module deletion starts: an incomplete fresh
-// inventory refuses, and a checkout registered since the plan protects its
-// versions.
-func TestModuleMembershipIsRefreshed(t *testing.T) {
-	t.Parallel()
-	gap := newModuleFixture(t)
-	gap.add("example.com/a", "v1.0.0", true, true)
-	gap.tw.RefreshCheckouts = func() ([]string, string) { return nil, "git worktree list failed" }
-	report := gap.tw.run(Options{Apply: true, Categories: []string{CategoryModules}, Floor: 0.01})
-	if it := categoryByName(t, report, CategoryModules).Items[0]; !strings.Contains(it.Reason, "git worktree list failed") {
-		t.Fatalf("gap = %#v", it)
-	}
-	late := newModuleFixture(t)
-	tree := late.add("example.com/a", "v1.0.0", true, true)
-	newcomer := t.TempDir()
-	mustWrite(t, filepath.Join(newcomer, "go.sum"), "example.com/a v1.0.0"+h+"\n", 0o644)
-	mustWrite(t, filepath.Join(newcomer, "README.md"), "not a sum file", 0o644)
-	late.tw.RefreshCheckouts = func() ([]string, string) { return []string{newcomer}, "" }
-	report = late.tw.run(Options{Apply: true, Categories: []string{CategoryModules}, Floor: 0.01})
-	if it := categoryByName(t, report, CategoryModules).Items[0]; it.Status == StatusDeleted || !exists(tree) {
-		t.Fatalf("a version a new checkout names = %#v", it)
-	}
-}
-
-// The .partial marker: a failure to create it is reported on the deleted
-// version, and a marker that cannot be removed afterwards is a failure.
-func TestModuleMarkerOutcomesAreReported(t *testing.T) {
-	t.Parallel()
-	f := newModuleFixture(t)
-	f.add("example.com/a", "v1.0.0", true, true)
-	dl := filepath.Join(f.cache, "cache", "download", "example.com", "a", "@v")
-	f.tw.categories = []category{hookedCategory{inner: moduleCategory{}, after: func() {
-		// A non-empty directory under the marker's name: it cannot be
-		// opened as the marker, nor removed by name.
-		mustWrite(t, filepath.Join(dl, "v1.0.0.partial", "x"), "x", 0o644)
-	}}}
-	report := f.tw.run(Options{Apply: true, Categories: []string{CategoryModules}, Floor: 0.01})
-	it := categoryByName(t, report, CategoryModules).Items[0]
-	if it.Status != StatusFailed || !strings.Contains(it.Error, ".partial marker remains") {
-		t.Fatalf("marker = %#v", it)
-	}
-	if err := writeMarker("/dev/null"); err == nil {
-		t.Fatal("a device was accepted as the marker")
-	}
-	if err := writeMarker(filepath.Join(t.TempDir(), "absent", "m")); err == nil {
-		t.Fatal("a marker in a missing directory was reported written")
-	}
-	var applied ItemReport
-	applyResult(&item{ItemReport: ItemReport{Reason: "unused"}}, itemResult{note: "marker not written"})
-	applied.Reason = "unused"
-	target := &item{ItemReport: applied}
-	applyResult(target, itemResult{note: ".partial marker not written: ENOSPC"})
-	if target.Status != StatusDeleted || target.Reason != "unused; .partial marker not written: ENOSPC" {
-		t.Fatalf("note = %#v", target.ItemReport)
-	}
-}
-
-// A module lock under the .lock name must be a regular file.
-func TestModuleLockMustBeARegularFile(t *testing.T) {
-	t.Parallel()
-	dir := filepath.Join(t.TempDir(), "v1.0.0.lock")
-	if err := os.Mkdir(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := LockModuleVersion(dir); err == nil {
-		t.Fatal("a directory was taken as a lock")
-	}
-	fifo := filepath.Join(t.TempDir(), "v1.0.0.lock")
-	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() { _, err := LockModuleVersion(fifo); done <- err }()
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("a FIFO was taken as a lock")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("opening a FIFO lock blocked")
-	}
-}
-
 // Bounded reads refuse an oversized file, and a proxy body over the limit
 // is an error, never a prefix compared as the whole.
 func TestBoundedReads(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "big")
 	mustWrite(t, path, strings.Repeat("x", 11), 0o644)
-	if _, err := readRegularFile(path, 10, false); err == nil {
+	if _, err := readRegularFile(path, 10); err == nil {
 		t.Fatal("an oversized file was read")
 	}
-	if raw, err := readRegularFile(path, 11, false); err != nil || len(raw) != 11 {
+	if raw, err := readRegularFile(path, 11); err != nil || len(raw) != 11 {
 		t.Fatalf("a file at the limit: %d %v", len(raw), err)
+	}
+	if _, err := readRegularFile(filepath.Join(t.TempDir(), "absent"), 10); err == nil {
+		t.Fatal("a missing file was read")
 	}
 	if resolved("") != "" {
 		t.Fatal("an empty path resolved")
-	}
-}
-
-//nolint:paralleltest // replaces probeClient
-func TestProbeBodyOverTheLimitIsRefused(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(strings.Repeat("m", maxProbeBody+1)))
-	}))
-	defer server.Close()
-	realClient := probeClient
-	t.Cleanup(func() { probeClient = realClient })
-	probeClient = server.Client()
-	if _, body, err := fetchURL(context.Background(), "GET", server.URL); err == nil || body != nil {
-		t.Fatalf("an oversized body was accepted: %d bytes, %v", len(body), err)
 	}
 }
 
@@ -374,20 +226,6 @@ func TestReceiptStateDirectoryThatCannotBeCreated(t *testing.T) {
 	}
 }
 
-// The world refreshes its checkouts with the same inventory it built.
-func TestWorldRefreshesItsCheckouts(t *testing.T) {
-	t.Parallel()
-	deps, clone, _ := fakeWorldDeps(t)
-	w, err := newWorld(context.Background(), "/r", nil, deps)
-	if err != nil {
-		t.Fatal(err)
-	}
-	checkouts, gap := w.RefreshCheckouts()
-	if gap != "" || len(checkouts) == 0 || checkouts[0] != clone {
-		t.Fatalf("refreshed %v gap %q", checkouts, gap)
-	}
-}
-
 // A child directory renamed away while it is emptied, with an empty
 // directory put in its place, is replaced: the replacement is not removed in
 // the original's stead.
@@ -420,9 +258,8 @@ func TestRemoveTreeLeavesAReplacedChildAlone(t *testing.T) {
 	}
 }
 
-// A checkout a worktrees root holds counts even when no clone registers it:
-// it is protected and read for references. The world's scans stop with the
-// run's context.
+// A checkout a worktrees root holds is protected even when no clone
+// registers it. The world's scans stop with the run's context.
 func TestWorktreesRootCheckoutsAreInventoried(t *testing.T) {
 	t.Parallel()
 	deps, _, _ := fakeWorldDeps(t)
@@ -434,17 +271,116 @@ func TestWorktreesRootCheckoutsAreInventoried(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(held, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	w, err := newWorld(context.Background(), "/r", nil, deps)
+	w, err := newWorld(context.Background(), "/r", deps)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(strings.Join(w.Checkouts, " "), held) || !strings.Contains(strings.Join(w.Protected, " "), held) {
-		t.Fatalf("checkouts %v protected %v", w.Checkouts, w.Protected)
+	if !strings.Contains(strings.Join(w.Protected, " "), held) {
+		t.Fatalf("protected %v", w.Protected)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	w.runCtx = ctx
 	if scan := w.Scan(held, identityOf(t, held).MountID, nil); !scan.Partial {
 		t.Fatalf("a scan in a cancelled run = %#v", scan)
+	}
+}
+
+// A mapped file's pathname is kept byte for byte: consecutive spaces
+// survive, a newline arrives as \012, and anonymous or pseudo mappings are
+// not files.
+func TestMappedFilesKeepThePathnameExactly(t *testing.T) {
+	t.Parallel()
+	maps := "7f00-7f01 r--p 00000000 08:01 42                         /tmp/a  b/lib.so\n" +
+		"7f01-7f02 r--p 00000000 08:01 43   /tmp/odd\\012name (deleted)\n" +
+		"7f02-7f03 rw-p 00000000 00:00 0                          [heap]\n" +
+		"7f03-7f04 rw-p 00000000 00:00 0\n" +
+		"short line\n"
+	files := mappedFiles(maps)
+	if len(files) != 2 || files[0] != "/tmp/a  b/lib.so" || files[1] != "/tmp/odd\nname" {
+		t.Fatalf("files = %q", files)
+	}
+}
+
+// The cache walk: a shard that is a protected root under another path, an
+// entry that cannot be inspected, or one whose identity cannot be read all
+// make the enumeration partial and contribute no candidate.
+//
+//nolint:paralleltest // replaces the lstatEntry seam
+func TestCacheWalkIncompleteEvidenceIsPartial(t *testing.T) {
+	tw := newTestWorld(t)
+	root := buildCacheFixture(t, tw, map[string]time.Duration{"0a01-a": 100 * time.Hour})
+	shard := identityOf(t, filepath.Join(root, "0a"))
+	tw.ProtectedIDs = map[[2]uint64]string{{shard.Dev, shard.Ino}: "/home/u/projects/.wb"}
+	if files, _, partial := readCacheFiles(tw.World, root); !partial || len(files) != 0 {
+		t.Fatalf("a protected shard: %v %t", files, partial)
+	}
+	tw.ProtectedIDs = nil
+	identity := tw.Identity
+	tw.Identity = func(path string) (Identity, error) {
+		if strings.HasSuffix(path, "-a") {
+			return Identity{}, errors.New("statx")
+		}
+		return identity(path)
+	}
+	if files, _, partial := readCacheFiles(tw.World, root); !partial || len(files) != 0 {
+		t.Fatalf("an entry without identity: %v %t", files, partial)
+	}
+	tw.Identity = identity
+	real := lstatEntry
+	t.Cleanup(func() { lstatEntry = real })
+	lstatEntry = func(string) (os.FileInfo, error) { return nil, os.ErrPermission }
+	if files, _, partial := readCacheFiles(tw.World, root); !partial || len(files) != 0 {
+		t.Fatalf("an uninspectable entry: %v %t", files, partial)
+	}
+	lstatEntry = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+	if files, _, partial := readCacheFiles(tw.World, root); partial || len(files) != 0 {
+		t.Fatalf("an entry Go removed meanwhile: %v %t", files, partial)
+	}
+}
+
+// An incomplete protected inventory stops both build-cache steps: GOCACHE
+// could lie inside a checkout the inventory missed.
+func TestBuildCacheStopsOnAnInventoryGap(t *testing.T) {
+	t.Parallel()
+	tw := newTestWorld(t)
+	buildCacheFixture(t, tw, map[string]time.Duration{"0a01-a": 100 * time.Hour})
+	tw.ProtectedGap = "canonical clones could not be listed"
+	tw.categories = []category{buildCacheCategory{}, fullCleanCategory{}}
+	report := tw.run(Options{Apply: true, AllowFullClean: true, Categories: []string{CategoryBuild}, Floor: 0.01})
+	for _, name := range []string{CategoryBuild, categoryFullClean} {
+		if cat := categoryByName(t, report, name); !strings.HasPrefix(cat.Reason, "unknown: canonical clones") {
+			t.Errorf("%s = %#v", name, cat)
+		}
+	}
+	if report.Outcome != OutcomeFailClosed {
+		t.Fatalf("outcome = %q", report.Outcome)
+	}
+}
+
+// A scratch entry that is itself a mount is kept before any projection, and
+// a file is never opened as an anchor.
+func TestMountedScratchEntryAndFileAnchor(t *testing.T) {
+	t.Parallel()
+	tw := newTestWorld(t)
+	tw.entry("go-build1", 8)
+	identity := tw.Identity
+	tw.Identity = func(path string) (Identity, error) {
+		id, err := identity(path)
+		if strings.HasSuffix(path, "go-build1") {
+			id.MountID++
+		}
+		return id, err
+	}
+	if it := itemsByName(tw.run(Options{Floor: 0.01}), CategoryScratch)["go-build1"]; it.Reason != "contains-mount" || it.ProjectedAvailableBytes != nil {
+		t.Fatalf("a mounted entry = %#v", it)
+	}
+	file := filepath.Join(t.TempDir(), "file")
+	mustWrite(t, file, "x", 0o644)
+	if _, err := RemoveFileBeneath(Anchor{Root: file}, "", "x", Identity{}); err == nil || errors.Is(err, ErrChanged) {
+		t.Fatalf("a file as the anchor: %v", err)
+	}
+	if lines := parseMountinfo("x 1 0:1 / /x rw - y y rw\n"); len(lines) != 0 {
+		t.Fatalf("a malformed mount ID was parsed: %v", lines)
 	}
 }

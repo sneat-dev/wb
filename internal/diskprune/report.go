@@ -31,15 +31,17 @@ type AdmissionReport struct {
 // kept apart: what the plan estimated, what was unlinked, and what free space
 // actually did.
 type FilesystemReport struct {
-	Device            string       `json:"device"`
-	Path              string       `json:"path"`
-	Target            TargetReport `json:"target"`
-	Before            SpaceReport  `json:"before"`
-	After             SpaceReport  `json:"after"`
+	Device string       `json:"device"`
+	Path   string       `json:"path"`
+	Target TargetReport `json:"target"`
+	Before SpaceReport  `json:"before"`
+	// After and ObservedGainBytes are null when the filesystem could not be
+	// measured: no figure is invented.
+	After             *SpaceReport `json:"after"`
 	TargetMet         bool         `json:"target_met"`
 	EstimatedBytes    int64        `json:"estimated_bytes"`
 	UnlinkedBytes     int64        `json:"unlinked_bytes"`
-	ObservedGainBytes int64        `json:"observed_gain_bytes"`
+	ObservedGainBytes *int64       `json:"observed_gain_bytes"`
 	Note              string       `json:"note,omitempty"`
 }
 
@@ -116,18 +118,16 @@ type StateEntryReport struct {
 
 // Item and category statuses.
 const (
-	StatusDelete           = "delete"
-	StatusDeleted          = "deleted"
-	StatusKeep             = "keep"
-	StatusBeyondTarget     = "beyond-target"
-	StatusSkipped          = "skipped"
-	StatusFailed           = "failed"
-	StatusReplaced         = "replaced"
-	StatusPlanned          = "planned"
-	StatusApplied          = "applied"
-	StatusPartial          = "partial"
-	StatusRequiresCategory = "requires-category"
-	StatusReportOnly       = "report-only"
+	StatusDelete       = "delete"
+	StatusDeleted      = "deleted"
+	StatusKeep         = "keep"
+	StatusBeyondTarget = "beyond-target"
+	StatusSkipped      = "skipped"
+	StatusFailed       = "failed"
+	StatusReplaced     = "replaced"
+	StatusPlanned      = "planned"
+	StatusApplied      = "applied"
+	StatusPartial      = "partial"
 )
 
 // Outcomes, in precedence order (disk-prune#req:exit-codes).

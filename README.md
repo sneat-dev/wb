@@ -1220,7 +1220,6 @@ candidate meets its free-space target (`--until-free`, default
 ```sh
 wb disk prune                                     # plan; exits 1 when there is work
 wb disk prune --apply                             # scratch, Go build-cache trim
-wb disk prune --category go-module-cache --apply  # opt-in: unreferenced, re-fetchable module versions
 wb disk prune --format json                       # outcome, reasons, per-filesystem figures
 ```
 
@@ -1237,7 +1236,7 @@ downloaded modules and scraps on the floor of `/tmp`.
  │  WORKBENCHES (one per task)        SHARED STOREROOM          │
  │  ┌─────────┐ ┌─────────┐          ┌──────────────────────┐   │
  │  │ task A  │ │ task B  │          │ Go build cache       │   │
- │  │ landed  │ │ in work │          │ Go module downloads  │   │
+ │  │ landed  │ │ in work │          │ (Go modules: report) │   │
  │  └─────────┘ └─────────┘          │ /tmp scratch         │   │
  │  ┌─────────┐                      │                      │   │
  │  │ task C  │                      └──────────────────────┘   │

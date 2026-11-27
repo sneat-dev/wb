@@ -66,13 +66,12 @@ func TestBindMountedRootsAreRefused(t *testing.T) {
 		"bound":   func(string) (bool, error) { return true, nil },
 		"unknown": func(string) (bool, error) { return false, errors.New("no mountinfo") },
 	} {
-		f := newModuleFixture(t)
-		f.add("example.com/a", "v1.0.0", true, true)
-		f.tw.entry("go-build1", 8)
-		buildCacheFixture(t, f.tw, map[string]time.Duration{"0a01-a": 100 * time.Hour})
-		f.tw.BindOfSubdirectory = bind
-		f.tw.categories = []category{scratchCategory{}, buildCacheCategory{}, moduleCategory{}, fullCleanCategory{}}
-		report := f.tw.run(Options{Categories: SelectableCategories, AllowFullClean: true, Floor: 0.01})
+		tw := newTestWorld(t)
+		tw.entry("go-build1", 8)
+		buildCacheFixture(t, tw, map[string]time.Duration{"0a01-a": 100 * time.Hour})
+		tw.BindOfSubdirectory = bind
+		tw.categories = []category{scratchCategory{}, buildCacheCategory{}, fullCleanCategory{}}
+		report := tw.run(Options{Categories: SelectableCategories, AllowFullClean: true, Floor: 0.01})
 		for _, cat := range report.Categories {
 			if !strings.HasPrefix(cat.Reason, "unknown") {
 				t.Errorf("%s: %s = %q", name, cat.Name, cat.Reason)
@@ -98,174 +97,6 @@ func TestBuildCacheRefusesMountedShards(t *testing.T) {
 	}
 	if _, _, partial := readCacheFiles(tw.World, filepath.Join(t.TempDir(), "absent")); !partial {
 		t.Fatal("a missing cache must be partial")
-	}
-}
-
-// The module cache walk refuses a symlinked or non-directory cache/, a
-// download directory on another mount, and a file Go does not write.
-func TestModuleCacheWalkStaysInside(t *testing.T) {
-	t.Parallel()
-	f := newModuleFixture(t)
-	f.add("example.com/a", "v1.0.0", true, true)
-	mustWrite(t, filepath.Join(f.cache, "cache", "download", "example.com", "a", "@v", "v1.0.0.zip.bak"), "x", 0o644)
-	mustWrite(t, filepath.Join(f.cache, "cache", "download", "example.com", "b", "@v", "v1.0.0.mod"), "module b\n", 0o444)
-	if err := os.Symlink(t.TempDir(), filepath.Join(f.cache, "cache", "download", "example.com", "b", "@v", "v1.0.0.info")); err != nil {
-		t.Fatal(err)
-	}
-	report := f.tw.run(Options{Categories: []string{CategoryModules}, Floor: 0.01})
-	items := map[string]string{}
-	for _, it := range categoryByName(t, report, CategoryModules).Items {
-		items[filepath.Base(it.Path)] = it.Reason
-	}
-	if !strings.HasPrefix(items["a@v1.0.0"], "unknown") || !strings.HasPrefix(items["b@v1.0.0"], "unknown") || len(items) != 2 {
-		t.Fatalf("foreign files = %v", items)
-	}
-
-	linked := newModuleFixture(t)
-	linked.add("example.com/a", "v1.0.0", true, false)
-	target := t.TempDir()
-	if err := os.Rename(filepath.Join(linked.cache, "cache"), filepath.Join(target, "cache")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(filepath.Join(target, "cache"), filepath.Join(linked.cache, "cache")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := readModuleCache(linked.tw.World, linked.cache); err == nil {
-		t.Fatal("a symlinked cache/ was walked")
-	}
-	if _, err := readModuleCache(linked.tw.World, filepath.Join(t.TempDir(), "absent")); err == nil {
-		t.Fatal("a missing module cache was walked")
-	}
-	nocache := t.TempDir()
-	if _, err := readModuleCache(linked.tw.World, nocache); err == nil {
-		t.Fatal("a module cache without cache/ was walked")
-	}
-}
-
-// An extracted tree holding a checkout, a mount, a socket, protected data or
-// an unreadable entry is kept, at plan and again before any mutation.
-func TestExtractedTreeVerdicts(t *testing.T) {
-	t.Parallel()
-	for _, c := range []struct {
-		scan scanResult
-		want string
-	}{
-		{scanResult{Protected: "/p"}, "protected: /p"},
-		{scanResult{Partial: true}, "partial-scan"},
-		{scanResult{ContainsMount: true}, "contains-mount"},
-		{scanResult{HasGit: true}, "contains-checkout"},
-		{scanResult{HasSpecial: true}, "runtime"},
-		{scanResult{}, ""},
-	} {
-		if got := extractedVerdict(c.scan); got != c.want {
-			t.Errorf("%#v = %q, want %q", c.scan, got, c.want)
-		}
-	}
-	f := newModuleFixture(t)
-	tree := f.add("example.com/a", "v1.0.0", true, true)
-	if err := os.Chmod(tree, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	mustWrite(t, filepath.Join(tree, "vendor", "repo", ".git"), "gitdir: x", 0o644)
-	if it := categoryByName(t, f.tw.run(Options{Categories: []string{CategoryModules}}), CategoryModules).Items[0]; it.Reason != "contains-checkout" {
-		t.Fatalf("a checkout in a module tree = %#v", it)
-	}
-	late := newModuleFixture(t)
-	lateTree := late.add("example.com/a", "v1.0.0", true, true)
-	late.tw.categories = []category{hookedCategory{inner: moduleCategory{}, after: func() {
-		late.tw.Scan = func(string, uint64, []string) scanResult { return scanResult{HasGit: true} }
-	}}}
-	report := late.tw.run(Options{Apply: true, Categories: []string{CategoryModules}, Floor: 0.01})
-	if it := categoryByName(t, report, CategoryModules).Items[0]; it.Reason != "contains-checkout" || !exists(lateTree) {
-		t.Fatalf("a checkout found at apply = %#v", it)
-	}
-}
-
-// Under Go's lock the version's complete file set must equal the plan's:
-// a file appeared, one went away, one was rewritten in place, or the ziphash
-// changed, and nothing is touched.
-func TestModuleRevalidationIsComplete(t *testing.T) {
-	t.Parallel()
-	dl := func(f *moduleFixture, name string) string {
-		return filepath.Join(f.cache, "cache", "download", "example.com", "a", "@v", name)
-	}
-	for name, mutate := range map[string]func(*moduleFixture){
-		"appeared": func(f *moduleFixture) { mustWrite(f.t, dl(f, "v1.0.0.zip.part"), "x", 0o644) },
-		"gone":     func(f *moduleFixture) { _ = os.Remove(dl(f, "v1.0.0.info")) },
-		"rewritten": func(f *moduleFixture) {
-			_ = os.Chmod(dl(f, "v1.0.0.info"), 0o644)
-			mustWrite(f.t, dl(f, "v1.0.0.info"), `{"Version":"v1.0.0","Time":"later"}`, 0o644)
-		},
-		"ziphash": func(f *moduleFixture) {
-			_ = os.Chmod(dl(f, "v1.0.0.ziphash"), 0o644)
-			mustWrite(f.t, dl(f, "v1.0.0.ziphash"), "h1:different", 0o644)
-		},
-	} {
-		f := newModuleFixture(t)
-		tree := f.add("example.com/a", "v1.0.0", true, true)
-		f.tw.categories = []category{hookedCategory{inner: moduleCategory{}, after: func() { mutate(f) }}}
-		report := f.tw.run(Options{Apply: true, Categories: []string{CategoryModules}, Floor: 0.01})
-		it := categoryByName(t, report, CategoryModules).Items[0]
-		if !strings.HasPrefix(it.Reason, "changed") || !exists(tree) || exists(dl(f, "v1.0.0.partial")) {
-			t.Errorf("%s: %#v (tree kept %t)", name, it, exists(tree))
-		}
-	}
-	gone := newModuleFixture(t)
-	gone.add("example.com/a", "v1.0.0", true, false)
-	if reason := unchangedSincePlan(gone.tw.World, moduleVersion{downloadDir: filepath.Join(t.TempDir(), "absent")}, 0); !strings.HasPrefix(reason, "changed") {
-		t.Fatalf("an unreadable download directory = %q", reason)
-	}
-}
-
-// The final process check runs immediately before the first mutation, after
-// the slow proofs.
-func TestModuleFinalProcessCheck(t *testing.T) {
-	t.Parallel()
-	for name, late := range map[string]func(*moduleFixture){
-		"busy":      func(f *moduleFixture) { f.tw.processes = []Process{{PID: 6, Comm: "go", Readable: true}} },
-		"untrusted": func(f *moduleFixture) { f.tw.evidence = Evidence{Unknown: "fd exhaustion"} },
-	} {
-		f := newModuleFixture(t)
-		tree := f.add("example.com/a", "v1.0.0", true, true)
-		http := f.tw.HTTP
-		f.tw.HTTP = func(ctx context.Context, method, url string) (int, []byte, error) {
-			late(f)
-			return http(ctx, method, url)
-		}
-		report := f.tw.run(Options{Apply: true, Categories: []string{CategoryModules}, Floor: 0.01})
-		if it := categoryByName(t, report, CategoryModules).Items[0]; it.Status != StatusSkipped || !exists(tree) {
-			t.Errorf("%s: %#v", name, it)
-		}
-	}
-}
-
-// Sum-file fingerprints fail closed on a checkout that cannot be resolved or
-// walked.
-func TestSumStampFailures(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	if err := os.Symlink(filepath.Join(dir, "absent"), filepath.Join(dir, "dangling")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := sumStamp([]string{filepath.Join(dir, "dangling")}, nil); err == nil {
-		t.Fatal("a dangling checkout was fingerprinted")
-	}
-	locked := filepath.Join(dir, "locked")
-	mustWrite(t, filepath.Join(locked, "sub", "go.sum"), "", 0o644)
-	if err := os.Chmod(filepath.Join(locked, "sub"), 0o000); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(filepath.Join(locked, "sub"), 0o755) })
-	if _, err := sumStamp([]string{locked}, nil); err == nil && os.Geteuid() != 0 {
-		t.Fatal("an unreadable checkout was fingerprinted")
-	}
-	f := newModuleFixture(t)
-	f.add("example.com/a", "v1.0.0", true, true)
-	root := f.checkout(map[string]string{"go.sum": ""})
-	f.tw.categories = []category{hookedCategory{inner: moduleCategory{}, after: func() { _ = os.RemoveAll(root) }}}
-	report := f.tw.run(Options{Apply: true, Categories: []string{CategoryModules}, Floor: 0.01})
-	if it := categoryByName(t, report, CategoryModules).Items[0]; !strings.HasPrefix(it.Reason, "incomplete-reference-set") {
-		t.Fatalf("a checkout gone at apply = %#v", it)
 	}
 }
 
@@ -299,18 +130,7 @@ func TestMountinfoDecodingAndBinds(t *testing.T) {
 	if _, err := bindOfSubdirectory("/anything"); err == nil {
 		t.Fatal("a mount ID missing from mountinfo was classified")
 	}
-	// Without it, the longest containing mount point, unless stacked.
-	statx = func(int, string, int, int, *unix.Statx_t) error { return nil }
-	if bound, err := bindOfSubdirectory("/mnt/with space/tmp"); err != nil || !bound {
-		t.Fatalf("bind of a subdirectory = %t, %v", bound, err)
-	}
-	if bound, err := bindOfSubdirectory("/usr"); err != nil || bound {
-		t.Fatalf("the root mount = %t, %v", bound, err)
-	}
-	mustWrite(t, info, "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n5 1 8:1 / /a rw - ext4 /dev/sda1 rw\n6 5 8:1 /x /a/b rw - ext4 /dev/sda1 rw\n8 1 8:1 / /a rw - ext4 /dev/sda1 rw\n", 0o644)
-	if _, err := bindOfSubdirectory("/a/b/c"); err == nil {
-		t.Fatal("a mount under a stacked mount point was classified")
-	}
+	mountID = 1
 	mustWrite(t, info, "short\n", 0o644)
 	if _, err := bindOfSubdirectory("/usr"); err == nil {
 		t.Fatal("a matchless mountinfo identified a mount")
@@ -347,9 +167,6 @@ func TestReadSmallRegularRefusesSpecialFiles(t *testing.T) {
 	}
 	if isGoBuildCacheShape(cache) {
 		t.Fatal("a FIFO README made a Go cache")
-	}
-	if linkCount(fakeInfo{}) != 1 {
-		t.Fatal("link count without a stat")
 	}
 }
 
@@ -427,32 +244,28 @@ func TestItemProbeFailureIsFailClosed(t *testing.T) {
 	}
 }
 
-// A registered worktree that exists but cannot be read is an inventory gap.
-func TestUnreadableRegisteredWorktreeIsAGap(t *testing.T) {
+// A registered worktree is protected by its path, readable or not; git
+// output that does not list the clone itself is an inventory gap.
+func TestRegisteredWorktreesAreProtectedByPath(t *testing.T) {
 	t.Parallel()
 	deps, clone, _ := fakeWorldDeps(t)
-	locked := filepath.Join(t.TempDir(), "locked")
-	if err := os.MkdirAll(filepath.Join(locked, "wt"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(locked, 0o000); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	unreadable := filepath.Join(t.TempDir(), "file", "wt")
+	mustWrite(t, filepath.Dir(unreadable), "a file where a directory belongs", 0o644)
 	deps.git = func(context.Context, string, ...string) (string, error) {
-		return "worktree " + clone + "\x00\x00worktree " + filepath.Join(locked, "wt") + "\x00\x00", nil
+		return "worktree " + clone + "\x00\x00worktree " + unreadable + "\x00\x00", nil
 	}
-	w, err := newWorld(context.Background(), "/r", nil, deps)
-	if err != nil {
-		t.Fatal(err)
+	w, err := newWorld(context.Background(), "/r", deps)
+	if err != nil || w.ProtectedGap != "" || !strings.Contains(strings.Join(w.Protected, " "), unreadable) {
+		t.Fatalf("gap %q protected %v (%v)", w.ProtectedGap, w.Protected, err)
 	}
-	if os.Geteuid() != 0 && !strings.Contains(w.ProtectedGap, "cannot be read") {
-		t.Fatalf("gap = %q", w.ProtectedGap)
+	deps.git = func(context.Context, string, ...string) (string, error) { return "worktree /elsewhere\x00\x00", nil }
+	if w, _ := newWorld(context.Background(), "/r", deps); !strings.Contains(w.ProtectedGap, "not listed") {
+		t.Fatalf("a list without the clone = %q", w.ProtectedGap)
 	}
 }
 
-// A cache root or shard, or a module download directory, whose mount cannot
-// be read, or that is a different mount, stops the walk there.
+// A cache root or shard whose mount cannot be read, or that is a different
+// mount, stops the walk there.
 //
 //nolint:paralleltest // replaces the mountIDOf seam
 func TestCacheWalksRefuseUnidentifiedOrForeignMounts(t *testing.T) {
@@ -472,26 +285,6 @@ func TestCacheWalksRefuseUnidentifiedOrForeignMounts(t *testing.T) {
 	}
 	if files, _, partial := readCacheFiles(tw.World, root); !partial || len(files) != 0 {
 		t.Fatalf("a mounted shard: %v %t", files, partial)
-	}
-	f := newModuleFixture(t)
-	f.add("example.com/a", "v1.0.0", true, false)
-	mountIDOf = func(path string) (uint64, error) {
-		if filepath.Base(path) == "@v" {
-			return 99, nil
-		}
-		return realMountIDOf(path)
-	}
-	if _, err := readModuleCache(f.tw.World, f.cache); !errors.Is(err, ErrContainsMount) {
-		t.Fatalf("a mounted @v directory: %v", err)
-	}
-	mountIDOf = func(path string) (uint64, error) {
-		if filepath.Base(path) == "example.com" {
-			return 0, errors.New("statx")
-		}
-		return realMountIDOf(path)
-	}
-	if _, err := readModuleCache(f.tw.World, f.cache); err == nil {
-		t.Fatal("an unidentified download directory was walked")
 	}
 }
 
@@ -528,7 +321,7 @@ func TestWorktreeListIsNULDelimited(t *testing.T) {
 	}
 	deps, clone, _ := fakeWorldDeps(t)
 	deps.git = func(context.Context, string, ...string) (string, error) { return "worktree " + clone + "\n", nil }
-	w, err := newWorld(context.Background(), "/r", nil, deps)
+	w, err := newWorld(context.Background(), "/r", deps)
 	if err != nil || !strings.Contains(w.ProtectedGap, "NUL") {
 		t.Fatalf("gap = %q (%v)", w.ProtectedGap, err)
 	}

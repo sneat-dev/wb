@@ -167,6 +167,7 @@ func collectWithDiscovery(ctx context.Context, options Options, userHomeDir func
 	groups := resolveGroups(discoverGroups(projectsRoot, home))
 	nested := nestedRoots(groups)
 	owner := map[string]string{}
+	var ownedDirs []ownedDir
 
 	// One walk across every category: a pnpm store hard-linked into a worktree
 	// belongs to whichever category is measured first and must not be added
@@ -179,11 +180,20 @@ func collectWithDiscovery(ctx context.Context, options Options, userHomeDir func
 			if root == "" {
 				continue
 			}
-			if _, err := os.Stat(root); err != nil {
+			info, err := os.Stat(root)
+			if err != nil {
 				if !errors.Is(err, os.ErrNotExist) {
 					report.Skipped = append(report.Skipped, fmt.Sprintf("%s: %v", root, err))
 				}
 				continue
+			}
+			// The same directory under another path (a bind view) is the
+			// same root: ownership goes by identity, not by spelling.
+			for _, seen := range ownedDirs {
+				if seen.root != root && sameRoot(seen.info, info) {
+					root = seen.root
+					break
+				}
 			}
 			if first, taken := owner[root]; taken {
 				// Measured already: by another category it is reported as
@@ -195,6 +205,7 @@ func collectWithDiscovery(ctx context.Context, options Options, userHomeDir func
 				continue
 			}
 			owner[root] = group.name
+			ownedDirs = append(ownedDirs, ownedDir{root: root, info: info})
 			category.Roots = append(category.Roots, root)
 			if options.SkipSizes {
 				continue
@@ -574,3 +585,14 @@ func resolveGroups(groups []group) []group {
 	}
 	return groups
 }
+
+// ownedDir is a measured root with its identity, so another spelling of the
+// same directory is recognised.
+type ownedDir struct {
+	root string
+	info os.FileInfo
+}
+
+// sameRoot reports whether two roots are one directory; a seam, because a
+// bind mount cannot be made without privileges in a test.
+var sameRoot = os.SameFile

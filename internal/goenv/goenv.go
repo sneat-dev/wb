@@ -6,6 +6,7 @@ package goenv
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,7 +39,7 @@ type goEnvSources struct {
 
 func realGoEnvSources() goEnvSources {
 	return goEnvSources{
-		getenv: os.Getenv, readFile: os.ReadFile,
+		getenv: os.Getenv, readFile: readRegular,
 		userConfigDir: os.UserConfigDir, userCacheDir: os.UserCacheDir, userHomeDir: os.UserHomeDir,
 	}
 }
@@ -138,4 +139,17 @@ func readGoEnvFile(src goEnvSources) (map[string]string, error) {
 		return nil, err
 	}
 	return values, nil
+}
+
+// readRegular reads path only when it is a regular file: a FIFO under the
+// name would block the daemon that reads it.
+func readRegular(path string) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", path)
+	}
+	return os.ReadFile(path)
 }

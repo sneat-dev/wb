@@ -4,15 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/disk"
@@ -34,7 +30,6 @@ type worldDeps struct {
 	tempDir     func() string
 	getenv      func(string) string
 	admitPrune  func(ctx context.Context, projectsRoot string) (status string, wait time.Duration, release func())
-	fetchURL    func(ctx context.Context, method, url string) (int, []byte, error)
 	readProcess func() Table
 }
 
@@ -42,16 +37,16 @@ func realWorldDeps() worldDeps {
 	return worldDeps{
 		userHome: os.UserHomeDir, resolve: wbhome.Resolve, readDir: os.ReadDir,
 		git: runGit, goEnv: ResolveGoEnv, tempDir: os.TempDir, getenv: os.Getenv,
-		admitPrune: admitPrune, fetchURL: fetchURL, readProcess: ReadProcessTable,
+		admitPrune: admitPrune, readProcess: ReadProcessTable,
 	}
 }
 
 // NewWorld assembles the real machine for one projects root.
-func NewWorld(ctx context.Context, projectsRoot string, ignoreSumFiles []string) (*World, error) {
-	return newWorld(ctx, projectsRoot, ignoreSumFiles, realWorldDeps())
+func NewWorld(ctx context.Context, projectsRoot string) (*World, error) {
+	return newWorld(ctx, projectsRoot, realWorldDeps())
 }
 
-func newWorld(ctx context.Context, projectsRoot string, ignoreSumFiles []string, deps worldDeps) (*World, error) {
+func newWorld(ctx context.Context, projectsRoot string, deps worldDeps) (*World, error) {
 	home, err := deps.userHome()
 	if err != nil {
 		return nil, err
@@ -70,14 +65,13 @@ func newWorld(ctx context.Context, projectsRoot string, ignoreSumFiles []string,
 	env.GOCACHE, env.GOMODCACHE = resolvedRoot(env.GOCACHE), resolvedRoot(env.GOMODCACHE)
 	w := &World{
 		Now: time.Now, UID: os.Getuid(), Home: home, ProjectsRoot: resolution.Root,
-		StateDir: resolution.Write.Home, Go: env, IgnoreSumFiles: ignoreSumFiles,
+		StateDir: resolution.Write.Home, Go: env,
 		Processes: deps.readProcess, Probe: disk.Probe, Identity: StatIdentity, Scan: scanTree,
-		LockDirs: LockDirs, RemoveTree: RemoveTree, RemoveFile: RemoveFileBeneath, LockModuleVersion: LockModuleVersion,
-		HTTP: deps.fetchURL, LookupHost: net.DefaultResolver.LookupHost,
+		LockDirs: LockDirs, RemoveTree: RemoveTree, RemoveFile: RemoveFileBeneath,
 		Admit: func(ctx context.Context) (string, time.Duration, func()) {
 			return deps.admitPrune(ctx, resolution.Root)
 		},
-		categories: []category{scratchCategory{}, buildCacheCategory{}, moduleCategory{}, fullCleanCategory{}},
+		categories: []category{scratchCategory{}, buildCacheCategory{}, fullCleanCategory{}},
 	}
 	if legacy := filepath.Join(home, ".wb"); filepath.Clean(legacy) != filepath.Clean(w.StateDir) {
 		if info, err := os.Stat(legacy); err == nil && info.IsDir() {
@@ -85,11 +79,7 @@ func newWorld(ctx context.Context, projectsRoot string, ignoreSumFiles []string,
 		}
 	}
 	w.TempDirs, w.TempAliases = tempDirs(deps)
-	w.Protected, w.Checkouts, w.ProtectedGap = protectedInventory(ctx, w, resolution, deps)
-	w.RefreshCheckouts = func() ([]string, string) {
-		_, checkouts, gap := protectedInventory(ctx, w, resolution, deps)
-		return checkouts, gap
-	}
+	w.Protected, w.ProtectedGap = protectedInventory(ctx, w, resolution, deps)
 	w.ProtectedIDs = protectedIDs(w.Protected)
 	w.Scan = scanTreeWithIDs(w.ProtectedIDs, func() bool { return w.runCancelled() })
 	w.BindOfSubdirectory = bindOfSubdirectory
@@ -130,10 +120,10 @@ func resolvedRoot(path string) string {
 }
 
 // protectedInventory lists every root no category may delete inside or
-// around, and the checkouts whose sum files form the module reference set.
-// A gap in the inventory is reported: every category that deletes
-// directories then fails closed.
-func protectedInventory(ctx context.Context, w *World, resolution wbhome.Resolution, deps worldDeps) (protected, checkouts []string, gap string) {
+// around: state, the worktree stores, every canonical clone and every
+// worktree a clone registers (by path, whether or not it can be read). A gap
+// in the inventory is reported: every category then fails closed.
+func protectedInventory(ctx context.Context, w *World, resolution wbhome.Resolution, deps worldDeps) (protected []string, gap string) {
 	add := func(paths ...string) {
 		for _, path := range paths {
 			if path != "" {
@@ -156,17 +146,8 @@ func protectedInventory(ctx context.Context, w *World, resolution wbhome.Resolut
 	if err != nil {
 		noteGap("canonical clones could not be listed: " + err.Error())
 	}
-	seen := map[string]bool{}
-	addCheckout := func(path string) {
-		path = resolved(path)
-		if !seen[path] {
-			seen[path] = true
-			checkouts = append(checkouts, path)
-		}
-	}
 	for _, clone := range clones {
 		add(clone, filepath.Join(clone, ".worktrees"))
-		addCheckout(clone)
 		stores = append(stores, filepath.Join(clone, ".worktrees"))
 		out, err := deps.git(ctx, clone, "worktree", "list", "--porcelain", "-z")
 		if err != nil {
@@ -174,45 +155,46 @@ func protectedInventory(ctx context.Context, w *World, resolution wbhome.Resolut
 			continue
 		}
 		worktrees, err := parseWorktreeList(out)
+		if err == nil && !listsClone(worktrees, clone) {
+			// Git always lists the repository itself first; output without
+			// it is incomplete, and registrations may be missing.
+			err = errors.New("the clone itself is not listed")
+		}
 		if err != nil {
 			noteGap("git worktree list in " + clone + ": " + err.Error())
 			continue
 		}
-		for _, worktree := range worktrees {
-			add(worktree)
-			info, err := os.Stat(worktree)
-			switch {
-			case err == nil && info.IsDir():
-				addCheckout(worktree)
-			case err != nil && !errors.Is(err, os.ErrNotExist):
-				// A registration that exists but cannot be read may hold the
-				// only reference to a module version.
-				noteGap("registered worktree " + worktree + " cannot be read: " + err.Error())
-			}
-		}
+		add(worktrees...)
 	}
-	// A checkout a worktrees root holds counts even when no listed clone
-	// registers it: its canonical clone may live elsewhere, or its
+	// A checkout a worktrees root holds is protected even when no listed
+	// clone registers it: its canonical clone may live elsewhere, or its
 	// registration may be broken.
 	for _, store := range stores {
 		held, err := findCheckouts(deps.readDir, store, false)
 		if err != nil {
 			noteGap("worktrees root " + store + " could not be listed: " + err.Error())
 		}
-		for _, checkout := range held {
-			add(checkout)
-			addCheckout(checkout)
+		add(held...)
+	}
+	return protected, gap
+}
+
+// listsClone reports whether git's list names the clone it was run in.
+func listsClone(worktrees []string, clone string) bool {
+	for _, worktree := range worktrees {
+		if resolved(worktree) == resolved(clone) {
+			return true
 		}
 	}
-	return protected, checkouts, gap
+	return false
 }
 
 // findCheckouts lists directories holding .git at any depth below root,
 // without descending into a checkout, and walks each directory once even
 // through a symlink loop. Any unreadable directory is an error: a silently
-// skipped clone would be neither protected nor read for references. skipDot
-// leaves out root's dot-directories (.wb, .worktrees), which are not clone
-// placements.
+// skipped clone would not be protected. skipDot leaves out WB's own
+// directories at root (.wb, .worktrees), which are not clone placements;
+// every other dot-directory may hold a clone and is walked.
 func findCheckouts(readDir func(string) ([]os.DirEntry, error), root string, skipDot bool) ([]string, error) {
 	var found []string
 	visited := map[string]bool{}
@@ -254,7 +236,7 @@ func findCheckouts(readDir func(string) ([]os.DirEntry, error), root string, ski
 				}
 				isDir = info.IsDir()
 			}
-			if !isDir || (skipDot && level == 0 && strings.HasPrefix(entry.Name(), ".")) || entry.Name() == "node_modules" {
+			if !isDir || (skipDot && level == 0 && (entry.Name() == ".wb" || entry.Name() == ".worktrees")) || entry.Name() == "node_modules" {
 				continue
 			}
 			if err := walk(path, level+1); err != nil {
@@ -298,66 +280,6 @@ func runGit(ctx context.Context, dir string, args ...string) (string, error) {
 	}
 	out, err := cmd.Output()
 	return string(out), err
-}
-
-// maxProbeBody bounds a proxy response WB reads to compare a .mod file.
-const maxProbeBody = 1 << 20
-
-// probeClient proves re-fetchability only against an independent proxy:
-// every redirect must stay on https, and every connection, made directly to
-// its destination, is refused if it reaches a loopback address, which also
-// defeats a DNS answer that changes between the plan's check and the dial.
-var probeClient = &http.Client{
-	Timeout: 10 * time.Second,
-	CheckRedirect: func(request *http.Request, via []*http.Request) error {
-		if request.URL.Scheme != "https" {
-			return fmt.Errorf("redirect to %s is not https", request.URL.Redacted())
-		}
-		if len(via) >= 5 {
-			return errors.New("too many redirects")
-		}
-		return nil
-	},
-	Transport: &http.Transport{
-		// Direct connections only: through a forward proxy the dial check
-		// would see the proxy, not the destination. Where a proxy is
-		// required the probes fail, and nothing is deleted.
-		Proxy:               nil,
-		DialContext:         (&net.Dialer{Timeout: 10 * time.Second, Control: refuseLoopback}).DialContext,
-		TLSHandshakeTimeout: 10 * time.Second,
-	},
-}
-
-// refuseLoopback rejects a connection to a loopback address.
-func refuseLoopback(network, address string, _ syscall.RawConn) error {
-	host, _, err := net.SplitHostPort(address)
-	if err != nil {
-		return err
-	}
-	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
-		return fmt.Errorf("refusing a re-fetch probe to loopback %s", address)
-	}
-	return nil
-}
-
-// fetchURL performs one re-fetch probe, reading at most 1 MiB of body.
-func fetchURL(ctx context.Context, method, url string) (int, []byte, error) {
-	request, err := http.NewRequestWithContext(ctx, method, url, nil)
-	if err != nil {
-		return 0, nil, err
-	}
-	response, err := probeClient.Do(request)
-	if err != nil {
-		return 0, nil, err
-	}
-	defer func() { _ = response.Body.Close() }()
-	// One byte past the limit tells a too-long body from one that fits, so
-	// a prefix can never pass as the whole.
-	body, err := io.ReadAll(io.LimitReader(response.Body, maxProbeBody+1))
-	if err == nil && len(body) > maxProbeBody {
-		return response.StatusCode, nil, fmt.Errorf("%s: response is larger than %d bytes", url, maxProbeBody)
-	}
-	return response.StatusCode, body, err
 }
 
 // admitPrune waits at most admissionWait for one unit of WB's admission

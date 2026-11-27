@@ -3,8 +3,6 @@ package diskprune
 import (
 	"context"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -41,18 +39,17 @@ func fakeWorldDeps(t *testing.T) (worldDeps, string, string) {
 		tempDir:     func() string { return home },
 		getenv:      func(key string) string { return map[string]string{"GOTMPDIR": filepath.Join(home, ".")}[key] },
 		admitPrune:  func(context.Context, string) (string, time.Duration, func()) { return "admitted", 0, func() {} },
-		fetchURL:    func(context.Context, string, string) (int, []byte, error) { return 200, nil, nil },
 		readProcess: func() Table { return Table{} },
 	}
 	return deps, clone, external
 }
 
 // The real world protects state, stores, clones and every registered
-// worktree, and reads module references from clones and worktrees that exist.
+// worktree.
 func TestNewWorldInventory(t *testing.T) {
 	t.Parallel()
 	deps, clone, external := fakeWorldDeps(t)
-	w, err := newWorld(context.Background(), "/ignored", []string{"x/go.sum"}, deps)
+	w, err := newWorld(context.Background(), "/ignored", deps)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,15 +59,15 @@ func TestNewWorldInventory(t *testing.T) {
 			t.Errorf("protected lacks %s: %v", want, w.Protected)
 		}
 	}
-	if len(w.Checkouts) != 2 || w.ProtectedGap != "" || len(w.TempDirs) != 1 || w.LegacyHome == "" || w.IgnoreSumFiles[0] != "x/go.sum" {
-		t.Fatalf("world = checkouts %v gap %q temp %v legacy %q", w.Checkouts, w.ProtectedGap, w.TempDirs, w.LegacyHome)
+	if w.ProtectedGap != "" || len(w.TempDirs) != 1 || w.LegacyHome == "" {
+		t.Fatalf("world = gap %q temp %v legacy %q", w.ProtectedGap, w.TempDirs, w.LegacyHome)
 	}
 	if status, _, release := w.Admit(context.Background()); status != "admitted" {
 		t.Fatal("admission not wired")
 	} else {
 		release()
 	}
-	if len(w.categories) != 4 {
+	if len(w.categories) != 3 {
 		t.Fatalf("categories = %d", len(w.categories))
 	}
 }
@@ -89,25 +86,25 @@ func TestNewWorldFailures(t *testing.T) {
 	} {
 		deps, _, _ := fakeWorldDeps(t)
 		mutate(&deps)
-		if _, err := newWorld(context.Background(), "/r", nil, deps); !errors.Is(err, failure) {
+		if _, err := newWorld(context.Background(), "/r", deps); !errors.Is(err, failure) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
 	deps, _, _ := fakeWorldDeps(t)
 	deps.readDir = func(string) ([]os.DirEntry, error) { return nil, failure }
-	if w, _ := newWorld(context.Background(), "/r", nil, deps); !strings.Contains(w.ProtectedGap, "canonical clones") {
+	if w, _ := newWorld(context.Background(), "/r", deps); !strings.Contains(w.ProtectedGap, "canonical clones") {
 		t.Fatalf("scan gap = %q", w.ProtectedGap)
 	}
 	deps, _, _ = fakeWorldDeps(t)
 	deps.git = func(context.Context, string, ...string) (string, error) { return "", failure }
-	if w, _ := newWorld(context.Background(), "/r", nil, deps); !strings.Contains(w.ProtectedGap, "git worktree list") {
+	if w, _ := newWorld(context.Background(), "/r", deps); !strings.Contains(w.ProtectedGap, "git worktree list") {
 		t.Fatalf("git gap = %q", w.ProtectedGap)
 	}
 	deps, _, _ = fakeWorldDeps(t)
 	deps.tempDir = func() string { return "" }
 	deps.getenv = func(string) string { return "/nonexistent-tmp" }
 	deps.userHome = func() (string, error) { return filepath.Join(t.TempDir(), "no-legacy"), nil }
-	if w, _ := newWorld(context.Background(), "/r", nil, deps); len(w.TempDirs) != 1 || w.TempDirs[0] != "/nonexistent-tmp" || w.LegacyHome != "" {
+	if w, _ := newWorld(context.Background(), "/r", deps); len(w.TempDirs) != 1 || w.TempDirs[0] != "/nonexistent-tmp" || w.LegacyHome != "" {
 		t.Fatalf("temp dirs %v legacy %q", w.TempDirs, w.LegacyHome)
 	}
 	if NewWorldDepsAreReal := realWorldDeps(); NewWorldDepsAreReal.git == nil {
@@ -126,46 +123,6 @@ func TestRealWorldHelpers(t *testing.T) {
 	out, err := runGit(context.Background(), repo, "worktree", "list", "--porcelain", "-z")
 	if paths, perr := parseWorktreeList(out); err != nil || perr != nil || len(paths) != 1 {
 		t.Fatalf("git worktree list = %q, %v", out, err)
-	}
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusTeapot)
-		_, _ = w.Write([]byte("body"))
-	}))
-	// The real client refuses a loopback destination: a local server may be
-	// serving the very cache being pruned.
-	if _, _, err := fetchURL(context.Background(), "GET", server.URL); err == nil || !strings.Contains(err.Error(), "loopback") {
-		t.Fatalf("a loopback probe was made: %v", err)
-	}
-	if err := refuseLoopback("tcp", "not-an-address", nil); err == nil {
-		t.Fatal("an unparsable address was accepted")
-	}
-	if err := refuseLoopback("tcp", "203.0.113.5:443", nil); err != nil {
-		t.Fatalf("a public address was refused: %v", err)
-	}
-	redirect := probeClient.CheckRedirect
-	if err := redirect(httptest.NewRequest("GET", "http://example.com/x", nil), nil); err == nil {
-		t.Fatal("a redirect to http was followed")
-	}
-	if err := redirect(httptest.NewRequest("GET", "https://example.com/x", nil), make([]*http.Request, 5)); err == nil {
-		t.Fatal("unbounded redirects were followed")
-	}
-	if err := redirect(httptest.NewRequest("GET", "https://example.com/x", nil), nil); err != nil {
-		t.Fatalf("an https redirect was refused: %v", err)
-	}
-	realClient := probeClient
-	probeClient = server.Client()
-	status, body, err := fetchURL(context.Background(), "GET", server.URL)
-	probeClient = realClient
-	if err != nil || status != http.StatusTeapot || string(body) != "body" {
-		t.Fatalf("fetch = %d %q %v", status, body, err)
-	}
-	server.Close()
-	if _, _, err := fetchURL(context.Background(), "GET", server.URL); err == nil {
-		t.Fatal("fetch from a closed server succeeded")
-	}
-	if _, _, err := fetchURL(context.Background(), "BAD METHOD", "http://x"); err == nil {
-		t.Fatal("an invalid request was sent")
 	}
 
 	root := t.TempDir()
@@ -187,7 +144,7 @@ func TestRealWorldHelpers(t *testing.T) {
 	} else {
 		release()
 	}
-	if _, err := NewWorld(context.Background(), root, nil); err != nil {
+	if _, err := NewWorld(context.Background(), root); err != nil {
 		t.Fatalf("real world: %v", err)
 	}
 }

@@ -53,6 +53,13 @@ func RemoveFileBeneath(anchor Anchor, rel, name string, expect Identity) (int64,
 // openBeneath opens anchor, verifies it is the planned directory, and walks
 // rel from it one component at a time.
 func openBeneath(anchor Anchor, rel string) (int, error) {
+	// The planned path must still resolve to itself: a symlink introduced
+	// on the way since the plan (the cache moved into a checkout, its old
+	// spelling now pointing there) is refused, even though the opened
+	// directory would be the same object.
+	if now, err := filepath.EvalSymlinks(anchor.Root); err != nil || now != anchor.Root {
+		return -1, ErrChanged
+	}
 	fd, err := unix.Open(anchor.Root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return -1, fmt.Errorf("open %s: %w", anchor.Root, err)
@@ -110,22 +117,6 @@ func StatIdentity(path string) (Identity, error) {
 	return identity, nil
 }
 
-// writeMarker creates Go's .partial marker best-effort, never following a
-// symlink a hostile entry might have planted.
-// It never blocks on a FIFO planted under the name, and reports why it could
-// not create the marker (on a full disk, ENOSPC) so the report can say so.
-func writeMarker(path string) error {
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0o644)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = file.Close() }()
-	if info, err := file.Stat(); err != nil || !info.Mode().IsRegular() {
-		return fmt.Errorf("%s is not a regular file", path)
-	}
-	return nil
-}
-
 // writeNewFile creates path exclusively, never following a symlink and never
 // truncating an existing file.
 func writeNewFile(path string, raw []byte) error {
@@ -159,13 +150,9 @@ func readSmallRegular(path string, n int) ([]byte, error) {
 
 // readRegularFile reads a whole regular file of at most limit bytes. The
 // open never blocks (a FIFO or device planted under the name is refused, not
-// waited on), and follow says whether a final symlink may be followed.
-func readRegularFile(path string, limit int64, follow bool) ([]byte, error) {
-	flags := unix.O_RDONLY | unix.O_NONBLOCK | unix.O_CLOEXEC
-	if !follow {
-		flags |= unix.O_NOFOLLOW
-	}
-	fd, err := unix.Open(path, flags, 0)
+// waited on) and never follows a final symlink.
+func readRegularFile(path string, limit int64) ([]byte, error) {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, &os.PathError{Op: "open", Path: path, Err: err}
 	}

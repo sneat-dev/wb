@@ -192,7 +192,7 @@ func TestAutoPrunerRealWiring(t *testing.T) {
 	if err := os.WriteFile(config, []byte("disk: [\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := pruner.Prune(context.Background(), 0.1); err == nil {
+	if _, err := pruner.Config(); err == nil {
 		t.Fatal("an invalid configuration was ignored")
 	}
 }

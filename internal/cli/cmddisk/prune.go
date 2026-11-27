@@ -23,7 +23,7 @@ import (
 // PruneDependencies are the operations wb disk prune composes.
 type PruneDependencies struct {
 	// World assembles the real machine for a projects root.
-	World func(ctx context.Context, projectsRoot string, ignoreSumFiles []string) (*diskprune.World, error)
+	World func(ctx context.Context, projectsRoot string) (*diskprune.World, error)
 	// Run plans or applies.
 	Run func(ctx context.Context, w *diskprune.World, o diskprune.Options) diskprune.Report
 	// ConfigPath is the user-level wb.yaml.
@@ -81,14 +81,12 @@ Categories, in pruning order:
   go-build-cache      Go build-cache entries older than the floor: the larger
                       of --older-than (default 24h) and the oldest running Go
                       build tool's age plus one hour
-  go-module-cache     only with --category go-module-cache: versions no sum
-                      file in the fleet names, older than 7 days, that the
-                      proxy can provably serve again
   --allow-full-clean  every build-cache entry, only while no Go tool runs
 
 Never pruned: worktrees (wb clean), WB state and the retired ~/.wb (reported
-for a person to decide), and the pnpm store and npm cache (measured only; run
-pnpm store prune yourself). Prune never runs go clean.
+for a person to decide), the Go module cache, and the pnpm store and npm
+cache (measured only; run pnpm store prune yourself). Prune never runs go
+clean.
 
 Exit codes: 0 nothing needs attention, 1 findings (a plan with work, a target
 unmet, a failure or a fail-closed skip; see "outcome"), 2 usage.
@@ -116,7 +114,7 @@ unmet, a failure or a fail-closed skip; see "outcome"), 2 usage.
 			// and worktrees is itself the slow part on a large fleet.
 			progress := newPruneProgress(cmd.ErrOrStderr(), deps, flags, options.verbose)
 			progress.event(diskprune.Event{Phase: "discover"})
-			w, err := deps.World(cmd.Context(), flags.ProjectsRoot, config.IgnoreSumFiles)
+			w, err := deps.World(cmd.Context(), flags.ProjectsRoot)
 			if err != nil {
 				progress.finish(diskprune.Report{Outcome: "failed"})
 				return err
@@ -147,7 +145,7 @@ unmet, a failure or a fail-closed skip; see "outcome"), 2 usage.
 	flags := command.Flags()
 	flags.BoolVar(&options.apply, "apply", false, "Delete what the plan lists; without it nothing changes")
 	flags.StringVar(&options.untilFree, "until-free", "", "Free-space target per filesystem: 15%, 20GiB or max (default disk.minimum_available, 10%)")
-	flags.StringSliceVar(&options.categories, "category", nil, "Restrict to a category (repeatable): scratch, go-build-cache, go-module-cache")
+	flags.StringSliceVar(&options.categories, "category", nil, "Restrict to a category (repeatable): scratch, go-build-cache")
 	flags.StringVar(&options.olderThan, "older-than", "", "Raise every age floor to at least this duration, such as 100h; never lowers one")
 	flags.BoolVar(&options.allowFullClean, "allow-full-clean", false, "Also remove every Go build-cache entry while no Go tool runs; a build that starts meanwhile can fail once")
 	flags.BoolVar(&options.auto, "auto", false, "The daemon's unattended subset: apply scratch and the build-cache trim to the floor")
@@ -321,9 +319,12 @@ func renderPrune(report diskprune.Report, verbose bool) string {
 	}
 	for _, fs := range report.Filesystems {
 		fmt.Fprintf(&b, "\nfilesystem %s: %s free of %s", fs.Path, diskusage.Human(fs.Before.AvailableBytes), diskusage.Human(fs.Before.TotalBytes))
-		if report.Mode != "plan" {
-			fmt.Fprintf(&b, " -> %s free (unlinked %s, observed %s)", diskusage.Human(fs.After.AvailableBytes), diskusage.Human(fs.UnlinkedBytes), signedHuman(fs.ObservedGainBytes))
-		} else {
+		switch {
+		case report.Mode != "plan" && fs.After == nil:
+			fmt.Fprintf(&b, " -> free space unknown (unlinked %s)", diskusage.Human(fs.UnlinkedBytes))
+		case report.Mode != "plan":
+			fmt.Fprintf(&b, " -> %s free (unlinked %s, observed %s)", diskusage.Human(fs.After.AvailableBytes), diskusage.Human(fs.UnlinkedBytes), signedHuman(*fs.ObservedGainBytes))
+		default:
 			fmt.Fprintf(&b, ", plan estimates %s", diskusage.Human(fs.EstimatedBytes))
 		}
 		if fs.Note != "" {

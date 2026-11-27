@@ -165,7 +165,7 @@ func TestScratchPlanChangesNothingAndTargetStops(t *testing.T) {
 		t.Fatalf("removed %v outcome %q reasons %v items %#v", tw.removed, applied.Outcome, applied.Reasons, items)
 	}
 	fs := applied.Filesystems[0]
-	if !fs.TargetMet || fs.UnlinkedBytes <= 0 || fs.ObservedGainBytes != fs.UnlinkedBytes || fs.EstimatedBytes <= 0 {
+	if !fs.TargetMet || fs.UnlinkedBytes <= 0 || fs.ObservedGainBytes == nil || *fs.ObservedGainBytes != fs.UnlinkedBytes || fs.EstimatedBytes <= 0 {
 		t.Fatalf("filesystem = %#v", fs)
 	}
 }
@@ -369,7 +369,11 @@ func TestScratchPlanningFailures(t *testing.T) {
 	probe := newTestWorld(t)
 	probe.entry("go-build1", 8)
 	probe.Probe = func(string) (diskFilesystem, error) { return diskFilesystem{}, errors.New("statfs failed") }
-	if it := itemsByName(probe.run(Options{Floor: 0.01}), CategoryScratch)["go-build1"]; it.Status != StatusFailed {
-		t.Fatalf("probe failure item = %#v", it)
+	// A filesystem that cannot be measured is stopped from its first
+	// probe: its items are skipped, the run is fail-closed, and it reports
+	// no figures it did not measure.
+	probed := probe.run(Options{Apply: true, Floor: 0.01})
+	if it := itemsByName(probed, CategoryScratch)["go-build1"]; it.Status != StatusSkipped || it.Reason != "probe-failed" || probed.Outcome != OutcomeFailClosed || probed.Filesystems[0].After != nil || probed.Filesystems[0].ObservedGainBytes != nil {
+		t.Fatalf("probe failure = %#v", probed)
 	}
 }

@@ -245,3 +245,31 @@ func TestDiskResolvesEqualSymlinkedAndUnreadableRoots(t *testing.T) {
 		t.Fatal("a missing path is owned")
 	}
 }
+
+// Two roots that are one directory under different paths (a bind view)
+// are measured once: the second category reports same-as and adds nothing.
+//
+//nolint:paralleltest // replaces the sameRoot seam
+func TestBindViewsOfOneDirectoryAreMeasuredOnce(t *testing.T) {
+	first, second := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(first, "f"), make([]byte, 8192), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	real := sameRoot
+	t.Cleanup(func() { sameRoot = real })
+	sameRoot = func(a, b os.FileInfo) bool { return true }
+	groups := func(string, string) []group {
+		return []group{
+			{name: "one", kind: "cache", roots: []string{first}},
+			{name: "two", kind: "cache", roots: []string{second}},
+		}
+	}
+	report, err := collectWithDiscovery(context.Background(), Options{ProjectsRoot: t.TempDir(), WBHome: t.TempDir()}, os.UserHomeDir, groups)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := categoriesByName(report)
+	if two := byName["two"]; len(two.Roots) != 0 || len(two.SameAs) != 1 || !strings.HasPrefix(two.SameAs[0], "one") || two.ApparentBytes != 0 {
+		t.Fatalf("a bind view = %#v", two)
+	}
+}

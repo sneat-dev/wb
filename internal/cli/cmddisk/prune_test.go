@@ -27,7 +27,6 @@ type pruneHarness struct {
 	config   string
 	report   diskprune.Report
 	options  diskprune.Options
-	ignore   []string
 	runs     int
 	worldErr error
 	ticks    chan time.Time
@@ -44,8 +43,7 @@ func newPruneHarness(t *testing.T) *pruneHarness {
 
 func (h *pruneHarness) deps(interactive bool) PruneDependencies {
 	return PruneDependencies{
-		World: func(_ context.Context, root string, ignore []string) (*diskprune.World, error) {
-			h.ignore = ignore
+		World: func(_ context.Context, root string) (*diskprune.World, error) {
 			if h.discovering != nil {
 				h.discovering()
 			}
@@ -125,7 +123,7 @@ func TestPruneRejectsInvalidFlagsBeforeReading(t *testing.T) {
 func TestPrunePassesTheSelectionAndMapsOutcomes(t *testing.T) {
 	t.Parallel()
 	h := newPruneHarness(t)
-	if err := os.WriteFile(h.config, []byte("disk:\n  minimum_available: 0.2\n  prune:\n    ignore_sum_files: [testdata/go.sum]\n"), 0o600); err != nil {
+	if err := os.WriteFile(h.config, []byte("disk:\n  minimum_available: 0.2\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	out, _, err := h.execute(shared.Flags{ProjectsRoot: "/p", Quiet: true}, false, "--apply", "--category", "go-build-cache", "--allow-full-clean", "--older-than", "100h")
@@ -133,8 +131,8 @@ func TestPrunePassesTheSelectionAndMapsOutcomes(t *testing.T) {
 		t.Fatal(err)
 	}
 	o := h.options
-	if !o.Apply || !o.AllowFullClean || o.OlderThan != 100*time.Hour || o.Floor != 0.2 || o.Target.Ratio != 0.2 || o.Categories[0] != "go-build-cache" || h.ignore[0] != "testdata/go.sum" {
-		t.Fatalf("options = %#v ignore %v", o, h.ignore)
+	if !o.Apply || !o.AllowFullClean || o.OlderThan != 100*time.Hour || o.Floor != 0.2 || o.Target.Ratio != 0.2 || o.Categories[0] != "go-build-cache" {
+		t.Fatalf("options = %#v", o)
 	}
 	if !strings.Contains(out, "outcome done") {
 		t.Fatalf("text = %q", out)
@@ -158,14 +156,15 @@ func TestPrunePassesTheSelectionAndMapsOutcomes(t *testing.T) {
 // category, deletions in full and keeps summarised unless --verbose.
 func TestPruneOutput(t *testing.T) {
 	t.Parallel()
-	estimate := int64(4096)
+	estimate, gain := int64(4096), int64(1<<30)
 	h := newPruneHarness(t)
 	h.report = diskprune.Report{
 		SchemaVersion: 1, Mode: "apply", Outcome: diskprune.OutcomeFailed,
 		Reasons:   []string{diskprune.OutcomeFailed, diskprune.OutcomeTargetUnmet},
 		Admission: diskprune.AdmissionReport{Status: "bypassed"},
 		Filesystems: []diskprune.FilesystemReport{{Path: "/tmp", Before: diskprune.SpaceReport{TotalBytes: 100 << 30, AvailableBytes: 1 << 30},
-			After: diskprune.SpaceReport{TotalBytes: 100 << 30, AvailableBytes: 2 << 30}, UnlinkedBytes: 1 << 30, ObservedGainBytes: 1 << 30, Note: "space-not-returned"}},
+			After: &diskprune.SpaceReport{TotalBytes: 100 << 30, AvailableBytes: 2 << 30}, UnlinkedBytes: 1 << 30, ObservedGainBytes: &gain, Note: "space-not-returned"},
+			{Path: "/var/tmp", Before: diskprune.SpaceReport{TotalBytes: 50 << 30, AvailableBytes: 1 << 30}, Note: "probe-failed"}},
 		Categories: []diskprune.CategoryReport{
 			{Name: "scratch", Order: 1, Status: "applied", EffectiveFloor: "24h0m0s", EstimateBytes: &estimate,
 				Items: []diskprune.ItemReport{
@@ -187,7 +186,7 @@ func TestPruneOutput(t *testing.T) {
 	}
 	text, _, _ := h.execute(shared.Flags{Quiet: true}, false)
 	for _, want := range []string{
-		"outcome failed (failed, target-unmet)", "admission: bypassed", "[space-not-returned]", "-> 2.0 GB free", "observed +1.0 GB",
+		"outcome failed (failed, target-unmet)", "admission: bypassed", "[space-not-returned]", "-> 2.0 GB free", "observed +1.0 GB", "-> free space unknown",
 		"1. scratch: applied, floor 24h0m0s, estimate 4.0 KB", "deleted       /tmp/go-build1  4.0 KB  unused",
 		"error: EIO", "kept 2: too-young", "kept 1: recovery-material", "2. go-build-cache: skipped (busy)",
 		"pid 7: go build", "/c/0a  3 entries", "report-only /home/u/.wb", "origin-not-proven",
@@ -235,17 +234,17 @@ func TestPruneProgressModes(t *testing.T) {
 		Ticker:      func(time.Duration) (<-chan time.Time, func()) { return h.ticks, func() { h.stopped = true } },
 		Interactive: func(bool) bool { return false },
 	}, shared.Flags{}, false)
-	p.event(diskprune.Event{Phase: "measure", Category: "go-module-cache"})
+	p.event(diskprune.Event{Phase: "measure", Category: "go-build-cache"})
 	h.ticks <- time.Now()
 	h.ticks <- time.Now()
 	deadline := time.Now().Add(5 * time.Second)
-	for strings.Count(out.String(), "measure go-module-cache") < 2 && time.Now().Before(deadline) {
+	for strings.Count(out.String(), "measure go-build-cache") < 2 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
 	p.finish(diskprune.Report{Outcome: diskprune.OutcomeDone})
 	p.beat()
 	text := out.String()
-	if strings.Count(text, "heartbeat every 10s") != 1 || strings.Count(text, "measure go-module-cache") < 2 || !strings.Contains(text, "done; outcome done") || !h.stopped {
+	if strings.Count(text, "heartbeat every 10s") != 1 || strings.Count(text, "measure go-build-cache") < 2 || !strings.Contains(text, "done; outcome done") || !h.stopped {
 		t.Fatalf("heartbeat = %q", text)
 	}
 	silent := newPruneProgress(io.Discard, PruneDependencies{
