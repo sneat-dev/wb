@@ -2,6 +2,7 @@ package diskprune
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -23,6 +24,21 @@ func (l *Lock) Release() {
 		l.release = nil
 	}
 }
+
+// LockedError names who holds a lock, when /proc/locks shows it.
+type LockedError struct {
+	Path string
+	PID  int
+}
+
+func (e *LockedError) Error() string {
+	if e.PID > 0 {
+		return fmt.Sprintf("%s: held by pid %d", e.Path, e.PID)
+	}
+	return e.Path + ": held by another process"
+}
+
+func (e *LockedError) Unwrap() error { return ErrLocked }
 
 // lockHolder reads /proc/locks for the PID holding a FLOCK on the inode, so
 // the refusal can name it. The PID is best-effort: zero when not visible.

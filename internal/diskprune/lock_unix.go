@@ -8,21 +8,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// LockedError names who holds a lock, when /proc/locks shows it.
-type LockedError struct {
-	Path string
-	PID  int
-}
-
-func (e *LockedError) Error() string {
-	if e.PID > 0 {
-		return fmt.Sprintf("%s: held by pid %d", e.Path, e.PID)
-	}
-	return e.Path + ": held by another process"
-}
-
-func (e *LockedError) Unwrap() error { return ErrLocked }
-
 // lockSyscalls is the flock call, as a seam: an NFS home where flock is not
 // supported must be reportable without one.
 var lockSyscalls = struct {
