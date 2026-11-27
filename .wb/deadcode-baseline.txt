@@ -323,6 +323,35 @@ github.com/sneat-dev/wb/internal/sessiontransport.TmuxCapabilities
 github.com/sneat-dev/wb/internal/sessiontransport.loadOverrideWithMarshal
 github.com/sneat-dev/wb/internal/sessiontransport.mappingValue
 
+# == A3. Scheduled by a live spec and plan: Desk wire contract ==
+#
+# spec/features/desk-connect (Draft): wire-contract-versioned, device-code-enrollment, publish-on-change,
+# heartbeat. spec/plans/desk-connect: Task 1 (api/desk contract) lands before its callers; Task 3 (Desk
+# HTTP client), Task 5 (wb desk commands) and Task 6 (daemon publisher) wire every entry below.
+github.com/sneat-dev/wb/api/desk.ConnectStartRequest.Validate
+github.com/sneat-dev/wb/api/desk.ConnectStartResponse.Validate
+github.com/sneat-dev/wb/api/desk.ConnectTokenRequest.Validate
+github.com/sneat-dev/wb/api/desk.ConnectTokenResponse.Validate
+github.com/sneat-dev/wb/api/desk.Decode
+github.com/sneat-dev/wb/api/desk.ErrorCode.Valid
+github.com/sneat-dev/wb/api/desk.ErrorCodes
+github.com/sneat-dev/wb/api/desk.GrantError.Valid
+github.com/sneat-dev/wb/api/desk.HeartbeatRequest.Validate
+github.com/sneat-dev/wb/api/desk.Level.Valid
+github.com/sneat-dev/wb/api/desk.MachineRef.Validate
+github.com/sneat-dev/wb/api/desk.MachineSelf.Validate
+github.com/sneat-dev/wb/api/desk.SchemaUnsupported.Validate
+github.com/sneat-dev/wb/api/desk.Scopes
+github.com/sneat-dev/wb/api/desk.ShareLevel.Valid
+github.com/sneat-dev/wb/api/desk.ShareState.Valid
+github.com/sneat-dev/wb/api/desk.SnapshotReceipt.Validate
+github.com/sneat-dev/wb/api/desk.SnapshotRequest.Validate
+github.com/sneat-dev/wb/api/desk.checkHTTPS
+github.com/sneat-dev/wb/api/desk.checkText
+github.com/sneat-dev/wb/api/desk.checkVersion
+github.com/sneat-dev/wb/api/desk.invalid
+github.com/sneat-dev/wb/api/desk.validateShares
+
 # == C. Possibly unwired by accident ==
 #
 # hub.WorkflowRunHarvester and hub.HTTPArtifactDownloader: spec/features/fleet-quality REQ
