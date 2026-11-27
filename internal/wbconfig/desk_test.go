@@ -41,6 +41,7 @@ func TestDeskSectionParsesEveryField(t *testing.T) {
 	t.Parallel()
 	config, err := LoadDesk(writeConfig(t, `desk:
   url: http://127.0.0.1:8080/
+  machine: studio-mac
   machine_id: `+deskMachine+`
   space_id: personal1
   shared_space_ids: [team1]
@@ -54,7 +55,7 @@ func TestDeskSectionParsesEveryField(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !config.Connected() || config.URL != "http://127.0.0.1:8080" || config.Detail != desk.LevelFull ||
+	if !config.Connected() || config.URL != "http://127.0.0.1:8080" || config.Machine != "studio-mac" || config.Detail != desk.LevelFull ||
 		config.SpaceID != "personal1" || len(config.SharedSpaceIDs) != 1 ||
 		config.PublishMinInterval != MinDeskPublishMinInterval || config.HeartbeatInterval != 2*time.Minute {
 		t.Fatalf("config = %+v", config)
@@ -71,6 +72,8 @@ func TestDeskSectionRefusesUnsafeOrUnknownValues(t *testing.T) {
 		"not yaml":          "desk: [",
 		"unknown key":       "desk:\n  token: abc\n",
 		"plain http":        "desk:\n  url: http://desk.sneat.dev\n",
+		"bad machine":       "desk:\n  machine: not a name\n",
+		"empty machine":     "desk:\n  machine: ''\n",
 		"bad machine id":    "desk:\n  machine_id: XYZ\n",
 		"bad space":         "desk:\n  space_id: a/b\n",
 		"bad shared space":  "desk:\n  shared_space_ids: ['x y']\n",
@@ -95,13 +98,13 @@ func TestDeskSectionRefusesUnsafeOrUnknownValues(t *testing.T) {
 func TestSetDeskOwnsOnlyItsKeysAndClearDeskRemovesThem(t *testing.T) {
 	t.Parallel()
 	path := writeConfig(t, "# my settings\nremote:\n  provider: git\ndesk:\n  enabled: true\n  heartbeat:\n    interval: 10m\n  shared_space_ids: [old]\n")
-	connection := DeskConnection{URL: "https://desk.sneat.dev", MachineID: deskMachine, SpaceID: "personal1",
+	connection := DeskConnection{URL: "https://desk.sneat.dev", Machine: "macbook", MachineID: deskMachine, SpaceID: "personal1",
 		SharedSpaceIDs: []string{"team1", "team2"}, CredentialFile: "/c/desk.token", Detail: desk.LevelRepositories}
 	if err := SetDesk(path, connection); err != nil {
 		t.Fatal(err)
 	}
 	config, err := LoadDesk(path)
-	if err != nil || !config.Connected() || config.HeartbeatInterval != 10*time.Minute || strings.Join(config.SharedSpaceIDs, ",") != "team1,team2" {
+	if err != nil || !config.Connected() || config.Machine != "macbook" || config.HeartbeatInterval != 10*time.Minute || strings.Join(config.SharedSpaceIDs, ",") != "team1,team2" {
 		t.Fatalf("after SetDesk = %+v, %v", config, err)
 	}
 	raw, _ := os.ReadFile(path)
@@ -124,11 +127,11 @@ func TestSetDeskOwnsOnlyItsKeysAndClearDeskRemovesThem(t *testing.T) {
 	if err := ClearDesk(path); err != nil {
 		t.Fatal(err)
 	}
-	if config, _ = LoadDesk(path); config.Connected() || config.HeartbeatInterval != 10*time.Minute {
+	if config, _ = LoadDesk(path); config.Connected() || config.Machine != "" || config.HeartbeatInterval != 10*time.Minute {
 		t.Fatalf("ClearDesk keeps the operator's settings only: %+v", config)
 	}
 	raw, _ = os.ReadFile(path)
-	if strings.Contains(string(raw), "machine_id") || !strings.Contains(string(raw), "enabled") {
+	if strings.Contains(string(raw), "machine") || !strings.Contains(string(raw), "enabled") {
 		t.Fatalf("after ClearDesk:\n%s", raw)
 	}
 }

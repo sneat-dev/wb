@@ -117,12 +117,12 @@ func TestStatusExitsOneOnFindings(t *testing.T) {
 		want   []string
 	}{
 		{"not connected", deskrun.StatusResult{Fix: "wb desk connect"}, 1, []string{"Not connected", "wb desk connect"}},
-		{"healthy", deskrun.StatusResult{Connected: true, DeskURL: "https://desk.sneat.dev", MachineID: "m1", Detail: desk.LevelRepositories,
+		{"healthy", deskrun.StatusResult{Connected: true, DeskURL: "https://desk.sneat.dev", Machine: "macbook", MachineID: "m1", Detail: desk.LevelRepositories,
 			PersonalSpaceID: "p1", Shares: []desk.Share{{SpaceID: "team1", Level: desk.ShareSummary, State: desk.ShareActive}},
-			LastSnapshotAt: &at}, 0, []string{"team1 (summary, active)", "published   1m30s ago", "heartbeat   never"}},
-		{"revoked", deskrun.StatusResult{Connected: true, DeskError: desk.ErrorRevoked, Fix: "wb desk connect"}, 1, []string{"desk_error  revoked", "fix         wb desk connect"}},
+			LastSnapshotAt: &at}, 0, []string{"machine     macbook (m1)", "team1 (summary, active)", "published   1m30s ago", "heartbeat   never"}},
+		{"revoked", deskrun.StatusResult{Connected: true, MachineID: "m1", DeskError: desk.ErrorRevoked, Fix: "wb desk connect"}, 1, []string{"machine     m1", "desk_error  revoked", "fix         wb desk connect"}},
 		{"unreachable", deskrun.StatusResult{Connected: true, DeskError: desk.ErrorUnreachable}, 1, []string{"desk_error  unreachable"}},
-		{"paused", deskrun.StatusResult{Connected: true, Paused: true}, 0, []string{"publishing  paused"}},
+		{"paused", deskrun.StatusResult{Connected: true, Machine: "macbook", Paused: true}, 0, []string{"machine     macbook\n", "publishing  paused"}},
 		{"local problem", deskrun.StatusResult{Connected: true, Problem: "the credential file is bad", Fix: "chmod 600 x"}, 1, []string{"problem     the credential file is bad", "fix         chmod 600 x"}},
 	}
 	for _, tc := range cases {

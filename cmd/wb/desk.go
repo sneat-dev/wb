@@ -18,9 +18,12 @@ import (
 )
 
 // deskMachineName names this machine as the daemon's fleet document does:
-// remote.machine, else the hostname, else "local".
+// remote.machine, else desk.machine, else the hostname, else "local".
 func deskMachineName(configPath string, hostname func() (string, error)) string {
 	if config, err := remotestate.LoadConfig(configPath); err == nil && config.Machine != "" {
+		return config.Machine
+	}
+	if config, err := wbconfig.LoadDesk(configPath); err == nil && config.Machine != "" {
 		return config.Machine
 	}
 	if host, err := hostname(); err == nil && host != "" {

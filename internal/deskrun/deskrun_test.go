@@ -173,7 +173,7 @@ func (h *harness) connected() string {
 	if err := os.WriteFile(credential, []byte("cred_0\n"), 0o600); err != nil {
 		h.t.Fatal(err)
 	}
-	h.writeConfig("remote:\n  provider: git\ndesk:\n  url: https://desk.example\n  machine_id: " + machineID +
+	h.writeConfig("remote:\n  provider: git\ndesk:\n  url: https://desk.example\n  machine: macbook\n  machine_id: " + machineID +
 		"\n  space_id: personal1\n  credential_file: " + credential + "\n  detail: repositories\n")
 	return credential
 }
@@ -203,7 +203,7 @@ func TestConnectApprovesInstallsAndRestarts(t *testing.T) {
 		t.Fatal("the staged credential must not remain")
 	}
 	config, _ := wbconfig.LoadDesk(h.configPath)
-	if !config.Connected() || config.SpaceID != "personal1" || strings.Join(config.SharedSpaceIDs, ",") != "team1" {
+	if !config.Connected() || config.Machine != "macbook" || config.SpaceID != "personal1" || strings.Join(config.SharedSpaceIDs, ",") != "team1" {
 		t.Fatalf("config = %+v", config)
 	}
 	raw, _ := os.ReadFile(h.configPath)
@@ -521,18 +521,18 @@ func TestStatusReportsConnectionAndDeskErrors(t *testing.T) {
 	h := newHarness(t)
 	h.connected()
 	at := time.Date(2026, 11, 27, 11, 59, 0, 0, time.UTC)
-	h.client.self = desk.MachineSelf{PersonalSpaceID: "personal1", Shares: []desk.Share{{SpaceID: "team1", Level: desk.ShareFull, State: desk.ShareActive}},
+	h.client.self = desk.MachineSelf{Machine: desk.MachineRef{ID: machineID, Name: "desk-mac"}, PersonalSpaceID: "personal1", Shares: []desk.Share{{SpaceID: "team1", Level: desk.ShareFull, State: desk.ShareActive}},
 		LastSnapshotAt: at, LastHeartbeatAt: at}
 	result, err = h.service().Status(context.Background())
-	if err != nil || !result.Connected || result.DeskError != "" || result.LastSnapshotAt == nil || len(result.Shares) != 1 {
+	if err != nil || !result.Connected || result.Machine != "desk-mac" || result.DeskError != "" || result.LastSnapshotAt == nil || len(result.Shares) != 1 {
 		t.Fatalf("connected = %+v, %v", result, err)
 	}
 	h.client.self = desk.MachineSelf{PersonalSpaceID: "personal1"}
-	if result, _ = h.service().Status(context.Background()); result.LastSnapshotAt != nil || result.LastHeartbeatAt != nil {
+	if result, _ = h.service().Status(context.Background()); result.Machine != "macbook" || result.LastSnapshotAt != nil || result.LastHeartbeatAt != nil {
 		t.Fatalf("never published = %+v", result)
 	}
 	h.client.selfErr = &deskclient.Error{Code: desk.ErrorRevoked}
-	if result, _ = h.service().Status(context.Background()); result.DeskError != desk.ErrorRevoked || result.Fix != "wb desk connect" {
+	if result, _ = h.service().Status(context.Background()); result.Machine != "macbook" || result.DeskError != desk.ErrorRevoked || result.Fix != "wb desk connect" {
 		t.Fatalf("revoked = %+v", result)
 	}
 	h.client.selfErr = errors.New("credential file is readable by others")
@@ -763,5 +763,54 @@ func TestPushRefusesWhilePublishingIsPaused(t *testing.T) {
 	h.exported = exportOf(t)
 	if _, err := h.service().Push(context.Background(), h.dir); exitCode(err) != 1 || !strings.Contains(err.Error(), "paused") || len(h.client.pushed) != 0 {
 		t.Fatalf("paused push = %v", err)
+	}
+}
+
+func TestConnectRefusesMachineMismatchWithRemoteAndKeepsDeskMachineOnReconnect(t *testing.T) {
+	t.Parallel()
+	// With remote: configured, a differing --machine is refused with exit 2.
+	conflict := newHarness(t)
+	conflict.writeConfig("remote:\n  provider: git\n  repo: acme/wb-state\n  machine: studio-mac\n")
+	_, err := conflict.connect(func(r *ConnectRequest) { r.Machine = "other-box" })
+	if exitCode(err) != 2 || !strings.Contains(err.Error(), "other-box") || !strings.Contains(err.Error(), "studio-mac") ||
+		!strings.Contains(err.Error(), "omit --machine") || conflict.client.started != nil {
+		t.Fatalf("mismatch error = %v (code %d), started = %v", err, exitCode(err), conflict.client.started)
+	}
+
+	// With remote: configured, omitting --machine or passing the same name succeeds.
+	for name, flag := range map[string]string{"omitted": "", "same": "studio-mac"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t)
+			h.writeConfig("remote:\n  provider: git\n  repo: acme/wb-state\n  machine: studio-mac\n")
+			issuedStudio := issued()
+			issuedStudio.Machine.Name = "studio-mac"
+			h.client.tokens = []desk.ConnectTokenResponse{issuedStudio}
+			if _, err := h.connect(func(r *ConnectRequest) { r.Machine = flag }); err != nil {
+				t.Fatalf("connect(%q) = %v", flag, err)
+			}
+			if h.client.started.Machine.Name != "studio-mac" {
+				t.Fatalf("started with %q, want studio-mac", h.client.started.Machine.Name)
+			}
+			if cfg, _ := wbconfig.LoadDesk(h.configPath); cfg.Machine != "studio-mac" {
+				t.Fatalf("persisted desk.machine = %q, want studio-mac", cfg.Machine)
+			}
+		})
+	}
+
+	// Without remote:, reconnecting without --machine keeps the persisted desk.machine.
+	reconnect := newHarness(t)
+	reconnect.writeConfig("desk:\n  url: https://desk.example\n  machine: custom-mac\n  machine_id: " + machineID + "\n  credential_file: " + filepath.Join(reconnect.dir, "credentials", "desk-custom-mac.token") + "\n")
+	issuedCustom := issued()
+	issuedCustom.Machine.Name = "custom-mac"
+	reconnect.client.tokens = []desk.ConnectTokenResponse{issuedCustom}
+	if _, err := reconnect.connect(nil); err != nil {
+		t.Fatalf("reconnect = %v", err)
+	}
+	if reconnect.client.started.Machine.Name != "custom-mac" {
+		t.Fatalf("reconnect started with %q, want persisted custom-mac", reconnect.client.started.Machine.Name)
+	}
+	if cfg, _ := wbconfig.LoadDesk(reconnect.configPath); cfg.Machine != "custom-mac" {
+		t.Fatalf("persisted desk.machine = %q, want custom-mac", cfg.Machine)
 	}
 }

@@ -56,9 +56,9 @@ func newLocalSampler(projectsRoot string, logf func(string, ...any), tick func(t
 // which resolves them with the same defaulting function the lifecycle-hook
 // worker and every `wb hooks lifecycle` command use (Dispatcher.defaults, as in
 // DefaultDispatcher), so this daemon's own XDG_STATE_HOME and home are honoured
-// exactly as the worker's are. The machine is named after the
-// remote section's machine, else after hostname's answer ("local" when it has
-// none). cockpit.refresh_interval, when set, is the refresh interval, and
+// exactly as the worker's are. The machine is named after the remote section's
+// machine, else the desk section's machine, else after hostname's answer
+// ("local" when it has none). cockpit.refresh_interval, when set, is the refresh interval, and
 // cockpit.code_index_provider, when set, names the provider that reports the
 // statistics of each checkout's index (the snapshotter alone asks it).
 // cockpit.pull_request_limit, when set, bounds the pull requests the
@@ -98,6 +98,8 @@ func Options(request Request, deps Dependencies) cockpitfleet.Options {
 			// the clone migrates into .wb mid-run (sneat-dev/wb#901).
 			remote = cockpitfleet.LocalStateCollector{Reader: remotepublish.ActiveStoreReader{ProjectsRoot: projectsRoot, Config: remoteConfig}}
 		}
+	} else if deskConfig, deskErr := wbconfig.LoadDesk(configPath); deskErr == nil && deskConfig.Machine != "" {
+		machine = deskConfig.Machine
 	}
 	local := cockpitfleet.LocalCollectors{
 		ProjectsRoot: projectsRoot, Home: home, IndexCachePath: filepath.Join(home, "cockpit-fleet-index.json"),

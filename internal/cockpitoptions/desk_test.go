@@ -2,6 +2,7 @@ package cockpitoptions
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/deskpublish"
 	"github.com/sneat-dev/wb/internal/deskrun"
+	"github.com/sneat-dev/wb/internal/wbconfig"
 )
 
 const deskMachineID = "0123456789abcdef0123456789abcdef"
@@ -72,5 +74,24 @@ func TestTheDaemonPublishesToDeskOnlyWhenConnected(t *testing.T) {
 	refuse := func(string, string) (deskpublish.Client, error) { return nil, errors.New("no client") }
 	if got := deskPublisher(full, "1", random(), logf, refuse); got != nil {
 		t.Fatal("a client that cannot be built publishes nothing")
+	}
+}
+
+func TestDaemonUsesDeskMachineWhenNoRemoteConfigExists(t *testing.T) {
+	t.Parallel()
+	root, home := t.TempDir(), t.TempDir()
+	host := func() (string, error) { return "the-host", nil }
+	cfg := wbconfig.DefaultCockpitConfig()
+
+	deskOnly := cockpitConfigFile(t, "desk:\n  machine: custom-desk\n  machine_id: "+deskMachineID+"\n  credential_file: /tmp/desk.token\n")()
+	got := testOptions(root, home, deskOnly, cfg, io.Discard, host, SSH{})
+	if got.Machine != "custom-desk" {
+		t.Fatalf("machine with desk.machine and no remote = %q, want custom-desk", got.Machine)
+	}
+
+	both := cockpitConfigFile(t, "remote:\n  provider: git\n  repo: acme/wb-state\n  machine: remote-box\ndesk:\n  machine: custom-desk\n")()
+	got = testOptions(root, home, both, cfg, io.Discard, host, SSH{})
+	if got.Machine != "remote-box" {
+		t.Fatalf("remote.machine wins over desk.machine, got %q", got.Machine)
 	}
 }

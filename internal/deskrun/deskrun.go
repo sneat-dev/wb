@@ -22,6 +22,7 @@ import (
 	"github.com/sneat-dev/wb/internal/deskclient"
 	"github.com/sneat-dev/wb/internal/deskpublish"
 	"github.com/sneat-dev/wb/internal/filewrite"
+	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/wbconfig"
 )
 
@@ -167,6 +168,16 @@ func (s *Service) Connect(ctx context.Context, request ConnectRequest) (ConnectR
 		detail = request.Detail
 	}
 	machine := strings.TrimSpace(request.Machine)
+	if remoteConfig, remoteErr := remotestate.LoadConfig(configPath); remoteErr == nil {
+		if machine != "" && machine != remoteConfig.Machine {
+			return ConnectResult{}, s.exit(2, fmt.Sprintf("--machine %q conflicts with remote.machine %q: omit --machine or use %q, because this machine already publishes to the remote store under that name", machine, remoteConfig.Machine, remoteConfig.Machine))
+		}
+		if machine == "" {
+			machine = remoteConfig.Machine
+		}
+	} else if machine == "" && config.Machine != "" {
+		machine = config.Machine
+	}
 	if machine == "" {
 		machine = s.deps.MachineName(configPath)
 	}
@@ -216,7 +227,7 @@ func (s *Service) Connect(ctx context.Context, request ConnectRequest) (ConnectR
 	for _, share := range issued.Shares {
 		shared = append(shared, share.SpaceID)
 	}
-	connection := wbconfig.DeskConnection{URL: deskURL, MachineID: issued.Machine.ID, SpaceID: issued.PersonalSpaceID,
+	connection := wbconfig.DeskConnection{URL: deskURL, Machine: issued.Machine.Name, MachineID: issued.Machine.ID, SpaceID: issued.PersonalSpaceID,
 		SharedSpaceIDs: shared, CredentialFile: credentialFile, Detail: detail}
 	if err := wbconfig.SetDesk(configPath, connection); err != nil {
 		return ConnectResult{}, err
@@ -242,7 +253,7 @@ func (s *Service) changeDetail(ctx context.Context, request ConnectRequest, conf
 	if err != nil {
 		return ConnectResult{}, err
 	}
-	return ConnectResult{MachineID: config.MachineID, DeskURL: config.URL, PersonalSpaceID: config.SpaceID,
+	return ConnectResult{Machine: config.Machine, MachineID: config.MachineID, DeskURL: config.URL, PersonalSpaceID: config.SpaceID,
 		Detail: request.Detail, CredentialFile: config.CredentialFile, TaskKeyID: key.ID(), TaskKeyCreated: created,
 		ConfigPath: configPath, DetailOnly: true, DaemonRestarted: restarted}, nil
 }
@@ -372,6 +383,7 @@ type StatusResult struct {
 	Paused          bool           `json:"paused,omitempty"`
 	Problem         string         `json:"problem,omitempty"`
 	DeskURL         string         `json:"desk_url,omitempty"`
+	Machine         string         `json:"machine,omitempty"`
 	MachineID       string         `json:"machine_id,omitempty"`
 	PersonalSpaceID string         `json:"personal_space_id,omitempty"`
 	Shares          []desk.Share   `json:"shares,omitempty"`
@@ -393,7 +405,7 @@ func (s *Service) Status(ctx context.Context) (StatusResult, error) {
 	if !config.Installed() {
 		return StatusResult{Fix: "wb desk connect"}, nil
 	}
-	result := StatusResult{Connected: true, Paused: !config.Enabled, DeskURL: config.URL, MachineID: config.MachineID,
+	result := StatusResult{Connected: true, Paused: !config.Enabled, DeskURL: config.URL, Machine: config.Machine, MachineID: config.MachineID,
 		PersonalSpaceID: config.SpaceID, Detail: config.Detail}
 	client, err := s.deps.NewClient(config.URL, config.CredentialFile)
 	var self desk.MachineSelf
@@ -415,6 +427,9 @@ func (s *Service) Status(ctx context.Context) (StatusResult, error) {
 			result.Fix = "wb desk connect"
 		}
 		return result, nil
+	}
+	if self.Machine.Name != "" {
+		result.Machine = self.Machine.Name
 	}
 	result.PersonalSpaceID, result.Shares = self.PersonalSpaceID, self.Shares
 	if !self.LastSnapshotAt.IsZero() {

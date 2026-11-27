@@ -27,6 +27,7 @@ const (
 // DeskConfig is the `desk:` section (desk-connect#req:desk-configuration).
 type DeskConfig struct {
 	URL                string
+	Machine            string
 	MachineID          string
 	SpaceID            string
 	SharedSpaceIDs     []string
@@ -58,6 +59,7 @@ func DefaultDeskConfig() DeskConfig {
 
 type deskSection struct {
 	URL            *string  `yaml:"url"`
+	Machine        *string  `yaml:"machine"`
 	MachineID      *string  `yaml:"machine_id"`
 	SpaceID        *string  `yaml:"space_id"`
 	SharedSpaceIDs []string `yaml:"shared_space_ids"`
@@ -74,7 +76,7 @@ type deskSection struct {
 
 var (
 	deskMachineID = regexp.MustCompile(`^[0-9a-f]{32}$`)
-	deskSpaceID   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+	deskName      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 )
 
 // deskInterval parses a duration, raising one below floor to floor as
@@ -115,6 +117,12 @@ func parseDesk(raw []byte) (DeskConfig, error) {
 		}
 		config.URL = hubaddress.Origin(config.URL)
 	}
+	if section.Machine != nil {
+		config.Machine = strings.TrimSpace(*section.Machine)
+		if !deskName.MatchString(config.Machine) {
+			return DeskConfig{}, fmt.Errorf("desk.machine %q is not a valid machine name", config.Machine)
+		}
+	}
 	if section.MachineID != nil {
 		config.MachineID = strings.TrimSpace(*section.MachineID)
 		if !deskMachineID.MatchString(config.MachineID) {
@@ -122,7 +130,7 @@ func parseDesk(raw []byte) (DeskConfig, error) {
 		}
 	}
 	for _, id := range append([]string{deref(section.SpaceID)}, section.SharedSpaceIDs...) {
-		if id != "" && !deskSpaceID.MatchString(id) {
+		if id != "" && !deskName.MatchString(id) {
 			return DeskConfig{}, fmt.Errorf("desk space id %q is not a valid space id", id)
 		}
 	}
@@ -184,6 +192,7 @@ func LoadDesk(path string) (DeskConfig, error) {
 // DeskConnection is what `wb desk connect` owns in the `desk:` section.
 type DeskConnection struct {
 	URL            string
+	Machine        string
 	MachineID      string
 	SpaceID        string
 	SharedSpaceIDs []string
@@ -193,7 +202,7 @@ type DeskConnection struct {
 
 // deskOwnedKeys are the keys SetDesk writes and ClearDesk removes; enabled
 // and the intervals are the operator's.
-var deskOwnedKeys = []string{"url", "machine_id", "space_id", "shared_space_ids", "credential_file", "detail"}
+var deskOwnedKeys = []string{"url", "machine", "machine_id", "space_id", "shared_space_ids", "credential_file", "detail"}
 
 // SetDesk atomically writes only the `desk:` keys connect owns, keeping
 // every other setting (desk-connect#req:credential-installed-privately).
@@ -207,6 +216,7 @@ func SetDesk(path string, connection DeskConnection) error {
 		return err
 	}
 	setMappingScalar(deskNode, "url", connection.URL)
+	setMappingScalar(deskNode, "machine", connection.Machine)
 	setMappingScalar(deskNode, "machine_id", connection.MachineID)
 	setMappingScalar(deskNode, "space_id", connection.SpaceID)
 	removeMappingKey(deskNode, "shared_space_ids")

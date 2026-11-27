@@ -104,8 +104,8 @@ On success, WB MUST do all of the following before it reports success:
 1. Verify the credential with one authenticated `GET <desk.url>/v0/desk/machines/self`.
 2. Write the credential to `~/.config/wb/credentials/desk-<machine>.token` with mode 0600,
    atomically.
-3. Atomically update only the `desk:` fields it owns in `wb.yaml` (`url`, `machine_id`,
-   `space_id`, `shared_space_ids`, `credential_file`), preserving every other setting.
+3. Atomically update only the `desk:` fields it owns in `wb.yaml` (`url`, `machine`, `machine_id`,
+   `space_id`, `shared_space_ids`, `credential_file`, `detail`), preserving every other setting.
 4. Restart a running daemon so that it starts publishing, unless `--no-restart` is given. In
    that case it prints the restart command.
 
@@ -292,6 +292,7 @@ recover common task names by guessing.
 Desk is configured in its own `desk:` section of `wb.yaml`:
 
 - `url` (default `https://desk.sneat.dev`)
+- `machine`
 - `machine_id`
 - `space_id`
 - `shared_space_ids`
@@ -300,6 +301,10 @@ Desk is configured in its own `desk:` section of `wb.yaml`:
 - `publish.min_interval`
 - `heartbeat.interval`
 - `enabled` (default `true` once connected)
+
+`desk.machine` records the connected machine name and is used as the daemon's fleet machine name
+when no `remote:` section is configured (`wb desk connect` refuses an explicit `--machine` that
+differs from `remote.machine`).
 
 A daemon with no `desk:` section, or with `enabled: false`, makes no Desk request at all.
 `desk:` is independent of `remote:`, so a machine may publish to a `git` or `hub` remote store

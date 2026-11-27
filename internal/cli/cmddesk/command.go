@@ -82,7 +82,7 @@ machine sends without connecting again:
 		},
 	}
 	command.Flags().StringVar(&deskURL, "desk", "", "Desk origin (default: desk.url, else https://desk.sneat.dev)")
-	command.Flags().StringVar(&machine, "machine", "", "name for this machine (default: remote.machine, else the hostname)")
+	command.Flags().StringVar(&machine, "machine", "", "name for this machine (default: remote.machine, else desk.machine, else the hostname)")
 	command.Flags().StringVar(&detail, "detail", string(desk.LevelRepositories), "what this machine sends: repositories or full")
 	command.Flags().StringVar(&space, "space", "", "preselect a team or company space on the approval page")
 	command.Flags().BoolVar(&noBrowser, "no-browser", false, "print the address instead of opening a browser")
@@ -244,8 +244,16 @@ func writeStatus(out io.Writer, result deskrun.StatusResult, jsonOut bool, now t
 		_, err := fmt.Fprintf(out, "Not connected to Desk. Run: %s\n", result.Fix)
 		return err
 	}
+	machine := result.MachineID
+	if result.Machine != "" {
+		if machine != "" {
+			machine = result.Machine + " (" + machine + ")"
+		} else {
+			machine = result.Machine
+		}
+	}
 	text := fmt.Sprintf("Connected to %s\n  machine     %s\n  detail      %s\n  space       %s (personal)\n",
-		result.DeskURL, result.MachineID, result.Detail, result.PersonalSpaceID)
+		result.DeskURL, machine, result.Detail, result.PersonalSpaceID)
 	for _, share := range result.Shares {
 		text += fmt.Sprintf("  shared      %s (%s, %s)\n", share.SpaceID, share.Level, share.State)
 	}

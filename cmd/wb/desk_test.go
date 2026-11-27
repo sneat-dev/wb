@@ -11,12 +11,19 @@ func TestDeskNamesTheMachineAsTheFleetDocumentDoes(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	configured := filepath.Join(dir, "wb.yaml")
-	if err := os.WriteFile(configured, []byte("remote:\n  provider: git\n  repo: acme/wb-state\n  machine: studio-mac\n"), 0o600); err != nil {
+	if err := os.WriteFile(configured, []byte("remote:\n  provider: git\n  repo: acme/wb-state\n  machine: studio-mac\ndesk:\n  machine: custom-desk\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	host := func() (string, error) { return "host-1", nil }
 	if got := deskMachineName(configured, host); got != "studio-mac" {
 		t.Fatalf("remote.machine wins, got %q", got)
+	}
+	deskOnly := filepath.Join(dir, "desk.yaml")
+	if err := os.WriteFile(deskOnly, []byte("desk:\n  machine: custom-desk\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := deskMachineName(deskOnly, host); got != "custom-desk" {
+		t.Fatalf("desk.machine wins when no remote exists, got %q", got)
 	}
 	missing := filepath.Join(dir, "none.yaml")
 	if got := deskMachineName(missing, host); got != "host-1" {
