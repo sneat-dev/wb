@@ -148,6 +148,9 @@ credential: the machine keeps publishing to its personal space. The daemon MUST 
 or re-enroll on its own. `wb desk status` and Cockpit's fleet health show the error with the
 command that fixes it (`wb desk connect`).
 
+Only 401 means revoked. A 403 can come from a proxy or firewall on the way, so it is treated as
+`unreachable` and retried with backoff.
+
 ### Publishing
 
 #### REQ: publish-on-change
@@ -237,6 +240,18 @@ changed with `wb desk connect --detail <level>` on a connected machine.
 
 At both levels, the daemon adds the machine's `throughput` block back. The export itself
 leaves it out, and it is in the metadata set.
+
+At both levels, the snapshot also leaves out what changes on every pass although the fleet did
+not, so that its hash changes only when the fleet does and an idle machine publishes nothing
+(REQ:publish-on-change):
+
+- the export time (`exported_at`) and the document's `snapshot_at`;
+- each entry's `observed_at`;
+- each pull request's `checked_at`;
+- the machine's resource samples (`metrics`).
+
+Desk takes the time of a snapshot from the request's `observed_at`, and a machine's liveness
+from its heartbeats.
 
 No level MUST ever send anything outside that set. That includes file content, file names,
 filesystem paths, diffs, commit subjects or messages, task summaries, prompts, log bodies,
