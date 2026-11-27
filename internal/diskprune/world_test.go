@@ -47,9 +47,10 @@ func newTestWorld(t *testing.T) *testWorld {
 			defer tw.mu.Unlock()
 			return disk.Filesystem{Path: path, TotalBytes: tw.total, AvailableBytes: tw.available}, nil
 		},
-		Identity: StatIdentity,
-		Scan:     scanTree,
-		LockDirs: LockDirs,
+		Identity:   StatIdentity,
+		RemoveFile: RemoveFileAt,
+		Scan:       scanTree,
+		LockDirs:   LockDirs,
 		Admit: func(context.Context) (string, time.Duration, func()) {
 			tw.admitted++
 			return "admitted", 3 * time.Millisecond, func() {}

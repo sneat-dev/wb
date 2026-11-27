@@ -103,7 +103,15 @@ type World struct {
 	Admit        func(ctx context.Context) (status string, wait time.Duration, release func())
 	RemoveTree   func(parent, name string, id Identity) (TreeOutcome, error)
 	RemoveFile   func(dir, name string, id Identity) (int64, error)
-	Progress     func(Event)
+	// PnpmStores are the store directories measured for the plan.
+	PnpmStores []string
+	// Pnpm runs pnpm from / under pnpmEnv; only apply calls it.
+	Pnpm     func(ctx context.Context, args ...string) (string, error)
+	Progress func(Event)
+
+	// belowTarget reports whether path's filesystem is still below its
+	// target; set by Run before applying.
+	belowTarget func(path string) bool
 
 	categories []category
 	table      *Table
@@ -200,6 +208,9 @@ func Run(ctx context.Context, w *World, o Options) Report {
 	w.progress(Event{Phase: "plan"})
 	var plans []*categoryPlan
 	for index, c := range w.categories {
+		if c.name() == categoryFullClean && !o.AllowFullClean {
+			continue
+		}
 		plan := c.plan(ctx, w, o)
 		plan.Name = c.name()
 		plan.Order = index + 1
@@ -215,6 +226,10 @@ func Run(ctx context.Context, w *World, o Options) Report {
 	filesystems := map[uint64]*filesystemState{}
 	project(w, o, plans, filesystems)
 
+	w.belowTarget = func(path string) bool {
+		fs, err := w.Probe(path)
+		return err == nil && !o.Target.Met(fs) && !o.Target.Unreachable(fs)
+	}
 	if o.Apply && ctx.Err() == nil {
 		admitted := admit(ctx, w, o, filesystems, &report)
 		applyPlans(ctx, w, o, plans, filesystems, reasons)
