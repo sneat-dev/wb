@@ -1212,15 +1212,20 @@ figures each: what removing the category would actually reclaim, and what its
 trees appear to hold. It only reports; each finding names the verb that acts on
 it.
 
-`wb disk prune` gives the space back. It plans by default and deletes only with
-`--apply`, cheapest to rebuild first, and stops once each filesystem holding a
-candidate meets its free-space target (`--until-free`, default
-`disk.minimum_available`, 10%):
+`wb disk prune` gives the safe part back with two simple rules. It plans by
+default and removes only with `--apply`:
+
+- **scratch**: your own `go-build*`, `Test*`/`Benchmark*`/`Fuzz*` and WB
+  scratch directories directly in `TMPDIR` in which nothing changed for 3 days
+  (`--older-than` raises it). A symlink, another user's directory, another
+  filesystem, or a tree holding a mount, a `.git` or a socket is kept.
+- **go-build-cache**: `go clean -cache`, only while no Go process runs. Go
+  trims its cache itself day to day; this is for a full disk.
 
 ```sh
-wb disk prune                                     # plan; exits 1 when there is work
-wb disk prune --apply                             # scratch, Go build-cache trim
-wb disk prune --format json                       # outcome, reasons, per-filesystem figures
+wb disk prune                  # plan; exits 1 when there is work
+wb disk prune --apply          # remove what the plan lists
+wb disk prune --format json    # outcome and items
 ```
 
 #### Clean versus prune
@@ -1258,19 +1263,16 @@ downloaded modules and scraps on the floor of `/tmp`.
   its commits have provably landed, checking Git, the pull request, the Work Log
   and the locks, because its worst mistake is losing unlanded work.
 - **`wb disk prune` empties the storeroom.** Nothing in it is anyone's work; it
-  can all be rebuilt or downloaded again. It removes an item only when nothing
-  uses it, it cannot come back wrong, and it holds no checkout, socket or cache
-  data, because its worst mistake is breaking a build that is running.
+  is rebuilt on demand. It removes only your own old scratch, and the build
+  cache while no Go process runs, because its worst mistake is breaking a
+  build that is running.
 
 A worktree's own `node_modules` lives in the worktree, so `wb clean` reclaims it
-with the bench; prune never touches a worktree. The shared pnpm store and npm
-cache are measured by `wb disk` but left alone: pruning them safely would
-depend on pnpm's internal layout, so run `pnpm store prune` yourself. Prune
-never runs `go clean`;
-`--allow-full-clean` removes every build-cache entry only while no Go tool runs.
-There is no `wb cache` command: `wb commands --search "cache"` finds
-`wb disk prune`. The daemon can run the unattended subset below the floor when
-`disk.auto_prune: true` is set in `~/.config/wb/wb.yaml` (off by default).
+with the bench; prune never touches a worktree. The Go module cache and the
+shared pnpm store and npm cache are measured by `wb disk` but left alone (run
+`go clean -modcache` or `pnpm store prune` yourself). There is no `wb cache`
+command: `wb commands --search "cache"` finds `wb disk prune`. Below
+`disk.minimum_available` (10% by default) `wb disk` and `wb clean` point to it.
 
 ### `wb fleet` / `wb status` — local fleet Git health
 

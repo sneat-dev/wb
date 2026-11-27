@@ -23,8 +23,6 @@ var quietVerbs = []string{
 	"worktree merge", "worktree merge prepare", "worktree merge land", "worktree merge resume", "worktree merge revert",
 	"pr create", "pr land",
 	"worktree retire",
-	// wb disk prune's --quiet silences its progress heartbeat.
-	"disk prune",
 }
 
 func TestQuietIsConsumedByExactlyTheLifecycleVerbs(t *testing.T) {

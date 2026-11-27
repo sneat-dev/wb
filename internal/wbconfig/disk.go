@@ -8,41 +8,29 @@ import (
 	"math"
 	"os"
 	"syscall"
-	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
 // DefaultDiskMinimumAvailable is the share of a filesystem below which wb disk
-// raises a finding and wb disk prune aims by default. A tenth of the volume is
-// enough for a large link step and a test run.
+// and wb clean point to wb disk prune. A tenth of the volume is enough for a
+// large link step and a test run.
 const DefaultDiskMinimumAvailable = 0.10
-
-// DefaultDiskCheckInterval is how often the daemon looks at free space when
-// disk.auto_prune is on.
-const DefaultDiskCheckInterval = 10 * time.Minute
 
 // DiskConfig is wb.yaml's disk: section, after defaults
 // (spec/features/disk-prune).
 type DiskConfig struct {
 	// MinimumAvailable is the free-space floor, a share of each filesystem.
 	MinimumAvailable float64
-	// AutoPrune lets the daemon run wb disk prune --auto below the floor. It is
-	// off unless disk.auto_prune is true: an unattended deleter is opt-in.
-	AutoPrune bool
-	// CheckInterval is how often the daemon checks free space.
-	CheckInterval time.Duration
 }
 
 type diskSection struct {
 	MinimumAvailable *float64 `yaml:"minimum_available"`
-	AutoPrune        *bool    `yaml:"auto_prune"`
-	CheckInterval    *string  `yaml:"check_interval"`
 }
 
 // DefaultDiskConfig is the section's value when wb.yaml sets nothing.
 func DefaultDiskConfig() DiskConfig {
-	return DiskConfig{MinimumAvailable: DefaultDiskMinimumAvailable, CheckInterval: DefaultDiskCheckInterval}
+	return DiskConfig{MinimumAvailable: DefaultDiskMinimumAvailable}
 }
 
 // parseDisk decodes the disk: section, rejecting unknown keys and invalid
@@ -70,16 +58,6 @@ func parseDisk(raw []byte) (DiskConfig, error) {
 			return DiskConfig{}, fmt.Errorf("disk.minimum_available must be between 0 and 1 (exclusive), got %v", *section.MinimumAvailable)
 		}
 		config.MinimumAvailable = *section.MinimumAvailable
-	}
-	if section.AutoPrune != nil {
-		config.AutoPrune = *section.AutoPrune
-	}
-	if section.CheckInterval != nil {
-		interval, err := time.ParseDuration(*section.CheckInterval)
-		if err != nil || interval < time.Second {
-			return DiskConfig{}, fmt.Errorf("disk.check_interval must be a duration of at least 1s such as 10m, got %q", *section.CheckInterval)
-		}
-		config.CheckInterval = interval
 	}
 	return config, nil
 }

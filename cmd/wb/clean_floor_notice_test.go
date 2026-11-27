@@ -2,12 +2,10 @@ package main
 
 import (
 	"errors"
-	"github.com/sneat-dev/wb/internal/diskprune"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sneat-dev/wb/internal/disk"
 	"github.com/sneat-dev/wb/internal/wbhome"
@@ -43,27 +41,5 @@ func TestCleanFloorNoticeNamesDiskPrune(t *testing.T) {
 	}
 	if notice := diskFloorNotice("", config, resolve, low); notice != "" {
 		t.Fatalf("invalid config notice = %q", notice)
-	}
-}
-
-// wb disk reads the newest receipt from the projects root's state directory.
-func TestDiskReceiptFindingReadsTheStateDirectory(t *testing.T) {
-	t.Parallel()
-	root := t.TempDir()
-	if finding := diskReceiptFinding(root); finding != "" {
-		t.Fatalf("no receipt = %q", finding)
-	}
-	home, err := wbhome.Root(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := diskprune.WriteReceipt(home, diskprune.Receipt{Time: time.Now(), Trigger: "daemon", Outcome: diskprune.OutcomeFailed}); err != nil {
-		t.Fatal(err)
-	}
-	if finding := diskReceiptFinding(root); !strings.Contains(finding, "ended failed") {
-		t.Fatalf("finding = %q", finding)
-	}
-	if diskReceiptFinding("\x00bad") != "" {
-		t.Fatal("an unresolvable root produced a finding")
 	}
 }

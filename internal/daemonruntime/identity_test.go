@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"github.com/sneat-dev/wb/internal/diskprune"
 	"os"
 	"path/filepath"
 	"strings"
@@ -328,27 +327,5 @@ func TestDaemonStartPersistsNoResolvedRuntimePath(t *testing.T) {
 		}
 	} else if !strings.Contains(logPath, runtimeDir) {
 		t.Fatalf("log %q is neither recorded by a supervisor nor the runtime log", logPath)
-	}
-}
-
-// wb daemon status names an automatic disk prune that failed or left a
-// filesystem below the floor, and says nothing after one that finished.
-func TestDaemonStatusReportsTheLastAutomaticPrune(t *testing.T) {
-	t.Parallel()
-	root := daemonTestRoot(t)
-	location, err := ResolveLocation(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	controller := NewController(daemonTestDependencies(t, root), root)
-	if result, err := controller.Status(context.Background()); err != nil || result.DiskAutoPrune != "" {
-		t.Fatalf("no receipt: %q, %v", result.DiskAutoPrune, err)
-	}
-	if err := diskprune.WriteReceipt(location.Home, diskprune.Receipt{Time: time.Now(), Trigger: "daemon", Outcome: diskprune.OutcomeTargetUnmet}); err != nil {
-		t.Fatal(err)
-	}
-	result, err := controller.Status(context.Background())
-	if err != nil || !strings.Contains(result.DiskAutoPrune, "ended target-unmet") {
-		t.Fatalf("status = %q, %v", result.DiskAutoPrune, err)
 	}
 }

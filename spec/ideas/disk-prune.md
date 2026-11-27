@@ -53,24 +53,21 @@ under `~/.wb`.
 
 ## Recommended Direction
 
-Add `wb disk prune`, which plans by default and runs the plan with
-`--apply`. It reuses `wb disk`'s single accounting walk, so each candidate is
-shown with its measured RECLAIM and a reason it is safe. It prunes in order
-of rebuild cost (orphaned scratch, then the Go build cache by last use) and
-stops once `--until-free` is met. Anything held
-open, owned by a live task or locked by a running build is skipped, and the
-skip is reported.
+Add `wb disk prune`, which plans by default and removes with `--apply`, with
+two rules a person can check (founder, 2026-11-27, after an earlier design
+that proved from outside that nothing used each cache entry kept growing
+under review):
+
+- remove this user's own old scratch: known producers' directories in the
+  temporary directory in which nothing changed for 3 days, never a symlink,
+  another filesystem, a mount, a checkout or a socket;
+- clear the Go build cache with `go clean -cache`, only while no Go process
+  runs.
 
 Revise the disk-reclaim Draft (now [disk-prune](../features/disk-prune/README.md)) into this feature instead of writing a second
-one. Because the incident keeps recurring, the daemon's below-floor trigger
-stays in scope: a manual verb nobody remembers to run does not stop the
-eleventh incident. The trigger runs only the subset that is safe to run
-unattended. The verb is the engine; the daemon calls it.
-
-wb-state is report-only. The prune plan breaks `~/.wb` down by provenance
-(written by WB, of unknown origin, or a worktree that belongs to `wb clean`)
-and lists the largest entries, so a person can decide. WB cannot prove a
-hand-made report is finished, so it deletes none of them.
+one. Everything else stays a report: worktrees (`wb clean`), WB state, the
+Go module cache and the npm and pnpm stores. There is no unattended
+(daemon) prune; `wb disk` and `wb clean` point to the verb below the floor.
 
 ## Alternatives Considered
 
@@ -82,22 +79,17 @@ hand-made report is finished, so it deletes none of them.
 - **Top-level `wb prune` or `wb disk reclaim`.** The founder chose
   `wb disk prune` (2026-11-27). "Prune" is the ecosystem's word for
   removing what nothing references, and the command calls those tools.
-- **Age-only deletion.** Lost because age is a proxy for "dead". A task that
-  is still running after four days would lose its scratch.
+- **Proving each entry unused** (process references, mount identity, Go's
+  own locks). Built and reviewed for six rounds, then dropped for the age
+  rule: every round found a narrower case, and the founder preferred a small
+  named risk (a process paused for over 3 days) to an open-ended one.
 
 ## MVP Scope
 
-One verb, `wb disk prune [--apply] [--until-free] [--category]
-[--older-than] [--allow-full-clean] [--format json]`. By default it covers
-scratch from known producers and the Go build-cache trim. The pnpm store is
-report-only: founder decision of 2026-11-27, because running `pnpm store
-prune` safely would depend on pnpm's internal layout and a full store walk.
-Go module pruning moved to a later Feature (founder, 2026-11-27, after
-three review rounds kept finding module edge cases); the module cache is a
-report. wb-state is a report. It works against
-hermetic fakes and passes a real-directory dry run. The daemon trigger ships
-in the same pull request, default off (founder, 2026-11-27). Docker and npm
-are deferred.
+One verb, `wb disk prune [--apply] [--category] [--older-than] [--format
+json]`, covering scratch and the idle Go build cache, plus the `wb disk`
+accounting fixes and `wb clean`'s progress heartbeat. Go module pruning is
+issue #1019. Docker, npm and pnpm are not pruned.
 
 ## Not Doing (and Why)
 
@@ -110,16 +102,16 @@ are deferred.
 
 | Tier | Assumption | How to validate |
 |------|------------|-----------------|
-| Must-be-true | A running Go build never reads a module version or build-cache entry that prune deletes | Hermetic test plus a concurrent `go test` while prune applies; check the module set against every `go.sum` |
-| Should-be-true | The go.sum-referenced module set is much smaller than the 21 GB cache | Count referenced versions against cached ones on the incident host in a dry run |
-| Might-be-true | The daemon trigger alone prevents recurrence without root-cause fixes | Watch incidents after the second phase ships |
+| Must-be-true | No running build or test needs a scratch directory unchanged for 3 days | Watch for reports of lost scratch after shipping |
+| Must-be-true | `go clean -cache` while no Go process runs breaks no build | The idle check runs immediately before the clean |
+| Might-be-true | A manual verb plus findings that name it prevent recurrence | Watch incidents; an unattended trigger is a later decision |
 
 
 ## SpecScore Integration
 
 - **New Features this would create:** none; it revises [disk-prune](../features/disk-prune/README.md)
 - **Existing Features affected:** disk-reclaim, renamed to [disk-prune](../features/disk-prune/README.md) and rescoped per this Idea; cleanup-orchestration (`progress-off-terminal`)
-- **Dependencies:** worktree-lifecycle, daemon-lifecycle
+- **Dependencies:** worktree-lifecycle
 
 ## Open Questions
 

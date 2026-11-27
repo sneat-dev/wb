@@ -6177,21 +6177,16 @@
             {
               "path": "wb disk prune",
               "flags": [
-                "--allow-full-clean",
                 "--apply",
-                "--auto",
                 "--category",
                 "--format",
-                "--older-than",
-                "--until-free",
-                "--verbose"
+                "--older-than"
               ],
               "modes": [
-                "Plans by default and deletes only with --apply: nothing is created, deleted, renamed or locked in a plan, and go never runs.",
-                "Prunes cheapest to rebuild first (scratch, then the Go build-cache trim) and stops once each filesystem holding a candidate meets --until-free (default disk.minimum_available).",
-                "Deletes only through the descriptors it checked, never across a mount, never inside or around a protected root (state, worktree stores, canonical clones, registered worktrees); skips whatever a process references and fails closed on process evidence it cannot trust.",
-                "The Go module cache is measured, never pruned (a later feature). --allow-full-clean removes every build-cache entry only while no Go tool runs, never by running go clean.",
-                "WB state and the retired ~/.wb are reported by class, never pruned; the pnpm store and npm cache are measured only; worktrees stay with wb clean. --auto is the daemon's unattended subset to the floor."
+                "Plans by default and removes only with --apply; a plan changes nothing.",
+                "scratch: removes this user's own go-build*, Test*/Benchmark*/Fuzz* and WB scratch directories directly in TMPDIR (and GOTMPDIR) in which nothing changed for 3 days (--older-than raises it); keeps a symlink, another user's or another filesystem's directory, and any tree holding a mount, a .git or a socket.",
+                "go-build-cache: runs go clean -cache (GOFLAGS dropped) only while no Go process runs, checked again just before; skipped where that cannot be told (no /proc) or when GOCACHEPROG is set.",
+                "Never prunes worktrees (wb clean), WB state, the Go module cache, or the npm and pnpm stores; wb disk measures them."
               ]
             }
           ],
@@ -6204,8 +6199,8 @@
               "command": "wb disk prune --help",
               "contains": [
                 "--apply",
-                "--until-free",
-                "--allow-full-clean",
+                "--older-than",
+                "go clean -cache",
                 "wb clean clears finished workbenches"
               ]
             }
@@ -6230,14 +6225,14 @@
           "status": "Full",
           "references": [
             {
-              "path": "internal/diskprune/scratch_test.go",
-              "name": "TestScratchRemovesOnlyKnownUnusedProducers",
+              "path": "internal/diskprune/diskprune_test.go",
+              "name": "TestScratchPlanThenApplyRemovesOnlyKnownOldProducers",
               "kind": "unit"
             },
             {
-              "path": "internal/diskprune/real_machine_test.go",
-              "name": "TestRealMachineDryRunNeverMutates",
-              "kind": "integration"
+              "path": "internal/diskprune/diskprune_test.go",
+              "name": "TestBuildCacheClearedOnlyWhileGoIsIdle",
+              "kind": "unit"
             },
             {
               "path": "internal/cli/cmddisk/prune_test.go",
@@ -6248,7 +6243,7 @@
           "limitation": null
         }
       },
-      "notes": "Exists because the agent VM ran out of disk at least ten times (founder, 2026-11-27) and every recovery was by hand. Docker and the npm cache are deferred; process evidence is Linux-only, so elsewhere only the build-cache trim runs, at a fixed 72h floor. Accepted risks (spec/features/disk-prune#accepted-risks): a process that starts using a candidate in the moments between prune's last check and the unlink can lose it, as with Go's own automatic cache trim."
+      "notes": "Exists because the agent VM ran out of disk at least ten times (founder, 2026-11-27) and every recovery was by hand. Deliberately simple (founder, 2026-11-27): two rules a person can check, instead of proving from outside that nothing uses a cache. Go trims its build cache itself day to day; prune is for a full disk."
     },
     {
       "id": "wb.fleet",

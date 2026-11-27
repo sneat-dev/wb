@@ -111,7 +111,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `deadcode` | rejected | rejected | rejected | yes |
 | `disk` | yes | rejected | rejected | yes |
 | `disk dependency-cache` | rejected | rejected | rejected | yes |
-| `disk prune` | yes | rejected | rejected | yes |
+| `disk prune` | rejected | rejected | rejected | yes |
 | `status` | no-path default fleet only | no-path default fleet only | rejected | yes |
 | `fleet`, `fleet overview`, `fleet stats`, `fleet status` | yes | yes | rejected | yes |
 | `fleet merge-policy` | yes | yes | yes | yes |
@@ -237,7 +237,7 @@ reason. `--apply` records which tasks an inclusion covered in its manifest;
   errors, exit codes, and the `--format json` document are unchanged. It is
   consumed only by `create`, `worktree create`, `land`, `worktree land`,
   `worktree merge` (and `prepare`, `land`, `resume`, `revert`), `pr create`,
-  `pr land`, `worktree retire`, and `disk prune`; every other command rejects it before it
+  `pr land`, and `worktree retire`; every other command rejects it before it
   starts, except `run` and `worktree guard`, which keep their own local
   `--quiet`. `WB_QUIET=1` has the same effect on the consuming verbs and none
   elsewhere. It differs from `--non-interactive`: that removes terminal-only UI

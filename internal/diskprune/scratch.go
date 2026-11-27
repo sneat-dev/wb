@@ -2,7 +2,7 @@ package diskprune
 
 import (
 	"context"
-	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -10,496 +10,148 @@ import (
 	"time"
 )
 
-// Scratch prefix classes (disk-prune#req:scratch). Every prefix WB code
-// passes to os.MkdirTemp must be in exactly one; a test pins that.
 var (
-	// regenerablePrefixes are temporary directories WB creates and removes
-	// itself; a leftover is a crash's debris.
-	regenerablePrefixes = []string{
-		"wb-coverage-baseline-", "wb-coverage-tiers-", "wb-go-test-shards-", "wb-index-",
-		"wb-sync-report-validate-", "wb-test-cpu-queue-", "wb-worktree-merge-main-deadcode-",
-		"wb-agent-preflight-", "wb-smoke-", "wb-deadcode-tool-", "wb-native-cover-",
-	}
-	// recoveryPrefixes may hold the only copy of rescued or archived work.
-	recoveryPrefixes = []string{
-		"wb-rescue-", "wb-retired-prepare-", "wb-retired-tag-metadata-", "wb-retirement-archive-",
-		"wb-retirement-history-", "wb-canonical-sync-ignore-",
-	}
-	// runtimePrefixes belong to live daemons and running operations; a
-	// listening socket shows in /proc only as socket:[inode], so process
-	// references cannot see it.
-	runtimePrefixes = []string{
-		"wb-daemon-", "wb-daemon-cli-", "wb-hub-", "wb-sock-", "wb-supervisor-", "wb-shutdown-",
-		"wb-peer-", "wb-peer-host-", "wb-poll-", "wb-host-stage-", "wb-pr-land-", "wb-e2e-",
-		"wb-e2e-origin-", "wb-cwwt-", "wb-layout-test-home-", "wb-legacy-home-", "wb-nls-", "wb-rawpolicy-",
-	}
-	// checkoutPrefixes are Git checkouts.
-	checkoutPrefixes = []string{"wb-wt-", "wb-orchestrate-git-seeds-"}
+	// goBuildDir is a go build/test work directory; testTempDir is what
+	// t.TempDir, b.TempDir and f.TempDir create.
+	goBuildDir  = regexp.MustCompile(`^go-build[0-9]+$`)
+	testTempDir = regexp.MustCompile(`^(Test|Benchmark|Fuzz)[A-Za-z0-9_]*[0-9]+$`)
+	// wbScratch is WB's own regenerable temporary directories: a known
+	// prefix and the numeric suffix os.MkdirTemp adds, or a per-task Go
+	// cache (wb-<task>-cache, wb-<task>-go-cache).
+	wbScratch = regexp.MustCompile(`^wb-(coverage-baseline|coverage-tiers|go-test-shards|index|sync-report-validate|test-cpu-queue|worktree-merge-main-deadcode|agent-preflight|smoke|deadcode-tool|native-cover)-[0-9]+$|^wb-.+-(go-)?cache$`)
 )
 
-var (
-	goBuildDir   = regexp.MustCompile(`^go-build[0-9]+$`)
-	testTempDir  = regexp.MustCompile(`^(Test|Benchmark|Fuzz)[A-Za-z0-9_]*[0-9]+$`)
-	numberedDir  = regexp.MustCompile(`^[0-9]+$`)
-	agentGoCache = regexp.MustCompile(`^wb-.+-(go-)?cache$`)
-)
-
-const (
-	floorGoProduced = 24 * time.Hour
-	floorWB         = 72 * time.Hour
-)
-
-// scratchShape is what an entry's name and shape say it is.
-type scratchShape struct {
-	candidate bool
-	floor     time.Duration
-	keep      string // the kept class when not a candidate
+// scratchName reports whether a temporary-directory entry's name is one of
+// the producers prune knows; nothing else in the temporary directory is
+// ever considered.
+func scratchName(name string) bool {
+	return goBuildDir.MatchString(name) || testTempDir.MatchString(name) || wbScratch.MatchString(name)
 }
 
-// classifyScratch decides from name and shape alone; ownership, age and use
-// are checked after.
-func classifyScratch(path, name string) (scratchShape, bool) {
-	switch {
-	case goBuildDir.MatchString(name):
-		return scratchShape{candidate: true, floor: floorGoProduced}, true
-	case testTempDir.MatchString(name) && hasNumberedSubdirs(path):
-		return scratchShape{candidate: true, floor: floorGoProduced}, true
-	case name == "wb":
-		return scratchShape{keep: "owner-unverifiable"}, true
-	case !strings.HasPrefix(name, "wb-"):
-		// A Test… name without the numbered subdirectories of t.TempDir.
-		return scratchShape{keep: "not-a-known-producer"}, true
-	}
-	for _, class := range []struct {
-		prefixes []string
-		keep     string
-	}{{recoveryPrefixes, "recovery-material"}, {runtimePrefixes, "runtime"}, {checkoutPrefixes, "checkout-in-scratch"}} {
-		if longestPrefix(name, class.prefixes) != "" {
-			return scratchShape{keep: class.keep}, true
-		}
-	}
-	if prefix := longestPrefix(name, regenerablePrefixes); prefix != "" && numberedDir.MatchString(strings.TrimPrefix(name, prefix)) {
-		return scratchShape{candidate: true, floor: floorWB}, true
-	}
-	if agentGoCache.MatchString(name) {
-		shape, err := isGoBuildCacheShape(path)
+func pruneScratch(ctx context.Context, env Env, o Options) CategoryReport {
+	report := CategoryReport{Name: CategoryScratch, Status: StatusKeep, Kept: map[string]int{}}
+	for _, root := range env.TempDirs {
+		rootInfo, err := os.Stat(root)
 		if err != nil {
-			return scratchShape{keep: "partial-scan: " + err.Error()}, true
-		}
-		if shape {
-			return scratchShape{candidate: true, floor: floorWB}, true
-		}
-	}
-	return scratchShape{keep: "not-a-known-producer"}, true
-}
-
-func longestPrefix(name string, prefixes []string) string {
-	best := ""
-	for _, prefix := range prefixes {
-		if strings.HasPrefix(name, prefix) && len(prefix) > len(best) {
-			best = prefix
-		}
-	}
-	return best
-}
-
-func hasNumberedSubdirs(path string) bool {
-	entries, err := os.ReadDir(path)
-	if err != nil || len(entries) == 0 {
-		return false
-	}
-	for _, entry := range entries {
-		if !entry.IsDir() || !numberedDir.MatchString(entry.Name()) {
-			return false
-		}
-	}
-	return true
-}
-
-var hexShard = regexp.MustCompile(`^[0-9a-f]{2}$`)
-
-// isGoBuildCacheShape accepts exactly a Go build cache: Go's README, shard
-// directories of entry files, and Go's bookkeeping files. A fuzz/ tree is
-// accepted here and kept later as cache data. A shard that cannot be listed
-// is an error, never a "not a cache" verdict: the evidence is incomplete.
-func isGoBuildCacheShape(path string) (bool, error) {
-	entries, err := os.ReadDir(path)
-	if err != nil {
-		return false, err
-	}
-	sawReadme := false
-	for _, entry := range entries {
-		name := entry.Name()
-		switch {
-		case name == "README" && entry.Type().IsRegular():
-			sawReadme = isGoCacheReadme(filepath.Join(path, name))
-		case (name == "trim.txt" || name == "testexpire.txt") && entry.Type().IsRegular():
-		case name == "fuzz" && entry.IsDir():
-		case hexShard.MatchString(name) && entry.IsDir():
-			if only, err := onlyEntryFiles(filepath.Join(path, name)); err != nil || !only {
-				return false, err
-			}
-		default:
-			return false, nil
-		}
-	}
-	return sawReadme, nil
-}
-
-// cacheEntry is a Go build-cache entry file: a SHA-256 hex digest and -a
-// (action) or -d (output); it lives in the shard named by its first two
-// digits.
-var cacheEntry = regexp.MustCompile(`^[0-9a-f]{64}-[ad]$`)
-
-// isCacheEntry checks the name and that it sits in its own shard.
-func isCacheEntry(shard, name string) bool {
-	return cacheEntry.MatchString(name) && strings.HasPrefix(name, shard)
-}
-
-// goCacheReadme is how the README cmd/go writes into every build cache begins.
-const goCacheReadme = "This directory holds cached build artifacts from the Go build system."
-
-func isGoCacheReadme(path string) bool {
-	raw, err := readSmallRegular(path, len(goCacheReadme))
-	return err == nil && strings.HasPrefix(string(raw), goCacheReadme)
-}
-
-func onlyEntryFiles(dir string) (bool, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return false, err
-	}
-	for _, entry := range entries {
-		if !entry.Type().IsRegular() || !isCacheEntry(filepath.Base(dir), entry.Name()) {
-			return false, nil
-		}
-	}
-	return true, nil
-}
-
-// processEvidence is the category-level verdict on the process table.
-func processEvidence(table Table, root string) string {
-	switch {
-	case table.Evidence.Unsupported:
-		return "unsupported-platform"
-	case table.Evidence.Unknown != "":
-		return "unknown: " + table.Evidence.Unknown
-	case table.Evidence.HidePID && accessibleToOthers(root):
-		return "unknown: /proc hides other users' processes and " + root + " is reachable by them"
-	}
-	return ""
-}
-
-// accessibleToOthers reports whether any other user (by group or other
-// permission bits, or an ACL) can reach path; hidden PIDs then hide them.
-func accessibleToOthers(path string) bool {
-	info, err := os.Stat(path)
-	return err != nil || info.Mode().Perm()&0o077 != 0 || hasACL(path)
-}
-
-// references lists the processes using path, under any of its spellings
-// (a temporary directory reached through a symlink is named both ways). An
-// unreadable process counts when its name marks it as a tool that may use
-// anything prune manages.
-func references(table Table, path string, aliases ...string) (pids []PIDReport, unverified bool) {
-	for _, process := range table.Processes {
-		named := process.References(path)
-		for _, alias := range aliases {
-			named = named || (alias != "" && process.References(alias))
-		}
-		switch {
-		case named:
-			pids = append(pids, PIDReport{PID: process.PID, Command: process.Command()})
-		case !process.Readable && (process.IsGoTool() || process.IsPnpm()):
-			pids = append(pids, PIDReport{PID: process.PID, Command: process.Command()})
-			unverified = true
-		}
-	}
-	return pids, unverified
-}
-
-type scratchCategory struct{}
-
-func (scratchCategory) name() string { return CategoryScratch }
-
-func (scratchCategory) plan(ctx context.Context, w *World, o Options) *categoryPlan {
-	plan := &categoryPlan{applicable: true, locks: append([]string{}, w.TempDirs...)}
-	plan.EffectiveFloor = maxDuration(floorGoProduced, o.OlderThan).String()
-	table := w.freshTable()
-	for _, root := range w.TempDirs {
-		if reason := processEvidence(table, root); reason != "" {
-			plan.skip(reason)
-			return plan
-		}
-	}
-	if w.ProtectedGap != "" {
-		plan.skip("unknown: " + w.ProtectedGap)
-		return plan
-	}
-	if reason := w.bindProblem(w.TempDirs...); reason != "" {
-		plan.skip(reason)
-		return plan
-	}
-	accumulator := newReclaimAccumulator()
-	var estimate int64
-	for _, root := range w.TempDirs {
-		// A temporary directory inside a clone (~/personal-repo/tmp) holds
-		// that checkout's files, never scratch; the other temporary
-		// directories are still planned.
-		if checkout := insideCheckout(root, w.Home); checkout != "" {
-			plan.items = append(plan.items, &item{ItemReport: ItemReport{Path: root, Status: StatusKeep, Reason: "protected: inside the checkout " + checkout}})
+			report.Kept["temporary directory unreadable"]++
 			continue
 		}
 		entries, err := os.ReadDir(root)
 		if err != nil {
-			plan.Partial = true
-			plan.items = append(plan.items, &item{ItemReport: ItemReport{Path: root, Status: StatusKeep, Reason: "partial-scan: " + err.Error()}})
+			report.Kept["temporary directory unreadable"]++
 			continue
 		}
 		for _, entry := range entries {
 			if ctx.Err() != nil {
-				return plan
+				return report
 			}
-			it := planScratchEntry(w, o, table, root, entry.Name(), accumulator)
-			if it == nil {
+			if !scratchName(entry.Name()) {
 				continue
 			}
-			if it.Status == StatusDelete {
-				estimate += it.estimate
+			path := filepath.Join(root, entry.Name())
+			if keep := scratchKeepReason(env, o, rootInfo, path); keep != "" {
+				report.Kept[keep]++
+				continue
 			}
-			plan.items = append(plan.items, it)
+			item := ItemReport{Path: path, Bytes: env.Measure(ctx, path), Status: StatusDelete}
+			if o.Apply {
+				if err := env.RemoveAll(path); err != nil {
+					item.Status, item.Error = StatusFailed, err.Error()
+				} else {
+					item.Status = StatusDeleted
+				}
+			}
+			report.Items = append(report.Items, item)
 		}
 	}
-	plan.EstimateBytes = &estimate
-	return plan
+	for _, item := range report.Items {
+		switch item.Status {
+		case StatusFailed:
+			report.Status = StatusFailed
+		case StatusDelete, StatusDeleted:
+			report.Bytes += item.Bytes
+			if report.Status != StatusFailed {
+				report.Status = item.Status
+			}
+		}
+	}
+	if len(report.Kept) == 0 {
+		report.Kept = nil
+	}
+	return report
 }
 
-// planScratchEntry applies every scratch rule to one entry, in the order the
-// spec gives them, and returns nil for an entry prune has no opinion about.
-func planScratchEntry(w *World, o Options, table Table, root, name string, accumulator *reclaimAccumulator) *item {
-	path := filepath.Join(root, name)
-	// The name alone decides whether prune has an opinion; nothing inside
-	// the entry is read until it is known to be this user's real directory,
-	// so a hostile FIFO or symlink cannot hang or redirect the plan.
-	if !scratchName(name) {
-		return nil
-	}
-	it := &item{ItemReport: ItemReport{Path: path, Status: StatusKeep}, root: root}
+// scratchKeepReason is why a scratch-named entry stays, or "" when it may
+// go: it must be this user's own real directory on the temporary
+// directory's filesystem, hold no other mount, no checkout and no socket or
+// FIFO, and nothing in it may have changed for the scratch age.
+func scratchKeepReason(env Env, o Options, rootInfo os.FileInfo, path string) string {
+	return scratchKeepReasonWith(env, o, rootInfo, path, func(_ string, info os.FileInfo) uint64 { return deviceOf(info) })
+}
+
+// scratchKeepReasonWith takes the device lookup as a seam: a test cannot
+// create a mount.
+func scratchKeepReasonWith(env Env, o Options, rootInfo os.FileInfo, path string, device func(string, os.FileInfo) uint64) string {
 	info, err := os.Lstat(path)
 	switch {
-	case errors.Is(err, os.ErrNotExist):
-		// Gone between the listing and now: routine for go-build*.
-		return nil
 	case err != nil:
-		it.Reason = "partial-scan: " + err.Error()
-		return it
+		return "unreadable"
 	case !info.IsDir():
-		it.Reason = "not-a-directory"
-		return it
-	case !ownedBy(info, w.UID):
-		it.Reason = "foreign-owner"
-		return it
+		return "not a directory"
+	case !ownedBy(info, env.UID):
+		return "owned by another user"
+	case device(path, info) != deviceOf(rootInfo):
+		return "another filesystem"
 	}
-	shape, _ := classifyScratch(path, name)
-	if !shape.candidate {
-		it.Reason = shape.keep
-		return it
-	}
-	identity, err := w.Identity(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		it.Reason = "partial-scan: " + err.Error()
-		return it
-	}
-	// An entry that is itself a mount belongs to another filesystem: it is
-	// never planned against the temporary directory's free space (nor
-	// removed: removal refuses a mount too).
-	if parent, err := w.Identity(root); err != nil || parent.MountID != identity.MountID {
-		it.Reason = "contains-mount"
-		return it
-	}
-	it.device = identity.Dev
-	scan := w.Scan(path, identity.MountID, w.Protected)
-	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
-		// It went away during the scan: routine for go-build*, and nothing
-		// is left to decide about.
-		return nil
-	}
-	if reason := scanVerdict(path, w.Protected, w.cacheRoots(), scan); reason != "" {
-		it.Reason = reason
-		return it
-	}
-	floor := maxDuration(shape.floor, o.OlderThan)
-	if age := w.Now().Sub(scan.Newest); age < floor {
-		it.Reason = "too-young: " + age.Round(time.Minute).String() + " < " + floor.String()
-		return it
-	}
-	if pids, unverified := references(table, path, w.aliases(path)...); len(pids) > 0 {
-		it.PIDs = pids
-		it.Reason = "held-open"
-		if unverified {
-			it.Reason = "busy-unverified"
+	own := device(path, info)
+	var newest time.Time
+	keep := ""
+	_ = filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {
+		var entryInfo os.FileInfo
+		if err == nil {
+			entryInfo, err = d.Info()
 		}
-		return it
-	}
-	it.Status = StatusDelete
-	it.estimate = accumulator.add(scan.Inodes)
-	it.Bytes = it.estimate
-	it.Reason = "unused " + w.Now().Sub(scan.Newest).Round(time.Hour).String() + ", nothing references it"
-	it.apply = func(ctx context.Context) itemResult {
-		return applyScratch(ctx, w, floor, root, name, identity)
-	}
-	return it
-}
-
-// scanVerdict is the never-removed list.
-func scanVerdict(path string, protected, caches []string, scan scanResult) string {
+		if err != nil {
+			keep = "unreadable"
+			return fs.SkipAll
+		}
+		switch {
+		case d.Name() == ".git":
+			keep = "contains a checkout"
+		case d.IsDir() && device(p, entryInfo) != own:
+			keep = "contains a mount"
+		case entryInfo.Mode()&(fs.ModeSocket|fs.ModeNamedPipe) != 0:
+			keep = "in use (socket or FIFO)"
+		}
+		if keep != "" {
+			return fs.SkipAll
+		}
+		if modified := entryInfo.ModTime(); modified.After(newest) {
+			newest = modified
+		}
+		return nil
+	})
 	switch {
-	case insideAny(path, protected) != "":
-		return "protected: " + insideAny(path, protected)
-	case insideAny(path, caches) != "":
-		// The resolved GOCACHE or GOMODCACHE, or a directory holding one:
-		// scratch never deletes what another category manages.
-		return "contains-cache-data: " + insideAny(path, caches)
-	case scan.Protected != "":
-		return "protected: " + scan.Protected
-	case scan.Partial:
-		return "partial-scan"
-	case scan.ContainsMount:
-		return "contains-mount"
-	case scan.HasGit:
-		return "checkout-in-scratch"
-	case scan.HasSpecial:
-		return "runtime"
-	case scan.CacheData:
-		return "contains-cache-data"
+	case keep != "":
+		return keep
+	case env.Now().Sub(newest) < o.ScratchAge:
+		return "changed within " + strings.TrimSuffix(o.ScratchAge.String(), "0m0s")
 	}
 	return ""
 }
 
-// applyScratch re-checks the entry immediately before removing it: a fresh
-// process table, a fresh scan, then deletion bound to the checked identity.
-func applyScratch(ctx context.Context, w *World, floor time.Duration, root, name string, identity Identity) itemResult {
-	path := filepath.Join(root, name)
-	// Every check below must be of the planned directory: its identity,
-	// birth time included, is compared before the checks and again after
-	// the scan, and removal compares it once more.
-	if !w.stillIdentical(path, identity) {
-		return itemResult{status: StatusSkipped, reason: "changed: not the directory the plan checked"}
+// removeAll removes a tree without following symlinks. Go writes extracted
+// module trees read-only, so when the first attempt fails, this user's own
+// directories in the tree are made writable and the removal is retried.
+func removeAll(path string) error {
+	if err := os.RemoveAll(path); err == nil {
+		return nil
 	}
-	// Still this user's directory, still the producer's shape: an entry that
-	// changed owner, or a test directory that gained a non-numbered child,
-	// no longer qualifies.
-	info, err := os.Lstat(path)
-	if err != nil || !info.IsDir() || !ownedBy(info, w.UID) {
-		return itemResult{status: StatusSkipped, reason: "changed"}
-	}
-	if shape, _ := classifyScratch(path, name); !shape.candidate {
-		return itemResult{status: StatusSkipped, reason: "changed: " + shape.keep}
-	}
-	table := w.freshTable()
-	if reason := processEvidence(table, root); reason != "" {
-		return itemResult{status: StatusSkipped, reason: reason}
-	}
-	if pids, unverified := references(table, path, w.aliases(path)...); len(pids) > 0 {
-		reason := "held-open"
-		if unverified {
-			reason = "busy-unverified"
+	_ = filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && d.IsDir() {
+			_ = os.Chmod(p, 0o700)
 		}
-		return itemResult{status: StatusSkipped, reason: reason, pids: pids}
-	}
-	scan := w.Scan(path, identity.MountID, w.Protected)
-	if reason := scanVerdict(path, w.Protected, w.cacheRoots(), scan); reason != "" {
-		return itemResult{status: StatusSkipped, reason: reason}
-	}
-	if w.Now().Sub(scan.Newest) < floor {
-		return itemResult{status: StatusSkipped, reason: "too-young"}
-	}
-	if !w.stillIdentical(path, identity) {
-		return itemResult{status: StatusSkipped, reason: "changed: not the directory the plan checked"}
-	}
-	if ctx.Err() != nil {
-		return itemResult{status: StatusSkipped, reason: "cancelled"}
-	}
-	outcome, err := w.RemoveTree(root, name, identity)
-	return treeResult(outcome, err)
-}
-
-// treeResult maps a tree removal's sentinel errors to statuses.
-func treeResult(outcome TreeOutcome, err error) itemResult {
-	result := itemResult{unlinked: outcome.Bytes}
-	switch {
-	case err == nil:
-	case errors.Is(err, ErrReplaced):
-		result.status, result.reason = StatusReplaced, "replaced"
-	case errors.Is(err, ErrChanged):
-		result.status, result.reason = StatusSkipped, "changed"
-	case errors.Is(err, ErrContainsMount):
-		result.status, result.reason = StatusSkipped, "contains-mount"
-	case errors.Is(err, ErrMoved):
-		result.status, result.reason = StatusSkipped, "moved"
-	case errors.Is(err, ErrUnsupported):
-		result.status, result.reason = StatusSkipped, "unsupported-platform"
-	default:
-		result.err = err
-	}
-	return result
-}
-
-func maxDuration(a, b time.Duration) time.Duration {
-	if b > a {
-		return b
-	}
-	return a
-}
-
-// cacheRoots are the resolved caches other categories manage.
-func (w *World) cacheRoots() []string {
-	// Report-only stores too: a scratch-shaped directory that is, resolved,
-	// the npm cache or a pnpm store (say ~/.npm symlinked into TMPDIR) is
-	// that store, never scratch.
-	return append([]string{w.Go.GOCACHE}, w.reportOnlyStores()...)
-}
-
-// reportOnlyStores are the measured stores no category prunes: the Go
-// module cache, the npm cache and the pnpm stores, resolved.
-func (w *World) reportOnlyStores() []string {
-	roots := []string{w.Go.GOMODCACHE}
-	for _, store := range []string{
-		filepath.Join(w.Home, ".npm"),
-		filepath.Join(w.Home, ".local", "share", "pnpm", "store"),
-		filepath.Join(w.Home, "Library", "pnpm", "store"),
-	} {
-		roots = append(roots, resolved(store))
-	}
-	return roots
-}
-
-// aliases are path under every unresolved spelling of its temporary
-// directory; none when only the resolved spelling is in use.
-func (w *World) aliases(path string) []string {
-	var out []string
-	for resolved, spellings := range w.TempAliases {
-		if within(path, resolved) {
-			for _, spelling := range spellings {
-				out = append(out, spelling+strings.TrimPrefix(path, resolved))
-			}
-		}
-	}
-	return out
-}
-
-// scratchName reports whether a temporary-directory entry's name is one prune
-// has an opinion about, without reading anything.
-func scratchName(name string) bool {
-	return goBuildDir.MatchString(name) || testTempDir.MatchString(name) || name == "wb" || strings.HasPrefix(name, "wb-")
-}
-
-// stillIdentical reports whether path still names the object identity
-// recorded, birth time and mount included.
-func (w *World) stillIdentical(path string, identity Identity) bool {
-	now, err := w.Identity(path)
-	return err == nil && identity.sameInode(now.Dev, now.Ino, now.Birth) && now.MountID == identity.MountID
+		return nil
+	})
+	return os.RemoveAll(path)
 }

@@ -24,25 +24,24 @@ wb disk --skip-sizes       # headroom and roots only, no tree walk
 
 `wb disk` only reports. Each finding names the verb that acts on it.
 
-`wb disk prune` gives the space back. It plans by default and deletes only with
-`--apply`, cheapest to rebuild first, stopping once each filesystem meets its
-free-space target:
+`wb disk prune` gives the safe part back. It plans by default and removes only
+with `--apply`: your own `go-build*`, `Test*` and WB scratch directories in
+`TMPDIR` unchanged for 3 days, and the Go build cache (`go clean -cache`) only
+while no Go process runs:
 
 ```sh
-wb disk prune                                     # plan to the 10% floor; exits 1 when there is work
-wb disk prune --apply                             # scratch, build-cache trim (pnpm store: report only)
-wb disk prune --until-free 20% --apply            # a higher target
-wb disk prune --format json                       # outcome, reasons, per-filesystem figures
+wb disk prune                  # plan; exits 1 when there is work
+wb disk prune --apply          # remove what the plan lists
+wb disk prune --format json    # outcome and items
 ```
 
 Clean versus prune: `wb clean` clears finished workbenches (a worktree whose
 commits provably landed; its worst mistake is losing work). `wb disk prune`
-empties the shared storeroom: caches and scratch that can be rebuilt or
-downloaded again, removed only when nothing is using them (its worst mistake is
-breaking a running build). Neither deletes Work Logs, locks, claims or reports.
-There is no `wb cache` command; `wb commands --search "cache"` finds `wb disk
-prune`. Prune never runs `go clean`; `--allow-full-clean` removes every
-build-cache entry only while no Go tool runs.
+empties the shared storeroom: old scratch and the idle build cache, rebuilt on
+demand (its worst mistake is breaking a running build). Neither deletes Work
+Logs, locks, claims or reports. The Go module cache and the npm and pnpm stores
+are measured only. There is no `wb cache` command; `wb commands --search
+"cache"` finds `wb disk prune`.
 
 `wb disk dependency-cache` is a separate, Linux non-root pnpm archive command.
 Its default plan does not write cache files or a source-worktree heartbeat.

@@ -340,24 +340,6 @@ func TestInvocationsReadParsedFlagsAndKeepLocalOptionsSeparate(t *testing.T) {
 
 // AC daemon-prunes-below-floor (wb disk side): a failed or still-below-floor
 // automatic prune is a wb disk finding, so wb disk exits 1.
-func TestDiskReportsTheLastAutomaticPrune(t *testing.T) {
-	t.Parallel()
-	var out bytes.Buffer
-	deps := Dependencies{
-		Collect:        func(context.Context, disk.Options) (disk.Report, error) { return ampleReport(), nil },
-		ReceiptFinding: func(root string) string { return "the last automatic prune ended target-unmet under " + root },
-	}
-	err := execute(New(runtimeFor("/projects"), deps), &out)
-	var coded *codedError
-	if !errors.As(err, &coded) || coded.code != shared.ExitFindings || !strings.Contains(out.String(), "ended target-unmet under /projects") {
-		t.Fatalf("err %v out %q", err, out.String())
-	}
-	deps.ReceiptFinding = func(string) string { return "" }
-	out.Reset()
-	if err := execute(New(runtimeFor("/projects"), deps), &out); err != nil {
-		t.Fatalf("no receipt finding: %v", err)
-	}
-}
 
 // Without --minimum-available, wb disk uses disk.minimum_available, the floor
 // prune and the daemon use; an invalid config is a usage error.

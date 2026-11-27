@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestDiskConfigDefaultsWhenAbsent(t *testing.T) {
@@ -14,7 +13,7 @@ func TestDiskConfigDefaultsWhenAbsent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.MinimumAvailable != 0.10 || config.AutoPrune || config.CheckInterval != 10*time.Minute {
+	if config.MinimumAvailable != 0.10 {
 		t.Fatalf("defaults = %#v", config)
 	}
 	for _, raw := range []string{"", "other: 1\n", "disk:\n"} {
@@ -25,11 +24,11 @@ func TestDiskConfigDefaultsWhenAbsent(t *testing.T) {
 	}
 }
 
-// The unattended deleter is opt-in, and every key is applied as written.
+// Every key is applied as written.
 func TestDiskConfigReadsEveryKey(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "wb.yaml")
-	raw := "disk:\n  minimum_available: 0.2\n  auto_prune: true\n  check_interval: 5m\n"
+	raw := "disk:\n  minimum_available: 0.2\n"
 	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +36,7 @@ func TestDiskConfigReadsEveryKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.MinimumAvailable != 0.2 || !config.AutoPrune || config.CheckInterval != 5*time.Minute {
+	if config.MinimumAvailable != 0.2 {
 		t.Fatalf("config = %#v", config)
 	}
 }
@@ -50,8 +49,6 @@ func TestDiskConfigRejectsInvalidValues(t *testing.T) {
 		"disk:\n  unknown: 1\n":                        "parse disk section",
 		"disk:\n  minimum_available: 0\n":              "disk.minimum_available",
 		"disk:\n  minimum_available: 1\n":              "disk.minimum_available",
-		"disk:\n  check_interval: soon\n":              "disk.check_interval",
-		"disk:\n  check_interval: 10ms\n":              "disk.check_interval",
 		"disk:\n  prune:\n    ignore_sum_files: [x]\n": "parse disk section",
 	} {
 		if _, err := parseDisk([]byte(raw)); err == nil || !strings.Contains(err.Error(), want) {
@@ -60,7 +57,7 @@ func TestDiskConfigRejectsInvalidValues(t *testing.T) {
 	}
 	dir := t.TempDir()
 	bad := filepath.Join(dir, "wb.yaml")
-	if err := os.WriteFile(bad, []byte("disk:\n  auto_prune: maybe\n"), 0o600); err != nil {
+	if err := os.WriteFile(bad, []byte("disk:\n  minimum_available: maybe\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := LoadDisk(bad); err == nil || !strings.Contains(err.Error(), bad) {

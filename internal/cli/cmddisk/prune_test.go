@@ -5,11 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
-	"os"
-	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -20,63 +16,40 @@ import (
 	"github.com/sneat-dev/wb/internal/diskprune"
 )
 
-// pruneHarness records what the command passed to the engine and returns a
-// canned report.
 type pruneHarness struct {
-	t        *testing.T
-	config   string
-	report   diskprune.Report
-	options  diskprune.Options
-	runs     int
-	worldErr error
-	ticks    chan time.Time
-	stopped  bool
-	events   []diskprune.Event
-	// discovering runs inside World, while the fleet is being discovered.
-	discovering func()
+	report  diskprune.Report
+	options diskprune.Options
+	runs    int
+	envs    int
 }
 
-func newPruneHarness(t *testing.T) *pruneHarness {
-	t.Helper()
-	return &pruneHarness{t: t, config: filepath.Join(t.TempDir(), "wb.yaml"), report: diskprune.Report{Mode: "plan", Outcome: diskprune.OutcomeDone}, ticks: make(chan time.Time)}
-}
-
-func (h *pruneHarness) deps(interactive bool) PruneDependencies {
+func (h *pruneHarness) deps() PruneDependencies {
 	return PruneDependencies{
-		World: func(_ context.Context, root string) (*diskprune.World, error) {
-			if h.discovering != nil {
-				h.discovering()
-			}
-			return &diskprune.World{ProjectsRoot: root}, h.worldErr
-		},
-		Run: func(_ context.Context, w *diskprune.World, o diskprune.Options) diskprune.Report {
+		Env: func() diskprune.Env { h.envs++; return diskprune.Env{} },
+		Run: func(_ context.Context, _ diskprune.Env, o diskprune.Options) diskprune.Report {
 			h.runs++
 			h.options = o
-			for _, event := range h.events {
-				w.Progress(event)
-			}
 			return h.report
 		},
-		ConfigPath:  func() string { return h.config },
-		Ticker:      func(time.Duration) (<-chan time.Time, func()) { return h.ticks, func() { h.stopped = true } },
-		Interactive: func(bool) bool { return interactive },
 	}
 }
 
-func (h *pruneHarness) execute(flags shared.Flags, interactive bool, args ...string) (string, string, error) {
-	h.t.Helper()
-	runtime := shared.Runtime{
-		Flags:     func() shared.Flags { return flags },
+func pruneRuntime() shared.Runtime {
+	return shared.Runtime{
+		Flags:     func() shared.Flags { return shared.Flags{} },
 		ExitError: func(code int, message string) error { return &codedError{code, message} },
 	}
-	command := New(runtime, Dependencies{Prune: h.deps(interactive)})
-	var out, errOut bytes.Buffer
+}
+
+func (h *pruneHarness) execute(args ...string) (string, error) {
+	command := New(pruneRuntime(), Dependencies{Prune: h.deps()})
+	var out bytes.Buffer
 	command.SilenceUsage, command.SilenceErrors = true, true
 	command.SetOut(&out)
-	command.SetErr(&errOut)
+	command.SetErr(&bytes.Buffer{})
 	command.SetArgs(append([]string{"prune"}, args...))
 	err := command.Execute()
-	return out.String(), errOut.String(), err
+	return out.String(), err
 }
 
 func exitCode(err error) int {
@@ -90,198 +63,94 @@ func exitCode(err error) int {
 	return 0
 }
 
-// AC flags-validated-first: every invalid invocation exits 2 before the
-// world is read or the engine runs.
+// Every invalid invocation exits 2 before the machine is read; an empty
+// value given explicitly never widens the run.
 func TestPruneRejectsInvalidFlagsBeforeReading(t *testing.T) {
 	t.Parallel()
 	for _, args := range [][]string{
-		{"--category", "docker"}, {"--category", "worktrees"}, {"--category", "wb-state"},
-		{"--until-free", "12XB"}, {"--older-than", "soon"}, {"--older-than", "-1h"},
-		{"--auto", "--category", "scratch"}, {"--auto", "--until-free", "5%"}, {"--auto", "--older-than", "1h"},
-		{"--auto", "--allow-full-clean"}, {"--allow-full-clean", "--category", "scratch"}, {"--format", "yaml"},
-		// An empty value, as from an unset shell variable, never widens a run.
-		{"--category="}, {"--until-free="}, {"--older-than="}, {"--category=scratch,"},
-		{"--category=scratch", "--category="}, {"--category", "go-module-cache"}, {"--category", "node-package-store"},
-		{"--older-than", "0d"}, {"--older-than", "xd"},
+		{"--category", "docker"}, {"--category", "go-module-cache"}, {"--category", "node-package-store"},
+		{"--category="}, {"--category=scratch,"}, {"--category=scratch", "--category="},
+		{"--older-than", "soon"}, {"--older-than", "1h"}, {"--older-than="}, {"--older-than", "0d"}, {"--older-than", "xd"},
+		{"--format", "yaml"},
 	} {
-		h := newPruneHarness(t)
-		h.worldErr = errors.New("the world must not be read")
-		_, _, err := h.execute(shared.Flags{}, false, args...)
-		if exitCode(err) != shared.ExitUsage || h.runs != 0 {
-			t.Errorf("%v: exit %d (%v), runs %d", args, exitCode(err), err, h.runs)
+		h := &pruneHarness{}
+		_, err := h.execute(args...)
+		if exitCode(err) != shared.ExitUsage || h.envs != 0 || h.runs != 0 {
+			t.Errorf("%v: exit %d (%v), env %d, runs %d", args, exitCode(err), err, h.envs, h.runs)
 		}
 	}
-	h := newPruneHarness(t)
-	if err := os.WriteFile(h.config, []byte("disk:\n  minimum_available: 2\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := h.execute(shared.Flags{}, false); exitCode(err) != shared.ExitUsage {
-		t.Fatalf("invalid config: %v", err)
+	h := &pruneHarness{}
+	if _, err := h.execute("extra"); err == nil || h.runs != 0 {
+		t.Fatal("a positional argument was accepted")
 	}
 }
 
-// The command passes the selection through, defaults the target to the
-// configured floor, and maps the outcome to the exit code.
-func TestPrunePassesTheSelectionAndMapsOutcomes(t *testing.T) {
+// The selection reaches the engine; days and comma lists are accepted.
+func TestPrunePassesTheSelection(t *testing.T) {
 	t.Parallel()
-	h := newPruneHarness(t)
-	if err := os.WriteFile(h.config, []byte("disk:\n  minimum_available: 0.2\n"), 0o600); err != nil {
+	h := &pruneHarness{report: diskprune.Report{Outcome: diskprune.OutcomeDone}}
+	if _, err := h.execute("--apply", "--category", "scratch,go-build-cache", "--older-than", "5d"); err != nil {
 		t.Fatal(err)
 	}
-	out, _, err := h.execute(shared.Flags{ProjectsRoot: "/p", Quiet: true}, false, "--apply", "--category", "go-build-cache", "--allow-full-clean", "--older-than", "100h")
-	if err != nil {
-		t.Fatal(err)
+	if !h.options.Apply || len(h.options.Categories) != 2 || h.options.ScratchAge != 5*24*time.Hour {
+		t.Fatalf("options = %#v", h.options)
 	}
-	o := h.options
-	if !o.Apply || !o.AllowFullClean || o.OlderThan != 100*time.Hour || o.Floor != 0.2 || o.Target.Ratio != 0.2 || o.Categories[0] != "go-build-cache" {
-		t.Fatalf("options = %#v", o)
-	}
-	if !strings.Contains(out, "outcome done") {
-		t.Fatalf("text = %q", out)
-	}
-	h.report.Outcome = diskprune.OutcomePlanned
-	if _, _, err := h.execute(shared.Flags{Quiet: true}, false, "--until-free", "max"); exitCode(err) != shared.ExitFindings || h.options.Target.Kind != diskprune.TargetMax {
-		t.Fatalf("planned exit %d, target %#v", exitCode(err), h.options.Target)
-	}
-	h.worldErr = errors.New("resolve failed")
-	if _, _, err := h.execute(shared.Flags{Quiet: true}, false); exitCode(err) != -1 {
-		t.Fatalf("world failure = %v", err)
-	}
-	h.worldErr = nil
-	h.report.Outcome = diskprune.OutcomeDone
-	if _, _, err := h.execute(shared.Flags{Quiet: true}, false, "--auto"); err != nil || !h.options.Auto {
-		t.Fatalf("auto = %v %#v", err, h.options)
+	if _, err := h.execute("--older-than", "100h"); err != nil || h.options.ScratchAge != 100*time.Hour || h.options.Apply {
+		t.Fatalf("hours: %#v %v", h.options, err)
 	}
 }
 
-// JSON is the engine's report verbatim; text shows filesystems, every
-// category, deletions in full and keeps summarised unless --verbose.
-func TestPruneOutput(t *testing.T) {
+// Outcomes map to exit codes: done is 0, anything else a finding.
+func TestPruneOutcomesAndOutput(t *testing.T) {
 	t.Parallel()
-	estimate, gain := int64(4096), int64(1<<30)
-	h := newPruneHarness(t)
-	h.report = diskprune.Report{
-		SchemaVersion: 1, Mode: "apply", Outcome: diskprune.OutcomeFailed,
-		Reasons:   []string{diskprune.OutcomeFailed, diskprune.OutcomeTargetUnmet},
-		Admission: diskprune.AdmissionReport{Status: "bypassed"},
-		Filesystems: []diskprune.FilesystemReport{{Path: "/tmp", Before: diskprune.SpaceReport{TotalBytes: 100 << 30, AvailableBytes: 1 << 30},
-			After: &diskprune.SpaceReport{TotalBytes: 100 << 30, AvailableBytes: 2 << 30}, UnlinkedBytes: 1 << 30, ObservedGainBytes: &gain, Note: "space-not-returned"},
-			{Path: "/var/tmp", Before: diskprune.SpaceReport{TotalBytes: 50 << 30, AvailableBytes: 1 << 30}, Note: "probe-failed"}},
-		Categories: []diskprune.CategoryReport{
-			{Name: "scratch", Order: 1, Status: "applied", EffectiveFloor: "24h0m0s", EstimateBytes: &estimate,
-				Items: []diskprune.ItemReport{
-					{Path: "/tmp/go-build1", Bytes: 4096, Status: "deleted", Reason: "unused"},
-					{Path: "/tmp/go-build2", Status: "failed", Error: "EIO"},
-					{Path: "/tmp/go-build3", Status: "keep", Reason: "too-young: 1h"},
-					{Path: "/tmp/go-build4", Status: "keep", Reason: "too-young: 2h"},
-					{Path: "/tmp/wb-rescue-1", Status: "keep", Reason: "recovery-material"},
-				}},
-			{Name: "go-build-cache", Order: 2, Status: "skipped", Reason: "busy", PIDs: []diskprune.PIDReport{{PID: 7, Command: "go build"}},
-				Shards: []diskprune.ShardReport{{Path: "/c/0a", Entries: 3, Bytes: 12288, Status: "deleted"}}},
-		},
-		State: []diskprune.StateReport{{Root: "/home/u/.wb", Entries: []diskprune.StateEntryReport{{Path: "/home/u/.wb/reports/x", Class: "origin-not-proven", Bytes: 9}}}},
+	h := &pruneHarness{report: diskprune.Report{SchemaVersion: 1, Mode: "plan", Outcome: diskprune.OutcomePlanned, Categories: []diskprune.CategoryReport{
+		{Name: "scratch", Status: diskprune.StatusDelete, Bytes: 8192,
+			Items: []diskprune.ItemReport{{Path: "/tmp/go-build1", Bytes: 4096, Status: "delete"}, {Path: "/tmp/go-build2", Bytes: 4096, Status: "failed", Error: "EIO"}},
+			Kept:  map[string]int{"changed within 72h": 2, "contains a checkout": 1}},
+		{Name: "go-build-cache", Status: diskprune.StatusSkipped, Reason: "Go is running (7 go)"},
+	}}}
+	text, err := h.execute()
+	if exitCode(err) != shared.ExitFindings {
+		t.Fatalf("exit %v", err)
 	}
-	out, _, err := h.execute(shared.Flags{Quiet: true}, false, "--format", "json")
-	var decoded diskprune.Report
-	if exitCode(err) != shared.ExitFindings || json.Unmarshal([]byte(out), &decoded) != nil || decoded.Outcome != diskprune.OutcomeFailed {
-		t.Fatalf("json = %q, %v", out, err)
-	}
-	text, _, _ := h.execute(shared.Flags{Quiet: true}, false)
-	for _, want := range []string{
-		"outcome failed (failed, target-unmet)", "admission: bypassed", "[space-not-returned]", "-> 2.0 GB free", "observed +1.0 GB", "-> free space unknown",
-		"1. scratch: applied, floor 24h0m0s, estimate 4.0 KB", "deleted       /tmp/go-build1  4.0 KB  unused",
-		"error: EIO", "kept 2: too-young", "kept 1: recovery-material", "2. go-build-cache: skipped (busy)",
-		"pid 7: go build", "/c/0a  3 entries", "report-only /home/u/.wb", "origin-not-proven",
-	} {
+	for _, want := range []string{"outcome planned", "scratch: delete, 8.0 KB", "/tmp/go-build1", "error: EIO", "kept 2: changed within 72h", "kept 1: contains a checkout", "go-build-cache: skipped (Go is running (7 go))", "--apply"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("text lacks %q:\n%s", want, text)
 		}
 	}
-	verbose, _, _ := h.execute(shared.Flags{Quiet: true}, false, "--verbose")
-	if !strings.Contains(verbose, "/tmp/go-build3") || strings.Contains(verbose, "kept 2") {
-		t.Fatalf("verbose text:\n%s", verbose)
+	out, _ := h.execute("--format", "json")
+	var decoded diskprune.Report
+	if json.Unmarshal([]byte(out), &decoded) != nil || decoded.Outcome != diskprune.OutcomePlanned {
+		t.Fatalf("json = %q", out)
 	}
-	h.report.Mode, h.report.Reasons = "plan", nil
-	plan, _, _ := h.execute(shared.Flags{Quiet: true}, false)
-	if !strings.Contains(plan, "plan estimates") || strings.Contains(plan, "admission:") {
-		t.Fatalf("plan text:\n%s", plan)
+	h.report = diskprune.Report{Mode: "apply", Outcome: diskprune.OutcomeDone}
+	if text, err := h.execute("--apply"); err != nil || strings.Contains(text, "--apply to remove") {
+		t.Fatalf("done = %q %v", text, err)
 	}
-	if signedHuman(-2048) != "-2.0 KB" {
-		t.Fatalf("negative change = %q", signedHuman(-2048))
-	}
-	if err := writePruneReport(failingWriter{err: errors.New("broken pipe")}, "json", false, h.report); err == nil {
+}
+
+// A write failure is reported as an error.
+func TestPruneReportsAWriteFailure(t *testing.T) {
+	t.Parallel()
+	report := diskprune.Report{Outcome: diskprune.OutcomeDone}
+	if err := writePrune(failingWriter{err: errors.New("EPIPE")}, "text", report); err == nil {
 		t.Fatal("a failed write was ignored")
 	}
+	if err := writePrune(failingWriter{err: errors.New("EPIPE")}, "json", report); err == nil {
+		t.Fatal("a failed JSON write was ignored")
+	}
+	h := &pruneHarness{report: report}
+	command := New(pruneRuntime(), Dependencies{Prune: h.deps()})
+	command.SetArgs([]string{"prune"})
+	command.SetOut(failingWriter{err: errors.New("EPIPE")})
+	command.SilenceErrors, command.SilenceUsage = true, true
+	if err := command.Execute(); err == nil {
+		t.Fatal("the command ignored a write failure")
+	}
 }
 
-// Liveness: per-line on a terminal or with --verbose; otherwise a heartbeat
-// on each tick that states its interval once and closes the run; --quiet
-// silences both.
-func TestPruneProgressModes(t *testing.T) {
-	t.Parallel()
-	h := newPruneHarness(t)
-	h.events = []diskprune.Event{{Phase: "plan"}, {Phase: "plan"}, {Phase: "apply", Category: "scratch", Unlinked: 4096}}
-	_, errOut, _ := h.execute(shared.Flags{}, true)
-	// discover (before the world exists), plan once, then apply.
-	if strings.Count(errOut, "wb disk prune: ") != 3 || !strings.HasPrefix(errOut, "wb disk prune: discover") || !strings.Contains(errOut, "apply scratch") {
-		t.Fatalf("per-line progress = %q", errOut)
-	}
-	_, quiet, _ := h.execute(shared.Flags{Quiet: true}, true)
-	if quiet != "" {
-		t.Fatalf("quiet progress = %q", quiet)
-	}
-
-	var out lockedBuffer
-	p := newPruneProgress(&out, PruneDependencies{
-		Ticker:      func(time.Duration) (<-chan time.Time, func()) { return h.ticks, func() { h.stopped = true } },
-		Interactive: func(bool) bool { return false },
-	}, shared.Flags{}, false)
-	p.event(diskprune.Event{Phase: "measure", Category: "go-build-cache"})
-	h.ticks <- time.Now()
-	h.ticks <- time.Now()
-	deadline := time.Now().Add(5 * time.Second)
-	for strings.Count(out.String(), "measure go-build-cache") < 2 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	p.finish(diskprune.Report{Outcome: diskprune.OutcomeDone})
-	p.beat()
-	text := out.String()
-	if strings.Count(text, "heartbeat every 10s") != 1 || strings.Count(text, "measure go-build-cache") < 2 || !strings.Contains(text, "done; outcome done") || !h.stopped {
-		t.Fatalf("heartbeat = %q", text)
-	}
-	silent := newPruneProgress(io.Discard, PruneDependencies{
-		Ticker: func(time.Duration) (<-chan time.Time, func()) { return make(chan time.Time), func() {} }, Interactive: func(bool) bool { return false },
-	}, shared.Flags{}, false)
-	silent.finish(diskprune.Report{})
-	if DefaultPruneDependencies().World == nil {
-		t.Fatal("default dependencies incomplete")
-	}
-	ticks, stop := DefaultPruneDependencies().Ticker(time.Millisecond)
-	<-ticks
-	stop()
-	_ = DefaultPruneDependencies().Interactive(true)
-}
-
-// lockedBuffer is safe for the heartbeat goroutine and the test to share.
-type lockedBuffer struct {
-	mu sync.Mutex
-	b  bytes.Buffer
-}
-
-func (l *lockedBuffer) Write(p []byte) (int, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.b.Write(p)
-}
-
-func (l *lockedBuffer) String() string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.b.String()
-}
-
-// wb disk's help carries the clean-versus-prune paragraph, and prune is its
-// subcommand.
+// wb disk's help carries the clean-versus-prune paragraph, and prune's help
+// says what it never touches.
 func TestDiskHelpExplainsCleanVersusPrune(t *testing.T) {
 	t.Parallel()
 	command := New(runtimeFor("/p"), Dependencies{Collect: func(context.Context, disk.Options) (disk.Report, error) { return disk.Report{}, nil }})
@@ -298,96 +167,12 @@ func TestDiskHelpExplainsCleanVersusPrune(t *testing.T) {
 	if prune != nil {
 		long = strings.Join(strings.Fields(prune.Long), " ")
 	}
-	if !strings.Contains(long, "wb clean clears finished workbenches") || !strings.Contains(long, "never runs go clean") || !strings.Contains(long, "pnpm store and npm cache (measured only") {
-		t.Fatal("wb disk prune help incomplete")
-	}
-}
-
-// A report that cannot be written is an error, not a silent success.
-func TestPruneReportsAWriteFailure(t *testing.T) {
-	t.Parallel()
-	h := newPruneHarness(t)
-	runtime := shared.Runtime{
-		Flags:     func() shared.Flags { return shared.Flags{Quiet: true} },
-		ExitError: func(code int, message string) error { return &codedError{code, message} },
-	}
-	command := New(runtime, Dependencies{Prune: h.deps(false)})
-	command.SilenceUsage, command.SilenceErrors = true, true
-	command.SetOut(failingWriter{err: errors.New("broken pipe")})
-	command.SetErr(io.Discard)
-	command.SetArgs([]string{"prune"})
-	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "broken pipe") {
-		t.Fatalf("write failure = %v", err)
-	}
-}
-
-// Every --apply and --auto run records a receipt; one that cannot be written
-// (a full disk) is reported on stderr and never changes the exit.
-func TestPruneWritesAReceiptForEveryApply(t *testing.T) {
-	t.Parallel()
-	h := newPruneHarness(t)
-	var triggers []string
-	deps := h.deps(false)
-	deps.WriteReceipt = func(stateDir string, receipt diskprune.Receipt) error {
-		triggers = append(triggers, receipt.Trigger)
-		return nil
-	}
-	runtime := shared.Runtime{
-		Flags:     func() shared.Flags { return shared.Flags{Quiet: true} },
-		ExitError: func(code int, message string) error { return &codedError{code, message} },
-	}
-	run := func(deps PruneDependencies, args ...string) (string, error) {
-		command := New(runtime, Dependencies{Prune: deps})
-		var errOut bytes.Buffer
-		command.SilenceUsage, command.SilenceErrors = true, true
-		command.SetOut(io.Discard)
-		command.SetErr(&errOut)
-		command.SetArgs(append([]string{"prune"}, args...))
-		err := command.Execute()
-		return errOut.String(), err
-	}
-	for _, args := range [][]string{{}, {"--apply"}, {"--auto"}} {
-		if _, err := run(deps, args...); err != nil {
-			t.Fatalf("%v: %v", args, err)
+	for _, want := range []string{"wb clean clears finished workbenches", "go clean -cache, only while no Go process runs", "the Go module cache", "pnpm stores"} {
+		if !strings.Contains(long, want) {
+			t.Errorf("prune help lacks %q", want)
 		}
 	}
-	if strings.Join(triggers, ",") != "manual,manual-auto" {
-		t.Fatalf("triggers = %v; a plan must write none", triggers)
-	}
-	deps.WriteReceipt = func(string, diskprune.Receipt) error { return errors.New("no space left on device") }
-	if errOut, err := run(deps, "--apply"); err != nil || !strings.Contains(errOut, "receipt not written: no space left on device") {
-		t.Fatalf("stderr %q err %v", errOut, err)
-	}
-}
-
-// A slow fleet discovery, before the engine has emitted anything, is still
-// covered by the heartbeat: the real command starts progress first.
-func TestPruneHeartbeatCoversDiscovery(t *testing.T) {
-	t.Parallel()
-	h := newPruneHarness(t)
-	h.discovering = func() {
-		// Heartbeat intervals pass while discovery works. The heartbeat takes
-		// the next tick only after writing the line for the previous one, so
-		// three sends guarantee two written lines.
-		for range 3 {
-			h.ticks <- time.Now()
-		}
-	}
-	_, errOut, err := h.execute(shared.Flags{}, false)
-	if err != nil || strings.Count(errOut, "discover") < 2 || !strings.Contains(errOut, "heartbeat every 10s") {
-		t.Fatalf("err %v, progress %q", err, errOut)
-	}
-}
-
-// --older-than takes days as the spec writes them, and a comma list of
-// categories, as one flag or repeated.
-func TestPruneAcceptsDaysAndCategoryLists(t *testing.T) {
-	t.Parallel()
-	h := newPruneHarness(t)
-	if _, _, err := h.execute(shared.Flags{}, false, "--older-than", "2d", "--category", "scratch,go-build-cache"); err != nil && exitCode(err) == shared.ExitUsage {
-		t.Fatalf("usage error: %v", err)
-	}
-	if h.options.OlderThan != 48*time.Hour || len(h.options.Categories) != 2 {
-		t.Fatalf("options = %#v", h.options)
+	if deps := DefaultPruneDependencies(); deps.Env == nil || deps.Run == nil || deps.ConfigPath == nil {
+		t.Fatal("default dependencies incomplete")
 	}
 }

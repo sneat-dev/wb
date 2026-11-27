@@ -292,7 +292,7 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"hooks measure": true, "hooks lint": true,
 		"hooks lifecycle backfill": true,
 		"hooks agent pre-tool-use": true, "hooks agent install": true,
-		"coverage": true, "verify": true, "check": true, "status": true, "disk": true, "disk prune": true,
+		"coverage": true, "verify": true, "check": true, "status": true, "disk": true,
 		"verify receipt": true, "repo transfer cleanup": true,
 		"fleet": true, "fleet overview": true, "fleet stats": true, "fleet status": true, "fleet merge-policy": true, "fleet default-branch": true, "remote publish": true,
 		"remote status": true, "remote machines": true, "remote enroll": true,
@@ -342,7 +342,6 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"create": true, "worktree create": true, "land": true, "worktree land": true,
 		"worktree merge": true, "worktree merge prepare": true, "worktree merge land": true, "worktree merge resume": true, "worktree merge revert": true,
 		"pr create": true, "pr land": true, "worktree retire": true,
-		"disk prune": true,
 	},
 	// This is a root rendering/input-safety guarantee. Commands without a TUI
 	// still consume it by inheriting the non-blocking contract; rejecting it
