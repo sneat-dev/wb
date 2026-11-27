@@ -192,7 +192,7 @@ func TestRenderLeadsWithHeadroomAndShowsBothFigures(t *testing.T) {
 func TestScratchRootsIncludeTheOwnedPathAndAdHocSiblings(t *testing.T) {
 	temp := t.TempDir()
 	t.Setenv("TMPDIR", temp)
-	for _, name := range []string{"wb", "wb-pr308-test-cache", "unrelated-thing"} {
+	for _, name := range []string{"wb", "wb-pr308-test-cache", "go-build123", "TestFoo456", "unrelated-thing"} {
 		if err := os.MkdirAll(filepath.Join(temp, name), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -204,6 +204,11 @@ func TestScratchRootsIncludeTheOwnedPathAndAdHocSiblings(t *testing.T) {
 	}
 	if !strings.Contains(joined, filepath.Join(temp, "wb-pr308-test-cache")) {
 		t.Fatalf("ad-hoc per-task cache missing: %#v", roots)
+	}
+	for _, shape := range []string{"go-build123", "TestFoo456"} {
+		if !strings.Contains(joined, filepath.Join(temp, shape)) {
+			t.Fatalf("scratch shape %s missing: %#v", shape, roots)
+		}
 	}
 	if strings.Contains(joined, "unrelated-thing") {
 		t.Fatalf("claimed a directory WB did not create: %#v", roots)

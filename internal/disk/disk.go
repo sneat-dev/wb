@@ -417,8 +417,10 @@ func scratchRoots() []string {
 			continue
 		}
 		// wb-pr308-lint-go-cache, wb-sync-report-focused-cache and friends:
-		// per-task caches nothing retires, which is the shape that filled /tmp.
-		if strings.HasPrefix(entry.Name(), "wb-") {
+		// per-task caches nothing retires, which is the shape that filled /tmp;
+		// go-build* work directories and test directories that killed
+		// processes left behind are the other shapes wb disk prune acts on.
+		if scratchShaped(entry.Name()) {
 			roots = append(roots, filepath.Join(temp, entry.Name()))
 		}
 	}
@@ -507,3 +509,14 @@ func Render(report Report) string {
 // Probe reports the capacity of the filesystem holding path, as wb disk
 // measures it: available bytes are what an ordinary process can still write.
 func Probe(path string) (Filesystem, error) { return filesystemFor(path) }
+
+// scratchShaped is every temporary-directory name wb disk measures as
+// scratch; wb disk prune decides which of them may go.
+func scratchShaped(name string) bool {
+	for _, prefix := range []string{"wb-", "go-build", "Test", "Benchmark", "Fuzz"} {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
