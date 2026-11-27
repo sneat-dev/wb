@@ -273,12 +273,20 @@ func planScratchEntry(w *World, o Options, table Table, root, name string, accum
 		return it
 	}
 	identity, err := w.Identity(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
 	if err != nil {
 		it.Reason = "partial-scan: " + err.Error()
 		return it
 	}
 	it.device = identity.Dev
 	scan := w.Scan(path, identity.MountID, w.Protected)
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		// It went away during the scan: routine for go-build*, and nothing
+		// is left to decide about.
+		return nil
+	}
 	if reason := scanVerdict(path, w.Protected, w.cacheRoots(), scan); reason != "" {
 		it.Reason = reason
 		return it

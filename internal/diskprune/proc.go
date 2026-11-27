@@ -131,18 +131,28 @@ func readProcess(src procSource, pid int, boot time.Time) (Process, bool, error)
 	process := Process{PID: pid, UID: -1, Readable: true}
 	process.Comm, process.Age = parseStat(string(stat), boot, src)
 	process.UID = readUID(filepath.Join(dir, "status"))
-	if raw, err := os.ReadFile(filepath.Join(dir, "cmdline")); err == nil {
-		process.Argv = splitNUL(raw)
+	raw, err := os.ReadFile(filepath.Join(dir, "cmdline"))
+	if untrustedRead(err) {
+		return Process{}, false, err
 	}
-	if raw, err := os.ReadFile(filepath.Join(dir, "environ")); err == nil {
-		process.Environ = splitNUL(raw)
+	process.Argv = splitNUL(raw)
+	// environ is private to the process's user; permission is expected, any
+	// other failure (EMFILE) would silently lose an env-only reference.
+	raw, err = os.ReadFile(filepath.Join(dir, "environ"))
+	if untrustedRead(err) {
+		return Process{}, false, err
 	}
+	process.Environ = splitNUL(raw)
 	process.Exe, _ = os.Readlink(filepath.Join(dir, "exe"))
 	cwd, cwdErr := os.Readlink(filepath.Join(dir, "cwd"))
 	process.Cwd = cwd
 	fds, fdErr := os.ReadDir(filepath.Join(dir, "fd"))
 	for _, fd := range fds {
-		if target, err := os.Readlink(filepath.Join(dir, "fd", fd.Name())); err == nil && strings.HasPrefix(target, "/") {
+		target, err := os.Readlink(filepath.Join(dir, "fd", fd.Name()))
+		if untrustedRead(err) {
+			return Process{}, false, err
+		}
+		if strings.HasPrefix(target, "/") {
 			process.Files = append(process.Files, target)
 		}
 	}
@@ -430,3 +440,9 @@ func mentionsPath(text, path string) bool {
 }
 
 func isLetter(b byte) bool { return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') }
+
+// untrustedRead is a read failure that is neither "not permitted" nor "the
+// process or descriptor is gone": the table can no longer be complete.
+func untrustedRead(err error) bool {
+	return err != nil && !errors.Is(err, fs.ErrPermission) && !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, syscall.ESRCH)
+}

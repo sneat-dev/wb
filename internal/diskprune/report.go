@@ -153,7 +153,7 @@ var failClosedReasons = map[string]bool{
 	"unknown": true, "busy-unverified": true, "unsupported-platform": true,
 	"incomplete-reference-set": true, "partial-scan": true,
 	"requested-step-skipped": true, "target-unreachable": true,
-	"lock-unavailable": true, "probe-failed": true,
+	"lock-unavailable": true, "probe-failed": true, "locked": true,
 }
 
 // IsFinding reports whether the report should exit 1.

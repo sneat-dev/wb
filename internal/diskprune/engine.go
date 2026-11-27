@@ -128,8 +128,8 @@ type World struct {
 	// target; set by Run before applying.
 	belowTarget func(path string) bool
 	// targetMet reports whether path's filesystem has reached the target,
-	// or cannot be measured; set by Run before applying.
-	targetMet func(path string) bool
+	// and whether it could be measured at all; set by Run before applying.
+	targetMet func(path string) (met, measured bool)
 
 	categories []category
 	table      *Table
@@ -262,9 +262,12 @@ func Run(ctx context.Context, w *World, o Options) Report {
 	}
 	// targetMet lets a category that deletes many small files stop as soon
 	// as its filesystem reaches the target; a probe that fails stops it too.
-	w.targetMet = func(path string) bool {
+	w.targetMet = func(path string) (bool, bool) {
 		fs, err := w.Probe(path)
-		return err != nil || o.Target.Met(fs)
+		if err != nil {
+			return false, false
+		}
+		return o.Target.Met(fs), true
 	}
 	if o.Apply && ctx.Err() == nil {
 		admitted := admit(ctx, w, o, filesystems, &report)
@@ -399,8 +402,10 @@ func applyPlans(ctx context.Context, w *World, o Options, plans []*categoryPlan,
 		if err != nil {
 			reason := "lock-unavailable"
 			if errors.Is(err, ErrLocked) {
+				// Another prune holds this category's resource: a fail-closed
+				// skip, not the run-level "locked" outcome, which means
+				// nothing at all was attempted.
 				reason = "locked"
-				reasons[OutcomeLocked] = true
 			}
 			plan.skip(reason + ": " + err.Error())
 			for _, it := range plan.items {

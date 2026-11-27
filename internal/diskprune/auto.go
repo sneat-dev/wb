@@ -66,6 +66,18 @@ func WriteReceipt(stateDir string, receipt Receipt) error {
 	return os.WriteFile(filepath.Join(dir, name), raw, 0o600)
 }
 
+// newestAutomaticReceipt is the newest receipt of an unattended-subset run,
+// by the daemon or a manual --auto: a manual run to its own target says
+// nothing about whether the floor is being held.
+func newestAutomaticReceipt(stateDir string) (Receipt, string, bool) {
+	daemon, daemonPath, daemonOK := NewestReceipt(stateDir, "daemon")
+	manual, manualPath, manualOK := NewestReceipt(stateDir, "manual-auto")
+	if manualOK && (!daemonOK || manual.Time.After(daemon.Time)) {
+		return manual, manualPath, true
+	}
+	return daemon, daemonPath, daemonOK
+}
+
 // NewestReceipt returns the newest receipt with the trigger ("" for any),
 // with its path.
 func NewestReceipt(stateDir, trigger string) (Receipt, string, bool) {
@@ -103,8 +115,8 @@ const receiptFreshness = 24 * time.Hour
 // ReceiptFinding is the line wb disk and wb daemon status show when the
 // newest receipt, from the last day, ended anything but done; "" otherwise.
 func ReceiptFinding(stateDir string) string {
-	receipt, path, ok := NewestReceipt(stateDir, "")
-	if !ok || receipt.Outcome == OutcomeDone || time.Since(receipt.Time) > receiptFreshness {
+	receipt, path, ok := newestAutomaticReceipt(stateDir)
+	if !ok || receipt.Outcome == OutcomeDone || receipt.Outcome == OutcomeLocked || time.Since(receipt.Time) > receiptFreshness {
 		return ""
 	}
 	return fmt.Sprintf("the last automatic prune (%s, %s) ended %s; see %s", receipt.Trigger, receipt.Time.UTC().Format(time.RFC3339), receipt.Outcome, path)

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -72,7 +73,7 @@ func newWorld(ctx context.Context, projectsRoot string, ignoreSumFiles []string,
 		StateDir: resolution.Write.Home, Go: env, IgnoreSumFiles: ignoreSumFiles,
 		Processes: deps.readProcess, Probe: disk.Probe, Identity: StatIdentity, Scan: scanTree,
 		LockDirs: LockDirs, RemoveTree: RemoveTree, RemoveFile: RemoveFileAt, LockModuleVersion: LockModuleVersion,
-		PnpmStores: []string{filepath.Join(home, ".local", "share", "pnpm", "store"), filepath.Join(home, "Library", "pnpm", "store")},
+		PnpmStores: []string{resolved(filepath.Join(home, ".local", "share", "pnpm", "store")), resolved(filepath.Join(home, "Library", "pnpm", "store"))},
 		Pnpm:       deps.runPnpm, HTTP: deps.fetchURL, LookupHost: net.DefaultResolver.LookupHost,
 		Admit: func(ctx context.Context) (string, time.Duration, func()) {
 			return deps.admitPrune(ctx, resolution.Root)
@@ -200,6 +201,11 @@ func findCheckouts(readDir func(string) ([]os.DirEntry, error), root string, dep
 		if errors.Is(err, os.ErrNotExist) && dir == root {
 			return nil
 		}
+		if errors.Is(err, os.ErrPermission) && dir != root && !ownedByUserPath(dir) {
+			// Another user's unreadable directory (a root-owned lost+found)
+			// cannot hold this user's checkout.
+			return nil
+		}
 		if err != nil {
 			return err
 		}
@@ -213,10 +219,21 @@ func findCheckouts(readDir func(string) ([]os.DirEntry, error), root string, dep
 			return nil
 		}
 		for _, entry := range entries {
-			if !entry.IsDir() || (skipDot && level == 0 && strings.HasPrefix(entry.Name(), ".")) || entry.Name() == "node_modules" {
+			path := filepath.Join(dir, entry.Name())
+			isDir := entry.IsDir()
+			if entry.Type()&os.ModeSymlink != 0 {
+				// A symlinked clone or org directory is a placement like any
+				// other; one that cannot be followed is an inventory gap.
+				info, err := os.Stat(path)
+				if err != nil {
+					return fmt.Errorf("%s: %w", path, err)
+				}
+				isDir = info.IsDir()
+			}
+			if !isDir || (skipDot && level == 0 && strings.HasPrefix(entry.Name(), ".")) || entry.Name() == "node_modules" {
 				continue
 			}
-			if err := walk(filepath.Join(dir, entry.Name()), level+1); err != nil {
+			if err := walk(path, level+1); err != nil {
 				return err
 			}
 		}

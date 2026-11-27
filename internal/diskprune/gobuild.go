@@ -39,16 +39,23 @@ func buildFloor(table Table, root string, olderThan time.Duration) (time.Duratio
 		return maxDuration(floorBuildCacheNoProc, olderThan), 0
 	}
 	floor, pid := maxDuration(floorBuildCache, olderThan), 0
+	unknownPID := 0
 	for _, process := range table.Processes {
 		if !process.IsGoBuildTool() {
 			continue
 		}
 		if process.Age == AgeUnknown {
-			return maxDuration(floorBuildCacheNoProc, floor), process.PID
+			unknownPID = process.PID
+			continue
 		}
 		if process.Age+time.Hour > floor {
 			floor, pid = process.Age+time.Hour, process.PID
 		}
+	}
+	// A build tool of unknown age raises the floor to at least 72 h; an
+	// older known build still raises it further.
+	if unknownPID != 0 && floor < floorBuildCacheNoProc {
+		floor, pid = floorBuildCacheNoProc, unknownPID
 	}
 	return floor, pid
 }
@@ -129,6 +136,14 @@ func newShardTracker(files []cacheFile) *shardTracker {
 	return tracker
 }
 
+// reset re-counts the tracker over the entries apply found.
+func (t *shardTracker) reset(files []cacheFile) {
+	fresh := newShardTracker(files)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.shards, t.deleted = fresh.shards, fresh.deleted
+}
+
 func (t *shardTracker) remove(dir string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -169,7 +184,14 @@ func trimEntries(ctx context.Context, w *World, root string, files []cacheFile, 
 	floor := time.Duration(0)
 	for index, file := range files {
 		if index%recheckEvery == 0 {
-			if ctx.Err() != nil || w.targetMet(root) {
+			if ctx.Err() != nil {
+				return result
+			}
+			met, measured := w.targetMet(root)
+			if !measured {
+				return itemResult{unlinked: result.unlinked, status: StatusSkipped, reason: "probe-failed"}
+			}
+			if met {
 				return result
 			}
 			table := w.freshTable()
@@ -323,7 +345,7 @@ func (fullCleanCategory) plan(ctx context.Context, w *World, o Options) *categor
 	}
 	it.apply = func(ctx context.Context) itemResult {
 		remaining, _ := readCacheFiles(w, root)
-		*tracker = *newShardTracker(remaining)
+		tracker.reset(remaining)
 		return trimEntries(ctx, w, root, remaining, 0, tracker, true)
 	}
 	plan.items = []*item{it}

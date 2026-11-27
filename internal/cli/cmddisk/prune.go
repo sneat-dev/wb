@@ -113,7 +113,7 @@ unmet, a failure or a fail-closed skip; see "outcome"), 2 usage.
 			w.Progress = progress.event
 			report := deps.Run(cmd.Context(), w, o)
 			progress.finish(report)
-			if (o.Apply || o.Auto) && deps.WriteReceipt != nil {
+			if (o.Apply || o.Auto) && deps.WriteReceipt != nil && report.Outcome != diskprune.OutcomeLocked {
 				trigger := "manual"
 				if o.Auto {
 					trigger = "manual-auto"

@@ -437,7 +437,7 @@ func applyModule(ctx context.Context, w *World, v moduleVersion, mount uint64, b
 	defer release()
 	// Under Go's lock: the version must still be exactly what the plan
 	// checked, unedited, or Go has touched it since.
-	if reason := unchangedSincePlan(w, v); reason != "" {
+	if reason := unchangedSincePlan(w, v, mount); reason != "" {
 		return itemResult{status: StatusSkipped, reason: reason}
 	}
 	var result itemResult
@@ -457,9 +457,6 @@ func applyModule(ctx context.Context, w *World, v moduleVersion, mount uint64, b
 	partial := filepath.Join(v.downloadDir, v.escVersion+".partial")
 	writeMarker(partial)
 	if v.hasExtraction {
-		if v.extractedID.MountID != mount {
-			return itemResult{unlinked: result.unlinked, status: StatusSkipped, reason: "contains-mount"}
-		}
 		outcome, err := w.RemoveTree(filepath.Dir(v.extracted), filepath.Base(v.extracted), v.extractedID)
 		tree := treeResult(outcome, err)
 		result.unlinked += tree.unlinked
@@ -529,8 +526,25 @@ func proveRefetch(ctx context.Context, w *World, v moduleVersion, budget *probeC
 	return ""
 }
 
-// unchangedSincePlan re-verifies, under Go's lock, what the plan checked.
-func unchangedSincePlan(w *World, v moduleVersion) string {
+// unchangedSincePlan re-verifies, under Go's lock and before anything is
+// changed, what the plan checked: every download file, the absence of a
+// .ziphash the plan did not see, the extracted tree and its hash, and its
+// mount.
+func unchangedSincePlan(w *World, v moduleVersion, mount uint64) string {
+	for ext, planned := range v.files {
+		identity, err := w.Identity(filepath.Join(v.downloadDir, v.escVersion+ext))
+		if err != nil || identity.Dev != planned.Dev || identity.Ino != planned.Ino {
+			return "changed: " + v.escVersion + ext + " is not the file the plan checked"
+		}
+	}
+	if _, planned := v.files[".ziphash"]; !planned {
+		if _, err := os.Lstat(filepath.Join(v.downloadDir, v.escVersion+".ziphash")); err == nil {
+			return "changed: Go completed the download since the plan"
+		}
+	}
+	if v.hasExtraction && v.extractedID.MountID != mount {
+		return "contains-mount"
+	}
 	if v.ziphash != "" {
 		raw, err := os.ReadFile(filepath.Join(v.downloadDir, v.escVersion+".ziphash"))
 		if err != nil || strings.TrimSpace(string(raw)) != v.ziphash {

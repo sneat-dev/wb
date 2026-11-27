@@ -401,3 +401,176 @@ func TestEachItemIsJudgedOnItsOwnFilesystem(t *testing.T) {
 		t.Fatalf("filesystems = %#v", report.Filesystems)
 	}
 }
+
+// Round-2 review (Fable 5.2) behaviours.
+
+// N1: a symlinked clone directory is found; one that cannot be followed is
+// an inventory gap; another user's unreadable directory is not.
+func TestFindCheckoutsFollowsSymlinksAndSkipsForeignDirectories(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	target := t.TempDir()
+	mustWrite(t, filepath.Join(target, ".git", "HEAD"), "ref", 0o644)
+	if err := os.MkdirAll(filepath.Join(root, "github.com", "acme"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(root, "github.com", "acme", "app")); err != nil {
+		t.Fatal(err)
+	}
+	found, err := findCheckouts(os.ReadDir, root, 3, true)
+	if err != nil || len(found) != 1 || !strings.HasSuffix(found[0], "app") {
+		t.Fatalf("symlinked clone: %v, %v", found, err)
+	}
+	if err := os.Symlink(filepath.Join(root, "absent"), filepath.Join(root, "github.com", "acme", "dangling")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := findCheckouts(os.ReadDir, root, 3, true); err == nil {
+		t.Fatal("a dangling symlinked placement was skipped silently")
+	}
+	ghost := t.TempDir()
+	if err := os.Mkdir(filepath.Join(ghost, "mine"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	readDir := func(dir string) ([]os.DirEntry, error) {
+		switch filepath.Base(dir) {
+		case "lost+found", "mine":
+			return nil, os.ErrPermission
+		}
+		entries, err := os.ReadDir(dir)
+		if dir == ghost {
+			entries = append(entries, ghostDir{name: "lost+found"})
+		}
+		return entries, err
+	}
+	if _, err := findCheckouts(readDir, ghost, 3, true); !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("an unreadable directory of this user's = %v", err)
+	}
+	if err := os.Remove(filepath.Join(ghost, "mine")); err != nil {
+		t.Fatal(err)
+	}
+	if found, err := findCheckouts(readDir, ghost, 3, true); err != nil || len(found) != 0 {
+		t.Fatalf("another user's unreadable directory = %v, %v", found, err)
+	}
+}
+
+// ghostDir is a directory entry with nothing on disk behind it, standing in
+// for a directory this user does not own.
+type ghostDir struct{ name string }
+
+func (g ghostDir) Name() string             { return g.name }
+func (ghostDir) IsDir() bool                { return true }
+func (ghostDir) Type() os.FileMode          { return os.ModeDir }
+func (ghostDir) Info() (os.FileInfo, error) { return nil, os.ErrNotExist }
+
+// N2: a version Go completed between plan and apply gains a .ziphash; it is
+// changed, and nothing (not even the marker) is written.
+func TestModuleCompletedByGoSincePlanIsLeftAlone(t *testing.T) {
+	t.Parallel()
+	f := newModuleFixture(t)
+	f.add("example.com/a", "v1.0.0", true, false)
+	dl := filepath.Join(f.cache, "cache", "download", "example.com", "a", "@v")
+	f.tw.categories = []category{hookedCategory{inner: moduleCategory{}, after: func() {
+		mustWrite(t, filepath.Join(dl, "v1.0.0.ziphash"), "h1:new", 0o444)
+	}}}
+	report := f.tw.run(Options{Apply: true, Categories: []string{CategoryModules}, Floor: 0.01})
+	if it := categoryByName(t, report, CategoryModules).Items[0]; !strings.HasPrefix(it.Reason, "changed: Go completed") || exists(filepath.Join(dl, "v1.0.0.partial")) || !exists(filepath.Join(dl, "v1.0.0.zip")) {
+		t.Fatalf("completed version = %#v", it)
+	}
+}
+
+// N6: a probe that fails inside the trim stops it as probe-failed, and a
+// cancelled context stops it before anything is removed.
+func TestTrimProbeFailureAndCancellation(t *testing.T) {
+	t.Parallel()
+	tw := newTestWorld(t)
+	root := buildCacheFixture(t, tw, map[string]time.Duration{"0a01-a": 100 * time.Hour})
+	probe, calls := tw.Probe, 0
+	tw.Probe = func(path string) (diskFilesystem, error) {
+		calls++
+		if calls > 3 {
+			return diskFilesystem{}, errors.New("statfs")
+		}
+		return probe(path)
+	}
+	report := tw.run(Options{Apply: true, Categories: []string{CategoryBuild}, Floor: 0.01})
+	if it := categoryByName(t, report, CategoryBuild).Items[0]; it.Reason != "probe-failed" || !exists(filepath.Join(root, "0a", "0a01-a")) {
+		t.Fatalf("probe failure in the trim = %#v", it)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	files, _ := readCacheFiles(tw.World, root)
+	if result := trimEntries(ctx, tw.World, root, files, 0, newShardTracker(files), false); result.unlinked != 0 || !exists(filepath.Join(root, "0a", "0a01-a")) {
+		t.Fatalf("a cancelled trim removed %d bytes", result.unlinked)
+	}
+}
+
+// N5: the receipt finding follows unattended runs only, and the newest of
+// the daemon's and a manual --auto run's.
+func TestReceiptFindingFollowsUnattendedRuns(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	now := time.Now()
+	for _, receipt := range []Receipt{
+		{Time: now.Add(-time.Hour), Trigger: "daemon", Outcome: OutcomeDone},
+		{Time: now.Add(-time.Minute), Trigger: "manual", Outcome: OutcomeTargetUnmet},
+	} {
+		if err := WriteReceipt(dir, receipt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if finding := ReceiptFinding(dir); finding != "" {
+		t.Fatalf("a manual run's own target produced %q", finding)
+	}
+	if err := WriteReceipt(dir, Receipt{Time: now, Trigger: "manual-auto", Outcome: OutcomeFailed}); err != nil {
+		t.Fatal(err)
+	}
+	if finding := ReceiptFinding(dir); !strings.Contains(finding, "manual-auto") {
+		t.Fatalf("a manual --auto failure = %q", finding)
+	}
+}
+
+// N7: a cmdline, environ or descriptor that fails to read for any reason
+// but permission or exit makes the table untrusted.
+func TestProcessReadFailuresBeyondPermissionAreUntrusted(t *testing.T) {
+	t.Parallel()
+	for _, broken := range []string{"cmdline", "environ"} {
+		proc := newFakeProc(t)
+		proc.add(fakeProcess{pid: 50, comm: "bash", cwd: "/", uid: 1})
+		path := filepath.Join(proc.root, "50", broken)
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if table := readProcessTable(proc.source()); table.Evidence.Unknown == "" {
+			t.Errorf("an unreadable %s was trusted", broken)
+		}
+	}
+	proc := newFakeProc(t)
+	proc.add(fakeProcess{pid: 51, comm: "bash", cwd: "/", uid: 1})
+	proc.write("51/fd/3", "not a link")
+	if table := readProcessTable(proc.source()); table.Evidence.Unknown == "" {
+		t.Error("an unreadable descriptor was trusted")
+	}
+}
+
+// N6 (scratch): an entry that disappears while it is examined is not a
+// finding.
+func TestScratchEntryVanishingDuringExaminationIsIgnored(t *testing.T) {
+	t.Parallel()
+	tw := newTestWorld(t)
+	path := tw.entry("go-build1", 8)
+	tw.Identity = func(string) (Identity, error) { return Identity{}, os.ErrNotExist }
+	if it := planScratchEntry(tw.World, Options{}, Table{}, tw.tmp, "go-build1", newReclaimAccumulator()); it != nil {
+		t.Fatalf("vanished at identity = %#v", it)
+	}
+	tw.Identity = StatIdentity
+	tw.Scan = func(root string, mount uint64, protected []string) scanResult {
+		_ = os.RemoveAll(path)
+		return scanResult{Partial: true}
+	}
+	if it := planScratchEntry(tw.World, Options{}, Table{}, tw.tmp, "go-build1", newReclaimAccumulator()); it != nil {
+		t.Fatalf("vanished during the scan = %#v", it)
+	}
+}

@@ -273,7 +273,7 @@ Every pre-existing entry under the state directories is left unchanged.
   behind the builds that are failing for lack of space. Admission is not
   the safety check, because agents run `go build` outside `wb run`.
 - **Process evidence (Linux).** Prune lists `/proc` once per category,
-  again for each build-cache shard, and immediately before each deletion.
+  again every 256 build-cache entries, and immediately before each deletion.
   A process *references* a path when any of these names a location inside
   it: its working directory, an open file descriptor, a memory-mapped file
   (`maps`), its command line, or its environment.
@@ -373,7 +373,7 @@ could not be read, every category that deletes directories is `unknown`.
 
 **Bulk build-cache deletion.** Build-cache entry files are unlinked
 relative to the open shard directory, each checked by identity first. For
-the trim, the per-shard `/proc` re-check of REQ: go-build-cache satisfies
+the trim, the `/proc` re-check every 256 entries of REQ: go-build-cache satisfies
 the per-deletion check of REQ: concurrency. The trim is reported per shard
 (entries and bytes), never per entry file, in the plan, the JSON and
 `--verbose` alike.
@@ -464,8 +464,9 @@ deleting an entry a running build is about to read is a hard error, not a
 cache miss.
 
 - **Trim.** Delete only entry files of `GOCACHE` (`<2 hex>/<hash>-a` and
-  `-d`), oldest first, stopping once the target is met. Before each shard,
-  prune re-reads `/proc` and recomputes the floor. The floor is the larger
+  `-d`), oldest first across all shards, stopping once the target is met.
+  Every 256 entries prune re-reads `/proc`, recomputes the floor and probes
+  the target, so it can overshoot the target by at most 255 entries. The floor is the larger
   of:
   - `--older-than`, default 24 h;
   - the age of the oldest running Go build tool, plus 1 h.
@@ -744,7 +745,7 @@ Feature, should these risks materialise.
    has judged unused. Linux cannot unlink by descriptor, so a name is
    unlinked moments after the object behind it was checked. Go's own
    automatic cache trim has the same race. The window is bounded by the
-   per-shard and per-item re-checks (founder, widened on 2026-11-27).
+   re-checks every 256 build-cache entries and before each other item (founder, widened on 2026-11-27).
 2. **`go build -work` directories retained longer than 24 h**, and any
    `go-build*` or test directory whose producer has been paused longer
    than 24 h, are deleted.
