@@ -64,7 +64,9 @@ Two facts about the existing code shape the tasks:
 **Id:** task-1
 **Verifies:** desk-connect#ac:coexists-and-stays-quiet
 **Depends-On:** —
-**Status:** planning
+**Status:** complete
+**Implemented-by:** 3578edb1
+**Evidence:** https://github.com/sneat-dev/wb/pull/1015
 
 Add the public package `api/desk` with:
 
@@ -86,7 +88,9 @@ rejection, and every code.
 **Id:** task-2
 **Verifies:** desk-connect#ac:detail-level-enforced-locally, desk-connect#ac:task-keys
 **Depends-On:** task-1
-**Status:** planning
+**Status:** complete
+**Implemented-by:** 3578edb1
+**Evidence:** https://github.com/sneat-dev/wb/pull/1015
 
 Add `internal/deskpublish/reduce.go`:
 
@@ -118,7 +122,9 @@ Pin the field sets of the new types.
 **Id:** task-3
 **Verifies:** desk-connect#ac:publish-on-change-with-heartbeat
 **Depends-On:** task-1
-**Status:** planning
+**Status:** complete
+**Implemented-by:** 3578edb1
+**Evidence:** https://github.com/sneat-dev/wb/pull/1015
 
 Add `internal/deskclient`, a client for the six routes with:
 
@@ -148,7 +154,9 @@ The tests run against an `httptest` fake Desk.
 **Id:** task-4
 **Verifies:** desk-connect#ac:coexists-and-stays-quiet
 **Depends-On:** —
-**Status:** planning
+**Status:** complete
+**Implemented-by:** 5401554f
+**Evidence:** https://github.com/sneat-dev/wb/pull/1016
 
 Add `wbconfig/desk.go`:
 
@@ -167,7 +175,9 @@ rename), because reconnects replace an existing credential.
 **Id:** task-5
 **Verifies:** desk-connect#ac:one-command-connect, desk-connect#ac:reconnect-and-disconnect, desk-connect#ac:space-chosen-at-approval
 **Depends-On:** task-1, task-3, task-4
-**Status:** planning
+**Status:** complete
+**Implemented-by:** 5401554f
+**Evidence:** https://github.com/sneat-dev/wb/pull/1016
 
 Add `internal/cli/cmddesk` (Operations struct) and `internal/deskrun`.
 
@@ -195,7 +205,9 @@ skill examples, and the `docs/cli-flag-matrix.md` lines. Exit codes are 0, 1 and
 **Id:** task-6
 **Verifies:** desk-connect#ac:publish-on-change-with-heartbeat, desk-connect#ac:reconnect-and-disconnect
 **Depends-On:** task-2, task-3, task-4
-**Status:** planning
+**Status:** complete
+**Implemented-by:** 2c915057
+**Evidence:** https://github.com/sneat-dev/wb/pull/1017
 
 Add `internal/deskpublish.Publisher`, implementing `fleet.RemotePublisher`:
 
@@ -221,7 +233,9 @@ and Desk's `machines/self` directly, so it needs no daemon route.
 **Id:** task-7
 **Verifies:** desk-connect#ac:one-command-connect, desk-connect#ac:publish-on-change-with-heartbeat, desk-connect#ac:detail-level-enforced-locally, desk-connect#ac:coexists-and-stays-quiet
 **Depends-On:** task-5, task-6
-**Status:** planning
+**Status:** complete
+**Implemented-by:** 2c915057
+**Evidence:** https://github.com/sneat-dev/wb/pull/1017
 
 An end-to-end test with a fake Desk that auto-approves the grant:
 
