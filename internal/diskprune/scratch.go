@@ -67,7 +67,8 @@ func classifyScratch(path, name string) (scratchShape, bool) {
 	case name == "wb":
 		return scratchShape{keep: "owner-unverifiable"}, true
 	case !strings.HasPrefix(name, "wb-"):
-		return scratchShape{}, false
+		// A Test… name without the numbered subdirectories of t.TempDir.
+		return scratchShape{keep: "not-a-known-producer"}, true
 	}
 	for _, class := range []struct {
 		prefixes []string
@@ -123,9 +124,9 @@ func isGoBuildCacheShape(path string) bool {
 	for _, entry := range entries {
 		name := entry.Name()
 		switch {
-		case name == "README" && !entry.IsDir():
+		case name == "README" && entry.Type().IsRegular():
 			sawReadme = isGoCacheReadme(filepath.Join(path, name))
-		case (name == "trim.txt" || name == "testexpire.txt") && !entry.IsDir():
+		case (name == "trim.txt" || name == "testexpire.txt") && entry.Type().IsRegular():
 		case name == "fuzz" && entry.IsDir():
 		case hexShard.MatchString(name) && entry.IsDir():
 			if !onlyEntryFiles(filepath.Join(path, name)) {
@@ -138,13 +139,21 @@ func isGoBuildCacheShape(path string) bool {
 	return sawReadme
 }
 
-var cacheEntry = regexp.MustCompile(`^[0-9a-f]+-[ad]$`)
+// cacheEntry is a Go build-cache entry file: a SHA-256 hex digest and -a
+// (action) or -d (output); it lives in the shard named by its first two
+// digits.
+var cacheEntry = regexp.MustCompile(`^[0-9a-f]{64}-[ad]$`)
+
+// isCacheEntry checks the name and that it sits in its own shard.
+func isCacheEntry(shard, name string) bool {
+	return cacheEntry.MatchString(name) && strings.HasPrefix(name, shard)
+}
 
 // goCacheReadme is how the README cmd/go writes into every build cache begins.
 const goCacheReadme = "This directory holds cached build artifacts from the Go build system."
 
 func isGoCacheReadme(path string) bool {
-	raw, err := os.ReadFile(path)
+	raw, err := readSmallRegular(path, len(goCacheReadme))
 	return err == nil && strings.HasPrefix(string(raw), goCacheReadme)
 }
 
@@ -154,7 +163,7 @@ func onlyEntryFiles(dir string) bool {
 		return false
 	}
 	for _, entry := range entries {
-		if entry.IsDir() || !cacheEntry.MatchString(entry.Name()) {
+		if !entry.Type().IsRegular() || !isCacheEntry(filepath.Base(dir), entry.Name()) {
 			return false
 		}
 	}
@@ -174,9 +183,11 @@ func processEvidence(table Table, root string) string {
 	return ""
 }
 
+// accessibleToOthers reports whether any other user (by group or other
+// permission bits, or an ACL) can reach path; hidden PIDs then hide them.
 func accessibleToOthers(path string) bool {
 	info, err := os.Stat(path)
-	return err != nil || info.Mode().Perm()&0o007 != 0
+	return err != nil || info.Mode().Perm()&0o077 != 0 || hasACL(path)
 }
 
 // references lists the processes using path, under any of its spellings
@@ -218,6 +229,10 @@ func (scratchCategory) plan(ctx context.Context, w *World, o Options) *categoryP
 		plan.skip("unknown: " + w.ProtectedGap)
 		return plan
 	}
+	if reason := w.bindProblem(w.TempDirs...); reason != "" {
+		plan.skip(reason)
+		return plan
+	}
 	accumulator := newReclaimAccumulator()
 	var estimate int64
 	for _, root := range w.TempDirs {
@@ -249,8 +264,10 @@ func (scratchCategory) plan(ctx context.Context, w *World, o Options) *categoryP
 // spec gives them, and returns nil for an entry prune has no opinion about.
 func planScratchEntry(w *World, o Options, table Table, root, name string, accumulator *reclaimAccumulator) *item {
 	path := filepath.Join(root, name)
-	shape, ours := classifyScratch(path, name)
-	if !ours {
+	// The name alone decides whether prune has an opinion; nothing inside
+	// the entry is read until it is known to be this user's real directory,
+	// so a hostile FIFO or symlink cannot hang or redirect the plan.
+	if !scratchName(name) {
 		return nil
 	}
 	it := &item{ItemReport: ItemReport{Path: path, Status: StatusKeep}, root: root}
@@ -268,7 +285,9 @@ func planScratchEntry(w *World, o Options, table Table, root, name string, accum
 	case !ownedBy(info, w.UID):
 		it.Reason = "foreign-owner"
 		return it
-	case !shape.candidate:
+	}
+	shape, _ := classifyScratch(path, name)
+	if !shape.candidate {
 		it.Reason = shape.keep
 		return it
 	}
@@ -310,7 +329,7 @@ func planScratchEntry(w *World, o Options, table Table, root, name string, accum
 	it.Bytes = it.estimate
 	it.Reason = "unused " + w.Now().Sub(scan.Newest).Round(time.Hour).String() + ", nothing references it"
 	it.apply = func(ctx context.Context) itemResult {
-		return applyScratch(w, floor, root, name, identity)
+		return applyScratch(ctx, w, floor, root, name, identity)
 	}
 	return it
 }
@@ -342,8 +361,18 @@ func scanVerdict(path string, protected, caches []string, scan scanResult) strin
 
 // applyScratch re-checks the entry immediately before removing it: a fresh
 // process table, a fresh scan, then deletion bound to the checked identity.
-func applyScratch(w *World, floor time.Duration, root, name string, identity Identity) itemResult {
+func applyScratch(ctx context.Context, w *World, floor time.Duration, root, name string, identity Identity) itemResult {
 	path := filepath.Join(root, name)
+	// Still this user's directory, still the producer's shape: an entry that
+	// changed owner, or a test directory that gained a non-numbered child,
+	// no longer qualifies.
+	info, err := os.Lstat(path)
+	if err != nil || !info.IsDir() || !ownedBy(info, w.UID) {
+		return itemResult{status: StatusSkipped, reason: "changed"}
+	}
+	if shape, _ := classifyScratch(path, name); !shape.candidate {
+		return itemResult{status: StatusSkipped, reason: "changed: " + shape.keep}
+	}
 	table := w.freshTable()
 	if reason := processEvidence(table, root); reason != "" {
 		return itemResult{status: StatusSkipped, reason: reason}
@@ -361,6 +390,9 @@ func applyScratch(w *World, floor time.Duration, root, name string, identity Ide
 	}
 	if w.Now().Sub(scan.Newest) < floor {
 		return itemResult{status: StatusSkipped, reason: "too-young"}
+	}
+	if ctx.Err() != nil {
+		return itemResult{status: StatusSkipped, reason: "cancelled"}
 	}
 	outcome, err := w.RemoveTree(root, name, identity)
 	return treeResult(outcome, err)
@@ -408,4 +440,10 @@ func (w *World) alias(path string) string {
 		}
 	}
 	return ""
+}
+
+// scratchName reports whether a temporary-directory entry's name is one prune
+// has an opinion about, without reading anything.
+func scratchName(name string) bool {
+	return goBuildDir.MatchString(name) || testTempDir.MatchString(name) || name == "wb" || strings.HasPrefix(name, "wb-")
 }

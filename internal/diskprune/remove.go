@@ -9,6 +9,18 @@ type Identity struct {
 	Ino     uint64
 	IsDir   bool
 	MountID uint64
+	// Birth is the inode's creation time in nanoseconds where the filesystem
+	// records one (0 otherwise). A freed inode number is often handed straight
+	// to the next file; its birth time tells the two apart.
+	Birth int64
+	// Ctime is a regular file's status-change time in nanoseconds; Go's
+	// marking an entry as used since the plan changes it.
+	Ctime int64
+}
+
+// sameInode reports whether dev, ino and birth name the checked inode.
+func (want Identity) sameInode(dev, ino uint64, birth int64) bool {
+	return dev == want.Dev && ino == want.Ino && (want.Birth == 0 || birth == want.Birth)
 }
 
 // Deletion outcomes a caller reports instead of treating them as failures.

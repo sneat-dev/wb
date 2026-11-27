@@ -185,8 +185,13 @@ func collectWithDiscovery(ctx context.Context, options Options, userHomeDir func
 				}
 				continue
 			}
-			if first, taken := owner[root]; taken && first != group.name {
-				category.SameAs = append(category.SameAs, first+" ("+root+")")
+			if first, taken := owner[root]; taken {
+				// Measured already: by another category it is reported as
+				// same-as; within this one it is simply not walked twice
+				// (TMPDIR and GOTMPDIR can be one directory).
+				if first != group.name {
+					category.SameAs = append(category.SameAs, first+" ("+root+")")
+				}
 				continue
 			}
 			owner[root] = group.name
@@ -250,26 +255,18 @@ type group struct {
 func candidateGroups(projectsRoot, home string) []group {
 	userHome, _ := os.UserHomeDir()
 	legacyHome := legacyWBHome(userHome, home)
+	// The table order of disk-prune#req:accounting-roots: when two
+	// categories resolve to one directory, the first owns its bytes.
 	groups := []group{
-		{
-			name: "worktrees", kind: "worktree",
-			roots: checkoutStores(projectsRoot, legacyHome),
-			note:  "may hold unlanded work; retire with wb clean, never rm",
-		},
-		{
-			name: "go-build-cache", kind: "cache",
-			roots: []string{goRoot(func(env goenv.Env) string { return env.GOCACHE })},
-			note:  "regenerable; shared across every worktree, so per-task copies multiply it; wb disk prune trims it",
-		},
-		{
-			name: "go-module-cache", kind: "cache",
-			roots: []string{goRoot(func(env goenv.Env) string { return env.GOMODCACHE })},
-			note:  "regenerable; re-downloading costs network, not correctness; wb disk prune removes versions no go.sum references",
-		},
 		{
 			name: "wb-state", kind: "state",
 			roots: []string{home},
 			note:  "work logs, locks, claims, receipts; not regenerable; reported, never pruned",
+		},
+		{
+			name: "worktrees", kind: "worktree",
+			roots: checkoutStores(projectsRoot, legacyHome),
+			note:  "may hold unlanded work; retire with wb clean, never rm",
 		},
 	}
 	if legacyHome != "" {
@@ -279,6 +276,18 @@ func candidateGroups(projectsRoot, home string) []group {
 			note:  "the retired $HOME/.wb: hub store, legacy reports and hand-made artifacts; legacy checkouts are counted under worktrees; a person decides",
 		})
 	}
+	groups = append(groups,
+		group{
+			name: "go-build-cache", kind: "cache",
+			roots: []string{goRoot(func(env goenv.Env) string { return env.GOCACHE })},
+			note:  "regenerable; shared across every worktree, so per-task copies multiply it; wb disk prune trims it",
+		},
+		group{
+			name: "go-module-cache", kind: "cache",
+			roots: []string{goRoot(func(env goenv.Env) string { return env.GOMODCACHE })},
+			note:  "regenerable; re-downloading costs network, not correctness; wb disk prune removes versions no go.sum references",
+		},
+	)
 	if userHome != "" {
 		groups = append(groups, group{
 			name: "node-package-store", kind: "cache",

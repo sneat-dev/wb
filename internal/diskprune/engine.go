@@ -102,11 +102,14 @@ type World struct {
 	Processes    func() Table
 	Probe        func(path string) (disk.Filesystem, error)
 	Identity     func(path string) (Identity, error)
-	Scan         func(root string, mount uint64, protected []string) scanResult
-	LockDirs     func(paths []string) (*Lock, error)
-	Admit        func(ctx context.Context) (status string, wait time.Duration, release func())
-	RemoveTree   func(parent, name string, id Identity) (TreeOutcome, error)
-	RemoveFile   func(dir, name string, id Identity) (int64, error)
+	// BindOfSubdirectory reports a root on a bind mount of a subdirectory,
+	// whose relationship to protected data cannot be established.
+	BindOfSubdirectory func(path string) (bool, error)
+	Scan               func(root string, mount uint64, protected []string) scanResult
+	LockDirs           func(paths []string) (*Lock, error)
+	Admit              func(ctx context.Context) (status string, wait time.Duration, release func())
+	RemoveTree         func(parent, name string, id Identity) (TreeOutcome, error)
+	RemoveFile         func(dir, name string, id Identity) (int64, error)
 	// Checkouts are every canonical clone and worktree whose sum files form
 	// the module reference set; IgnoreSumFiles are checkout-relative paths
 	// to skip (disk.prune.ignore_sum_files).
@@ -234,27 +237,34 @@ func Run(ctx context.Context, w *World, o Options) Report {
 		report.Lock.Held = true
 	}
 
-	w.progress(Event{Phase: "plan"})
 	var plans []*categoryPlan
 	for index, c := range w.categories {
-		if c.name() == categoryFullClean && !o.AllowFullClean {
+		name := c.name()
+		if name == categoryFullClean && !o.AllowFullClean {
 			continue
 		}
-		plan := c.plan(ctx, w, o)
-		plan.Name = c.name()
-		plan.Order = index + 1
-		plan.selected = o.selected(plan.Name) || plan.Name == categoryFullClean
-		if !o.selected(plan.Name) && plan.Name != categoryFullClean {
-			if plan.Name == CategoryModules && plan.Status != StatusSkipped {
-				plan.Status = StatusRequiresCategory
-				plan.Reason = "requires --category go-module-cache"
-			}
-			plan.applicable = false
+		var plan *categoryPlan
+		switch {
+		case name == categoryFullClean || o.selected(name):
+			w.progress(Event{Phase: "measure", Category: name})
+			plan = c.plan(ctx, w, o)
+			plan.selected = true
+		case name == CategoryModules:
+			// Opt-in, and never walked unless asked for.
+			plan = &categoryPlan{CategoryReport: CategoryReport{Status: StatusRequiresCategory, Reason: "requires --category go-module-cache"}}
+		default:
+			// Not planned at all, so the report never shows deletion
+			// candidates an unselected category would not act on.
+			plan = &categoryPlan{CategoryReport: CategoryReport{Status: StatusSkipped, Reason: "not-selected"}}
 		}
+		plan.Name = name
+		plan.Order = index + 1
 		plans = append(plans, plan)
 	}
+	w.progress(Event{Phase: "plan"})
 	filesystems := map[uint64]*filesystemState{}
 	project(w, o, plans, filesystems)
+	seedFilesystems(w, o, plans, filesystems)
 
 	w.belowTarget = func(path string) bool {
 		fs, err := w.Probe(existingAncestor(path))
@@ -270,7 +280,7 @@ func Run(ctx context.Context, w *World, o Options) Report {
 		return o.Target.Met(fs), true
 	}
 	if o.Apply && ctx.Err() == nil {
-		admitted := admit(ctx, w, o, filesystems, &report)
+		admitted := admit(ctx, w, o, plans, filesystems, &report)
 		applyPlans(ctx, w, o, plans, filesystems, reasons)
 		admitted()
 	}
@@ -376,8 +386,8 @@ func targetValue(t Target) float64 {
 // admit goes through WB's admission queue unless a filesystem is already
 // below the floor, where queueing behind the builds failing for lack of
 // space would defeat the purpose.
-func admit(ctx context.Context, w *World, o Options, filesystems map[uint64]*filesystemState, report *Report) func() {
-	if len(filesystems) == 0 {
+func admit(ctx context.Context, w *World, o Options, plans []*categoryPlan, filesystems map[uint64]*filesystemState, report *Report) func() {
+	if !hasWork(plans) {
 		return func() {}
 	}
 	for _, state := range filesystems {
@@ -418,7 +428,14 @@ func applyPlans(ctx context.Context, w *World, o Options, plans []*categoryPlan,
 		w.progress(Event{Phase: "apply", Category: plan.Name})
 		for _, state := range filesystems {
 			state.catStart = state.report.UnlinkedBytes
-			state.catAvail, _ = currentAvailable(w, state)
+			var probed bool
+			state.catAvail, probed = currentAvailable(w, state)
+			if !probed {
+				// Without a measurement, space-not-returned cannot be judged.
+				state.stopped = true
+				state.report.Note = "probe-failed"
+				reasons[OutcomeFailClosed] = true
+			}
 		}
 		applied := false
 		for _, it := range plan.items {
@@ -432,7 +449,9 @@ func applyPlans(ctx context.Context, w *World, o Options, plans []*categoryPlan,
 			// filesystem by project; a failed probe there marks it failed.
 			state := filesystems[it.device]
 			if state.stopped {
-				it.Status, it.Reason = StatusSkipped, "space-not-returned"
+				// The filesystem's own reason: space-not-returned, or a
+				// probe that failed at the category boundary.
+				it.Status, it.Reason = StatusSkipped, state.report.Note
 				continue
 			}
 			current, probed := currentAvailable(w, state)
@@ -507,7 +526,9 @@ func applyResult(it *item, result itemResult) {
 // collectReasons turns statuses into outcome reasons: failures, fail-closed
 // skips, and, in a plan, the existence of work.
 func collectReasons(plan *categoryPlan, reasons map[string]bool, applied bool) {
-	if failClosedReasons[reasonCode(plan.Reason)] {
+	// A partial scan means the category's figures and candidates are a
+	// lower bound: never a clean bill of health.
+	if failClosedReasons[reasonCode(plan.Reason)] || plan.Partial {
 		reasons[OutcomeFailClosed] = true
 	}
 	for _, it := range plan.items {
@@ -597,4 +618,50 @@ func (p *categoryPlan) render() CategoryReport {
 		report.Items = append(report.Items, it.ItemReport)
 	}
 	return report
+}
+
+// bindProblem refuses a category root that is, or lies on, a bind mount of
+// a subdirectory: it may alias protected data under another path.
+func (w *World) bindProblem(roots ...string) string {
+	for _, root := range roots {
+		bound, err := w.BindOfSubdirectory(root)
+		if err != nil {
+			return "unknown: the mount of " + root + " cannot be identified: " + err.Error()
+		}
+		if bound {
+			return "unknown: " + root + " is on a bind mount of a subdirectory, which may alias protected data"
+		}
+	}
+	return ""
+}
+
+// seedFilesystems adds every selected category's root filesystem to the
+// report even when it yielded no candidate, so a filesystem still below its
+// target is reported target-unmet, never silently done.
+func seedFilesystems(w *World, o Options, plans []*categoryPlan, filesystems map[uint64]*filesystemState) {
+	for _, plan := range plans {
+		if !plan.selected || plan.Status == StatusSkipped || len(plan.locks) == 0 {
+			continue
+		}
+		identity, err := w.Identity(plan.locks[0])
+		if err != nil {
+			continue
+		}
+		filesystemFor(w, o, &item{ItemReport: ItemReport{Path: plan.locks[0]}, root: plan.locks[0], device: identity.Dev}, plan.locks[0], filesystems)
+	}
+}
+
+// hasWork reports whether any applicable category has an item to delete.
+func hasWork(plans []*categoryPlan) bool {
+	for _, plan := range plans {
+		if !plan.applicable {
+			continue
+		}
+		for _, it := range plan.items {
+			if it.apply != nil && (it.Status == StatusDelete || it.Status == StatusBeyondTarget) {
+				return true
+			}
+		}
+	}
+	return false
 }

@@ -35,7 +35,11 @@ func TestAutoRunsTheUnattendedSubsetToTheFloor(t *testing.T) {
 	if cat := categoryByName(t, report, CategoryModules); cat.Status != StatusRequiresCategory {
 		t.Fatalf("auto modules = %#v", cat)
 	}
-	if report.Admission.Status != "bypassed" || len(events) < 2 || events[0].Phase != "plan" {
+	sawPlan := false
+	for _, event := range events {
+		sawPlan = sawPlan || event.Phase == "plan"
+	}
+	if report.Admission.Status != "bypassed" || len(events) < 2 || events[0].Phase != "measure" || !sawPlan {
 		t.Fatalf("admission %#v events %#v", report.Admission, events)
 	}
 }
@@ -98,7 +102,7 @@ func TestApplyReprobesAndReportsState(t *testing.T) {
 		t.Fatal(err)
 	}
 	report = flaky.run(Options{Apply: true, Floor: 0.01})
-	if it := itemsByName(report, CategoryScratch)["go-build1"]; it.Status != StatusSkipped || it.Reason != "probe-failed" || report.Outcome != OutcomeFailClosed || len(report.State) != 1 {
+	if it := itemsByName(report, CategoryScratch)["go-build1"]; it.Status != StatusSkipped || it.Reason != "probe-failed" || report.Outcome != OutcomeFailClosed || len(report.State) != 1 || report.Filesystems[0].Note != "probe-failed" {
 		t.Fatalf("a probe failure must stop deletion: %#v", report)
 	}
 	if !exists(filepath.Join(flaky.tmp, "go-build1")) {
@@ -130,16 +134,16 @@ func TestBuildCacheShardEdges(t *testing.T) {
 	t.Parallel()
 	tw := newTestWorld(t)
 	root := buildCacheFixture(t, tw, map[string]time.Duration{"0a01-a": 100 * time.Hour, "0a02-a": 100 * time.Hour})
-	if err := os.Symlink(filepath.Join(root, "0a", "0a01-a"), filepath.Join(root, "0a", "0a03-a")); err != nil {
+	if err := os.Symlink(filepath.Join(root, "0a", cacheName("0a01-a")), filepath.Join(root, "0a", cacheName("0a03-a"))); err != nil {
 		t.Fatal(err)
 	}
 	tw.categories = []category{hookedCategory{inner: buildCacheCategory{}, after: func() {
-		_ = os.Remove(filepath.Join(root, "0a", "0a01-a"))
+		_ = os.Remove(filepath.Join(root, "0a", cacheName("0a01-a")))
 		now := tw.Now()
-		_ = os.Chtimes(filepath.Join(root, "0a", "0a02-a"), now, now)
+		_ = os.Chtimes(filepath.Join(root, "0a", cacheName("0a02-a")), now, now)
 	}}}
 	report := tw.run(Options{Apply: true, Categories: []string{CategoryBuild}, Floor: 0.01})
-	if !exists(filepath.Join(root, "0a", "0a02-a")) || categoryByName(t, report, CategoryBuild).Shards[0].Entries != 2 {
+	if !exists(filepath.Join(root, "0a", cacheName("0a02-a"))) || categoryByName(t, report, CategoryBuild).Shards[0].Entries != 2 {
 		t.Fatalf("report = %#v", categoryByName(t, report, CategoryBuild))
 	}
 }

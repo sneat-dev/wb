@@ -258,10 +258,12 @@ func newRootCmdFor(inv *invocation) *cobra.Command {
 
 // sideEffectFreeCommand reports whether the command with this id must record no
 // heartbeat and no invoked-command marker: `version` (a status probe, see
-// cli-install#req:version-json-side-effect-free) and `cockpit export` (a
-// read-only export, cockpit-views#req:cockpit-export-verb).
+// cli-install#req:version-json-side-effect-free), `cockpit export` (a
+// read-only export, cockpit-views#req:cockpit-export-verb) and `disk prune`,
+// whose plan must change nothing (disk-prune#req:plan-by-default) and which
+// never works inside the worktree it is run from, in any mode.
 func sideEffectFreeCommand(id string) bool {
-	return id == "version" || id == "cockpit export"
+	return id == "version" || id == "cockpit export" || id == "disk prune"
 }
 
 // persistentFlagSupport is an executable counterpart to

@@ -95,7 +95,7 @@ func (r treeRemover) remove(parent, name string, expect Identity) (TreeOutcome, 
 	if err := r.sys.fstat(fd, &stat); err != nil {
 		return outcome, fmt.Errorf("stat %s/%s: %w", parent, name, err)
 	}
-	if uint64(stat.Dev) != expect.Dev || uint64(stat.Ino) != expect.Ino {
+	if !expect.sameInode(uint64(stat.Dev), uint64(stat.Ino), birthAt(fd, "")) {
 		return outcome, ErrChanged
 	}
 	parentMount, err := r.mountIDAt(parentfd, "")
@@ -120,7 +120,7 @@ func (r treeRemover) remove(parent, name string, expect Identity) (TreeOutcome, 
 	}
 	r.beforeRemoveTop()
 	var now unix.Stat_t
-	if err := r.sys.fstatat(parentfd, name, &now); err != nil || uint64(now.Ino) != expect.Ino || uint64(now.Dev) != expect.Dev {
+	if err := r.sys.fstatat(parentfd, name, &now); err != nil || !expect.sameInode(uint64(now.Dev), uint64(now.Ino), birthAt(parentfd, name)) {
 		return outcome, ErrReplaced
 	}
 	if err := r.sys.unlinkat(parentfd, name, unix.AT_REMOVEDIR); err != nil {
@@ -254,8 +254,11 @@ func mountIDFromMountinfo(mountinfo, path string) (uint64, error) {
 		if err != nil {
 			continue
 		}
-		point := fields[4]
-		if (point == "/" || within(path, point)) && len(point) > bestLen {
+		// mountinfo escapes space, tab, newline and backslash as octal;
+		// a later line for the same point is a mount stacked on top, which
+		// is the one visible, so ties go to the later line.
+		point := unescapeMountinfo(fields[4])
+		if (point == "/" || within(path, point)) && len(point) >= bestLen {
 			best, bestLen = id, len(point)
 		}
 	}
@@ -274,3 +277,71 @@ func procFDPath(fd int) (string, error) {
 var mountIDOf = func(path string) (uint64, error) {
 	return statxMountID(unix.AT_FDCWD, path)
 }
+
+// hasACL reports a POSIX access ACL on path, which may grant other users
+// access the permission bits do not show.
+func hasACL(path string) bool {
+	size, err := unix.Getxattr(path, "system.posix_acl_access", nil)
+	return err == nil && size > 0
+}
+
+// unescapeMountinfo decodes the \NNN octal escapes the kernel writes in
+// mountinfo path fields.
+func unescapeMountinfo(field string) string {
+	var out strings.Builder
+	for i := 0; i < len(field); i++ {
+		if field[i] == '\\' && i+3 < len(field) {
+			if value, err := strconv.ParseUint(field[i+1:i+4], 8, 8); err == nil {
+				out.WriteByte(byte(value))
+				i += 3
+				continue
+			}
+		}
+		out.WriteByte(field[i])
+	}
+	return out.String()
+}
+
+// fdMountID is the mount ID of the directory open at fd.
+func fdMountID(fd int) (uint64, error) { return statxMountID(fd, "") }
+
+// bindOfSubdirectory reports whether path lies on a mount whose source is a
+// subdirectory of another filesystem (a bind mount): its relationship to the
+// protected roots then cannot be established from paths.
+func bindOfSubdirectory(path string) (bool, error) {
+	raw, err := os.ReadFile(mountinfoPath)
+	if err != nil {
+		return false, err
+	}
+	root, bestLen := "/", -1
+	for _, line := range strings.Split(string(raw), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 5 {
+			continue
+		}
+		point := unescapeMountinfo(fields[4])
+		if (point == "/" || within(path, point)) && len(point) >= bestLen {
+			root, bestLen = unescapeMountinfo(fields[3]), len(point)
+		}
+	}
+	if bestLen < 0 {
+		return false, fmt.Errorf("no mount in mountinfo contains %s", path)
+	}
+	return root != "/", nil
+}
+
+// birthAt is the creation time of name under dirfd (dirfd itself when name is
+// empty), without following a symlink; 0 when the filesystem keeps none.
+func birthAt(dirfd int, name string) int64 {
+	flags := unix.AT_SYMLINK_NOFOLLOW
+	if name == "" {
+		flags |= unix.AT_EMPTY_PATH
+	}
+	var stx unix.Statx_t
+	if unix.Statx(dirfd, name, flags, unix.STATX_BTIME, &stx) != nil || stx.Mask&unix.STATX_BTIME == 0 {
+		return 0
+	}
+	return stx.Btime.Sec*1e9 + int64(stx.Btime.Nsec)
+}
+
+func ctimeOf(stat *unix.Stat_t) int64 { return stat.Ctim.Nano() }

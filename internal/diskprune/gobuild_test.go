@@ -23,7 +23,7 @@ func buildCacheFixture(t *testing.T, tw *testWorld, ages map[string]time.Duratio
 	mustWrite(t, filepath.Join(root, "ab", "backup", "notes"), "mine", 0o644)
 	mustWrite(t, filepath.Join(root, "ab", "notanentry"), "x", 0o644)
 	for name, age := range ages {
-		path := filepath.Join(root, name[:2], name)
+		path := filepath.Join(root, name[:2], cacheName(name))
 		mustWrite(t, path, strings.Repeat("x", 4096), 0o644)
 		when := tw.Now().Add(-age)
 		if err := os.Chtimes(path, when, when); err != nil {
@@ -68,11 +68,11 @@ func TestBuildCacheTrimRespectsTheFloor(t *testing.T) {
 	}
 	kept := strings.Join(keptFiles(t, root), " ")
 	for _, gone := range []string{"0a01-a", "0a02-d", "1b01-a"} {
-		if strings.Contains(kept, gone) {
+		if strings.Contains(kept, cacheName(gone)) {
 			t.Errorf("%s survived: %s", gone, kept)
 		}
 	}
-	for _, stays := range []string{"1b02-a", "2c01-a", "README", "trim.txt", "testexpire.txt", "corpus", "notes", "notanentry"} {
+	for _, stays := range []string{cacheName("1b02-a"), cacheName("2c01-a"), "README", "trim.txt", "testexpire.txt", "corpus", "notes", "notanentry"} {
 		if !strings.Contains(kept, stays) {
 			t.Errorf("%s was removed: %s", stays, kept)
 		}
@@ -91,12 +91,12 @@ func TestBuildCacheFullClean(t *testing.T) {
 	tw := newTestWorld(t)
 	root := buildCacheFixture(t, tw, ages)
 	tw.run(Options{Apply: true, Categories: []string{CategoryBuild}, Floor: 0.01})
-	if !strings.Contains(strings.Join(keptFiles(t, root), " "), "1b01-a") {
+	if !strings.Contains(strings.Join(keptFiles(t, root), " "), cacheName("1b01-a")) {
 		t.Fatal("a young entry went without --allow-full-clean")
 	}
 	report := tw.run(Options{Apply: true, Categories: []string{CategoryBuild}, AllowFullClean: true, Floor: 0.01})
 	kept := strings.Join(keptFiles(t, root), " ")
-	if strings.Contains(kept, "1b01-a") || !strings.Contains(kept, "corpus") || !strings.Contains(kept, "notes") {
+	if strings.Contains(kept, cacheName("1b01-a")) || !strings.Contains(kept, "corpus") || !strings.Contains(kept, "notes") {
 		t.Fatalf("after full clean: %s (%v)", kept, report.Reasons)
 	}
 	if categoryByName(t, report, categoryFullClean).Status != StatusApplied {
@@ -113,7 +113,7 @@ func TestBuildCacheFullClean(t *testing.T) {
 	aged := newTestWorld(t)
 	buildCacheFixture(t, aged, ages)
 	got = aged.run(Options{Apply: true, Categories: []string{CategoryBuild}, AllowFullClean: true, OlderThan: 48 * time.Hour, Floor: 0.01})
-	if cat := categoryByName(t, got, categoryFullClean); cat.Reason != "age-filter-unsupported" {
+	if cat := categoryByName(t, got, categoryFullClean); cat.Reason != "requested-step-skipped: age-filter-unsupported" {
 		t.Fatalf("aged full clean = %#v", cat)
 	}
 	started := newTestWorld(t)

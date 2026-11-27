@@ -214,7 +214,8 @@ func TestPruneProgressModes(t *testing.T) {
 	h := newPruneHarness(t)
 	h.events = []diskprune.Event{{Phase: "plan"}, {Phase: "plan"}, {Phase: "apply", Category: "scratch", Unlinked: 4096}}
 	_, errOut, _ := h.execute(shared.Flags{}, true)
-	if strings.Count(errOut, "wb disk prune: ") != 2 || !strings.Contains(errOut, "apply scratch") {
+	// discover (before the world exists), plan once, then apply.
+	if strings.Count(errOut, "wb disk prune: ") != 3 || !strings.HasPrefix(errOut, "wb disk prune: discover") || !strings.Contains(errOut, "apply scratch") {
 		t.Fatalf("per-line progress = %q", errOut)
 	}
 	_, quiet, _ := h.execute(shared.Flags{Quiet: true}, true)

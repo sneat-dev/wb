@@ -2,6 +2,7 @@ package diskprune
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -42,7 +43,9 @@ func ParseTarget(raw string) (Target, error) {
 	}
 	if number, ok := strings.CutSuffix(value, "%"); ok {
 		percent, err := strconv.ParseFloat(strings.TrimSpace(number), 64)
-		if err != nil || percent <= 0 || percent >= 100 {
+		// NaN fails every comparison, so it is rejected explicitly: it would
+		// otherwise be a target no filesystem ever meets.
+		if err != nil || math.IsNaN(percent) || percent <= 0 || percent >= 100 {
 			return Target{}, fmt.Errorf("--until-free %q: a percentage must be between 0 and 100 (exclusive)", raw)
 		}
 		return Target{Kind: TargetRatio, Ratio: percent / 100}, nil
@@ -53,10 +56,11 @@ func ParseTarget(raw string) (Target, error) {
 			continue
 		}
 		amount, err := strconv.ParseFloat(strings.TrimSpace(number), 64)
-		if err != nil || amount <= 0 {
+		bytes := amount * float64(unit.factor)
+		if err != nil || math.IsNaN(amount) || amount <= 0 || bytes >= math.MaxInt64 {
 			break
 		}
-		return Target{Kind: TargetBytes, Bytes: int64(amount * float64(unit.factor))}, nil
+		return Target{Kind: TargetBytes, Bytes: int64(bytes)}, nil
 	}
 	return Target{}, fmt.Errorf("--until-free %q: use a percentage such as 15%%, a size such as 20GiB, or max", raw)
 }

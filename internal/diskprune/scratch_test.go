@@ -24,7 +24,7 @@ func TestScratchRemovesOnlyKnownUnusedProducers(t *testing.T) {
 	}
 	cache := filepath.Join(tw.tmp, "wb-pr2-lint-go-cache")
 	mustWrite(t, filepath.Join(cache, "README"), "This directory holds cached build artifacts from the Go build system.", 0o644)
-	mustWrite(t, filepath.Join(cache, "0a", "0a1b-a"), "x", 0o644)
+	mustWrite(t, filepath.Join(cache, "0a", cacheName("0a1b-a")), "x", 0o644)
 	mustWrite(t, filepath.Join(cache, "trim.txt"), "1", 0o644)
 	notCache := filepath.Join(tw.tmp, "wb-x-cache")
 	mustWrite(t, filepath.Join(notCache, "README"), "", 0o644)

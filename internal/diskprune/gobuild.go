@@ -82,18 +82,28 @@ func readCacheFiles(w *World, root string) ([]cacheFile, bool) {
 	}
 	var files []cacheFile
 	partial := false
+	rootMount, err := mountIDOf(root)
+	if err != nil {
+		return nil, true
+	}
 	for _, entry := range entries {
 		if !entry.IsDir() || !hexShard.MatchString(entry.Name()) {
 			continue
 		}
 		dir := filepath.Join(root, entry.Name())
+		// A shard that is a mount (say, a bind of a checkout) is not the
+		// cache: none of its files are entries prune may unlink.
+		if mount, err := mountIDOf(dir); err != nil || mount != rootMount {
+			partial = true
+			continue
+		}
 		shard, err := os.ReadDir(dir)
 		if err != nil {
 			partial = true
 			continue
 		}
 		for _, file := range shard {
-			if !cacheEntry.MatchString(file.Name()) {
+			if !isCacheEntry(entry.Name(), file.Name()) {
 				continue
 			}
 			path := filepath.Join(dir, file.Name())
@@ -182,18 +192,22 @@ func trimEntries(ctx context.Context, w *World, root string, files []cacheFile, 
 	tracker.mu.Unlock()
 	var result itemResult
 	floor := time.Duration(0)
+	shard := ""
 	for index, file := range files {
-		if index%recheckEvery == 0 {
-			if ctx.Err() != nil {
-				return result
-			}
-			met, measured := w.targetMet(root)
-			if !measured {
-				return itemResult{unlinked: result.unlinked, status: StatusSkipped, reason: "probe-failed"}
-			}
-			if met {
-				return result
-			}
+		if ctx.Err() != nil {
+			return result
+		}
+		// The target is probed before every entry (a statfs), so the trim
+		// stops at the first entry that suffices.
+		met, measured := w.targetMet(root)
+		if !measured {
+			return itemResult{unlinked: result.unlinked, status: StatusSkipped, reason: "probe-failed"}
+		}
+		if met {
+			return result
+		}
+		if index%recheckEvery == 0 || file.dir != shard {
+			shard = file.dir
 			table := w.freshTable()
 			if full {
 				if reason := processEvidence(table, root); reason != "" {
@@ -257,6 +271,10 @@ func (buildCacheCategory) plan(ctx context.Context, w *World, o Options) *catego
 		plan.skip("protected: " + hit)
 		return plan
 	}
+	if reason := w.bindProblem(root); reason != "" {
+		plan.skip(reason)
+		return plan
+	}
 	table := w.freshTable()
 	floor, pid := buildFloor(table, root, o.OlderThan)
 	plan.EffectiveFloor, plan.FloorSetByPID = floor.String(), pid
@@ -302,13 +320,16 @@ func (fullCleanCategory) plan(ctx context.Context, w *World, o Options) *categor
 		plan.skip("never under --auto")
 		return plan
 	case o.OlderThan > 0:
-		plan.skip("age-filter-unsupported")
+		plan.skip("requested-step-skipped: age-filter-unsupported")
 		return plan
 	case unsupportedCache(w.Go) != "":
 		plan.skip(unsupportedCache(w.Go))
 		return plan
 	case insideAny(root, w.Protected) != "":
 		plan.skip("protected: " + insideAny(root, w.Protected))
+		return plan
+	case w.bindProblem(root) != "":
+		plan.skip(w.bindProblem(root))
 		return plan
 	}
 	table := w.freshTable()

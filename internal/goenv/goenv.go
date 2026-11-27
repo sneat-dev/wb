@@ -120,6 +120,7 @@ func readGoEnvFile(src goEnvSources) (map[string]string, error) {
 	}
 	values := map[string]string{}
 	scanner := bufio.NewScanner(strings.NewReader(string(raw)))
+	scanner.Buffer(make([]byte, 64<<10), 1<<20)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		key, value, ok := strings.Cut(line, "=")
@@ -127,6 +128,11 @@ func readGoEnvFile(src goEnvSources) (map[string]string, error) {
 			continue
 		}
 		values[strings.TrimSpace(key)] = strings.TrimSpace(value)
+	}
+	// A line too long to read could hide a later GOCACHEPROG or GOPRIVATE;
+	// defaults in their place would enable deletion Go itself would not.
+	if err := scanner.Err(); err != nil {
+		return nil, err
 	}
 	return values, nil
 }

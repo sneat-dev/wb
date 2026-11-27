@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -99,5 +100,15 @@ func TestGoEnvFailures(t *testing.T) {
 	}
 	if _, err := Resolve(); err != nil {
 		t.Fatalf("real resolution: %v", err)
+	}
+}
+
+// A go env line too long to read fails closed: a GOCACHEPROG or GOPRIVATE
+// after it must not silently fall back to defaults.
+func TestGoEnvFileWithAnUnreadableLineFailsClosed(t *testing.T) {
+	t.Parallel()
+	long := "GOFLAGS=" + strings.Repeat("x", 2<<20) + "\nGOCACHEPROG=/bin/cacher\n"
+	if _, err := resolveGoEnv(fakeGoEnvSources(map[string]string{"GOENV": "/custom/env"}, map[string]string{"/custom/env": long})); err == nil {
+		t.Fatal("an over-long go env line was skipped")
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -32,6 +33,16 @@ func (pnpmCategory) plan(ctx context.Context, w *World, o Options) *categoryPlan
 		return plan
 	}
 	plan.locks = stores
+	if w.ProtectedGap != "" {
+		// pnpm's cache directory could sit in a worktree the incomplete
+		// inventory did not find.
+		plan.skip("unknown: " + w.ProtectedGap)
+		return plan
+	}
+	if reason := w.bindProblem(stores...); reason != "" {
+		plan.skip(reason)
+		return plan
+	}
 	if o.OlderThan > 0 {
 		plan.skip("age-filter-unsupported")
 		return plan
@@ -52,6 +63,10 @@ func (pnpmCategory) plan(ctx context.Context, w *World, o Options) *categoryPlan
 	for _, store := range stores {
 		scan := w.Scan(store, identity.MountID, nil)
 		plan.Partial = plan.Partial || scan.Partial
+		if scan.ContainsMount {
+			plan.skip("contains-mount: " + store)
+			return plan
+		}
 		for _, inode := range scan.Inodes {
 			if inode.links == 1 {
 				single += inode.blocks
@@ -92,8 +107,9 @@ func applyPnpm(ctx context.Context, w *World, stores []string) itemResult {
 		return itemResult{status: StatusSkipped, reason: "unavailable: " + err.Error()}
 	}
 	store, cacheDir = resolved(strings.TrimSpace(store)), strings.TrimSpace(cacheDir)
-	if cacheDir == "undefined" {
-		cacheDir = ""
+	if cacheDir == "undefined" || cacheDir == "" {
+		// pnpm then uses its default cache, which it prunes all the same.
+		cacheDir = w.pnpmDefaultCache()
 	}
 	cacheDir = resolved(cacheDir)
 	measured := false
@@ -107,13 +123,10 @@ func applyPnpm(ctx context.Context, w *World, stores []string) itemResult {
 		return itemResult{status: StatusSkipped, reason: "store-not-measured: pnpm prunes " + store}
 	case insideAny(store, w.Protected) != "":
 		return itemResult{status: StatusSkipped, reason: "protected: " + insideAny(store, w.Protected)}
-	case cacheDir != "" && insideAny(cacheDir, w.Protected) != "":
+	case insideAny(cacheDir, w.Protected) != "":
 		return itemResult{status: StatusSkipped, reason: "protected: " + insideAny(cacheDir, w.Protected)}
 	}
-	writeSet := []string{store, filepath.Join(store, "tmp")}
-	if cacheDir != "" {
-		writeSet = append(writeSet, cacheDir)
-	}
+	writeSet := []string{store, filepath.Join(store, "tmp"), cacheDir}
 	for _, path := range writeSet {
 		if !w.belowTarget(path) {
 			return itemResult{status: StatusSkipped, reason: "write-set-outside-target: " + path}
@@ -137,6 +150,7 @@ func applyPnpm(ctx context.Context, w *World, stores []string) itemResult {
 	if result, busy := pnpmBusy(w, store); busy {
 		return result
 	}
+	before := singleLinkBytes(w, stores)
 	if _, err := w.Pnpm(ctx, "store", "prune"); err != nil {
 		return itemResult{err: fmt.Errorf("pnpm store prune: %w", err)}
 	}
@@ -144,7 +158,8 @@ func applyPnpm(ctx context.Context, w *World, stores []string) itemResult {
 	if err != nil || strings.TrimSpace(after) != store {
 		return itemResult{err: fmt.Errorf("pnpm store path changed from %s to %q during prune", store, strings.TrimSpace(after))}
 	}
-	return itemResult{}
+	// What pnpm freed, measured, so the space-not-returned guard sees it.
+	return itemResult{unlinked: max(before-singleLinkBytes(w, stores), 0)}
 }
 
 // pnpmBusy reads a fresh process table: untrusted evidence or a running pnpm
@@ -176,4 +191,37 @@ func resolved(path string) string {
 		return real
 	}
 	return filepath.Clean(path)
+}
+
+// singleLinkBytes is the store's bytes no consumer links: what store prune
+// can remove.
+func singleLinkBytes(w *World, stores []string) int64 {
+	var total int64
+	for _, store := range stores {
+		identity, err := w.Identity(store)
+		if err != nil {
+			continue
+		}
+		for _, inode := range w.Scan(store, identity.MountID, nil).Inodes {
+			if inode.links == 1 {
+				total += inode.blocks
+			}
+		}
+	}
+	return total
+}
+
+// pnpmDefaultCache is the cache directory pnpm uses when none is configured:
+// $XDG_CACHE_HOME/pnpm, else ~/.cache/pnpm (Linux) or ~/Library/Caches/pnpm
+// (macOS).
+func (w *World) pnpmDefaultCache() string { return pnpmDefaultCacheFor(runtime.GOOS, w.Home) }
+
+func pnpmDefaultCacheFor(goos, home string) string {
+	if xdg := os.Getenv("XDG_CACHE_HOME"); xdg != "" {
+		return filepath.Join(xdg, "pnpm")
+	}
+	if goos == "darwin" {
+		return filepath.Join(home, "Library", "Caches", "pnpm")
+	}
+	return filepath.Join(home, ".cache", "pnpm")
 }

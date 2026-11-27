@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"golang.org/x/mod/module"
+	"golang.org/x/mod/semver"
 	"golang.org/x/mod/sumdb/dirhash"
 )
 
@@ -126,6 +127,29 @@ func readSumFile(path string, refs map[string]bool) error {
 	return nil
 }
 
+// fileState is a download file as the plan saw it: an in-place rewrite keeps
+// the inode but not the size and times, so all are compared.
+type fileState struct {
+	Identity
+	size   int64
+	mtime  time.Time
+	ctime  time.Time
+	links  uint64
+	blocks int64
+}
+
+func stateOf(identity Identity, info os.FileInfo) fileState {
+	return fileState{Identity: identity, size: info.Size(), mtime: info.ModTime(), ctime: changeTime(info), links: linkCount(info), blocks: diskBytes(info)}
+}
+
+func (a fileState) same(b fileState) bool {
+	return a.Dev == b.Dev && a.Ino == b.Ino && a.size == b.size && a.mtime.Equal(b.mtime) && a.ctime.Equal(b.ctime)
+}
+
+// downloadExts are the download files apply removes; anything else beside
+// them makes a version unknown, never silently counted or left.
+var downloadExts = map[string]bool{".info": true, ".mod": true, ".zip": true, ".ziphash": true}
+
 // moduleVersion is one version in the module cache.
 type moduleVersion struct {
 	path, version         string
@@ -133,12 +157,14 @@ type moduleVersion struct {
 	downloadDir           string
 	extracted             string
 	newest                time.Time
-	files                 map[string]Identity // download files by extension
+	files                 map[string]fileState // download files by extension
 	hasZip, hasExtraction bool
 	// extractedID and ziphash are what the plan checked, so apply deletes
 	// only that tree and only while its recorded hash is unchanged.
 	extractedID Identity
 	ziphash     string
+	// foreign is a file beside the version that Go does not write there.
+	foreign bool
 }
 
 func (v moduleVersion) key() string { return v.path + "@" + v.version }
@@ -147,14 +173,38 @@ func (v moduleVersion) key() string { return v.path + "@" + v.version }
 // version that does not unescape is skipped: it is not a version Go wrote.
 func readModuleCache(w *World, root string) ([]moduleVersion, error) {
 	download := filepath.Join(root, "cache", "download")
+	rootMount, err := mountIDOf(root)
+	if err != nil {
+		return nil, err
+	}
+	// The walk must stay inside GOMODCACHE on its own mount: a symlinked
+	// cache/ or download/, or an @v directory on another mount, could make
+	// prune unlink files elsewhere.
+	for _, dir := range []string{filepath.Join(root, "cache"), download} {
+		info, err := os.Lstat(dir)
+		if err != nil {
+			return nil, err
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("%s is not a real directory", dir)
+		}
+	}
 	versions := map[string]*moduleVersion{}
-	err := filepath.WalkDir(download, func(path string, entry fs.DirEntry, err error) error {
+	var strays []string
+	err = filepath.WalkDir(download, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if entry.IsDir() {
 			if path == filepath.Join(download, "sumdb") {
 				return fs.SkipDir
+			}
+			mount, err := mountIDOf(path)
+			if err != nil {
+				return err
+			}
+			if mount != rootMount {
+				return fmt.Errorf("%s: %w", path, ErrContainsMount)
 			}
 			return nil
 		}
@@ -172,7 +222,10 @@ func readModuleCache(w *World, root string) ([]moduleVersion, error) {
 		escPath = filepath.ToSlash(escPath)
 		modPath, errPath := module.UnescapePath(escPath)
 		version, errVersion := module.UnescapeVersion(escVersion)
-		if errPath != nil || errVersion != nil {
+		if errPath != nil || errVersion != nil || !semver.IsValid(version) {
+			// Not a version Go wrote (v1.0.0.zip.bak): it is attached to the
+			// version whose name it extends, making that version unknown.
+			strays = append(strays, path)
 			return nil
 		}
 		identity, err := w.Identity(path)
@@ -187,16 +240,26 @@ func readModuleCache(w *World, root string) ([]moduleVersion, error) {
 		v := versions[key]
 		if v == nil {
 			v = &moduleVersion{path: modPath, version: version, escPath: escPath, escVersion: escVersion,
-				downloadDir: dir, extracted: filepath.Join(root, filepath.FromSlash(escPath)+"@"+escVersion), files: map[string]Identity{}}
+				downloadDir: dir, extracted: filepath.Join(root, filepath.FromSlash(escPath)+"@"+escVersion), files: map[string]fileState{}}
 			versions[key] = v
 		}
-		v.files[ext] = identity
+		if !downloadExts[ext] || !info.Mode().IsRegular() {
+			v.foreign = true
+		}
+		v.files[ext] = stateOf(identity, info)
 		v.newest = latest(v.newest, changeTime(info))
 		v.hasZip = v.hasZip || ext == ".zip"
 		return nil
 	})
 	if err != nil {
 		return nil, err
+	}
+	for _, stray := range strays {
+		for _, v := range versions {
+			if filepath.Dir(stray) == v.downloadDir && strings.HasPrefix(filepath.Base(stray), v.escVersion+".") {
+				v.foreign = true
+			}
+		}
 	}
 	out := make([]moduleVersion, 0, len(versions))
 	for _, v := range versions {
@@ -265,19 +328,17 @@ func (moduleCategory) plan(ctx context.Context, w *World, o Options) *categoryPl
 	plan := &categoryPlan{applicable: true, EstimateIsUpperBound: true, locks: []string{root}}
 	floor := maxDuration(floorModules, o.OlderThan)
 	plan.EffectiveFloor = floor.String()
-	if !o.selected(CategoryModules) {
-		// Opt-in: an unselected module cache is not walked at all, so a
-		// default or --auto run never pays for the fleet-wide reference
-		// scan nor reports its problems.
-		plan.Status, plan.Reason, plan.applicable = StatusRequiresCategory, "requires --category go-module-cache", false
-		return plan
-	}
+	w.progress(Event{Phase: "references", Category: CategoryModules})
 	if info, err := os.Stat(root); err != nil || !info.IsDir() || !filepath.IsAbs(root) {
 		plan.skip("unsupported-cache: GOMODCACHE " + root + " is not a directory")
 		return plan
 	}
 	if hit := insideAny(root, w.Protected); hit != "" {
 		plan.skip("protected: " + hit)
+		return plan
+	}
+	if reason := w.bindProblem(root); reason != "" {
+		plan.skip(reason)
 		return plan
 	}
 	table := w.freshTable()
@@ -316,11 +377,24 @@ func (moduleCategory) plan(ctx context.Context, w *World, o Options) *categoryPl
 	budget := &probeClock{remaining: probeBudget}
 	// The reference set is read again once at apply, so a sum file changed
 	// between plan and apply is still honoured.
-	var once sync.Once
+	// Before each version, the sum files are re-checked by size and
+	// modification time, and the set is read again when any changed, so a
+	// branch checked out while prune works is honoured.
+	var mu sync.Mutex
 	var freshRefs map[string]bool
 	var freshErr error
+	var stamp string
 	current := func() (map[string]bool, error) {
-		once.Do(func() { freshRefs, _, freshErr = referenceSet(w.Checkouts, w.IgnoreSumFiles) })
+		mu.Lock()
+		defer mu.Unlock()
+		now, err := sumStamp(w.Checkouts, w.IgnoreSumFiles)
+		if err != nil {
+			return nil, err
+		}
+		if freshRefs == nil || now != stamp {
+			freshRefs, _, freshErr = referenceSet(w.Checkouts, w.IgnoreSumFiles)
+			stamp = now
+		}
 		return freshRefs, freshErr
 	}
 	var estimate int64
@@ -334,13 +408,25 @@ func (moduleCategory) plan(ctx context.Context, w *World, o Options) *categoryPl
 			it.Reason = reason
 			continue
 		}
-		if v.hasExtraction && v.files[".ziphash"] != (Identity{}) {
+		if v.foreign {
+			it.Reason = "unknown: a file Go does not write sits beside " + v.key()
+			continue
+		}
+		var scan scanResult
+		if v.hasExtraction {
+			scan = w.Scan(v.extracted, rootIdentity.MountID, w.Protected)
+			if reason := extractedVerdict(scan); reason != "" {
+				it.Reason = reason
+				continue
+			}
+		}
+		if _, hashed := v.files[".ziphash"]; v.hasExtraction && hashed {
 			if reason := locallyModified(v); reason != "" {
 				it.Reason = reason
 				continue
 			}
 		}
-		released := accumulator.add(moduleInodes(w, v, rootIdentity.MountID))
+		released := accumulator.add(moduleInodes(v, scan))
 		it.Status, it.estimate, it.known, it.Bytes = StatusDelete, released, true, released
 		it.Reason = "no sum file in the fleet names " + v.key() + "; downloaded " + w.Now().Sub(v.newest).Round(time.Hour).String() + " ago"
 		version := v
@@ -397,18 +483,30 @@ func locallyModified(v moduleVersion) string {
 	return ""
 }
 
-func moduleInodes(w *World, v moduleVersion, mount uint64) []inodeRef {
-	var inodes []inodeRef
-	if v.hasExtraction {
-		inodes = w.Scan(v.extracted, mount, nil).Inodes
-	}
-	for ext := range v.files {
-		path := filepath.Join(v.downloadDir, v.escVersion+ext)
-		if info, err := os.Lstat(path); err == nil {
-			inodes = append(inodes, inodeRef{dev: v.files[ext].Dev, ino: v.files[ext].Ino, links: 1, blocks: diskBytes(info)})
-		}
+// moduleInodes is exactly what apply unlinks, with real link counts.
+func moduleInodes(v moduleVersion, scan scanResult) []inodeRef {
+	inodes := append([]inodeRef{}, scan.Inodes...)
+	for _, file := range v.files {
+		inodes = append(inodes, inodeRef{dev: file.Dev, ino: file.Ino, links: file.links, blocks: file.blocks})
 	}
 	return inodes
+}
+
+// extractedVerdict refuses an extracted tree prune cannot safely remove.
+func extractedVerdict(scan scanResult) string {
+	switch {
+	case scan.Protected != "":
+		return "protected: " + scan.Protected
+	case scan.Partial:
+		return "partial-scan"
+	case scan.ContainsMount:
+		return "contains-mount"
+	case scan.HasGit:
+		return "contains-checkout"
+	case scan.HasSpecial:
+		return "runtime"
+	}
+	return ""
 }
 
 // probeClock is the run's remaining time for re-fetch probes.
@@ -440,13 +538,22 @@ func applyModule(ctx context.Context, w *World, v moduleVersion, mount uint64, b
 	if reason := unchangedSincePlan(w, v, mount); reason != "" {
 		return itemResult{status: StatusSkipped, reason: reason}
 	}
+	// The probes and the hash above can take seconds; the final process
+	// check comes immediately before the first mutation.
+	final := w.freshTable()
+	if reason := processEvidence(final, w.Go.GOMODCACHE); reason != "" {
+		return itemResult{status: StatusSkipped, reason: reason}
+	}
+	if reason, pids := moduleBusy(final); reason != "" {
+		return itemResult{status: StatusSkipped, reason: reason, pids: pids}
+	}
 	var result itemResult
 	remove := func(ext string) error {
-		identity, ok := v.files[ext]
+		file, ok := v.files[ext]
 		if !ok {
 			return nil
 		}
-		bytes, err := w.RemoveFile(v.downloadDir, v.escVersion+ext, identity)
+		bytes, err := w.RemoveFile(v.downloadDir, v.escVersion+ext, file.Identity)
 		result.unlinked += bytes
 		return err
 	}
@@ -492,6 +599,10 @@ func proveRefetch(ctx context.Context, w *World, v moduleVersion, budget *probeC
 	base := strings.TrimSuffix(firstProxy(w.Go.GOPROXY), "/") + "/" + v.escPath + "/@v/" + v.escVersion
 	started := time.Now()
 	defer func() { budget.remaining -= time.Since(started) }()
+	// The whole proof, every request included, fits in what remains of the
+	// run's probe budget.
+	ctx, cancel := context.WithTimeout(ctx, budget.remaining)
+	defer cancel()
 	if reason := loopbackProxy(ctx, w); reason != "" {
 		return reason
 	}
@@ -531,30 +642,52 @@ func proveRefetch(ctx context.Context, w *World, v moduleVersion, budget *probeC
 // .ziphash the plan did not see, the extracted tree and its hash, and its
 // mount.
 func unchangedSincePlan(w *World, v moduleVersion, mount uint64) string {
-	for ext, planned := range v.files {
-		identity, err := w.Identity(filepath.Join(v.downloadDir, v.escVersion+ext))
-		if err != nil || identity.Dev != planned.Dev || identity.Ino != planned.Ino {
-			return "changed: " + v.escVersion + ext + " is not the file the plan checked"
+	// The complete file set is re-enumerated: a file added since the plan,
+	// such as the .ziphash of a download Go completed, changes the version.
+	entries, err := os.ReadDir(v.downloadDir)
+	if err != nil {
+		return "changed: " + err.Error()
+	}
+	present := map[string]bool{}
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), v.escVersion+".") {
+			continue
+		}
+		ext := entry.Name()[len(v.escVersion):]
+		if ext == ".lock" || ext == ".partial" {
+			continue
+		}
+		present[ext] = true
+		planned, known := v.files[ext]
+		if !known {
+			if ext == ".ziphash" {
+				return "changed: Go completed the download since the plan"
+			}
+			return "changed: " + entry.Name() + " appeared since the plan"
+		}
+		info, err := os.Lstat(filepath.Join(v.downloadDir, entry.Name()))
+		identity, idErr := w.Identity(filepath.Join(v.downloadDir, entry.Name()))
+		if err != nil || idErr != nil || !planned.same(stateOf(identity, info)) {
+			return "changed: " + entry.Name() + " is not the file the plan checked"
 		}
 	}
-	if _, planned := v.files[".ziphash"]; !planned {
-		if _, err := os.Lstat(filepath.Join(v.downloadDir, v.escVersion+".ziphash")); err == nil {
-			return "changed: Go completed the download since the plan"
+	for ext := range v.files {
+		if !present[ext] {
+			return "changed: " + v.escVersion + ext + " is gone"
 		}
 	}
 	if v.hasExtraction && v.extractedID.MountID != mount {
 		return "contains-mount"
 	}
-	if v.ziphash != "" {
-		raw, err := os.ReadFile(filepath.Join(v.downloadDir, v.escVersion+".ziphash"))
-		if err != nil || strings.TrimSpace(string(raw)) != v.ziphash {
-			return "changed: the version's ziphash changed since the plan"
-		}
-	}
+	// Every download file, the .ziphash included, already compared equal in
+	// identity, size and times; any write changes ctime.
 	if v.hasExtraction {
 		identity, err := w.Identity(v.extracted)
 		if err != nil || identity.Dev != v.extractedID.Dev || identity.Ino != v.extractedID.Ino {
 			return "changed: the extracted tree is not the one the plan checked"
+		}
+		if reason := extractedVerdict(w.Scan(v.extracted, mount, w.Protected)); reason != "" {
+			return reason
 		}
 		if v.ziphash != "" {
 			if reason := locallyModified(v); reason != "" {
@@ -589,4 +722,43 @@ func mustHost(raw string) string {
 		return ""
 	}
 	return parsed.Hostname()
+}
+
+// sumStamp fingerprints every sum file below the checkouts by path, size and
+// modification time; any difference means the reference set must be read
+// again.
+func sumStamp(checkouts, ignore []string) (string, error) {
+	var stamp strings.Builder
+	for _, original := range checkouts {
+		checkout, err := filepath.EvalSymlinks(original)
+		if err != nil {
+			return "", err
+		}
+		err = filepath.WalkDir(checkout, func(path string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if entry.IsDir() {
+				if path != checkout && (entry.Name() == "node_modules" || entry.Name() == ".git") {
+					return fs.SkipDir
+				}
+				return nil
+			}
+			if !strings.HasSuffix(entry.Name(), ".sum") {
+				return nil
+			}
+			// A file that vanished mid-walk stamps as gone, which differs
+			// from any earlier stamp all the same.
+			size, modified := int64(-1), int64(0)
+			if info, err := entry.Info(); err == nil {
+				size, modified = info.Size(), info.ModTime().UnixNano()
+			}
+			fmt.Fprintf(&stamp, "%s %d %d\n", path, size, modified)
+			return nil
+		})
+		if err != nil {
+			return "", err
+		}
+	}
+	return stamp.String(), nil
 }

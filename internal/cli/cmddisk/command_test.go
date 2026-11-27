@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -354,5 +356,39 @@ func TestDiskReportsTheLastAutomaticPrune(t *testing.T) {
 	out.Reset()
 	if err := execute(New(runtimeFor("/projects"), deps), &out); err != nil {
 		t.Fatalf("no receipt finding: %v", err)
+	}
+}
+
+// Without --minimum-available, wb disk uses disk.minimum_available, the floor
+// prune and the daemon use; an invalid config is a usage error.
+func TestDiskFloorComesFromConfigUnlessTheFlagIsSet(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	config := filepath.Join(dir, "wb.yaml")
+	if err := os.WriteFile(config, []byte("disk:\n  minimum_available: 0.3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var seen []float64
+	deps := Dependencies{Collect: func(_ context.Context, o disk.Options) (disk.Report, error) {
+		seen = append(seen, o.MinimumAvailableRatio)
+		return ampleReport(), nil
+	}}
+	deps.Prune.ConfigPath = func() string { return config }
+	var out bytes.Buffer
+	if err := execute(New(runtimeFor("/projects"), deps), &out); err != nil {
+		t.Fatal(err)
+	}
+	if err := execute(New(runtimeFor("/projects"), deps), &out, "--minimum-available", "0.05"); err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) != 2 || seen[0] != 0.3 || seen[1] != 0.05 {
+		t.Fatalf("floors = %v", seen)
+	}
+	if err := os.WriteFile(config, []byte("disk:\n  minimum_available: 7\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var coded *codedError
+	if err := execute(New(runtimeFor("/projects"), deps), &out); !errors.As(err, &coded) || coded.code != shared.ExitUsage {
+		t.Fatalf("invalid config = %v", err)
 	}
 }

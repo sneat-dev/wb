@@ -133,7 +133,31 @@ func TestRealWorldHelpers(t *testing.T) {
 		w.WriteHeader(http.StatusTeapot)
 		_, _ = w.Write([]byte("body"))
 	}))
+	// The real client refuses a loopback destination: a local server may be
+	// serving the very cache being pruned.
+	if _, _, err := fetchURL(context.Background(), "GET", server.URL); err == nil || !strings.Contains(err.Error(), "loopback") {
+		t.Fatalf("a loopback probe was made: %v", err)
+	}
+	if err := refuseLoopback("tcp", "not-an-address", nil); err == nil {
+		t.Fatal("an unparsable address was accepted")
+	}
+	if err := refuseLoopback("tcp", "203.0.113.5:443", nil); err != nil {
+		t.Fatalf("a public address was refused: %v", err)
+	}
+	redirect := probeClient.CheckRedirect
+	if err := redirect(httptest.NewRequest("GET", "http://example.com/x", nil), nil); err == nil {
+		t.Fatal("a redirect to http was followed")
+	}
+	if err := redirect(httptest.NewRequest("GET", "https://example.com/x", nil), make([]*http.Request, 5)); err == nil {
+		t.Fatal("unbounded redirects were followed")
+	}
+	if err := redirect(httptest.NewRequest("GET", "https://example.com/x", nil), nil); err != nil {
+		t.Fatalf("an https redirect was refused: %v", err)
+	}
+	realClient := probeClient
+	probeClient = server.Client()
 	status, body, err := fetchURL(context.Background(), "GET", server.URL)
+	probeClient = realClient
 	if err != nil || status != http.StatusTeapot || string(body) != "body" {
 		t.Fatalf("fetch = %d %q %v", status, body, err)
 	}

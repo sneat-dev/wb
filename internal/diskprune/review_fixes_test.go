@@ -249,14 +249,13 @@ func TestRemovalChecksAFlatCandidateAndHardLinks(t *testing.T) {
 	if bytes, err := RemoveFileAt(candidate, "f", identityOf(t, filepath.Join(candidate, "f"))); err != nil || bytes != 0 {
 		t.Fatalf("hard-linked unlink freed %d (%v)", bytes, err)
 	}
+	if err := os.Link(filepath.Join(parent, "keeper"), filepath.Join(parent, "second")); err != nil {
+		t.Fatal(err)
+	}
 	info, err := os.Lstat(filepath.Join(parent, "keeper"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Link(filepath.Join(parent, "keeper"), filepath.Join(parent, "second")); err != nil {
-		t.Fatal(err)
-	}
-	info, _ = os.Lstat(filepath.Join(parent, "keeper"))
 	if unlinkBytes(info) != 0 {
 		t.Fatal("a hard-linked file counts as freed")
 	}
@@ -493,13 +492,13 @@ func TestTrimProbeFailureAndCancellation(t *testing.T) {
 		return probe(path)
 	}
 	report := tw.run(Options{Apply: true, Categories: []string{CategoryBuild}, Floor: 0.01})
-	if it := categoryByName(t, report, CategoryBuild).Items[0]; it.Reason != "probe-failed" || !exists(filepath.Join(root, "0a", "0a01-a")) {
+	if it := categoryByName(t, report, CategoryBuild).Items[0]; it.Reason != "probe-failed" || !exists(filepath.Join(root, "0a", cacheName("0a01-a"))) {
 		t.Fatalf("probe failure in the trim = %#v", it)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	files, _ := readCacheFiles(tw.World, root)
-	if result := trimEntries(ctx, tw.World, root, files, 0, newShardTracker(files), false); result.unlinked != 0 || !exists(filepath.Join(root, "0a", "0a01-a")) {
+	if result := trimEntries(ctx, tw.World, root, files, 0, newShardTracker(files), false); result.unlinked != 0 || !exists(filepath.Join(root, "0a", cacheName("0a01-a"))) {
 		t.Fatalf("a cancelled trim removed %d bytes", result.unlinked)
 	}
 }

@@ -47,10 +47,11 @@ func newTestWorld(t *testing.T) *testWorld {
 			defer tw.mu.Unlock()
 			return disk.Filesystem{Path: path, TotalBytes: tw.total, AvailableBytes: tw.available}, nil
 		},
-		Identity:   StatIdentity,
-		RemoveFile: RemoveFileAt,
-		Scan:       scanTree,
-		LockDirs:   LockDirs,
+		Identity:           StatIdentity,
+		BindOfSubdirectory: func(string) (bool, error) { return false, nil },
+		RemoveFile:         RemoveFileAt,
+		Scan:               scanTree,
+		LockDirs:           LockDirs,
 		Admit: func(context.Context) (string, time.Duration, func()) {
 			tw.admitted++
 			return "admitted", 3 * time.Millisecond, func() {}
@@ -115,3 +116,10 @@ func exists(path string) bool {
 
 // diskFilesystem shortens the probe's type in fixtures.
 type diskFilesystem = disk.Filesystem
+
+// cacheName turns a short fixture name such as "0a01-a" into a real Go
+// build-cache entry name: a 64-digit hex digest in its own shard.
+func cacheName(short string) string {
+	digest, suffix := short[:len(short)-2], short[len(short)-2:]
+	return digest + strings.Repeat("0", 64-len(digest)) + suffix
+}

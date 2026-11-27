@@ -105,11 +105,15 @@ unmet, a failure or a fail-closed skip; see "outcome"), 2 usage.
 				o.Target = diskprune.Target{Kind: diskprune.TargetRatio, Ratio: config.MinimumAvailable}
 			}
 			flags := runtime.Flags()
+			// Progress starts before discovery: walking the fleet for clones
+			// and worktrees is itself the slow part on a large fleet.
+			progress := newPruneProgress(cmd.ErrOrStderr(), deps, flags, options.verbose)
+			progress.event(diskprune.Event{Phase: "discover"})
 			w, err := deps.World(cmd.Context(), flags.ProjectsRoot, config.IgnoreSumFiles)
 			if err != nil {
+				progress.finish(diskprune.Report{Outcome: "failed"})
 				return err
 			}
-			progress := newPruneProgress(cmd.ErrOrStderr(), deps, flags, options.verbose)
 			w.Progress = progress.event
 			report := deps.Run(cmd.Context(), w, o)
 			progress.finish(report)

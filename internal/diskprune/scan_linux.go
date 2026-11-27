@@ -23,10 +23,19 @@ func realScanSeams() scanSeams { return scanSeams{lstat: unix.Lstat, mountID: mo
 // scanTree walks root read-only. mount is the root's own mount ID; protected
 // roots inside the tree are reported, not descended.
 func scanTree(root string, mount uint64, protected []string) scanResult {
-	return realScanSeams().scan(root, mount, protected)
+	return realScanSeams().scan(root, mount, protected, nil)
 }
 
-func (s scanSeams) scan(root string, mount uint64, protected []string) scanResult {
+// scanTreeWithIDs also refuses a directory whose device and inode are a
+// protected root's, which catches a bind alias of protected data that no
+// path comparison can.
+func scanTreeWithIDs(ids map[[2]uint64]string) func(string, uint64, []string) scanResult {
+	return func(root string, mount uint64, protected []string) scanResult {
+		return realScanSeams().scan(root, mount, protected, ids)
+	}
+}
+
+func (s scanSeams) scan(root string, mount uint64, protected []string, ids map[[2]uint64]string) scanResult {
 	var result scanResult
 	var newestDir time.Time
 	sawFile := false
@@ -52,6 +61,10 @@ func (s scanSeams) scan(root string, mount uint64, protected []string) scanResul
 		changed := latest(time.Unix(stat.Mtim.Unix()), time.Unix(stat.Ctim.Unix()))
 		switch stat.Mode & unix.S_IFMT {
 		case unix.S_IFDIR:
+			if hit, ok := ids[[2]uint64{uint64(stat.Dev), stat.Ino}]; ok {
+				result.Protected = hit
+				return fs.SkipDir
+			}
 			newestDir = latest(newestDir, changed)
 			name := entry.Name()
 			if name == ".git" {

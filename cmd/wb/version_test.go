@@ -78,3 +78,36 @@ func TestVersionCommand_DoesNotTouchWorktreeHeartbeatOrInvokedCommand(t *testing
 		t.Errorf("heartbeat file changed after plain `wb version`:\nbefore: %s\nafter:  %s", before, after)
 	}
 }
+
+// disk-prune#req:plan-by-default: run from inside a worktree, wb disk prune
+// touches neither its heartbeat nor the invoked-command marker, even for an
+// invocation its own flag validation then rejects.
+func TestDiskPruneDoesNotTouchWorktreeHeartbeat(t *testing.T) {
+	dir := t.TempDir()
+	journalDir := filepath.Join(dir, ".wb", "local")
+	if err := os.MkdirAll(journalDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(journalDir, "manifest.yaml"), []byte("version: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	worktrees.TouchHeartbeat(dir, "prior command")
+	worktrees.SetInvokedCommand("prior command")
+	heartbeatPath := filepath.Join(journalDir, "heartbeat.json")
+	before, err := os.ReadFile(heartbeatPath)
+	if err != nil {
+		t.Fatalf("read seeded heartbeat: %v", err)
+	}
+	t.Chdir(dir)
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"disk", "prune", "--category", "worktrees"}, &stdout, &stderr); code != exitUsage {
+		t.Fatalf("exit = %d, stderr = %s", code, stderr.String())
+	}
+	after, err := os.ReadFile(heartbeatPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) || worktrees.InvokedCommand() != "prior command" {
+		t.Fatalf("wb disk prune touched the worktree:\nbefore: %s\nafter:  %s", before, after)
+	}
+}

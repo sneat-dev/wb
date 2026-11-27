@@ -126,19 +126,19 @@ func TestScanReportsProtectedMountsAndGaps(t *testing.T) {
 		}
 		return mountIDOf(path)
 	}
-	if !seams.scan(mounted, base, nil).ContainsMount {
+	if !seams.scan(mounted, base, nil, nil).ContainsMount {
 		t.Fatal("nested mount missed")
 	}
 	seams.mountID = func(string) (uint64, error) { return 0, errors.New("injected") }
-	if !seams.scan(mounted, base, nil).Partial {
+	if !seams.scan(mounted, base, nil, nil).Partial {
 		t.Fatal("a mount lookup failure must make the scan partial")
 	}
 	seams = realScanSeams()
 	seams.lstat = func(string, *unix.Stat_t) error { return errors.New("injected") }
-	if !seams.scan(mounted, base, nil).Partial {
+	if !seams.scan(mounted, base, nil, nil).Partial {
 		t.Fatal("a stat failure must make the scan partial")
 	}
-	missing := realScanSeams().scan(filepath.Join(t.TempDir(), "absent"), 0, nil)
+	missing := realScanSeams().scan(filepath.Join(t.TempDir(), "absent"), 0, nil, nil)
 	if !missing.Partial {
 		t.Fatal("a missing root must be partial")
 	}

@@ -147,10 +147,16 @@ func readProcess(src procSource, pid int, boot time.Time) (Process, bool, error)
 	cwd, cwdErr := os.Readlink(filepath.Join(dir, "cwd"))
 	process.Cwd = cwd
 	fds, fdErr := os.ReadDir(filepath.Join(dir, "fd"))
+	unreadableFD := false
 	for _, fd := range fds {
 		target, err := os.Readlink(filepath.Join(dir, "fd", fd.Name()))
 		if untrustedRead(err) {
 			return Process{}, false, err
+		}
+		// A descriptor that cannot be read (as opposed to one that closed)
+		// may be the very reference prune is looking for.
+		if errors.Is(err, fs.ErrPermission) {
+			unreadableFD = true
 		}
 		if strings.HasPrefix(target, "/") {
 			process.Files = append(process.Files, target)
@@ -158,7 +164,7 @@ func readProcess(src procSource, pid int, boot time.Time) (Process, bool, error)
 	}
 	maps, mapsErr := os.ReadFile(filepath.Join(dir, "maps"))
 	process.Files = append(process.Files, mappedFiles(string(maps))...)
-	process.Readable = cwdErr == nil && fdErr == nil && mapsErr == nil
+	process.Readable = cwdErr == nil && fdErr == nil && mapsErr == nil && !unreadableFD
 	return process, true, nil
 }
 
@@ -257,6 +263,7 @@ func procHidesPIDs(src procSource) (hidden, known bool) {
 		return false, false
 	}
 	scanner := bufio.NewScanner(strings.NewReader(string(raw)))
+	sawProc := false
 	for scanner.Scan() {
 		line := scanner.Text()
 		left, right, ok := strings.Cut(line, " - ")
@@ -268,13 +275,16 @@ func procHidesPIDs(src procSource) (hidden, known bool) {
 		if len(options) < 3 || options[0] != "proc" {
 			continue
 		}
+		sawProc = true
 		for _, option := range strings.Split(options[2], ",") {
 			if value, ok := strings.CutPrefix(option, "hidepid="); ok && value != "0" && value != "off" {
 				return true, true
 			}
 		}
 	}
-	return false, true
+	// Without a complete listing that positively shows the procfs mount,
+	// hidden processes cannot be ruled out.
+	return false, scanner.Err() == nil && sawProc
 }
 
 // untrustedNamespace names why the visible process table may omit processes

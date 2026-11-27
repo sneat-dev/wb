@@ -13,6 +13,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/sneat-dev/wb/internal/disk"
+	"github.com/sneat-dev/wb/internal/wbconfig"
 )
 
 type diskOptions struct {
@@ -79,6 +80,15 @@ Exit codes: 0 nothing to flag, 1 findings, 2 usage.
 			}
 			if options.minimum < 0 || options.minimum > 1 {
 				return runtime.ExitError(shared.ExitUsage, "--minimum-available must be between 0 and 1")
+			}
+			// The floor is the one the daemon and wb disk prune use,
+			// disk.minimum_available, unless the flag overrides it.
+			if !cmd.Flags().Changed("minimum-available") && deps.Prune.ConfigPath != nil {
+				config, err := wbconfig.LoadDisk(deps.Prune.ConfigPath())
+				if err != nil {
+					return runtime.ExitError(shared.ExitUsage, err.Error())
+				}
+				options.minimum = config.MinimumAvailable
 			}
 
 			report, err := deps.Collect(cmd.Context(), disk.Options{

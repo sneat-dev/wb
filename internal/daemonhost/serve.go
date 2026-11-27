@@ -293,7 +293,13 @@ func (host *Host) servePrepared(projectsRoot string, ctx context.Context, out, e
 	// Below the free-space floor the daemon runs wb disk prune --auto, at most
 	// hourly, only when disk.auto_prune is on (disk-prune#req:daemon-auto-prune).
 	// It re-reads the configuration on every check and stops with ctx.
-	go diskprune.NewAutoPruner(projectsRoot, location.Home, func(line string) { _, _ = fmt.Fprintln(errOut, line) }).Run(ctx)
+	// The daemon waits for it on the way out, so no deletion outlives it.
+	autoPruneDone := make(chan struct{})
+	go func() {
+		defer close(autoPruneDone)
+		diskprune.NewAutoPruner(projectsRoot, location.Home, lineLogger(errOut)).Run(ctx)
+	}()
+	defer func() { stop(); <-autoPruneDone }()
 	if err := startRepositoryEventReceiver(ctx, projectsRoot, hubConfigPath(), errOut); err != nil {
 		_, _ = fmt.Fprintln(errOut, "repository event receiver disabled:", err)
 	}
@@ -397,4 +403,10 @@ func requireLoopbackBound(bound net.Addr, usageError func(string) error) error {
 		return usageError(fmt.Sprintf("the daemon is bound to %s, which is not a loopback address; it was not started, publish it through an authenticated tunnel instead", bound))
 	}
 	return nil
+}
+
+// lineLogger writes each line the automatic prune logs to the daemon's
+// error stream.
+func lineLogger(out io.Writer) func(string) {
+	return func(line string) { _, _ = fmt.Fprintln(out, line) }
 }

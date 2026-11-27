@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -72,7 +73,7 @@ func parseDisk(raw []byte) (DiskConfig, error) {
 		return DiskConfig{}, fmt.Errorf("parse disk section: %w", err)
 	}
 	if section.MinimumAvailable != nil {
-		if *section.MinimumAvailable <= 0 || *section.MinimumAvailable >= 1 {
+		if math.IsNaN(*section.MinimumAvailable) || *section.MinimumAvailable <= 0 || *section.MinimumAvailable >= 1 {
 			return DiskConfig{}, fmt.Errorf("disk.minimum_available must be between 0 and 1 (exclusive), got %v", *section.MinimumAvailable)
 		}
 		config.MinimumAvailable = *section.MinimumAvailable

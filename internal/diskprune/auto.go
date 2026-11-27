@@ -59,11 +59,18 @@ func WriteReceipt(stateDir string, receipt Receipt) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
+	// Neither the receipts directory nor the receipt may be reached through
+	// a symlink, or a receipt could be written into a checkout.
+	for _, path := range []string{filepath.Join(stateDir, "disk"), dir} {
+		if info, err := os.Lstat(path); err != nil || !info.IsDir() {
+			return fmt.Errorf("receipt directory %s is not a real directory", path)
+		}
+	}
 	// A Receipt holds only strings, numbers, times and maps of them, which
 	// always marshal.
 	raw, _ := json.MarshalIndent(receipt, "", "  ")
 	name := receipt.Time.UTC().Format("20060102T150405.000000000Z") + "-" + receipt.Trigger + ".json"
-	return os.WriteFile(filepath.Join(dir, name), raw, 0o600)
+	return writeNewFile(filepath.Join(dir, name), raw)
 }
 
 // newestAutomaticReceipt is the newest receipt of an unattended-subset run,

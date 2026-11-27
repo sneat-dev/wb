@@ -230,7 +230,9 @@ Every pre-existing entry under the state directories is left unchanged.
   `--category go-module-cache` is given. A run without `--category` covers
   the other three, and lists the module cache as `requires-category`
   without walking it, so a default or `--auto` run never pays for the
-  fleet-wide reference scan.
+  fleet-wide reference scan. Any other category left out of `--category` is
+  not walked either and is reported `skipped: not-selected`, so the report
+  never lists candidates the run would not act on.
 - **Age floors.** `--older-than <dur>` raises every category's age floor to
   at least `dur` and never lowers one. Each category's default floor is
   stated in its REQ. The pnpm store prune and the full build-cache clean
@@ -340,7 +342,10 @@ whatever a path names later:
    The candidate's mount ID must equal its parent's; a candidate that is
    itself a mount, such as a bind alias of protected data, is skipped as
    `contains-mount`. So is a candidate containing any directory on another
-   mount ID.
+   mount ID. A category root that lies on a bind mount of a subdirectory
+   (mountinfo root other than `/`), or whose mount cannot be identified, is
+   `unknown`: it may alias protected data under another path. Scans also
+   refuse a directory whose device and inode are a protected root's.
 3. **Remove through descriptors.** Remove the candidate's contents through
    directory descriptors (`openat`, `unlinkat`), never by path, and never
    follow a symlink. Before removing the entries of a directory that lacks
@@ -372,8 +377,11 @@ protected-root inventory is incomplete because a clone or worktree list
 could not be read, every category that deletes directories is `unknown`.
 
 **Bulk build-cache deletion.** Build-cache entry files are unlinked
-relative to the open shard directory, each checked by identity first. For
-the trim, the `/proc` re-check every 256 entries of REQ: go-build-cache satisfies
+relative to the open shard directory, each checked by identity first:
+device, inode, the inode's creation time where the filesystem records one
+(a freed inode number is often reused at once) and the file's status-change
+time. For the trim, the `/proc` re-check every 256 entries and at every shard
+change of REQ: go-build-cache satisfies
 the per-deletion check of REQ: concurrency. The trim is reported per shard
 (entries and bytes), never per entry file, in the plan, the JSON and
 `--verbose` alike.
@@ -465,8 +473,9 @@ cache miss.
 
 - **Trim.** Delete only entry files of `GOCACHE` (`<2 hex>/<hash>-a` and
   `-d`), oldest first across all shards, stopping once the target is met.
-  Every 256 entries prune re-reads `/proc`, recomputes the floor and probes
-  the target, so it can overshoot the target by at most 255 entries. The floor is the larger
+  Prune probes the target before every entry, so it stops at the first entry
+  that suffices. Every 256 entries, and whenever it moves to another shard,
+  it re-reads `/proc` and recomputes the floor. The floor is the larger
   of:
   - `--older-than`, default 24 h;
   - the age of the oldest running Go build tool, plus 1 h.
@@ -507,7 +516,11 @@ store files itself.
   `COREPACK_ENABLE_NETWORK=0`, `COREPACK_ENABLE_DOWNLOAD_PROMPT=0` and
   `COREPACK_ENABLE_AUTO_PIN=0`, so no pnpm is ever downloaded.
 - **Resolving.** It runs `pnpm --version`, `pnpm store path` and
-  `pnpm config get cache-dir`. The category is skipped:
+  `pnpm config get cache-dir`. An unset cache directory is pnpm's default,
+  `$XDG_CACHE_HOME/pnpm`, else `~/.cache/pnpm` (`~/Library/Caches/pnpm` on
+  macOS). The category is skipped:
+  - as `unknown` when the protected inventory is incomplete, when a store
+    holds a mount, or when a store lies on a bind mount of a subdirectory;
   - as `unavailable` when any of them fails (not a finding);
   - as `protected` when the store path or cache directory lies inside a
     protected root, or contains one;
