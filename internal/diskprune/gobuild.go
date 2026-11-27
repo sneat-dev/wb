@@ -63,6 +63,21 @@ func buildFloor(table Table, root string, olderThan time.Duration) (time.Duratio
 	return floor, pid
 }
 
+// insideCheckout is the checkout GOCACHE lies in, found by a .git entry in
+// GOCACHE or an ancestor below home: a cache-shaped directory tracked in a
+// clone the inventory does not know (a personal clone outside the projects
+// root) is that clone's data. Home itself and above are not checked, so a
+// dotfiles repository at ~ does not disable the trim of ~/.cache/go-build.
+func insideCheckout(root, home string) string {
+	home = filepath.Clean(home)
+	for dir := filepath.Clean(root); dir != home && dir != filepath.Dir(dir); dir = filepath.Dir(dir) {
+		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+			return dir
+		}
+	}
+	return ""
+}
+
 // unsupportedCache names a GOCACHE prune cannot reason about.
 func unsupportedCache(env GoEnv) string {
 	switch {
@@ -130,6 +145,12 @@ func readCacheFiles(w *World, root string) ([]cacheFile, Anchor, bool) {
 			}
 			identity, err := w.Identity(path)
 			if err != nil {
+				partial = true
+				continue
+			}
+			if identity.MountID != rootMount {
+				// A file mounted over an entry name belongs to another
+				// filesystem: never an entry, never counted for this one.
 				partial = true
 				continue
 			}
@@ -306,6 +327,10 @@ func (buildCacheCategory) plan(ctx context.Context, w *World, o Options) *catego
 		plan.skip("unknown: " + w.ProtectedGap)
 		return plan
 	}
+	if checkout := insideCheckout(root, w.Home); checkout != "" {
+		plan.skip("protected: " + root + " is inside the checkout " + checkout)
+		return plan
+	}
 	if reason := w.bindProblem(root); reason != "" {
 		plan.skip(reason)
 		return plan
@@ -367,6 +392,9 @@ func (fullCleanCategory) plan(ctx context.Context, w *World, o Options) *categor
 		return plan
 	case w.ProtectedGap != "":
 		plan.skip("unknown: " + w.ProtectedGap)
+		return plan
+	case insideCheckout(root, w.Home) != "":
+		plan.skip("protected: " + root + " is inside the checkout " + insideCheckout(root, w.Home))
 		return plan
 	case w.bindProblem(root) != "":
 		plan.skip(w.bindProblem(root))

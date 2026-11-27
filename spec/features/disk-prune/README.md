@@ -273,7 +273,8 @@ Every pre-existing entry under the state directories is left unchanged.
   again every 256 build-cache entries, and immediately before each deletion.
   A process *references* a path when any of these names a location inside
   it: its working directory, an open file descriptor, a memory-mapped file
-  (`maps`), its command line, or its environment.
+  (`maps`, its pathname taken byte for byte), its command line (a relative
+  argument resolved against its working directory), or its environment.
 - **Evidence it cannot trust.** Process evidence is `unknown`, and every
   category that depends on it is skipped, when:
   - `/proc` cannot be listed;
@@ -457,8 +458,8 @@ removed only when:
   `checkout-in-scratch`;
 - an entry that contains or lies inside a protected root;
 - an entry that holds a module cache (`cache/download/`), a non-empty
-  `fuzz/` directory, or a resolved `GOCACHE` or `GOMODCACHE`, reported as
-  `contains-cache-data`. Scratch never deletes what an opt-in or
+  `fuzz/` directory, or a resolved `GOCACHE`, `GOMODCACHE`, npm cache or
+  pnpm store, reported as `contains-cache-data`. Scratch never deletes what an opt-in or
   always-kept rule protects.
 
 ### REQ: go-build-cache
@@ -488,6 +489,11 @@ cache miss.
 - **Without `/proc`.** The floor is 72 h and cannot be lowered.
 - **Always kept.** `README`, `trim.txt`, `testexpire.txt`, the `fuzz/` tree
   (corpus data that is not regenerable), and the directory tree itself.
+- **Inside a checkout.** A `GOCACHE` with a `.git` entry in itself or an
+  ancestor below home (a personal clone outside the projects root) is
+  `protected`; a repository at home itself (dotfiles) does not count. A
+  cache entry name that is a mount of a file from another filesystem is
+  not an entry, and makes the enumeration partial.
 - **Unsupported configurations.** The category is skipped as
   `unsupported-cache` when `GOCACHE` is `off`, empty, relative or not a
   directory, or when `GOCACHEPROG` is set. The full clean, explicitly

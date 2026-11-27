@@ -214,3 +214,19 @@ func TestScratchRootsIncludeTheOwnedPathAndAdHocSiblings(t *testing.T) {
 		t.Fatalf("claimed a directory WB did not create: %#v", roots)
 	}
 }
+
+// TMPDIR/wb is scratch only when it is this user's own directory: a
+// symlink under that name to an unrelated tree is not attributed to scratch.
+func TestScratchWbPathMustBeARealOwnedDirectory(t *testing.T) {
+	t.Parallel()
+	temp := t.TempDir()
+	if err := os.Symlink(t.TempDir(), filepath.Join(temp, "wb")); err != nil {
+		t.Fatal(err)
+	}
+	if roots := scratchRootsIn(temp); len(roots) != 0 {
+		t.Fatalf("a symlinked TMPDIR/wb was claimed: %v", roots)
+	}
+	if roots := scratchRootsIn(filepath.Join(temp, "absent")); len(roots) != 0 {
+		t.Fatalf("a missing temp directory produced roots: %v", roots)
+	}
+}

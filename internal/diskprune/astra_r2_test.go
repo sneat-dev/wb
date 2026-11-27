@@ -520,3 +520,72 @@ func TestAutoTriggerOnlyBelowTheFloor(t *testing.T) {
 		t.Fatal("a filesystem below the floor did not trigger")
 	}
 }
+
+// A GOCACHE inside a git checkout (a personal clone outside the projects
+// root) is that checkout's data: neither the trim nor the full clean runs.
+// A repository at home itself (dotfiles) does not count.
+func TestBuildCacheInsideACheckoutIsProtected(t *testing.T) {
+	t.Parallel()
+	tw := newTestWorld(t)
+	root := buildCacheFixture(t, tw, map[string]time.Duration{"0a01-a": 100 * time.Hour})
+	clone := filepath.Dir(root)
+	mustWrite(t, filepath.Join(clone, ".git", "HEAD"), "ref: refs/heads/main", 0o644)
+	tw.Home = filepath.Dir(clone)
+	report := tw.run(Options{Apply: true, AllowFullClean: true, Categories: []string{CategoryBuild}, Target: Target{Kind: TargetMax}})
+	for _, name := range []string{CategoryBuild, categoryFullClean} {
+		if cat := categoryByName(t, report, name); !strings.Contains(cat.Reason, "inside the checkout "+clone) {
+			t.Errorf("%s = %#v", name, cat)
+		}
+	}
+	if insideCheckout(root, clone) != "" {
+		t.Fatal("a repository at home disabled the trim")
+	}
+}
+
+// A cache entry name that is a mount of a file from another filesystem is
+// not an entry.
+func TestMountedCacheFileIsNotAnEntry(t *testing.T) {
+	t.Parallel()
+	tw := newTestWorld(t)
+	root := buildCacheFixture(t, tw, map[string]time.Duration{"0a01-a": 100 * time.Hour})
+	identity := tw.Identity
+	tw.Identity = func(path string) (Identity, error) {
+		id, err := identity(path)
+		if strings.HasSuffix(path, "-a") {
+			id.MountID++
+		}
+		return id, err
+	}
+	if files, _, partial := readCacheFiles(tw.World, root); !partial || len(files) != 0 {
+		t.Fatalf("a mounted entry file: %v %t", files, partial)
+	}
+}
+
+// A process names a candidate through a relative argument resolved against
+// its working directory.
+func TestRelativeArgumentReferencesACandidate(t *testing.T) {
+	t.Parallel()
+	worker := Process{Cwd: "/tmp", Argv: []string{"worker", "-v", "go-build77/input"}}
+	if !worker.References("/tmp/go-build77") {
+		t.Fatal("a relative argument was not a reference")
+	}
+	if worker.References("/tmp/go-build78") {
+		t.Fatal("an unrelated candidate was referenced")
+	}
+}
+
+// A scratch-shaped directory that is, resolved, a report-only store (the
+// npm cache symlinked into TMPDIR) is that store, never scratch.
+func TestScratchKeepsAReportOnlyStore(t *testing.T) {
+	t.Parallel()
+	tw := newTestWorld(t)
+	tw.Home = t.TempDir()
+	store := filepath.Join(tw.tmp, "wb-index-77")
+	mustWrite(t, filepath.Join(store, "001", "index"), "npm data", 0o644)
+	if err := os.Symlink(store, filepath.Join(tw.Home, ".npm")); err != nil {
+		t.Fatal(err)
+	}
+	if it := itemsByName(tw.run(Options{Apply: true, Floor: 0.01}), CategoryScratch)["wb-index-77"]; !strings.HasPrefix(it.Reason, "contains-cache-data") || !exists(store) {
+		t.Fatalf("a report-only store = %#v", it)
+	}
+}

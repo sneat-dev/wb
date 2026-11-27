@@ -450,7 +450,18 @@ func maxDuration(a, b time.Duration) time.Duration {
 
 // cacheRoots are the resolved caches other categories manage.
 func (w *World) cacheRoots() []string {
-	return []string{w.Go.GOCACHE, w.Go.GOMODCACHE}
+	// Report-only stores too: a scratch-shaped directory that is, resolved,
+	// the npm cache or a pnpm store (say ~/.npm symlinked into TMPDIR) is
+	// that store, never scratch.
+	roots := []string{w.Go.GOCACHE, w.Go.GOMODCACHE}
+	for _, store := range []string{
+		filepath.Join(w.Home, ".npm"),
+		filepath.Join(w.Home, ".local", "share", "pnpm", "store"),
+		filepath.Join(w.Home, "Library", "pnpm", "store"),
+	} {
+		roots = append(roots, resolved(store))
+	}
+	return roots
 }
 
 // aliases are path under every unresolved spelling of its temporary

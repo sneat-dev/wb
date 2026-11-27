@@ -454,7 +454,14 @@ func scratchRoots() []string {
 // scratchRootsIn lists one temporary directory's scratch-shaped entries the
 // invoking user owns; another user's are neither measurable nor prunable.
 func scratchRootsIn(temp string) []string {
-	roots := []string{filepath.Join(temp, "wb")}
+	var roots []string
+	// TMPDIR/wb counts only as this user's own directory, never a symlink
+	// or another user's tree that happens to carry the name.
+	if wb := filepath.Join(temp, "wb"); ownedByUser(wb) {
+		if info, err := os.Lstat(wb); err == nil && info.IsDir() {
+			roots = append(roots, wb)
+		}
+	}
 	entries, err := os.ReadDir(temp)
 	if err != nil {
 		return roots
