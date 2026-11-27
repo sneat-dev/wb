@@ -257,13 +257,6 @@ func TestMigCovCampaignPureHelpers(t *testing.T) {
 		}
 	}
 
-	if got := lastNonEmptyLine("first\n\n   \n"); got != "first" {
-		t.Errorf("lastNonEmptyLine() = %q, want first", got)
-	}
-	if got := lastNonEmptyLine("   \n\n"); got != "" {
-		t.Errorf("lastNonEmptyLine(blank) = %q, want empty", got)
-	}
-
 	long := strings.Repeat("x", 1001)
 	if got := shortenedDetail(long); len(got) != 1000+len("…") || !strings.HasSuffix(got, "…") {
 		t.Errorf("shortenedDetail(long) length = %d", len(got))

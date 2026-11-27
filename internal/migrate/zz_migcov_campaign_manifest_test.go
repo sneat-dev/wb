@@ -335,9 +335,9 @@ exit "${GH_CREATE_EXIT:-1}"
 		t.Fatal("openCampaignPR() ignored a failed gh pr create")
 	}
 
-	// An empty URL is not a pull request.
+	// A successful exit with only a CLI notice has no PR URL.
 	t.Setenv("GH_CREATE_EXIT", "0")
-	t.Setenv("GH_CREATE_STDERR", "")
+	t.Setenv("GH_CREATE_STDERR", "- Event subscriptions are in preview and may not be enabled for your account.")
 	if _, err := openCampaignPR(repo, Spec{ID: "example"}); err == nil ||
 		!strings.Contains(err.Error(), "returned no pull request URL") {
 		t.Fatalf("openCampaignPR(empty output) = %v", err)

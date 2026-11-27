@@ -53,16 +53,6 @@ func TestOrchCovRunCommandReportsATimeout(t *testing.T) {
 	}
 }
 
-func TestOrchCovLastNonEmptyLineIgnoresTrailingBlanks(t *testing.T) {
-	t.Parallel()
-	if got := lastNonEmptyLine("first\n\n  second  \n\n"); got != "second" {
-		t.Fatalf("lastNonEmptyLine = %q", got)
-	}
-	if got := lastNonEmptyLine("   \n\n"); got != "" {
-		t.Fatalf("blank input = %q", got)
-	}
-}
-
 func TestOrchCovFetchMemoIsANoOpWhenNilAndCountsWhenNot(t *testing.T) {
 	t.Parallel()
 	var nilMemo *FetchMemo

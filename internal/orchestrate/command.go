@@ -62,13 +62,3 @@ func runCommand(ctx context.Context, run runner.Runner, timeout time.Duration, r
 		}
 	}
 }
-
-func lastNonEmptyLine(value string) string {
-	lines := strings.Split(strings.TrimSpace(value), "\n")
-	for index := len(lines) - 1; index >= 0; index-- {
-		if line := strings.TrimSpace(lines[index]); line != "" {
-			return line
-		}
-	}
-	return ""
-}

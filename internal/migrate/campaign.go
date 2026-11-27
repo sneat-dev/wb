@@ -2217,11 +2217,11 @@ func openCampaignPR(repo *campaignRepository, spec Spec) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	url := strings.TrimSpace(output)
+	url := githubobserver.PullRequestURLFromOutput(output)
 	if url == "" {
 		return "", fmt.Errorf("gh pr create returned no pull request URL for %s", repo.repository)
 	}
-	return lastNonEmptyLine(url), nil
+	return url, nil
 }
 
 // requiredChecksGreen asks the one implementation WB has of "are this pull
@@ -2244,15 +2244,6 @@ func requiredChecksGreen(_ string, prURL string) ([]RemoteCheck, bool, error) {
 		checks = append(checks, RemoteCheck{Name: check.Name, Bucket: check.Bucket})
 	}
 	return checks, green, nil
-}
-
-func lastNonEmptyLine(value string) string {
-	for lines := strings.Split(strings.TrimSpace(value), "\n"); len(lines) > 0; lines = lines[:len(lines)-1] {
-		if line := strings.TrimSpace(lines[len(lines)-1]); line != "" {
-			return line
-		}
-	}
-	return ""
 }
 
 func runIn(dir, name string, args ...string) (string, error) {

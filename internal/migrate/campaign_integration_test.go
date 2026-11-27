@@ -198,6 +198,7 @@ if [ "$1 $2" = "pr list" ]; then
 fi
 if [ "$1 $2" = "pr create" ]; then
 	printf '%s\n' 'https://github.com/acme/example/pull/2'
+	printf '%s\n' '- Event subscriptions are in preview and may not be enabled for your account.' >&2
 	exit 0
 fi
 exit 1
