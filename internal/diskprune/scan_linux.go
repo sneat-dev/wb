@@ -97,10 +97,3 @@ func nonEmptyDir(path string) bool {
 	entries, err := os.ReadDir(path)
 	return err == nil && len(entries) > 0
 }
-
-func latest(a, b time.Time) time.Time {
-	if b.After(a) {
-		return b
-	}
-	return a
-}

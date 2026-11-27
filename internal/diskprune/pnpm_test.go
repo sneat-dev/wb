@@ -127,8 +127,8 @@ func TestPnpmRefusals(t *testing.T) {
 			}
 			tw.t.Cleanup(lock.Release)
 		}, StatusSkipped, "locked"},
-		"prune fails":  {func(tw *testWorld, f *fakePnpm) { f.fail["store prune"] = failure }, StatusFailed, ""},
-		"path changes": {func(tw *testWorld, f *fakePnpm) { f.after = "/elsewhere/v10" }, StatusFailed, ""},
+		"prune fails":     {func(tw *testWorld, f *fakePnpm) { f.fail["store prune"] = failure }, StatusFailed, ""},
+		"path changes":    {func(tw *testWorld, f *fakePnpm) { f.after = "/elsewhere/v10" }, StatusFailed, ""},
 		"undefined cache": {func(tw *testWorld, f *fakePnpm) { f.cacheDir = "undefined" }, StatusDeleted, ""},
 	}
 	for name, c := range cases {

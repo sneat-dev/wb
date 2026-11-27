@@ -3,6 +3,7 @@
 package diskprune
 
 import (
+	"errors"
 	"fmt"
 
 	"golang.org/x/sys/unix"
@@ -59,4 +60,30 @@ func LockDirs(paths []string) (*Lock, error) {
 			h.Release()
 		}
 	}}, nil
+}
+
+// LockModuleVersion takes Go's own lock on a module version's .lock file,
+// without blocking: a version Go is downloading is skipped, not waited on. A
+// version without a .lock file (one Go only resolved, never downloaded as a
+// zip) needs none. The lock file itself is never removed: removing it while
+// another process holds it would let two processes lock different inodes.
+func LockModuleVersion(path string) (func(), error) {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if errors.Is(err, unix.ENOENT) {
+		return func() {}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	if err := lockSyscalls.flock(fd, unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		unix.Close(fd)
+		if err == unix.EWOULDBLOCK {
+			return nil, &LockedError{Path: path}
+		}
+		return nil, fmt.Errorf("lock %s: %w", path, err)
+	}
+	return func() {
+		_ = unix.Flock(fd, unix.LOCK_UN)
+		unix.Close(fd)
+	}, nil
 }

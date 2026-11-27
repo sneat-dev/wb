@@ -103,6 +103,15 @@ type World struct {
 	Admit        func(ctx context.Context) (status string, wait time.Duration, release func())
 	RemoveTree   func(parent, name string, id Identity) (TreeOutcome, error)
 	RemoveFile   func(dir, name string, id Identity) (int64, error)
+	// Checkouts are every canonical clone and worktree whose sum files form
+	// the module reference set; IgnoreSumFiles are checkout-relative paths
+	// to skip (disk.prune.ignore_sum_files).
+	Checkouts      []string
+	IgnoreSumFiles []string
+	// HTTP fetches a proxy URL for re-fetch proofs; only apply calls it.
+	HTTP func(ctx context.Context, method, url string) (int, []byte, error)
+	// LockModuleVersion takes Go's own per-version lock without blocking.
+	LockModuleVersion func(path string) (func(), error)
 	// PnpmStores are the store directories measured for the plan.
 	PnpmStores []string
 	// Pnpm runs pnpm from / under pnpmEnv; only apply calls it.

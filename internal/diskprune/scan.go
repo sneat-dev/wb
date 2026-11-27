@@ -79,3 +79,11 @@ func insideAny(path string, protected []string) string {
 	}
 	return ""
 }
+
+// latest is the later of two times.
+func latest(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
+}
