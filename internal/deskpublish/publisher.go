@@ -116,9 +116,16 @@ func (p *Publisher) fail(err error, now time.Time) desk.ErrorCode {
 	return failure
 }
 
-// Publish implements fleet.DeskPublisher.
-func (p *Publisher) Publish(ctx context.Context, source fleet.DeskSource) {
+// Start begins the heartbeats when the daemon starts, so a machine whose
+// passes do not complete is still seen as running (desk-connect#req:heartbeat).
+func (p *Publisher) Start(ctx context.Context) {
 	p.heartbeat.Do(func() { go p.heartbeats(ctx) })
+}
+
+// Publish implements fleet.DeskPublisher. It also starts the heartbeats, for a
+// caller that never called Start.
+func (p *Publisher) Publish(ctx context.Context, source fleet.DeskSource) {
+	p.Start(ctx)
 	p.mu.Lock()
 	now := p.options.Now()
 	if p.stopped || now.Before(p.nextTry) || (!p.lastSent.IsZero() && now.Sub(p.lastSent) < p.options.MinInterval) {
@@ -139,6 +146,10 @@ func (p *Publisher) Publish(ctx context.Context, source fleet.DeskSource) {
 		return
 	}
 	_, err = p.options.Client.Publish(ctx, snapshot.Request(now))
+	if err != nil && ctx.Err() != nil {
+		// The daemon is stopping: that is no Desk failure to show or back off from.
+		return
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if err != nil {

@@ -265,3 +265,28 @@ func TestABeatStopsOnRefusalAndOnCancellation(t *testing.T) {
 		t.Fatalf("wait on a cancelled context = %v", err)
 	}
 }
+
+func TestStartSendsHeartbeatsBeforeAnyPublish(t *testing.T) {
+	t.Parallel()
+	client := &scriptedClient{beaten: make(chan struct{}, 1)}
+	publisher := NewPublisher(PublisherOptions{Client: client, Wait: stopAfterFirst})
+	publisher.Start(t.Context())
+	<-client.beaten
+	if client.sent() != 0 {
+		t.Fatal("starting sends a heartbeat and no snapshot")
+	}
+}
+
+func TestAPublishCutOffByShutdownIsNoDeskError(t *testing.T) {
+	t.Parallel()
+	client := &scriptedClient{publishErr: []error{context.Canceled}}
+	at := &clock{now: time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)}
+	publisher := newTestPublisher(t, client, at)
+	ctx, cancel := context.WithCancel(t.Context())
+	publisher.Start(ctx)
+	cancel()
+	publisher.Publish(ctx, &source{envelope: publishableEnvelope()})
+	if publisher.Diagnostic() != "" || publisher.backoff != 0 {
+		t.Fatalf("shutdown recorded %q with backoff %v", publisher.Diagnostic(), publisher.backoff)
+	}
+}

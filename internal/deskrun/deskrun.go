@@ -462,8 +462,11 @@ func (s *Service) Push(ctx context.Context, projectsRoot string) (PushResult, er
 	if err != nil {
 		return PushResult{}, s.exit(2, err.Error())
 	}
-	if !config.Connected() {
+	if !config.Installed() {
 		return PushResult{}, s.exit(1, "this machine is not connected to Desk; run wb desk connect")
+	}
+	if !config.Enabled {
+		return PushResult{}, s.exit(1, "publishing to Desk is paused (desk.enabled: false); set it to true to push")
 	}
 	exported := s.deps.Export(ctx, projectsRoot)
 	switch exported.Failure {

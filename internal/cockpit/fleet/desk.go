@@ -23,6 +23,11 @@ type DeskPublisher interface {
 	Diagnostic() string
 }
 
+// deskStarter is a Desk publisher with work of its own from the daemon's start,
+// such as heartbeats, which must not wait for a full pass
+// (desk-connect#req:heartbeat).
+type deskStarter interface{ Start(ctx context.Context) }
+
 // LocalThroughput is this machine's throughput block, nil until one is known.
 func (s *Snapshotter) LocalThroughput() *Throughput {
 	s.mu.RLock()

@@ -754,3 +754,14 @@ func TestConnectReportsATaskKeyThatCannotBeInstalled(t *testing.T) {
 		t.Fatalf("an uninstallable key = %v", err)
 	}
 }
+
+func TestPushRefusesWhilePublishingIsPaused(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.connected()
+	h.writeConfig(mustRead(t, h.configPath) + "  enabled: false\n")
+	h.exported = exportOf(t)
+	if _, err := h.service().Push(context.Background(), h.dir); exitCode(err) != 1 || !strings.Contains(err.Error(), "paused") || len(h.client.pushed) != 0 {
+		t.Fatalf("paused push = %v", err)
+	}
+}

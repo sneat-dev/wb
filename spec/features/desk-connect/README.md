@@ -173,7 +173,8 @@ While connected, the daemon MUST send `POST <desk.url>/v0/desk/machines/self/hea
 every `desk.heartbeat.interval` (default 5 minutes, floor 1 minute). The body is the
 observation time, the WB version, and the hash of the last accepted snapshot, nothing else.
 Desk derives online, stale, and offline from heartbeats, independently of whether the fleet
-changed.
+changed. Heartbeats start when the daemon starts, not after its first full pass, so a machine
+whose passes do not complete is still seen as running.
 
 #### REQ: publishing-never-blocks-local-work
 
@@ -315,7 +316,9 @@ published version keeps decoding at Desk for at least 90 days after its successo
 #### REQ: push-publishes-now
 
 `wb desk push` MUST read this machine's export from its running daemon, together with the
-daemon's throughput block. It reduces the export exactly as the daemon's publisher does
+daemon's throughput block, which it reads with the fleet route's small `scope=throughput`
+answer. A daemon too old to know that scope answers the whole document, read within the
+export's bound; past that bound the push goes without throughput. It reduces the export exactly as the daemon's publisher does
 (REQ:detail-level-applied-on-the-machine), publishes it, and sends one heartbeat. It exits 1
 in each of these cases:
 

@@ -270,6 +270,11 @@ const (
 	scopeQuery   = "scope"
 	ScopeOwn     = "own"
 	ScopeMachine = "machine"
+	// ScopeThroughput answers only this machine's throughput block, which the
+	// two scopes above leave out, for wb desk push
+	// (desk-connect#req:push-publishes-now). A daemon that does not know it
+	// answers the whole document.
+	ScopeThroughput = "throughput"
 )
 
 // ExportDropsHeader is the response header of a scoped read that says how many

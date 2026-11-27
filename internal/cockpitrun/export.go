@@ -183,9 +183,12 @@ func Export(ctx context.Context, deps ExportDependencies, request ExportRequest)
 	}
 	result := ExportResult{Body: append(body, '\n'), Drops: drops}
 	if request.WithThroughput {
-		var whole cockpitfleet.Document
-		if _, failure := cockpitExportGet(ctx, Client, base, cockpitfleet.FleetRoute, url.Values{}, cockpitfleet.MaxEnvelopeBytes, &whole); failure == "" {
-			result.Throughput = whole.Throughput
+		// The throughput scope is small and is this machine's alone. A daemon
+		// too old to know it answers the whole document, read within the
+		// export's own bound; beyond it the push goes without throughput.
+		var answer cockpitfleet.Document
+		if _, failure := cockpitExportGet(ctx, Client, base, cockpitfleet.FleetRoute, url.Values{"scope": {cockpitfleet.ScopeThroughput}}, cockpitDocumentLimit, &answer); failure == "" {
+			result.Throughput = answer.Throughput
 		}
 	}
 	return result

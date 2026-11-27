@@ -644,6 +644,9 @@ func (s *Snapshotter) Start(ctx context.Context) (stop func()) {
 	if s.sampler != nil {
 		stopSampler = s.sampler.Start(ctx)
 	}
+	if starter, ok := s.desk.(deskStarter); ok {
+		starter.Start(ctx)
+	}
 	go func() {
 		defer close(done)
 		s.run(ctx)

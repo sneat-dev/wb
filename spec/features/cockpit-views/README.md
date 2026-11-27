@@ -1338,7 +1338,9 @@ the `fleet` of its export, prepared once for each published document) and `scope
 with no entry but this machine's own machine entry, which is all the `--metrics-only` export reads
 of the fleet. A machine whose daemon shows many other machines therefore never fails its own export
 on the size of entries it does not export, and a metrics-only export, which another machine may run
-every 30 seconds, does not fetch and decode the fleet. A scoped read is never demand for the other
+every 30 seconds, does not fetch and decode the fleet. `scope=throughput` answers only this machine's
+`throughput` block, which the two scopes above leave out, for `wb desk push`
+([desk-connect](../desk-connect/README.md)#req:push-publishes-now). A scoped read is never demand for the other
 machines, whoever makes it; the response header `X-Wb-Cockpit-Export-Dropped` carries the four
 counts of what the daemon left out of it (repositories, worktrees, pull requests, agents), numbers
 only; any other value of `scope`, and a daemon that does not know the parameter, answer the whole

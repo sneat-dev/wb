@@ -3,9 +3,12 @@ package fleet
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/cockpit"
 )
 
 type fakeDesk struct {
@@ -86,5 +89,48 @@ func TestDeskPublisherPanicIsContainedAndThroughputIsOffered(t *testing.T) {
 	refreshAndSettle(t, quiet)
 	if got := localMachine(t, quiet).DeskError; got != "" {
 		t.Fatalf("no Desk publisher shows %q", got)
+	}
+}
+
+type startingDesk struct {
+	fakeDesk
+	started chan context.Context
+}
+
+func (d *startingDesk) Start(ctx context.Context) { d.started <- ctx }
+
+// TestTheDeskPublisherStartsWithTheDaemonNotTheFirstPass: heartbeats must
+// not wait for a full pass (desk-connect#req:heartbeat), so the snapshotter
+// starts a Desk publisher that can start, before its first pass completes.
+func TestTheDeskPublisherStartsWithTheDaemonNotTheFirstPass(t *testing.T) {
+	t.Parallel()
+	publisher := &startingDesk{started: make(chan context.Context, 1)}
+	snapshotter, _ := newSnapshotter(oneRepoSources("/repo/widgets").collectors(), func(o *Options) { o.Desk = publisher })
+	stop := snapshotter.Start(t.Context())
+	ctx := <-publisher.started
+	stop()
+	if ctx.Err() == nil {
+		t.Fatal("the publisher's context must end when the snapshotter stops")
+	}
+}
+
+// TestTheThroughputScopeAnswersTheThroughputAloneAndIsNoDemand serves wb desk
+// push the throughput block the other scopes leave out.
+func TestTheThroughputScopeAnswersTheThroughputAloneAndIsNoDemand(t *testing.T) {
+	t.Parallel()
+	snapshotter, _ := newSnapshotter(oneRepoSources("/repo/widgets").collectors(), nil)
+	refreshAndSettle(t, snapshotter)
+	snapshotter.mu.Lock()
+	snapshotter.throughput = &Throughput{WindowDays: 7, PerDay: []ThroughputDay{}, Slowest: []ThroughputTask{}}
+	snapshotter.mu.Unlock()
+	server := newCockpitServer(t, snapshotter)
+	snapshotter.fleetAsked.Store(0)
+	answer := server.get(cockpit.APIPrefix+FleetRoute+"?scope="+ScopeThroughput, nil, ExportReaderHeader, "1")
+	var got map[string]json.RawMessage
+	if err := json.Unmarshal(answer.Body.Bytes(), &got); err != nil || answer.Code != http.StatusOK || len(got) != 1 || !strings.Contains(string(got["throughput"]), `"window_days":7`) {
+		t.Fatalf("throughput scope = %d %s", answer.Code, answer.Body.String())
+	}
+	if snapshotter.fleetAsked.Load() != 0 {
+		t.Fatal("the throughput read was recorded as demand for the other machines")
 	}
 }
