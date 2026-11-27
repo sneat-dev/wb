@@ -146,3 +146,58 @@ func TestGoEnvFileMustBeRegular(t *testing.T) {
 		t.Fatalf("env file = %q, %v", raw, err)
 	}
 }
+
+// $GOROOT/go.env is the toolchain's layer below the user's env file: a
+// GOCACHEPROG set there is seen; the user's file and the environment
+// override it.
+func TestGorootEnvIsTheLowestLayer(t *testing.T) {
+	t.Parallel()
+	src := fakeGoEnvSources(map[string]string{"GOENV": "/user/env"}, map[string]string{
+		"/goroot/go.env": "GOCACHEPROG=/bin/cacher\nGOPROXY=https://toolchain.example\n",
+		"/user/env":      "GOPROXY=https://user.example\n",
+	})
+	src.goroot = func() string { return "/goroot" }
+	env, err := resolveGoEnv(src)
+	if err != nil || env.GOCACHEPROG != "/bin/cacher" || env.GOPROXY != "https://user.example" {
+		t.Fatalf("env = %#v %v", env, err)
+	}
+	src.goroot = func() string { return "/none" }
+	if env, err := resolveGoEnv(src); err != nil || env.GOCACHEPROG != "" {
+		t.Fatalf("a toolchain without go.env = %#v %v", env, err)
+	}
+	src.goroot = func() string { return "" }
+	if _, err := resolveGoEnv(src); err != nil {
+		t.Fatalf("no toolchain: %v", err)
+	}
+	broken := fakeGoEnvSources(nil, nil)
+	broken.goroot = func() string { return "/goroot" }
+	broken.readFile = func(path string) ([]byte, error) {
+		if path == "/goroot/go.env" {
+			return nil, errors.New("EIO")
+		}
+		return nil, os.ErrNotExist
+	}
+	if _, err := resolveGoEnv(broken); err == nil {
+		t.Fatal("an unreadable go.env was ignored")
+	}
+}
+
+// GOROOT comes from the environment, else from the go on PATH.
+func TestGorootIsFoundWithoutRunningGo(t *testing.T) {
+	t.Parallel()
+	if got := gorootOf(func(string) string { return "/env/goroot" }, nil); got != "/env/goroot" {
+		t.Fatalf("env GOROOT = %q", got)
+	}
+	none := func(string) string { return "" }
+	if got := gorootOf(none, func(string) (string, error) { return "", errors.New("not found") }); got != "" {
+		t.Fatalf("no go = %q", got)
+	}
+	if got := gorootOf(none, func(string) (string, error) { return "/usr/local/go/bin/go", nil }); got != "/usr/local/go" {
+		t.Fatalf("go on PATH = %q", got)
+	}
+	if realSources := realGoEnvSources(); realSources.goroot == nil {
+		t.Fatal("the real sources do not find GOROOT")
+	} else {
+		_ = realSources.goroot()
+	}
+}

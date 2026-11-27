@@ -322,6 +322,12 @@ func (buildCacheCategory) plan(ctx context.Context, w *World, o Options) *catego
 		plan.skip("protected: " + hit)
 		return plan
 	}
+	if w.Go.GOMODCACHE != "" && insideAny(root, []string{w.Go.GOMODCACHE}) != "" {
+		// A cache-shaped directory inside an unpacked module (or around the
+		// module cache) is module data, never the build cache.
+		plan.skip("protected: " + root + " overlaps the Go module cache")
+		return plan
+	}
 	if w.ProtectedGap != "" {
 		// GOCACHE could lie inside a checkout the incomplete inventory missed.
 		plan.skip("unknown: " + w.ProtectedGap)
@@ -388,7 +394,10 @@ func (fullCleanCategory) plan(ctx context.Context, w *World, o Options) *categor
 		plan.skip("requested-step-skipped: " + unsupportedCache(w.Go))
 		return plan
 	case insideAny(root, w.Protected) != "":
-		plan.skip("protected: " + insideAny(root, w.Protected))
+		plan.skip("requested-step-skipped: protected: " + insideAny(root, w.Protected))
+		return plan
+	case w.Go.GOMODCACHE != "" && insideAny(root, []string{w.Go.GOMODCACHE}) != "":
+		plan.skip("requested-step-skipped: protected: " + root + " overlaps the Go module cache")
 		return plan
 	case w.ProtectedGap != "":
 		plan.skip("unknown: " + w.ProtectedGap)

@@ -296,7 +296,7 @@ func candidateGroups(projectsRoot, home string) []group {
 		group{
 			name: "go-module-cache", kind: "cache",
 			roots: []string{goRoot(func(env goenv.Env) string { return env.GOMODCACHE })},
-			note:  "regenerable; re-downloading costs network, not correctness; wb disk prune removes versions no go.sum references",
+			note:  "regenerable; re-downloading costs network, not correctness; measured only: wb disk prune does not prune it (go clean -modcache clears it all)",
 		},
 	)
 	if userHome != "" {

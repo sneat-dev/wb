@@ -142,8 +142,10 @@ write telemetry counters. Each of `GOCACHE`, `GOMODCACHE`, `GOPATH`,
 
 1. the process environment;
 2. Go's environment file (`$GOENV`, else `<user config dir>/go/env`), parsed
-   read-only;
-3. Go's documented default (`<user cache dir>/go-build`,
+   read-only exactly as cmd/go parses it (split at LF, nothing trimmed);
+3. the toolchain's `$GOROOT/go.env` (`GOROOT` from the environment, else
+   the directory above the `bin/` of the `go` on `PATH`);
+4. Go's documented default (`<user cache dir>/go-build`,
    `<first GOPATH entry>/pkg/mod`, `https://proxy.golang.org,direct`,
    `sum.golang.org`).
 
@@ -160,6 +162,7 @@ second-level entries:
 |---|---|---|
 | `wb-written` | `reports/<name>` where `<name>` is a directory name a static WB writer uses | written by WB; a retention rule is future work |
 | `origin-not-proven` | every other entry under `reports/` and `backups/` | WB cannot prove who wrote it. It may be WB's, since some writers use dynamic names, or hand-made; a person decides |
+| `unreadable` | `reports/` or `backups/` when it cannot be listed | reported, never left out |
 | `wb-state` | everything else | WB's own records; never deleted by any verb |
 
 The legacy home's `worktrees/` is reported under `worktrees`, not here. A
@@ -170,9 +173,10 @@ test MUST fail when a non-test source file joins a string literal under
 
 Without `--apply`, prune MUST NOT create, delete, rename, truncate, chmod or
 lock anything in any root it measures or manages. The only external command it runs is
-`git worktree list --porcelain -z` in canonical clones. It reads `/proc`, and
+`git worktree list --porcelain -z` in canonical clones, with git's trace2
+output disabled so that git writes nothing either. It reads `/proc`, and
 it never runs `go`. Every mutation goes through a seam of the
-World (tree and file removal, locks, admission, HTTP probes) that the
+World (tree and file removal, locks, admission) that the
 planner never calls; a test against this machine's real directories fails if
 any is called, and records every external command the plan runs.
 
@@ -366,9 +370,14 @@ category rules and finishes it or keeps it.
 **Protected roots override every category.** These roots are protected:
 
 - the state directories;
-- every `worktrees` root;
+- every `worktrees` root, including the older `<root>/<org>/<repo>/.worktrees`
+  whether or not its clone is found;
 - every canonical clone;
-- every worktree any clone's `git worktree list` registers, wherever it is.
+- every worktree any clone's `git worktree list` registers, wherever it is,
+  and every one its `.git/worktrees/*/gitdir` names (git can list a clone
+  successfully yet incompletely); a registration that cannot be read is an
+  inventory gap;
+- a temporary directory or `GOCACHE` inside a git checkout below home.
 
 A candidate is refused as `protected` when its resolved path lies inside a
 protected root, or when a protected root lies inside it. If the
@@ -605,7 +614,7 @@ stderr only.
    "items":[{"path":"","filesystem":"","bytes":0,"projected_available_bytes":0,
      "status":"delete|deleted|keep|beyond-target|skipped|failed|replaced","reason":"",
      "pids":[{"pid":0,"command":""}],"error":""}]}],
- "state":[{"root":"","entries":[{"path":"","class":"wb-written|origin-not-proven|wb-state","bytes":0}]}]}
+ "state":[{"root":"","entries":[{"path":"","class":"wb-written|origin-not-proven|wb-state|unreadable","bytes":0}]}]}
 ```
 
 `shards` is used by the build-cache trim instead of `items`.

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -36,17 +37,21 @@ type goEnvSources struct {
 	userConfigDir func() (string, error)
 	userCacheDir  func() (string, error)
 	userHomeDir   func() (string, error)
+	// goroot is the toolchain's root, "" when no go is installed.
+	goroot func() string
 }
 
 func realGoEnvSources() goEnvSources {
 	return goEnvSources{
 		getenv: os.Getenv, readFile: readRegular,
 		userConfigDir: os.UserConfigDir, userCacheDir: os.UserCacheDir, userHomeDir: os.UserHomeDir,
+		goroot: func() string { return gorootOf(os.Getenv, exec.LookPath) },
 	}
 }
 
 // Resolve resolves Go's settings the way cmd/go does, in order: the
-// process environment, Go's environment file, then Go's documented default.
+// process environment, Go's environment file, the toolchain's own
+// $GOROOT/go.env, then Go's documented default.
 func Resolve() (Env, error) { return resolveGoEnv(realGoEnvSources()) }
 
 func resolveGoEnv(src goEnvSources) (Env, error) {
@@ -54,11 +59,18 @@ func resolveGoEnv(src goEnvSources) (Env, error) {
 	if err != nil {
 		return Env{}, err
 	}
+	toolchain, err := readGorootEnv(src)
+	if err != nil {
+		return Env{}, err
+	}
 	lookup := func(key string) string {
 		if value := src.getenv(key); value != "" {
 			return value
 		}
-		return file[key]
+		if value := file[key]; value != "" {
+			return value
+		}
+		return toolchain[key]
 	}
 	env := Env{
 		GOCACHE: lookup("GOCACHE"), GOMODCACHE: lookup("GOMODCACHE"),
@@ -120,20 +132,7 @@ func readGoEnvFile(src goEnvSources) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	values := map[string]string{}
-	// Exactly cmd/go's reading of its env file: split at LF only (a CR stays
-	// part of the value, as it does for Go), with no line-length limit; a
-	// line counts only when it starts with an upper-case letter and has an
-	// "="; neither side is trimmed. A " GOCACHE=..." line Go ignores is
-	// ignored here too.
-	for _, line := range strings.Split(string(raw), "\n") {
-		key, value, ok := strings.Cut(line, "=")
-		if !ok || line[0] < 'A' || line[0] > 'Z' {
-			continue
-		}
-		values[key] = value
-	}
-	return values, nil
+	return parseGoEnv(raw), nil
 }
 
 // readRegular reads path only when it is a regular file. It opens without
@@ -149,4 +148,60 @@ func readRegular(path string) ([]byte, error) {
 		return nil, fmt.Errorf("%s is not a regular file", path)
 	}
 	return io.ReadAll(file)
+}
+
+// gorootOf is GOROOT as cmd/go finds it without running: the environment,
+// else the directory above the bin/ holding the go on PATH.
+func gorootOf(getenv func(string) string, lookPath func(string) (string, error)) string {
+	if root := getenv("GOROOT"); root != "" {
+		return root
+	}
+	path, err := lookPath("go")
+	if err != nil {
+		return ""
+	}
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		path = real
+	}
+	return filepath.Dir(filepath.Dir(path))
+}
+
+// readGorootEnv reads $GOROOT/go.env, the toolchain's settings layer below
+// the user's env file (GOPROXY, GOSUMDB, and possibly GOCACHEPROG). A
+// toolchain without one, or no toolchain, has none.
+func readGorootEnv(src goEnvSources) (map[string]string, error) {
+	values := map[string]string{}
+	if src.goroot == nil {
+		return values, nil
+	}
+	root := src.goroot()
+	if root == "" {
+		return values, nil
+	}
+	raw, err := src.readFile(filepath.Join(root, "go.env"))
+	if errors.Is(err, os.ErrNotExist) {
+		return values, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return parseGoEnv(raw), nil
+}
+
+// parseGoEnv reads an env file exactly as cmd/go does.
+func parseGoEnv(raw []byte) map[string]string {
+	values := map[string]string{}
+	// Exactly cmd/go's reading of its env file: split at LF only (a CR stays
+	// part of the value, as it does for Go), with no line-length limit; a
+	// line counts only when it starts with an upper-case letter and has an
+	// "="; neither side is trimmed. A " GOCACHE=..." line Go ignores is
+	// ignored here too.
+	for _, line := range strings.Split(string(raw), "\n") {
+		key, value, ok := strings.Cut(line, "=")
+		if !ok || line[0] < 'A' || line[0] > 'Z' {
+			continue
+		}
+		values[key] = value
+	}
+	return values
 }

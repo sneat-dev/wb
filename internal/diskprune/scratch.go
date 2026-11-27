@@ -240,6 +240,14 @@ func (scratchCategory) plan(ctx context.Context, w *World, o Options) *categoryP
 		plan.skip(reason)
 		return plan
 	}
+	for _, dir := range w.TempDirs {
+		// TMPDIR inside a clone (~/personal-repo/tmp): its entries are that
+		// checkout's tracked or untracked files, never scratch.
+		if checkout := insideCheckout(dir, w.Home); checkout != "" {
+			plan.skip("protected: " + dir + " is inside the checkout " + checkout)
+			return plan
+		}
+	}
 	accumulator := newReclaimAccumulator()
 	var estimate int64
 	for _, root := range w.TempDirs {

@@ -152,10 +152,12 @@ func TestBuildCacheEdgeCases(t *testing.T) {
 	root := buildCacheFixture(t, tw, map[string]time.Duration{"0a01-a": 50 * time.Hour, "0a02-a": 100 * time.Hour})
 	tw.Protected = []string{filepath.Dir(root)}
 	report := tw.run(Options{Categories: []string{CategoryBuild}, AllowFullClean: true})
-	for _, cat := range report.Categories {
-		if !strings.HasPrefix(cat.Reason, "protected") {
-			t.Errorf("protected %s = %#v", cat.Name, cat)
-		}
+	// The trim says why; the explicitly requested full clean is a finding.
+	if cat := categoryByName(t, report, CategoryBuild); !strings.HasPrefix(cat.Reason, "protected") {
+		t.Errorf("protected trim = %#v", cat)
+	}
+	if cat := categoryByName(t, report, categoryFullClean); !strings.HasPrefix(cat.Reason, "requested-step-skipped: protected") {
+		t.Errorf("protected full clean = %#v", cat)
 	}
 	tw.Protected = nil
 	tw.evidence = Evidence{Unknown: "container"}

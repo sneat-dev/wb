@@ -3,6 +3,7 @@
 package diskprune
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -63,16 +64,26 @@ func openBeneath(anchor Anchor, rel string) (int, error) {
 	// on the way since the plan (the cache moved into a checkout, its old
 	// spelling now pointing there) is refused, even though the opened
 	// directory would be the same object.
-	if now, err := filepath.EvalSymlinks(anchor.Root); err != nil || now != anchor.Root {
+	now, err := filepath.EvalSymlinks(anchor.Root)
+	if err != nil {
+		return -1, fmt.Errorf("resolve %s: %w", anchor.Root, err)
+	}
+	if now != anchor.Root {
 		return -1, ErrChanged
 	}
 	fd, err := unix.Open(anchor.Root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return -1, fmt.Errorf("open %s: %w", anchor.Root, err)
 	}
+	// An inspection that fails is an error, reported as such; only a
+	// verified mismatch is a change.
 	var stat unix.Stat_t
 	mount, mountErr := fdMountID(fd)
-	if unix.Fstat(fd, &stat) != nil || mountErr != nil || mount != anchor.ID.MountID || !anchor.ID.sameInode(uint64(stat.Dev), uint64(stat.Ino), birthAt(fd, "")) {
+	if statErr := unix.Fstat(fd, &stat); statErr != nil || mountErr != nil {
+		_ = unix.Close(fd)
+		return -1, fmt.Errorf("inspect %s: %w", anchor.Root, errors.Join(statErr, mountErr))
+	}
+	if mount != anchor.ID.MountID || !anchor.ID.sameInode(uint64(stat.Dev), uint64(stat.Ino), birthAt(fd, "")) {
 		_ = unix.Close(fd)
 		return -1, ErrChanged
 	}
@@ -92,7 +103,12 @@ func openBeneath(anchor Anchor, rel string) (int, error) {
 			}
 			return -1, fmt.Errorf("open %s/%s: %w", anchor.Root, rel, err)
 		}
-		if mount, err := fdMountID(next); err != nil || mount != anchor.ID.MountID {
+		mount, err := fdMountID(next)
+		if err != nil {
+			_ = unix.Close(next)
+			return -1, fmt.Errorf("mount id of %s/%s: %w", anchor.Root, rel, err)
+		}
+		if mount != anchor.ID.MountID {
 			_ = unix.Close(next)
 			return -1, ErrChanged
 		}

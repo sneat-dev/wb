@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/disk"
@@ -116,7 +117,10 @@ func resolvedRoot(path string) string {
 	if !filepath.IsAbs(path) {
 		return path
 	}
-	return resolved(path)
+	// Go uses the configured path lexically (filepath.Join cleans it), so
+	// "/data/link/../cache" is /data/cache for Go: clean first, then
+	// resolve, or WB would prune the directory the symlink's parent holds.
+	return resolved(filepath.Clean(path))
 }
 
 // protectedInventory lists every root no category may delete inside or
@@ -142,6 +146,15 @@ func protectedInventory(ctx context.Context, w *World, resolution wbhome.Resolut
 		add(layout.WorktreesRoot)
 		stores = append(stores, layout.WorktreesRoot)
 	}
+	// The older per-repository stores, <root>/<org>/<repo>/.worktrees, are
+	// protected whether or not their clone is found.
+	legacyStores, _ := filepath.Glob(filepath.Join(resolution.Root, "*", "*", ".worktrees"))
+	for _, store := range legacyStores {
+		if info, err := os.Stat(store); err == nil && info.IsDir() {
+			add(store)
+			stores = append(stores, store)
+		}
+	}
 	clones, err := findCheckouts(deps.readDir, resolution.Root, true)
 	if err != nil {
 		noteGap("canonical clones could not be listed: " + err.Error())
@@ -165,6 +178,15 @@ func protectedInventory(ctx context.Context, w *World, resolution wbhome.Resolut
 			continue
 		}
 		add(worktrees...)
+		// Git can list a clone successfully yet incompletely (a registration
+		// whose gitdir file it cannot read): every registration is also read
+		// from the clone's own .git/worktrees.
+		registered, err := registeredWorktrees(clone)
+		if err != nil {
+			noteGap("registrations of " + clone + " cannot be read: " + err.Error())
+			continue
+		}
+		add(registered...)
 	}
 	// A checkout a worktrees root holds is protected even when no listed
 	// clone registers it: its canonical clone may live elsewhere, or its
@@ -262,10 +284,17 @@ func parseWorktreeList(out string) ([]string, error) {
 	}
 	var paths []string
 	for _, record := range strings.Split(strings.TrimSuffix(out, "\x00\x00"), "\x00\x00") {
-		first, _, _ := strings.Cut(record, "\x00")
-		path, ok := strings.CutPrefix(first, "worktree ")
+		fields := strings.Split(record, "\x00")
+		path, ok := strings.CutPrefix(fields[0], "worktree ")
 		if !ok || !filepath.IsAbs(path) {
-			return nil, fmt.Errorf("a record does not begin with an absolute worktree path: %q", first)
+			return nil, fmt.Errorf("a record does not begin with an absolute worktree path: %q", fields[0])
+		}
+		// One worktree per record: a second "worktree" field means a lost
+		// record separator, and with it a registration read as an attribute.
+		for _, field := range fields[1:] {
+			if strings.HasPrefix(field, "worktree ") {
+				return nil, fmt.Errorf("a record holds two worktree fields: %q", record)
+			}
 		}
 		paths = append(paths, path)
 	}
@@ -281,6 +310,9 @@ func runGit(ctx context.Context, dir string, args ...string) (string, error) {
 			cmd.Env = append(cmd.Env, variable)
 		}
 	}
+	// A read-only listing must write nothing: trace2 targets set in the
+	// user's git config (which could point under WB state) are disabled.
+	cmd.Env = append(cmd.Env, "GIT_TRACE2=0", "GIT_TRACE2_EVENT=0", "GIT_TRACE2_PERF=0", "GIT_OPTIONAL_LOCKS=0")
 	out, err := cmd.Output()
 	return string(out), err
 }
@@ -320,4 +352,32 @@ func resolved(path string) string {
 		return real
 	}
 	return filepath.Clean(path)
+}
+
+// registeredWorktrees reads a clone's .git/worktrees/<name>/gitdir files:
+// each names a linked worktree's .git file, so its directory is the
+// worktree. A clone without linked worktrees has none.
+func registeredWorktrees(clone string) ([]string, error) {
+	admin := filepath.Join(clone, ".git", "worktrees")
+	entries, err := os.ReadDir(admin)
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(admin, entry.Name(), "gitdir"))
+		if err != nil {
+			return nil, err
+		}
+		if gitdir := strings.TrimSpace(string(raw)); filepath.IsAbs(gitdir) {
+			out = append(out, filepath.Dir(gitdir))
+		}
+	}
+	return out, nil
 }

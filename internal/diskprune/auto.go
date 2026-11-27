@@ -101,6 +101,13 @@ func newestAutomaticReceipt(stateDir string) (Receipt, string, bool) {
 // NewestReceipt returns the newest receipt with the trigger ("" for any),
 // with its path.
 func NewestReceipt(stateDir, trigger string) (Receipt, string, bool) {
+	return newestReceipt(stateDir, trigger, false)
+}
+
+// newestReceipt is NewestReceipt; withLocked also counts a locked attempt,
+// which the hourly rate limit must (an attempt is an attempt), while the
+// floor finding must not (it measured nothing).
+func newestReceipt(stateDir, trigger string, withLocked bool) (Receipt, string, bool) {
 	entries, err := os.ReadDir(ReceiptsDir(stateDir))
 	if err != nil {
 		return Receipt{}, "", false
@@ -124,7 +131,7 @@ func NewestReceipt(stateDir, trigger string) (Receipt, string, bool) {
 		}
 		// A run that never took the lock measured nothing: it neither
 		// clears nor replaces the last real result.
-		if receipt.Outcome == OutcomeLocked {
+		if receipt.Outcome == OutcomeLocked && !withLocked {
 			continue
 		}
 		if trigger == "" || receipt.Trigger == trigger {
@@ -172,7 +179,7 @@ type AutoPruner struct {
 // Run loops until ctx ends. The configuration is re-read each tick, so
 // turning disk.auto_prune on or off needs no restart.
 func (a *AutoPruner) Run(ctx context.Context) {
-	if receipt, _, ok := NewestReceipt(a.StateDir, "daemon"); ok {
+	if receipt, _, ok := newestReceipt(a.StateDir, "daemon", true); ok {
 		a.last = receipt.Time
 	}
 	interval := a.interval()

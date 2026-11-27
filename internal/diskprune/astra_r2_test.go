@@ -589,3 +589,179 @@ func TestScratchKeepsAReportOnlyStore(t *testing.T) {
 		t.Fatalf("a report-only store = %#v", it)
 	}
 }
+
+// A temporary directory inside a git checkout is that checkout's data:
+// scratch does not run there.
+func TestScratchInsideACheckoutIsProtected(t *testing.T) {
+	t.Parallel()
+	tw := newTestWorld(t)
+	tw.entry("go-build1", 8)
+	clone := filepath.Dir(tw.tmp)
+	mustWrite(t, filepath.Join(clone, ".git", "HEAD"), "ref: refs/heads/main", 0o644)
+	tw.Home = filepath.Dir(clone)
+	if cat := categoryByName(t, tw.run(Options{Apply: true, Floor: 0.01}), CategoryScratch); !strings.Contains(cat.Reason, "inside the checkout") || !exists(filepath.Join(tw.tmp, "go-build1")) {
+		t.Fatalf("scratch in a checkout = %#v", cat)
+	}
+}
+
+// Every registration is read from the clone's .git/worktrees as well, and
+// the older per-repository stores are protected without their clone.
+func TestRegistrationsAndOlderStoresAreProtected(t *testing.T) {
+	t.Parallel()
+	deps, clone, _ := fakeWorldDeps(t)
+	hidden := filepath.Join(t.TempDir(), "linked")
+	mustWrite(t, filepath.Join(clone, ".git", "worktrees", "linked", "gitdir"), filepath.Join(hidden, ".git")+"\n", 0o644)
+	mustWrite(t, filepath.Join(clone, ".git", "worktrees", "stray"), "not a registration", 0o644)
+	resolution, _ := deps.resolve("")
+	older := filepath.Join(resolution.Root, "acme", "old", ".worktrees")
+	if err := os.MkdirAll(older, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w, err := newWorld(context.Background(), "/r", deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(w.Protected, " ")
+	if !strings.Contains(joined, hidden) || !strings.Contains(joined, older) {
+		t.Fatalf("protected = %v", w.Protected)
+	}
+	if err := os.Remove(filepath.Join(clone, ".git", "worktrees", "linked", "gitdir")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(clone, ".git", "worktrees", "linked", "gitdir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if w, _ := newWorld(context.Background(), "/r", deps); !strings.Contains(w.ProtectedGap, "registrations of") {
+		t.Fatalf("an unreadable registration = %q", w.ProtectedGap)
+	}
+	if regs, err := registeredWorktrees(filepath.Join(t.TempDir(), "no-git")); err != nil || regs != nil {
+		t.Fatalf("a clone without worktrees = %v %v", regs, err)
+	}
+	gitFile := t.TempDir()
+	mustWrite(t, filepath.Join(gitFile, ".git"), "gitdir: elsewhere", 0o644)
+	if regs, err := registeredWorktrees(gitFile); err != nil || regs != nil {
+		t.Fatalf("a .git file = %v %v", regs, err)
+	}
+	if os.Geteuid() != 0 {
+		locked := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(locked, ".git", "worktrees"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(filepath.Join(locked, ".git", "worktrees"), 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(filepath.Join(locked, ".git", "worktrees"), 0o755) })
+		if _, err := registeredWorktrees(locked); err == nil {
+			t.Fatal("an unreadable worktrees directory was read as empty")
+		}
+	}
+	if _, err := parseWorktreeList("worktree /a\x00worktree /b\x00\x00"); err == nil {
+		t.Fatal("a record with two worktree fields was accepted")
+	}
+}
+
+// Root resolution is lexical first, as Go's: /data/link/../cache is
+// /data/cache even when link points elsewhere.
+func TestRootsAreCleanedBeforeResolving(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "cache"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	other := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(other, "child"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(other, "child"), filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	want, _ := filepath.EvalSymlinks(filepath.Join(dir, "cache"))
+	if got := resolvedRoot(dir + "/link/../cache"); got != want {
+		t.Fatalf("resolved = %q, want %q", got, want)
+	}
+}
+
+// A state subtree that cannot be listed is reported as unreadable, never
+// silently left out.
+func TestUnreadableStateSubtreeIsReported(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() == 0 {
+		t.Skip("root lists every directory")
+	}
+	state := t.TempDir()
+	reports := filepath.Join(state, "reports")
+	mustWrite(t, filepath.Join(reports, "x.md"), "x", 0o644)
+	if err := os.Chmod(reports, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(reports, 0o755) })
+	report, ok := stateReport(context.Background(), state, false)
+	if !ok || len(report.Entries) != 1 || report.Entries[0].Class != "unreadable" {
+		t.Fatalf("report = %#v", report)
+	}
+}
+
+// Every inspection failure in the descriptor walk is an error, never a
+// silent "changed": the root's mount ID, a component's mount ID, and a root
+// that no longer resolves.
+//
+//nolint:paralleltest // replaces the statx seam
+func TestDescriptorWalkInspectionErrors(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "s", "e"), "x", 0o644)
+	anchor, err := AnchorOf(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := identityOf(t, filepath.Join(root, "s", "e"))
+	realStatx := statx
+	t.Cleanup(func() { statx = realStatx })
+	for _, failing := range []int{1, 2} {
+		calls := 0
+		statx = func(dirfd int, path string, flags int, mask int, stx *unix.Statx_t) error {
+			calls++
+			if calls == failing {
+				return errors.New("EIO")
+			}
+			return realStatx(dirfd, path, flags, mask, stx)
+		}
+		if _, err := RemoveFileBeneath(anchor, "s", "e", entry); err == nil || errors.Is(err, ErrChanged) {
+			t.Fatalf("statx call %d failing: %v", failing, err)
+		}
+	}
+	statx = realStatx
+	gone := anchor
+	gone.Root = filepath.Join(root, "absent")
+	if _, err := RemoveFileBeneath(gone, "s", "e", entry); err == nil || errors.Is(err, ErrChanged) {
+		t.Fatalf("a root that no longer resolves: %v", err)
+	}
+	// The planned spelling now passes through a symlink: refused as changed.
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(root, link); err != nil {
+		t.Fatal(err)
+	}
+	moved := anchor
+	moved.Root = link
+	if _, err := RemoveFileBeneath(moved, "s", "e", entry); !errors.Is(err, ErrChanged) {
+		t.Fatalf("a root reached through a new symlink: %v", err)
+	}
+	if !exists(filepath.Join(root, "s", "e")) {
+		t.Fatal("an entry was removed despite a failed inspection")
+	}
+}
+
+// A GOCACHE inside the module cache (a cache-shaped directory shipped in an
+// unpacked module) is module data: neither build-cache step runs there.
+func TestBuildCacheInsideTheModuleCacheIsProtected(t *testing.T) {
+	t.Parallel()
+	tw := newTestWorld(t)
+	root := buildCacheFixture(t, tw, map[string]time.Duration{"0a01-a": 100 * time.Hour})
+	tw.Go.GOMODCACHE = filepath.Dir(root)
+	report := tw.run(Options{Apply: true, AllowFullClean: true, Categories: []string{CategoryBuild}, Target: Target{Kind: TargetMax}})
+	if cat := categoryByName(t, report, CategoryBuild); !strings.Contains(cat.Reason, "overlaps the Go module cache") {
+		t.Errorf("trim = %#v", cat)
+	}
+	if cat := categoryByName(t, report, categoryFullClean); !strings.HasPrefix(cat.Reason, "requested-step-skipped: protected") {
+		t.Errorf("full clean = %#v", cat)
+	}
+}

@@ -51,7 +51,13 @@ func stateReport(ctx context.Context, root string, legacy bool) (StateReport, bo
 			continue
 		}
 		if entry.IsDir() && (name == "reports" || name == "backups") {
-			children, _ := os.ReadDir(path)
+			children, err := os.ReadDir(path)
+			if err != nil {
+				// Listed, not hidden: a subtree that cannot be read is in the
+				// report as such, with whatever its size can be measured as.
+				report.Entries = append(report.Entries, StateEntryReport{Path: path, Class: "unreadable", Bytes: reclaimOf(ctx, path)})
+				continue
+			}
 			for _, child := range children {
 				class := "origin-not-proven"
 				if name == "reports" && isWBWrittenReport(child.Name()) {
