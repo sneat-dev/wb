@@ -207,7 +207,7 @@ func TestHeartbeatsStartWithTheFirstPassAndReportTheirOwnErrors(t *testing.T) {
 			}
 		}})
 	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
+	t.Cleanup(cancel)
 	publisher.Publish(ctx, &source{envelope: publishableEnvelope()})
 	publisher.Publish(ctx, &source{envelope: publishableEnvelope()})
 	<-client.beaten

@@ -178,7 +178,7 @@ func TestDeskJourneyConnectPublishRevokeDisconnect(t *testing.T) {
 			return ctx.Err()
 		}})
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 	source := &journeySource{envelope: fleet.SentinelExport(t)}
 	publisher.Publish(ctx, source)
 	<-beat

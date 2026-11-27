@@ -9,12 +9,11 @@ import (
 )
 
 type fakeDesk struct {
-	mu        sync.Mutex
-	diag      string
-	panics    bool
-	exports   []Envelope
-	throughs  []*Throughput
-	published chan struct{}
+	mu       sync.Mutex
+	diag     string
+	panics   bool
+	exports  []Envelope
+	throughs []*Throughput
 }
 
 func (d *fakeDesk) Diagnostic() string { d.mu.Lock(); defer d.mu.Unlock(); return d.diag }
