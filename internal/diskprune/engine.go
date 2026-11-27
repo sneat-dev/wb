@@ -249,6 +249,18 @@ func Run(ctx context.Context, w *World, o Options) Report {
 		report.Categories = append(report.Categories, plan.render())
 	}
 	report.Filesystems = finalFilesystems(w, o, filesystems, reasons)
+	report.State = []StateReport{}
+	for _, state := range []struct {
+		root   string
+		legacy bool
+	}{{w.StateDir, false}, {w.LegacyHome, true}} {
+		if state.root == "" {
+			continue
+		}
+		if entry, ok := stateReport(ctx, state.root, state.legacy); ok {
+			report.State = append(report.State, entry)
+		}
+	}
 	if ctx.Err() != nil {
 		reasons[OutcomeCancelled] = true
 	}

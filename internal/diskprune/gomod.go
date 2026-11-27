@@ -147,11 +147,11 @@ func readModuleCache(w *World, root string) ([]moduleVersion, error) {
 		if errPath != nil || errVersion != nil {
 			return nil
 		}
-		info, err := os.Lstat(path)
-		if err != nil {
-			return err
-		}
 		identity, err := w.Identity(path)
+		info, infoErr := entry.Info()
+		if err == nil {
+			err = infoErr
+		}
 		if err != nil {
 			return err
 		}
