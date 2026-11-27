@@ -503,3 +503,7 @@ func Render(report Report) string {
 	}
 	return out.String()
 }
+
+// Probe reports the capacity of the filesystem holding path, as wb disk
+// measures it: available bytes are what an ordinary process can still write.
+func Probe(path string) (Filesystem, error) { return filesystemFor(path) }

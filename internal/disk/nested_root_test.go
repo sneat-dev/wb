@@ -179,3 +179,12 @@ func TestCollectReportsAnUnresolvableStateDirectory(t *testing.T) {
 		t.Fatal("unresolvable state directory was accepted")
 	}
 }
+
+// Probe is the same measurement wb disk reports for its filesystem.
+func TestProbeMeasuresTheFilesystem(t *testing.T) {
+	t.Parallel()
+	fs, err := Probe(t.TempDir())
+	if err != nil || fs.TotalBytes <= 0 || fs.AvailableBytes > fs.TotalBytes {
+		t.Fatalf("probe = %#v, %v", fs, err)
+	}
+}
