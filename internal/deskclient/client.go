@@ -180,21 +180,21 @@ func (client *Client) do(ctx context.Context, c call) (int, error) {
 }
 
 func statusError(response *http.Response) error {
-	switch status := response.StatusCode; {
-	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+	switch response.StatusCode {
+	case http.StatusUnauthorized, http.StatusForbidden:
 		return &Error{Code: desk.ErrorRevoked}
-	case status == http.StatusRequestEntityTooLarge:
+	case http.StatusRequestEntityTooLarge:
 		return &Error{Code: desk.ErrorTooLarge}
-	case status == http.StatusBadRequest || status == http.StatusUnprocessableEntity:
+	case http.StatusBadRequest, http.StatusUnprocessableEntity:
 		return &Error{Code: desk.ErrorRejectedPayload}
-	case status == http.StatusUpgradeRequired:
+	case http.StatusUpgradeRequired:
 		var body desk.SchemaUnsupported
 		minimum := 0
 		if desk.Decode(response.Body, desk.MaxResponseBytes, &body) == nil {
 			minimum = body.MinimumSchemaVersion
 		}
 		return &Error{Code: desk.ErrorSchemaUnsupported, MinimumSchemaVersion: minimum}
-	case status == http.StatusTooManyRequests:
+	case http.StatusTooManyRequests:
 		retry := time.Duration(0)
 		if seconds, err := strconv.Atoi(response.Header.Get("Retry-After")); err == nil && seconds > 0 {
 			retry = time.Duration(seconds) * time.Second

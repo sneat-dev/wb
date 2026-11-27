@@ -359,20 +359,20 @@ type MachineSelf struct {
 }
 
 // Validate checks the record.
-func (self MachineSelf) Validate() error {
-	if err := self.Machine.Validate(); err != nil {
+func (record MachineSelf) Validate() error {
+	if err := record.Machine.Validate(); err != nil {
 		return err
 	}
-	if err := validateShares(self.PersonalSpaceID, self.Shares); err != nil {
+	if err := validateShares(record.PersonalSpaceID, record.Shares); err != nil {
 		return err
 	}
-	if !self.Detail.Valid() {
+	if !record.Detail.Valid() {
 		return invalid("detail")
 	}
-	if (self.LastSnapshotHash == "") != self.LastSnapshotAt.IsZero() {
+	if (record.LastSnapshotHash == "") != record.LastSnapshotAt.IsZero() {
 		return invalid("last_snapshot")
 	}
-	if self.LastSnapshotHash != "" && !snapshotHash.MatchString(self.LastSnapshotHash) {
+	if record.LastSnapshotHash != "" && !snapshotHash.MatchString(record.LastSnapshotHash) {
 		return invalid("last_snapshot_hash")
 	}
 	return nil

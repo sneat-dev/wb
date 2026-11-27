@@ -29,7 +29,8 @@ func (brokenReader) Read([]byte) (int, error) { return 0, errors.New("no entropy
 func TestTaskKeysAreStableKeyedAndFingerprinted(t *testing.T) {
 	t.Parallel()
 	key, other := fixedKey(t, "a"), fixedKey(t, "b")
-	if key.Of("task-a") != key.Of("task-a") || key.Of("task-a") == other.Of("task-a") || key.Of("task-a") == key.Of("task-b") {
+	first, again := key.Of("task-a"), key.Of("task-a")
+	if first != again || first == other.Of("task-a") || first == key.Of("task-b") {
 		t.Fatal("a task key must be deterministic per key and name, and differ across keys and names")
 	}
 	if len(key.Of("task-a")) != 22 || key.Of("") != "" {
