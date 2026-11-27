@@ -289,7 +289,7 @@ func TestConnectAdoptsAPipedTaskKey(t *testing.T) {
 	}
 	other, _ := deskpublish.NewTaskKey(strings.NewReader(strings.Repeat("o", deskpublish.TaskKeyBytes)))
 	_, err = h.connect(func(r *ConnectRequest) { r.TaskKeyStdin, r.Input = true, strings.NewReader(other.Text()) })
-	if exitCode(err) != 1 || !strings.Contains(err.Error(), "different task key") {
+	if exitCode(err) != 1 || !strings.Contains(err.Error(), "different Desk task key") || strings.Contains(err.Error(), "--token-file") {
 		t.Fatalf("a different key = %v", err)
 	}
 	for name, input := range map[string]string{"empty": "", "garbage": "not-a-key"} {
@@ -569,5 +569,76 @@ func TestDefaultsSleepAndClient(t *testing.T) {
 	}
 	if client, err := NewDeskClient(desk.DefaultURL, ""); err != nil || client == nil {
 		t.Fatalf("default client = %v", err)
+	}
+}
+
+func TestADeniedConnectLeavesNoTaskKeyBehind(t *testing.T) {
+	t.Parallel()
+	key, _ := deskpublish.NewTaskKey(strings.NewReader(strings.Repeat("k", deskpublish.TaskKeyBytes)))
+	for name, piped := range map[string]bool{"created": false, "piped": true} {
+		h := newHarness(t)
+		h.client.tokens = []desk.ConnectTokenResponse{{Error: desk.GrantAccessDenied}}
+		_, err := h.connect(func(r *ConnectRequest) {
+			if piped {
+				r.TaskKeyStdin, r.Input = true, strings.NewReader(key.Text())
+			}
+		})
+		if exitCode(err) != 1 {
+			t.Fatalf("%s: denied = %v", name, err)
+		}
+		if _, statErr := os.Stat(TaskKeyPath(h.configPath)); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("%s: a denied connect wrote the task key", name)
+		}
+	}
+}
+
+func TestAPausedMachineCanStillBeDisconnectedAndShowsPaused(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	credential := h.connected()
+	h.writeConfig(mustRead(t, h.configPath) + "  enabled: false\n")
+	status, err := h.service().Status(context.Background())
+	if err != nil || !status.Connected || !status.Paused {
+		t.Fatalf("paused status = %+v, %v", status, err)
+	}
+	result, err := h.service().Disconnect(context.Background(), h.dir, true)
+	if err != nil || !result.Revoked {
+		t.Fatalf("disconnect of a paused machine = %+v, %v", result, err)
+	}
+	if _, err := os.Stat(credential); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("the credential of a paused machine must be removed too")
+	}
+}
+
+func TestStatusReportsALocalCredentialProblemAsLocal(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.connected()
+	h.client.selfErr = fmt.Errorf("read: %w", deskclient.ErrCredential)
+	status, err := h.service().Status(context.Background())
+	if err != nil || status.DeskError != "" || !strings.Contains(status.Problem, "credential file") || !strings.Contains(status.Fix, "chmod 600") {
+		t.Fatalf("credential problem = %+v, %v", status, err)
+	}
+}
+
+func mustRead(t *testing.T, path string) string {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+func TestConnectReportsATaskKeyThatCannotBeInstalled(t *testing.T) {
+	t.Parallel()
+	key, _ := deskpublish.NewTaskKey(strings.NewReader(strings.Repeat("k", deskpublish.TaskKeyBytes)))
+	h := newHarness(t)
+	if err := os.MkdirAll(TaskKeyPath(h.configPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, err := h.connect(func(r *ConnectRequest) { r.TaskKeyStdin, r.Input = true, strings.NewReader(key.Text()) })
+	if err == nil || exitCode(err) != -1 || !strings.Contains(err.Error(), "task key") {
+		t.Fatalf("an uninstallable key = %v", err)
 	}
 }

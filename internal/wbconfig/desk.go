@@ -40,7 +40,14 @@ type DeskConfig struct {
 // Connected reports whether the section names an installed machine
 // credential; only then may the daemon make a Desk request.
 func (config DeskConfig) Connected() bool {
-	return config.Enabled && config.CredentialFile != "" && config.MachineID != ""
+	return config.Enabled && config.Installed()
+}
+
+// Installed reports whether a machine credential is configured, whether or
+// not publishing is paused with enabled: false. Disconnect and status act on
+// an installed credential.
+func (config DeskConfig) Installed() bool {
+	return config.CredentialFile != "" && config.MachineID != ""
 }
 
 // DefaultDeskConfig is the configuration of a machine never connected.

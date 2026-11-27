@@ -110,6 +110,9 @@ Exits 1 when the machine is not connected or Desk reports an error.`,
 			if !result.Connected {
 				return runtime.ExitError(shared.ExitFindings, "this machine is not connected to Desk")
 			}
+			if result.Problem != "" {
+				return runtime.ExitError(shared.ExitFindings, result.Problem)
+			}
 			if result.DeskError != "" {
 				return runtime.ExitError(shared.ExitFindings, "Desk answered "+string(result.DeskError))
 			}
@@ -189,7 +192,7 @@ func restarted(yes bool) string {
 	if yes {
 		return "restarted if running"
 	}
-	return "restart skipped"
+	return "restart skipped: run wb daemon restart for a running daemon to pick it up"
 }
 
 func age(at *time.Time, now time.Time) string {
@@ -212,7 +215,12 @@ func writeStatus(out io.Writer, result deskrun.StatusResult, jsonOut bool, now t
 	for _, share := range result.Shares {
 		text += fmt.Sprintf("  shared      %s (%s, %s)\n", share.SpaceID, share.Level, share.State)
 	}
-	if result.DeskError != "" {
+	if result.Paused {
+		text += "  publishing  paused (desk.enabled: false)\n"
+	}
+	if result.Problem != "" {
+		text += fmt.Sprintf("  problem     %s\n  fix         %s\n", result.Problem, result.Fix)
+	} else if result.DeskError != "" {
 		text += fmt.Sprintf("  desk_error  %s\n", result.DeskError)
 		if result.Fix != "" {
 			text += fmt.Sprintf("  fix         %s\n", result.Fix)

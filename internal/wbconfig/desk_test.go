@@ -60,7 +60,7 @@ func TestDeskSectionParsesEveryField(t *testing.T) {
 		t.Fatalf("config = %+v", config)
 	}
 	disabled, err := LoadDesk(writeConfig(t, "desk:\n  enabled: false\n  machine_id: "+deskMachine+"\n  credential_file: /x\n  heartbeat:\n    interval: 1s\n  publish: {}\n"))
-	if err != nil || disabled.Connected() || disabled.HeartbeatInterval != MinDeskHeartbeatInterval || disabled.PublishMinInterval != DefaultDeskPublishMinInterval {
+	if err != nil || disabled.Connected() || !disabled.Installed() || disabled.HeartbeatInterval != MinDeskHeartbeatInterval || disabled.PublishMinInterval != DefaultDeskPublishMinInterval {
 		t.Fatalf("disabled = %+v, %v", disabled, err)
 	}
 }

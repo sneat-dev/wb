@@ -142,7 +142,7 @@ func (s *Service) Connect(ctx context.Context, request ConnectRequest) (ConnectR
 	if request.DetailChanged && !request.Detail.Valid() {
 		return ConnectResult{}, s.exit(2, fmt.Sprintf("--detail must be %q or %q", desk.LevelRepositories, desk.LevelFull))
 	}
-	if config.Connected() && request.DetailChanged && request.DeskURL == "" && request.SpaceHint == "" && !request.TaskKeyStdin && request.Machine == "" {
+	if config.Installed() && request.DetailChanged && request.DeskURL == "" && request.SpaceHint == "" && !request.TaskKeyStdin && request.Machine == "" {
 		return s.changeDetail(ctx, request, config, configPath)
 	}
 	deskURL := strings.TrimSpace(request.DeskURL)
@@ -166,7 +166,7 @@ func (s *Service) Connect(ctx context.Context, request ConnectRequest) (ConnectR
 	if err := start.Validate(); err != nil {
 		return ConnectResult{}, s.exit(2, fmt.Sprintf("cannot connect machine %q: %v (pass a valid --machine)", machine, err))
 	}
-	key, keyCreated, err := s.taskKey(configPath, request)
+	piped, err := s.pipedTaskKey(request)
 	if err != nil {
 		return ConnectResult{}, err
 	}
@@ -191,6 +191,12 @@ func (s *Service) Connect(ctx context.Context, request ConnectRequest) (ConnectR
 	}
 	credentialFile := filepath.Join(credentialsDir(configPath), "desk-"+issued.Machine.Name+".token")
 	if err := s.install(ctx, deskURL, credentialFile, issued.Credential); err != nil {
+		return ConnectResult{}, err
+	}
+	// Only once Desk has accepted the credential does the task key change on
+	// disk: a denied, expired or failed connect writes nothing.
+	key, keyCreated, err := s.taskKey(configPath, piped)
+	if err != nil {
 		return ConnectResult{}, err
 	}
 	shared := make([]string, 0, len(issued.Shares))
@@ -228,25 +234,37 @@ func (s *Service) changeDetail(ctx context.Context, request ConnectRequest, conf
 		ConfigPath: configPath, DetailOnly: true, DaemonRestarted: restarted}, nil
 }
 
-// taskKey adopts the key piped in with --task-key-stdin, or loads or creates
-// this machine's (desk-connect#req:task-keys-correlate-without-names).
-func (s *Service) taskKey(configPath string, request ConnectRequest) (deskpublish.TaskKey, bool, error) {
-	path := TaskKeyPath(configPath)
+// pipedTaskKey reads and checks the key piped in with --task-key-stdin, before
+// anything is sent, so a bad key fails fast; it is nil without the flag.
+func (s *Service) pipedTaskKey(request ConnectRequest) (*deskpublish.TaskKey, error) {
 	if !request.TaskKeyStdin {
-		return deskpublish.LoadOrCreateTaskKey(path, s.deps.Random)
+		return nil, nil
 	}
 	text, err := credentialfile.ReadToken(request.Input)
 	if err != nil {
-		return deskpublish.TaskKey{}, false, s.exit(2, "--task-key-stdin: "+err.Error())
+		return nil, s.exit(2, "--task-key-stdin: expected one task key on stdin, as wb desk task-key export writes it")
 	}
 	key, err := deskpublish.ParseTaskKey(text)
 	if err != nil {
-		return deskpublish.TaskKey{}, false, s.exit(2, "--task-key-stdin: "+err.Error())
+		return nil, s.exit(2, "--task-key-stdin: "+err.Error())
 	}
-	if err := deskpublish.InstallTaskKey(path, key); err != nil {
-		return deskpublish.TaskKey{}, false, s.exit(1, err.Error()+"; this machine already has a different task key")
+	return &key, nil
+}
+
+// taskKey installs the piped key, or loads or creates this machine's
+// (desk-connect#req:task-keys-correlate-without-names).
+func (s *Service) taskKey(configPath string, piped *deskpublish.TaskKey) (deskpublish.TaskKey, bool, error) {
+	path := TaskKeyPath(configPath)
+	if piped == nil {
+		return deskpublish.LoadOrCreateTaskKey(path, s.deps.Random)
 	}
-	return key, false, nil
+	if err := deskpublish.InstallTaskKey(path, *piped); err != nil {
+		if errors.Is(err, deskpublish.ErrTaskKeyMismatch) {
+			return deskpublish.TaskKey{}, false, s.exit(1, err.Error()+": remove "+path+" first to adopt the piped one")
+		}
+		return deskpublish.TaskKey{}, false, err
+	}
+	return *piped, false, nil
 }
 
 func (s *Service) poll(ctx context.Context, client Client, grant desk.ConnectStartResponse) (desk.ConnectTokenResponse, error) {
@@ -314,7 +332,7 @@ func (s *Service) Disconnect(ctx context.Context, projectsRoot string, noRestart
 	if err != nil {
 		return DisconnectResult{}, s.exit(2, err.Error())
 	}
-	if !config.Connected() {
+	if !config.Installed() {
 		return DisconnectResult{}, s.exit(1, "this machine is not connected to Desk")
 	}
 	result := DisconnectResult{CredentialFile: config.CredentialFile, ConfigPath: configPath}
@@ -338,6 +356,8 @@ func (s *Service) Disconnect(ctx context.Context, projectsRoot string, noRestart
 // StatusResult is `wb desk status --json`.
 type StatusResult struct {
 	Connected       bool           `json:"connected"`
+	Paused          bool           `json:"paused,omitempty"`
+	Problem         string         `json:"problem,omitempty"`
 	DeskURL         string         `json:"desk_url,omitempty"`
 	MachineID       string         `json:"machine_id,omitempty"`
 	PersonalSpaceID string         `json:"personal_space_id,omitempty"`
@@ -357,15 +377,21 @@ func (s *Service) Status(ctx context.Context) (StatusResult, error) {
 	if err != nil {
 		return StatusResult{}, s.exit(2, err.Error())
 	}
-	if !config.Connected() {
+	if !config.Installed() {
 		return StatusResult{Fix: "wb desk connect"}, nil
 	}
-	result := StatusResult{Connected: true, DeskURL: config.URL, MachineID: config.MachineID,
+	result := StatusResult{Connected: true, Paused: !config.Enabled, DeskURL: config.URL, MachineID: config.MachineID,
 		PersonalSpaceID: config.SpaceID, Detail: config.Detail}
 	client, err := s.deps.NewClient(config.URL, config.CredentialFile)
 	var self desk.MachineSelf
 	if err == nil {
 		self, err = client.Self(ctx)
+	}
+	if errors.Is(err, deskclient.ErrCredential) {
+		// The problem is on this machine, not on the way to Desk.
+		result.Problem = "the credential file " + config.CredentialFile + " is missing, readable by other users, or not one token"
+		result.Fix = "chmod 600 " + config.CredentialFile + ", or wb desk connect"
+		return result, nil
 	}
 	if err != nil {
 		result.DeskError = deskclient.CodeOf(err)

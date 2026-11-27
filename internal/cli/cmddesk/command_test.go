@@ -93,7 +93,7 @@ func TestConnectRendersADetailChangeAndPassesErrors(t *testing.T) {
 	detailOnly := Operations{Connect: func(context.Context, deskrun.ConnectRequest) (deskrun.ConnectResult, error) {
 		return deskrun.ConnectResult{DetailOnly: true, Detail: desk.LevelFull, ConfigPath: "/c/wb.yaml"}, nil
 	}}
-	if stdout, _, err := run(t, detailOnly, "connect", "--detail", "full"); err != nil || !strings.Contains(stdout, "Desk detail is now full") || !strings.Contains(stdout, "restart skipped") {
+	if stdout, _, err := run(t, detailOnly, "connect", "--detail", "full"); err != nil || !strings.Contains(stdout, "Desk detail is now full") || !strings.Contains(stdout, "run wb daemon restart") {
 		t.Fatalf("detail change = %q, %v", stdout, err)
 	}
 	failing := Operations{Connect: func(context.Context, deskrun.ConnectRequest) (deskrun.ConnectResult, error) {
@@ -122,6 +122,8 @@ func TestStatusExitsOneOnFindings(t *testing.T) {
 			LastSnapshotAt: &at}, 0, []string{"team1 (summary, active)", "published   1m30s ago", "heartbeat   never"}},
 		{"revoked", deskrun.StatusResult{Connected: true, DeskError: desk.ErrorRevoked, Fix: "wb desk connect"}, 1, []string{"desk_error  revoked", "fix         wb desk connect"}},
 		{"unreachable", deskrun.StatusResult{Connected: true, DeskError: desk.ErrorUnreachable}, 1, []string{"desk_error  unreachable"}},
+		{"paused", deskrun.StatusResult{Connected: true, Paused: true}, 0, []string{"publishing  paused"}},
+		{"local problem", deskrun.StatusResult{Connected: true, Problem: "the credential file is bad", Fix: "chmod 600 x"}, 1, []string{"problem     the credential file is bad", "fix         chmod 600 x"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
