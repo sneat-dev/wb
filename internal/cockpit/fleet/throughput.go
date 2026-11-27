@@ -362,8 +362,12 @@ func (s *Snapshotter) startThroughput(ctx context.Context) {
 		defer s.throughputBusy.Store(false)
 		block := s.throughputs.collect(ctx, s.now())
 		s.mu.Lock()
-		defer s.mu.Unlock()
 		s.throughput = block
 		s.publishMaybeLocked()
+		ready := s.complete && s.listError == ""
+		s.mu.Unlock()
+		if ready && block != nil {
+			s.startDeskPublish(ctx)
+		}
 	}()
 }

@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/cockpit"
 )
@@ -17,6 +19,7 @@ type fakeDesk struct {
 	panics   bool
 	exports  []Envelope
 	throughs []*Throughput
+	onPub    func(int)
 }
 
 func (d *fakeDesk) Diagnostic() string { d.mu.Lock(); defer d.mu.Unlock(); return d.diag }
@@ -28,7 +31,11 @@ func (d *fakeDesk) Publish(_ context.Context, source DeskSource) {
 	envelope, throughput := source.Export(false), source.LocalThroughput()
 	d.mu.Lock()
 	d.exports, d.throughs = append(d.exports, envelope), append(d.throughs, throughput)
+	count, notify := len(d.exports), d.onPub
 	d.mu.Unlock()
+	if notify != nil {
+		notify(count)
+	}
 }
 
 func localMachine(t *testing.T, snapshotter *Snapshotter) Machine {
@@ -132,5 +139,60 @@ func TestTheThroughputScopeAnswersTheThroughputAloneAndIsNoDemand(t *testing.T) 
 	}
 	if snapshotter.fleetAsked.Load() != 0 {
 		t.Fatal("the throughput read was recorded as demand for the other machines")
+	}
+}
+
+type gatedTerminals struct {
+	*fakeTerminals
+	release <-chan struct{}
+}
+
+func (g gatedTerminals) List(ctx context.Context, limit int) ([]TerminalFile, bool, error) {
+	select {
+	case <-g.release:
+	case <-ctx.Done():
+		return nil, false, ctx.Err()
+	}
+	return g.fakeTerminals.List(ctx, limit)
+}
+
+// TestThroughputComputedAfterAPassReachesTheDeskPublisherWithoutAnotherPass
+// verifies that when the asynchronous throughput scan finishes after the pass's
+// own Desk publish, the new throughput block triggers another Desk publish
+// without waiting for the next pass.
+func TestThroughputComputedAfterAPassReachesTheDeskPublisherWithoutAnotherPass(t *testing.T) {
+	t.Parallel()
+	release := make(chan struct{})
+	firstPublish := make(chan struct{})
+	var firstOnce sync.Once
+	publisher := &fakeDesk{onPub: func(int) { firstOnce.Do(func() { close(firstPublish) }) }}
+	terminals := newFakeTerminals()
+	snapshotter, clock := throughputSnapshotter(gatedTerminals{fakeTerminals: terminals, release: release}, func(o *Options) {
+		o.Desk = publisher
+	})
+	now := clock.Now()
+	terminals.put("a", now, landedTerminal("task-a", now.Add(-3*time.Hour), now.Add(-time.Hour)))
+
+	if err := snapshotter.Refresh(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	<-firstPublish
+	for snapshotter.deskBusy.Load() {
+		runtime.Gosched()
+	}
+	close(release)
+	snapshotter.side.Wait()
+
+	publisher.mu.Lock()
+	throughs := append([]*Throughput(nil), publisher.throughs...)
+	publisher.mu.Unlock()
+	if len(throughs) != 2 {
+		t.Fatalf("Desk publisher saw %d calls after one pass, want 2 (initial + throughput)", len(throughs))
+	}
+	if throughs[0] != nil {
+		t.Fatalf("first publish saw throughput %+v before scan finished, want nil", throughs[0])
+	}
+	if throughs[1] == nil || len(throughs[1].PerDay) != 1 || throughs[1].PerDay[0].Landed != 1 {
+		t.Fatalf("second publish throughput = %+v, want the computed block", throughs[1])
 	}
 }
