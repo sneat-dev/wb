@@ -175,44 +175,58 @@ with sizes, and exits `1` when there is work.
 ### REQ: scratch
 
 Scratch is a direct entry of a temporary directory (`os.TempDir()` and
-`GOTMPDIR`, each resolved and deduplicated) whose name is one of:
+`GOTMPDIR`, each resolved and deduplicated; one that cannot be resolved is
+left out, never cleaned lexically into another path) whose name is one of:
 
 - `go-build<digits>` (go build and go test work directories);
 - `Test…<digits>`, `Benchmark…<digits>`, `Fuzz…<digits>` (what `t.TempDir`
   and friends create);
 - WB's own regenerable directories: `wb-index-<digits>`,
   `wb-coverage-baseline-<digits>` and the other prefixes listed in the code,
-  and per-task Go caches `wb-<task>-cache` / `wb-<task>-go-cache`.
+  and per-task Go caches `wb-<task>-cache` / `wb-<task>-go-cache`, where
+  `<task>` uses only letters, digits, `.`, `_` and `-`.
 
 Nothing else in the temporary directory is ever considered. A candidate is
 removed only when all of these hold; otherwise it is kept and counted under
 its reason:
 
 - it is a real directory, not a symlink, owned by the invoking user;
-- it is on the same filesystem as its temporary directory;
-- no directory below it is on another filesystem (a mount), and it holds no
-  `.git` and no socket or FIFO;
+- it is on the same filesystem as its temporary directory, and it is not, and
+  does not hold, the resolved `GOCACHE` or `GOMODCACHE`;
+- no directory below it is on another filesystem, no mount point listed in
+  `/proc/self/mountinfo` lies inside it (a bind mount on the same filesystem
+  included), and it holds no `.git` and no socket or FIFO;
 - nothing in it, files or directories, was modified in the last 3 days.
   `--older-than` raises that (a Go duration such as `100h`, or whole days
   such as `5d`) and can never lower it.
 
-Removal never follows a symlink. A tree Go wrote read-only is made writable
-(directories only) and removed.
+Its identity is taken before anything is inspected, and the name must still
+be that directory immediately before removal; one replaced meanwhile is
+kept. Removal never follows a symlink. A tree Go wrote read-only is made
+writable (directories only, each re-checked to be a real directory) and
+removed. A temporary directory that exists but cannot be listed, unreadable
+mount points, or a cancelled run make the category `failed`.
 
 ### REQ: go-build-cache
 
-With `--apply`, prune runs `go clean -cache` against the resolved `GOCACHE`,
-with `GOFLAGS` dropped so that nothing there can widen the clean, only when
-no Go process is running. A Go process is one whose `comm`, or the base name
+With `--apply`, prune runs `go clean -cache` against the resolved `GOCACHE`
+(symlinks resolved once, so the check, the measurement and the clean name
+one directory), with `GOFLAGS` set to a single space, only when no Go
+process is running. A blank `GOFLAGS` overrides Go's env files and parses as
+no flags; an empty one would let a `GOFLAGS=-modcache` there widen the clean
+to the module cache. A Go process is one whose `comm`, or the base name
 of whose `argv[0]`, is a Go tool (`go`, `compile`, `link`, `asm`, `cgo`,
 `vet`, `cover`, `gopls`, `dlv`, `golangci-lint`, `staticcheck`,
 `govulncheck`) or ends in `.test`. The check is made when planning and again
-immediately before the clean.
+immediately before the clean. A process whose `comm` or `cmdline` cannot be
+read for any reason other than having exited means prune cannot tell.
 
 The category is skipped, and the run exits `1`, when a Go process runs (the
 PIDs are named) or when that cannot be told (no `/proc`, as on macOS). It is
 skipped without a finding when `GOCACHEPROG` is set, `GOCACHE` is `off` or
-relative, or there is no cache. Go trims its build cache itself day to day;
+relative, or there is no cache, and kept as `nothing to clear` when no shard
+holds an entry. Go's settings or `GOCACHE` that cannot be inspected make
+the category `failed`. Go trims its build cache itself day to day;
 this category is for a full disk.
 
 ### REQ: cross-references

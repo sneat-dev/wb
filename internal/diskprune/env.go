@@ -2,6 +2,7 @@ package diskprune
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -21,20 +22,29 @@ func NewEnv() Env {
 		UID:         os.Getuid(),
 		Now:         time.Now,
 		GoProcesses: goProcesses,
+		MountPoints: mountPoints,
 		Measure:     measure,
 		RemoveAll:   removeAll,
 	}
 	settings, err := resolveGo()
 	if err != nil {
-		env.GoCacheProblem = "Go's settings cannot be read: " + err.Error()
+		env.GoCacheError = "Go's settings cannot be read: " + err.Error()
 		return env
 	}
-	env.GoCache, env.GoCacheProblem = buildCache(settings)
+	for _, cache := range []string{settings.GOCACHE, settings.GOMODCACHE} {
+		if filepath.IsAbs(cache) {
+			env.GoCaches = append(env.GoCaches, resolvedPath(cache))
+		}
+	}
+	env.GoCache, env.GoCacheProblem, env.GoCacheError = buildCache(settings)
 	env.GoClean = func(ctx context.Context) error { return goClean(ctx, env.GoCache) }
 	return env
 }
 
-// tempDirs are the resolved, distinct temporary directories.
+// tempDirs are the resolved, distinct temporary directories. One that
+// cannot be resolved is left out: cleaning its spelling lexically could name
+// another directory (/data/missing/../archive is not /data/archive when
+// missing does not exist).
 func tempDirs(dirs ...string) []string {
 	var out []string
 	seen := map[string]bool{}
@@ -42,10 +52,11 @@ func tempDirs(dirs ...string) []string {
 		if dir == "" {
 			continue
 		}
-		if real, err := filepath.EvalSymlinks(dir); err == nil {
-			dir = real
+		real, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			continue
 		}
-		dir = filepath.Clean(dir)
+		dir = real
 		if !seen[dir] {
 			seen[dir] = true
 			out = append(out, dir)
@@ -54,22 +65,40 @@ func tempDirs(dirs ...string) []string {
 	return out
 }
 
-// buildCache is GOCACHE when prune may clear it, else why not.
-func buildCache(settings goenv.Env) (string, string) {
+// buildCache is the resolved GOCACHE when prune may clear it; else why not
+// (nothing to clear), or the inspection error (a finding). It is resolved
+// once, so the check, the measurement and go clean all name one directory.
+func buildCache(settings goenv.Env) (cache, problem, failure string) {
 	switch {
 	case settings.GOCACHEPROG != "":
-		return "", "GOCACHEPROG is set, so the cache is not a directory prune clears"
+		return "", "GOCACHEPROG is set, so the cache is not a directory prune clears", ""
 	case settings.GOCACHE == "off" || !filepath.IsAbs(settings.GOCACHE):
-		return "", fmt.Sprintf("GOCACHE is %q", settings.GOCACHE)
+		return "", fmt.Sprintf("GOCACHE is %q", settings.GOCACHE), ""
 	}
-	if info, err := os.Stat(settings.GOCACHE); err != nil || !info.IsDir() {
-		return "", "no build cache at " + settings.GOCACHE
+	real, err := filepath.EvalSymlinks(settings.GOCACHE)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", "no build cache at " + settings.GOCACHE, ""
 	}
-	return settings.GOCACHE, ""
+	if err != nil {
+		return "", "", "GOCACHE " + settings.GOCACHE + " cannot be inspected: " + err.Error()
+	}
+	if info, err := os.Stat(real); err != nil || !info.IsDir() {
+		return "", "no build cache at " + settings.GOCACHE, ""
+	}
+	return real, "", ""
 }
 
-// goClean runs go clean -cache against exactly this cache. GOFLAGS is
-// dropped so that a -modcache there cannot widen the clean.
+// resolvedPath is path with symlinks resolved when it exists.
+func resolvedPath(path string) string {
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		return real
+	}
+	return filepath.Clean(path)
+}
+
+// goClean runs go clean -cache against exactly this cache. GOFLAGS is set
+// to a single space, which overrides a GOFLAGS in Go's env files (dropping
+// it would let a -modcache there widen the clean) and parses as no flags.
 func goClean(ctx context.Context, cache string) error {
 	cmd := exec.CommandContext(ctx, "go", "clean", "-cache")
 	for _, variable := range os.Environ() {
@@ -77,7 +106,7 @@ func goClean(ctx context.Context, cache string) error {
 			cmd.Env = append(cmd.Env, variable)
 		}
 	}
-	cmd.Env = append(cmd.Env, "GOCACHE="+cache)
+	cmd.Env = append(cmd.Env, "GOCACHE="+cache, "GOFLAGS= ")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("go clean -cache: %w: %s", err, strings.TrimSpace(string(out)))
 	}

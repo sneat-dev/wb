@@ -3,6 +3,8 @@ package diskprune
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -11,8 +13,16 @@ import (
 // automatic trim keeps handling the routine case; this is for a full disk.
 func pruneBuildCache(ctx context.Context, env Env, o Options) CategoryReport {
 	report := CategoryReport{Name: CategoryBuild}
+	if env.GoCacheError != "" {
+		report.Status, report.Reason = StatusFailed, env.GoCacheError
+		return report
+	}
 	if env.GoCacheProblem != "" {
 		report.Status, report.Reason = StatusSkipped, "unsupported: "+env.GoCacheProblem
+		return report
+	}
+	if !hasEntries(env.GoCache) {
+		report.Status, report.Reason = StatusKeep, "nothing to clear"
 		return report
 	}
 	if reason := goBusy(env); reason != "" {
@@ -54,4 +64,22 @@ func goBusy(env Env) string {
 		names = append(names, fmt.Sprintf("%d %s", process.PID, process.Command))
 	}
 	return "Go is running (" + strings.Join(names, ", ") + ")"
+}
+
+// hasEntries reports whether the cache holds anything go clean -cache
+// removes: a shard directory with a file in it.
+func hasEntries(cache string) bool {
+	shards, err := os.ReadDir(cache)
+	if err != nil {
+		return true
+	}
+	for _, shard := range shards {
+		if !shard.IsDir() || len(shard.Name()) != 2 {
+			continue
+		}
+		if files, err := os.ReadDir(filepath.Join(cache, shard.Name())); err != nil || len(files) > 0 {
+			return true
+		}
+	}
+	return false
 }

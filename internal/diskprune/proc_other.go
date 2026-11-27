@@ -9,3 +9,7 @@ import "errors"
 func goProcesses() ([]Process, error) {
 	return nil, errors.New("this platform has no /proc to read")
 }
+
+// mountPoints has no mountinfo to read here; the device check alone keeps a
+// tree on another filesystem.
+func mountPoints() ([]string, error) { return nil, nil }

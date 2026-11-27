@@ -46,8 +46,9 @@ func newFixture(t *testing.T) *fixture {
 			}
 			return f.cleanErr
 		},
-		Measure:   measure,
-		RemoveAll: removeAll,
+		Measure:     measure,
+		RemoveAll:   removeAll,
+		MountPoints: func() ([]string, error) { return nil, nil },
 	}
 	return f
 }
@@ -142,7 +143,7 @@ func TestScratchKeepsWhatIsNotSafelyOld(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = listener.Close() }()
+	t.Cleanup(func() { _ = listener.Close() })
 	g.env.UID = os.Getuid() + 1
 	foreign := Run(context.Background(), g.env, Options{Categories: []string{CategoryScratch}})
 	if category(t, foreign, CategoryScratch).Kept["owned by another user"] != 2 {
@@ -193,7 +194,7 @@ func TestScratchKeepsMountsAndUnreadableTrees(t *testing.T) {
 	}); keep != "another filesystem" {
 		t.Fatalf("another filesystem = %q", keep)
 	}
-	if keep := scratchKeepReason(f.env, Options{ScratchAge: DefaultScratchAge}, rootInfo, filepath.Join(f.tmp, "absent")); keep != "unreadable" {
+	if keep := scratchKeepReasonWith(f.env, Options{ScratchAge: DefaultScratchAge}, rootInfo, filepath.Join(f.tmp, "absent"), func(_ string, info os.FileInfo) uint64 { return deviceOf(info) }); keep != "unreadable" {
 		t.Fatalf("absent = %q", keep)
 	}
 	if os.Geteuid() != 0 {
@@ -202,7 +203,7 @@ func TestScratchKeepsMountsAndUnreadableTrees(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = os.Chmod(filepath.Join(locked, "001"), 0o755) })
-		if keep := scratchKeepReason(f.env, Options{ScratchAge: DefaultScratchAge}, rootInfo, locked); keep != "unreadable" {
+		if keep := scratchKeepReasonWith(f.env, Options{ScratchAge: DefaultScratchAge}, rootInfo, locked, func(_ string, info os.FileInfo) uint64 { return deviceOf(info) }); keep != "unreadable" {
 			t.Fatalf("an unreadable tree = %q", keep)
 		}
 	}
@@ -214,22 +215,34 @@ func TestScratchFailures(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	f.env.TempDirs = []string{filepath.Join(f.tmp, "absent")}
-	if kept := category(t, Run(context.Background(), f.env, Options{Categories: []string{CategoryScratch}}), CategoryScratch).Kept; kept["temporary directory unreadable"] != 1 {
-		t.Fatalf("kept = %v", kept)
+	if report := Run(context.Background(), f.env, Options{Categories: []string{CategoryScratch}}); report.Outcome != OutcomeDone {
+		t.Fatalf("a temporary directory that does not exist = %#v", report)
 	}
 	file := filepath.Join(f.tmp, "file")
 	mustWrite(t, file, "x")
 	f.env.TempDirs = []string{file}
-	if kept := category(t, Run(context.Background(), f.env, Options{Categories: []string{CategoryScratch}}), CategoryScratch).Kept; kept["temporary directory unreadable"] != 1 {
-		t.Fatalf("a file as the temporary directory: %v", kept)
+	if report := Run(context.Background(), f.env, Options{Categories: []string{CategoryScratch}}); report.Outcome != OutcomeFailed || !strings.Contains(category(t, report, CategoryScratch).Reason, "cannot be read") {
+		t.Fatalf("an unlistable temporary directory = %#v", report)
+	}
+	f.env.MountPoints = func() ([]string, error) { return nil, errors.New("no mountinfo") }
+	if report := Run(context.Background(), f.env, Options{Categories: []string{CategoryScratch}}); report.Outcome != OutcomeFailed {
+		t.Fatalf("unreadable mount points = %#v", report)
 	}
 
 	g := newFixture(t)
 	g.scratch("go-build1")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if items := category(t, Run(ctx, g.env, Options{Apply: true}), CategoryScratch).Items; len(items) != 0 {
-		t.Fatalf("a cancelled run acted on %v", items)
+	if c := category(t, Run(ctx, g.env, Options{Apply: true, Categories: []string{CategoryScratch}}), CategoryScratch); len(c.Items) != 0 || c.Status != StatusFailed || c.Reason != "cancelled" {
+		t.Fatalf("a cancelled run = %#v", c)
+	}
+	// Cancelled after measuring, before removing: nothing is removed.
+	h := newFixture(t)
+	kept := h.scratch("go-build1")
+	measuring, stop := context.WithCancel(context.Background())
+	h.env.Measure = func(context.Context, string) int64 { stop(); return 1 }
+	if c := category(t, Run(measuring, h.env, Options{Apply: true, Categories: []string{CategoryScratch}}), CategoryScratch); c.Status != StatusFailed || !exists(kept) {
+		t.Fatalf("cancelled during measurement = %#v", c)
 	}
 	g.env.RemoveAll = func(string) error { return errors.New("EIO") }
 	report := Run(context.Background(), g.env, Options{Apply: true, Categories: []string{CategoryScratch}})
@@ -348,7 +361,7 @@ func TestRealEnvironment(t *testing.T) {
 	if err := os.Symlink(dir, link); err != nil {
 		t.Fatal(err)
 	}
-	if dirs := tempDirs(link, dir, "", filepath.Join(dir, "absent")); len(dirs) != 2 {
+	if dirs := tempDirs(link, dir, "", filepath.Join(dir, "absent")); len(dirs) != 1 {
 		t.Fatalf("dirs = %v", dirs)
 	}
 	for settings, want := range map[goenv.Env]string{
@@ -357,11 +370,11 @@ func TestRealEnvironment(t *testing.T) {
 		{GOCACHE: "relative"}:              "GOCACHE is",
 		{GOCACHE: filepath.Join(dir, "x")}: "no build cache",
 	} {
-		if cache, problem := buildCache(settings); cache != "" || !strings.Contains(problem, want) {
+		if cache, problem, _ := buildCache(settings); cache != "" || !strings.Contains(problem, want) {
 			t.Errorf("%#v: %q %q", settings, cache, problem)
 		}
 	}
-	if cache, problem := buildCache(goenv.Env{GOCACHE: dir}); cache != dir || problem != "" {
+	if cache, problem, failure := buildCache(goenv.Env{GOCACHE: dir}); cache != resolvedPath(dir) || problem != "" || failure != "" {
 		t.Fatalf("a real cache = %q %q", cache, problem)
 	}
 	if env := NewEnv(); env.Now == nil || env.GoProcesses == nil || env.RemoveAll == nil || env.Measure == nil {
@@ -369,6 +382,22 @@ func TestRealEnvironment(t *testing.T) {
 	}
 	if measure(context.Background(), filepath.Join(dir, "absent")) != 0 {
 		t.Fatal("an absent path measured bytes")
+	}
+	file := filepath.Join(dir, "file")
+	mustWrite(t, file, "x")
+	if measure(context.Background(), filepath.Join(file, "below")) != 0 {
+		t.Fatal("a path through a file measured bytes")
+	}
+	// GOCACHE through a file cannot be inspected: a finding. A file as
+	// GOCACHE is no cache.
+	if _, _, failure := buildCache(goenv.Env{GOCACHE: filepath.Join(file, "cache")}); !strings.Contains(failure, "cannot be inspected") {
+		t.Fatalf("an uninspectable GOCACHE = %q", failure)
+	}
+	if cache, problem, _ := buildCache(goenv.Env{GOCACHE: file}); cache != "" || !strings.Contains(problem, "no build cache") {
+		t.Fatalf("a file as GOCACHE = %q %q", cache, problem)
+	}
+	if got := resolvedPath(filepath.Join(dir, "absent", "..", "x")); got != filepath.Join(dir, "x") {
+		t.Fatalf("an unresolvable path = %q", got)
 	}
 }
 
@@ -390,7 +419,7 @@ func TestGoCleanRunsAgainstTheMeasuredCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, _ := os.ReadFile(record)
-	if got := strings.TrimSpace(string(raw)); got != "clean -cache GOCACHE=/the/cache GOFLAGS=" {
+	if got := strings.TrimSpace(string(raw)); got != "clean -cache GOCACHE=/the/cache GOFLAGS=" && got != "clean -cache GOCACHE=/the/cache GOFLAGS= " {
 		t.Fatalf("go ran as %q", got)
 	}
 	t.Setenv("FAIL", "1")
@@ -408,7 +437,153 @@ func TestGoCleanRunsAgainstTheMeasuredCache(t *testing.T) {
 	real := resolveGo
 	t.Cleanup(func() { resolveGo = real })
 	resolveGo = func() (goenv.Env, error) { return goenv.Env{}, errors.New("unreadable env file") }
-	if env := NewEnv(); !strings.Contains(env.GoCacheProblem, "unreadable env file") {
-		t.Fatalf("unreadable settings = %q", env.GoCacheProblem)
+	if env := NewEnv(); !strings.Contains(env.GoCacheError, "unreadable env file") {
+		t.Fatalf("unreadable settings = %q", env.GoCacheError)
+	}
+}
+
+// A scratch tree holding a mount point (a bind mount on its own filesystem
+// included), or one that is or holds a Go cache, is kept; a directory
+// replaced between the check and the removal is kept; a name outside WB's
+// task-name characters is not scratch.
+func TestScratchMountsCachesReplacementsAndNames(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	mounted := f.scratch("go-build1")
+	cache := f.scratch("wb-ci-go-cache")
+	f.env.MountPoints = func() ([]string, error) { return []string{"/", filepath.Join(mounted, "001")}, nil }
+	f.env.GoCaches = []string{filepath.Join(cache, "mod")}
+	report := Run(context.Background(), f.env, Options{Apply: true, Categories: []string{CategoryScratch}})
+	kept := category(t, report, CategoryScratch).Kept
+	if kept["contains a mount"] != 1 || kept["is or holds a Go cache"] != 1 || !exists(mounted) || !exists(cache) {
+		t.Fatalf("kept = %v", kept)
+	}
+
+	for _, name := range []string{"wb-personal notes-cache", "wb--cache", "wb-index-x"} {
+		if scratchName(name) {
+			t.Errorf("%q is scratch", name)
+		}
+	}
+	for _, name := range []string{"wb-pr308-lint-go-cache", "wb-sync.report-cache", "wb-index-12"} {
+		if !scratchName(name) {
+			t.Errorf("%q is not scratch", name)
+		}
+	}
+}
+
+// The replacement check runs immediately before removal.
+func TestScratchReplacedBeforeRemovalIsKept(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	path := f.scratch("go-build3")
+	swapped := false
+	f.env.Measure = func(context.Context, string) int64 { return 1 }
+	f.env.MountPoints = func() ([]string, error) { return nil, nil }
+	f.env.RemoveAll = func(p string) error { return os.RemoveAll(p) }
+	// The only seam after the check is the clock read inside the age test,
+	// so the swap happens in Now on its final call.
+	now := f.env.Now
+	f.env.Now = func() time.Time {
+		at := now()
+		if !swapped {
+			swapped = true
+			_ = os.Rename(path, path+".old")
+			mustWrite(t, filepath.Join(path, "fresh"), "new")
+		}
+		return at
+	}
+	report := Run(context.Background(), f.env, Options{Apply: true, Categories: []string{CategoryScratch}})
+	if c := category(t, report, CategoryScratch); c.Kept["replaced while checked"] != 1 || !exists(filepath.Join(path, "fresh")) {
+		t.Fatalf("replaced = %#v", c)
+	}
+}
+
+// The age covers the whole tree: a nested file changed recently keeps an
+// otherwise old tree.
+func TestScratchAgeCoversNestedChanges(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.env.Now = time.Now
+	path := f.scratch("go-build4")
+	old := time.Now().Add(-10 * 24 * time.Hour)
+	_ = filepath.WalkDir(path, func(p string, _ os.DirEntry, _ error) error { return os.Chtimes(p, old, old) })
+	nested := filepath.Join(path, "001", "data")
+	if err := os.WriteFile(nested, []byte("changed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Chtimes(filepath.Join(path, "001"), old, old)
+	_ = os.Chtimes(path, old, old)
+	report := Run(context.Background(), f.env, Options{Apply: true, Categories: []string{CategoryScratch}})
+	if !exists(path) || category(t, report, CategoryScratch).Kept["changed within 72h"] != 1 {
+		t.Fatalf("a recently changed nested file = %#v", report)
+	}
+}
+
+// The build cache: an inspection failure is a finding, an empty cache has
+// nothing to clear.
+func TestBuildCacheFailureAndEmptyCache(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.env.GoCacheError = "GOCACHE cannot be inspected: EACCES"
+	if report := Run(context.Background(), f.env, Options{Categories: []string{CategoryBuild}}); report.Outcome != OutcomeFailed {
+		t.Fatalf("an inspection failure = %#v", report)
+	}
+	empty := newFixture(t)
+	empty.env.GoCache = t.TempDir()
+	mustWrite(t, filepath.Join(empty.env.GoCache, "README"), "This directory holds cached build artifacts")
+	if err := os.MkdirAll(filepath.Join(empty.env.GoCache, "0a"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	report := Run(context.Background(), empty.env, Options{Apply: true, Categories: []string{CategoryBuild}})
+	if c := category(t, report, CategoryBuild); c.Status != StatusKeep || report.Outcome != OutcomeDone || empty.cleaned != 0 {
+		t.Fatalf("an empty cache = %#v", report)
+	}
+	if !hasEntries(filepath.Join(t.TempDir(), "absent")) {
+		t.Fatal("an unreadable cache was taken as empty")
+	}
+}
+
+// Process metadata that cannot be read for a reason other than the process
+// exiting means prune cannot tell; mountinfo escapes are decoded.
+func TestProcReadErrorsAndMountinfo(t *testing.T) {
+	t.Parallel()
+	proc := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(proc, "20", "comm"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := goProcessesIn(proc); err == nil {
+		t.Fatal("an unreadable comm was read as idle")
+	}
+	proc2 := t.TempDir()
+	mustWrite(t, filepath.Join(proc2, "21", "comm"), "worker\n")
+	if err := os.MkdirAll(filepath.Join(proc2, "21", "cmdline"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := goProcessesIn(proc2); err == nil {
+		t.Fatal("an unreadable cmdline was read as idle")
+	}
+	only := t.TempDir()
+	mustWrite(t, filepath.Join(only, "22", "comm"), "gopls\n")
+	if processes, err := goProcessesIn(only); err != nil || len(processes) != 1 {
+		t.Fatalf("a Go tool by comm alone = %v %v", processes, err)
+	}
+	info := filepath.Join(t.TempDir(), "mountinfo")
+	mustWrite(t, info, "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n5 1 8:1 /x /tmp/with\\040space rw - ext4 /dev/sda1 rw\nshort\n")
+	points, err := mountPointsIn(info)
+	if err != nil || len(points) != 2 || points[1] != "/tmp/with space" {
+		t.Fatalf("points = %q %v", points, err)
+	}
+	if _, err := mountPointsIn(filepath.Join(t.TempDir(), "absent")); err == nil {
+		t.Fatal("a missing mountinfo was read")
+	}
+	if unescapeOctal(`a\999b\`) != `a\999b\` {
+		t.Fatal("an invalid escape was decoded")
+	}
+	rootInfo, _ := os.Stat(t.TempDir())
+	if _, keep := scratchCheck(Env{}, Options{}, rootInfo, filepath.Join(t.TempDir(), "absent"), nil); keep != "unreadable" {
+		t.Fatalf("an absent candidate = %q", keep)
+	}
+	if _, err := mountPoints(); err != nil {
+		t.Fatalf("the real mountinfo: %v", err)
 	}
 }

@@ -2,6 +2,7 @@ package diskprune
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -18,7 +19,7 @@ var (
 	// wbScratch is WB's own regenerable temporary directories: a known
 	// prefix and the numeric suffix os.MkdirTemp adds, or a per-task Go
 	// cache (wb-<task>-cache, wb-<task>-go-cache).
-	wbScratch = regexp.MustCompile(`^wb-(coverage-baseline|coverage-tiers|go-test-shards|index|sync-report-validate|test-cpu-queue|worktree-merge-main-deadcode|agent-preflight|smoke|deadcode-tool|native-cover)-[0-9]+$|^wb-.+-(go-)?cache$`)
+	wbScratch = regexp.MustCompile(`^wb-(coverage-baseline|coverage-tiers|go-test-shards|index|sync-report-validate|test-cpu-queue|worktree-merge-main-deadcode|agent-preflight|smoke|deadcode-tool|native-cover)-[0-9]+$|^wb-[A-Za-z0-9][A-Za-z0-9._-]*-(go-)?cache$`)
 )
 
 // scratchName reports whether a temporary-directory entry's name is one of
@@ -30,31 +31,57 @@ func scratchName(name string) bool {
 
 func pruneScratch(ctx context.Context, env Env, o Options) CategoryReport {
 	report := CategoryReport{Name: CategoryScratch, Status: StatusKeep, Kept: map[string]int{}}
+	mounts, err := env.MountPoints()
+	if err != nil {
+		report.Status, report.Reason, report.Kept = StatusFailed, "mount points cannot be read: "+err.Error(), nil
+		return report
+	}
+	failure := ""
+roots:
 	for _, root := range env.TempDirs {
 		rootInfo, err := os.Stat(root)
-		if err != nil {
-			report.Kept["temporary directory unreadable"]++
+		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
-		entries, err := os.ReadDir(root)
+		var entries []os.DirEntry
+		if err == nil {
+			entries, err = os.ReadDir(root)
+		}
 		if err != nil {
-			report.Kept["temporary directory unreadable"]++
+			// A temporary directory that exists but cannot be listed is a
+			// failure, never an empty one.
+			failure = "temporary directory " + root + " cannot be read: " + err.Error()
 			continue
 		}
 		for _, entry := range entries {
 			if ctx.Err() != nil {
-				return report
+				failure = "cancelled"
+				break roots
 			}
 			if !scratchName(entry.Name()) {
 				continue
 			}
 			path := filepath.Join(root, entry.Name())
-			if keep := scratchKeepReason(env, o, rootInfo, path); keep != "" {
+			// Measured first, so the eligibility check is the last word
+			// before the removal.
+			bytes := env.Measure(ctx, path)
+			checked, keep := scratchCheck(env, o, rootInfo, path, mounts)
+			if keep != "" {
 				report.Kept[keep]++
 				continue
 			}
-			item := ItemReport{Path: path, Bytes: env.Measure(ctx, path), Status: StatusDelete}
+			item := ItemReport{Path: path, Bytes: bytes, Status: StatusDelete}
 			if o.Apply {
+				if ctx.Err() != nil {
+					failure = "cancelled"
+					break roots
+				}
+				// The name must still be the directory just checked: one
+				// replaced meanwhile (a producer recreating it) is kept.
+				if now, err := os.Lstat(path); err != nil || !os.SameFile(now, checked) {
+					report.Kept["replaced while checked"]++
+					continue
+				}
 				if err := env.RemoveAll(path); err != nil {
 					item.Status, item.Error = StatusFailed, err.Error()
 				} else {
@@ -68,12 +95,15 @@ func pruneScratch(ctx context.Context, env Env, o Options) CategoryReport {
 		switch item.Status {
 		case StatusFailed:
 			report.Status = StatusFailed
-		case StatusDelete, StatusDeleted:
+		default:
 			report.Bytes += item.Bytes
 			if report.Status != StatusFailed {
 				report.Status = item.Status
 			}
 		}
+	}
+	if failure != "" {
+		report.Status, report.Reason = StatusFailed, failure
 	}
 	if len(report.Kept) == 0 {
 		report.Kept = nil
@@ -81,12 +111,38 @@ func pruneScratch(ctx context.Context, env Env, o Options) CategoryReport {
 	return report
 }
 
-// scratchKeepReason is why a scratch-named entry stays, or "" when it may
-// go: it must be this user's own real directory on the temporary
-// directory's filesystem, hold no other mount, no checkout and no socket or
-// FIFO, and nothing in it may have changed for the scratch age.
-func scratchKeepReason(env Env, o Options, rootInfo os.FileInfo, path string) string {
-	return scratchKeepReasonWith(env, o, rootInfo, path, func(_ string, info os.FileInfo) uint64 { return deviceOf(info) })
+// scratchCheck is why a scratch-named entry stays, or "" when it may go,
+// with the entry as checked: it must be this user's own real directory on
+// the temporary directory's filesystem, not a Go cache, contain no mount
+// point (bind mounts on the same filesystem included), no checkout and no
+// socket or FIFO, and nothing in it may have changed for the scratch age.
+func scratchCheck(env Env, o Options, rootInfo os.FileInfo, path string, mounts []string) (os.FileInfo, string) {
+	// The identity is taken before anything is inspected, so a directory
+	// swapped in while the tree is walked is never the one removed.
+	checked, err := os.Lstat(path)
+	if err != nil {
+		return nil, "unreadable"
+	}
+	for _, cache := range env.GoCaches {
+		if within(cache, path) || within(path, cache) {
+			return nil, "is or holds a Go cache"
+		}
+	}
+	for _, mount := range mounts {
+		if within(mount, path) {
+			return nil, "contains a mount"
+		}
+	}
+	if keep := scratchKeepReasonWith(env, o, rootInfo, path, func(_ string, info os.FileInfo) uint64 { return deviceOf(info) }); keep != "" {
+		return nil, keep
+	}
+	return checked, ""
+}
+
+// within reports whether candidate is path or lies below it.
+func within(candidate, path string) bool {
+	candidate, path = filepath.Clean(candidate), filepath.Clean(path)
+	return candidate == path || strings.HasPrefix(candidate, path+string(filepath.Separator))
 }
 
 // scratchKeepReasonWith takes the device lookup as a seam: a test cannot
@@ -148,8 +204,12 @@ func removeAll(path string) error {
 		return nil
 	}
 	_ = filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {
+		// Checked again just before, so a directory replaced by a symlink
+		// since the walk listed it is never followed.
 		if err == nil && d.IsDir() {
-			_ = os.Chmod(p, 0o700)
+			if info, err := os.Lstat(p); err == nil && info.IsDir() {
+				_ = os.Chmod(p, 0o700)
+			}
 		}
 		return nil
 	})

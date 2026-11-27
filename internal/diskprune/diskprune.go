@@ -105,6 +105,15 @@ type Env struct {
 	// none prune may clear (GOCACHEPROG set, GOCACHE off or missing).
 	GoCache        string
 	GoCacheProblem string
+	// GoCacheError is a failure to inspect the Go settings or the cache: a
+	// finding, unlike a configuration with nothing to clear.
+	GoCacheError string
+	// GoCaches are the resolved GOCACHE and GOMODCACHE, which scratch never
+	// removes even when they sit in the temporary directory.
+	GoCaches []string
+	// MountPoints lists every mount point, so a scratch tree holding a bind
+	// mount on its own filesystem is kept.
+	MountPoints func() ([]string, error)
 	// GoProcesses lists running Go tools, or fails when that cannot be told.
 	GoProcesses func() ([]Process, error)
 	// GoClean runs go clean -cache.
