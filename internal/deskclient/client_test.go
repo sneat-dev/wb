@@ -173,6 +173,10 @@ func TestAuthenticatedRoutesCarryThePrivateCredential(t *testing.T) {
 	if err := client.Revoke(t.Context()); err != nil {
 		t.Fatalf("Revoke() = %v", err)
 	}
+	gone, _ := fakeDesk(t, map[string]http.HandlerFunc{"DELETE " + desk.PathMachineSelf: answer(404, "")})
+	if err := gone.Revoke(t.Context()); err != nil {
+		t.Fatalf("revoking a machine Desk no longer has is done: %v", err)
+	}
 	receipt, err := client.Publish(t.Context(), snapshotRequest(`{"schema_version":1}`))
 	if err != nil || receipt.Hash != hash || !strings.Contains(string(published), `"envelope":{"schema_version":1}`) {
 		t.Fatalf("Publish() = %+v, %v; sent %s", receipt, err, published)

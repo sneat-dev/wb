@@ -74,8 +74,15 @@ func TestTaskKeyFileIsCreatedOnceAndKeptPrivate(t *testing.T) {
 	if err := InstallTaskKey(path, created); err != nil {
 		t.Fatalf("installing the same key again is a no-op: %v", err)
 	}
-	if err := InstallTaskKey(path, fixedKey(t, "q")); err == nil {
-		t.Fatal("a different key must never replace the existing one")
+	if err := InstallTaskKey(path, fixedKey(t, "q")); !errors.Is(err, ErrTaskKeyMismatch) {
+		t.Fatalf("a different key must never replace the existing one: %v", err)
+	}
+	garbled := filepath.Join(dir, "garbled-key")
+	if err := os.WriteFile(garbled, []byte("a b\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := InstallTaskKey(garbled, created); !errors.Is(err, ErrTaskKeyMismatch) {
+		t.Fatalf("an unreadable existing key is not silently replaced: %v", err)
 	}
 	if err := os.Chmod(path, 0o644); err != nil {
 		t.Fatal(err)

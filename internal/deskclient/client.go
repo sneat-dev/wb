@@ -251,10 +251,11 @@ func (client *Client) Self(ctx context.Context) (desk.MachineSelf, error) {
 	return response, err
 }
 
-// Revoke deletes this machine's credential at Desk.
+// Revoke deletes this machine's credential at Desk. A 404 means Desk no
+// longer has the machine, which is what revoking asks for.
 func (client *Client) Revoke(ctx context.Context) error {
 	_, err := client.do(ctx, call{method: http.MethodDelete, path: desk.PathMachineSelf, auth: true,
-		accept: []int{http.StatusNoContent, http.StatusOK}})
+		accept: []int{http.StatusNoContent, http.StatusOK, http.StatusNotFound}})
 	return err
 }
 

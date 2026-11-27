@@ -29,6 +29,10 @@ const TaskKeyFile = "desk-task-key"
 // (desk-connect#req:task-keys-correlate-without-names). Desk never holds it.
 type TaskKey struct{ secret []byte }
 
+// ErrTaskKeyMismatch is returned when a different task key is already
+// installed: a person's machines must agree on one, so it is never replaced.
+var ErrTaskKeyMismatch = errors.New("this machine already has a different Desk task key")
+
 // ErrInvalidTaskKey is returned for a key that is not TaskKeyBytes of
 // base64url text.
 var ErrInvalidTaskKey = errors.New("desk task key must be 32 bytes of base64url text")
@@ -115,8 +119,13 @@ func LoadOrCreateTaskKey(path string, random io.Reader) (key TaskKey, created bo
 }
 
 // InstallTaskKey writes key to path with mode 0600. It refuses to replace a
-// different existing key: a person's machines must agree on one.
+// different existing key with ErrTaskKeyMismatch.
 func InstallTaskKey(path string, key TaskKey) error {
+	if existing, err := os.ReadFile(path); err == nil {
+		if token, tokenErr := credentialfile.ReadToken(bytes.NewReader(existing)); tokenErr != nil || token != key.Text() {
+			return ErrTaskKeyMismatch
+		}
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create credential directory: %w", err)
 	}
