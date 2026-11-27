@@ -83,8 +83,8 @@ The approval MUST ask where the machine is shown. The choices are:
 
 - **Personal only** (the default);
 - **Personal and a space**: one `team` or `company` space in which the approving person may
-  add machines, with that space's sharing level (`summary` or `full`, never above the
-  machine's detail level).
+  add machines, with that space's sharing level (`summary`, `repositories`, or `full`). The
+  level takes effect at no more than the machine's detail level.
 
 The machine is always owned by the approving person and always lives in their personal space.
 Choosing a space adds a share, which the person can revoke later in Desk without reconnecting
@@ -142,8 +142,9 @@ be removed in Desk, and it exits 1.
 #### REQ: revocation-is-respected
 
 When Desk answers a publish or heartbeat with 401, the daemon MUST stop publishing and record
-`desk_error: revoked`. This happens when the machine was removed in Desk, the person left the
-space, or the credential was rotated elsewhere. The daemon MUST NOT retry with that credential
+`desk_error: revoked`. This happens when the machine was deleted in Desk or the credential
+was rotated elsewhere. Leaving a space, or losing a share in one, never revokes the machine's
+credential: the machine keeps publishing to its personal space. The daemon MUST NOT retry with that credential
 or re-enroll on its own. `wb desk status` and Cockpit's fleet health show the error with the
 command that fixes it (`wb desk connect`).
 
