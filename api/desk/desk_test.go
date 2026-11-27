@@ -114,6 +114,8 @@ func TestConnectStartRequestRequiresAWellFormedMachine(t *testing.T) {
 	runValidation(t, []validationCase{
 		{"valid", startRequest(), true},
 		{"valid with space hint", with(func(r *ConnectStartRequest) { r.SpaceHint = "team1" }), true},
+		{"dev build version", with(func(r *ConnectStartRequest) { r.WBVersion = "0.210.3+dirty" }), true},
+		{"version with space", with(func(r *ConnectStartRequest) { r.WBVersion = "0.1 beta" }), false},
 		{"other schema", with(func(r *ConnectStartRequest) { r.SchemaVersion = 2 }), false},
 		{"bad machine id", with(func(r *ConnectStartRequest) { r.Machine.ID = "XYZ" }), false},
 		{"bad machine name", with(func(r *ConnectStartRequest) { r.Machine.Name = "../etc" }), false},

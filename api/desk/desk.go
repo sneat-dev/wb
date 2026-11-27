@@ -153,8 +153,10 @@ func invalid(format string, args ...any) error {
 }
 
 var (
-	safeName     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
-	safeToken    = regexp.MustCompile(`^[A-Za-z0-9._~-]+$`)
+	safeName  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+	safeToken = regexp.MustCompile(`^[A-Za-z0-9._~-]+$`)
+	// wbVersion admits semver build metadata, as in 0.211.0+dirty.
+	wbVersion    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.+_~-]*$`)
 	machineID    = regexp.MustCompile(`^[0-9a-f]{32}$`)
 	userCode     = regexp.MustCompile(`^[BCDFGHJKLMNPQRSTVWXZ]{4}-[BCDFGHJKLMNPQRSTVWXZ]{4}$`)
 	snapshotHash = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
@@ -242,7 +244,7 @@ func (request ConnectStartRequest) Validate() error {
 	if err := request.Machine.Validate(); err != nil {
 		return err
 	}
-	if err := checkText("wb_version", request.WBVersion, MaxVersionLength, safeToken); err != nil {
+	if err := checkText("wb_version", request.WBVersion, MaxVersionLength, wbVersion); err != nil {
 		return err
 	}
 	if err := checkText("os", request.OS, MaxPlatformLength, safeName); err != nil {
@@ -445,7 +447,7 @@ func (request HeartbeatRequest) Validate() error {
 	if request.ObservedAt.IsZero() {
 		return invalid("observed_at")
 	}
-	if err := checkText("wb_version", request.WBVersion, MaxVersionLength, safeToken); err != nil {
+	if err := checkText("wb_version", request.WBVersion, MaxVersionLength, wbVersion); err != nil {
 		return err
 	}
 	if request.LastSnapshotHash != "" && !snapshotHash.MatchString(request.LastSnapshotHash) {
