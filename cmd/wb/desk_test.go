@@ -30,7 +30,7 @@ func TestDeskNamesTheMachineAsTheFleetDocumentDoes(t *testing.T) {
 	} else if id, err := deps.MachineID(t.TempDir()); err != nil || len(id) != 32 {
 		t.Fatalf("machine id = %q, %v", id, err)
 	}
-	if command := newDeskCmd(&invocation{}); command.Name() != "desk" || len(command.Commands()) != 4 {
+	if command := newDeskCmd(&invocation{}); command.Name() != "desk" || len(command.Commands()) != 5 {
 		t.Fatalf("wb desk = %v", command.Commands())
 	}
 }

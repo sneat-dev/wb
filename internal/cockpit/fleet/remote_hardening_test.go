@@ -1073,6 +1073,7 @@ func TestMapLiveCarriesEveryFieldOfEveryEntryOrSaysWhyNot(t *testing.T) {
 		".machine.Transport":    "set at publication, from the transport that produced the entries",
 		".machine.RemoteError":  "set at publication, from the last failure",
 		".machine.PublishError": "the diagnostic of this machine's own periodic publish: local only, never read from another machine's document",
+		".machine.DeskError":    "the diagnostic of this machine's own Desk publish: local only, never read from another machine's document",
 	}
 	var document Document
 	setAll(reflect.ValueOf(&document).Elem(), now)
@@ -1127,8 +1128,8 @@ func TestMapLiveCarriesEveryFieldOfEveryEntryOrSaysWhyNot(t *testing.T) {
 		}
 	}
 	// The list is pinned: a field added to it is a reviewed change of this number.
-	if len(notCarried) != 3 {
-		t.Errorf("%d fields are listed as not carried by mapLive, want 3", len(notCarried))
+	if len(notCarried) != 4 {
+		t.Errorf("%d fields are listed as not carried by mapLive, want 4", len(notCarried))
 	}
 	if document.Throughput == nil {
 		t.Fatal("the filled document has no throughput: the check below would be vacuous")
@@ -1140,6 +1141,7 @@ func TestMapLiveCarriesEveryFieldOfEveryEntryOrSaysWhyNot(t *testing.T) {
 	notPublished := map[string]string{
 		".machine.RemoteError":  "empty: the last export succeeded",
 		".machine.PublishError": "local only: the diagnostic of this machine's own publish, never carried for another machine",
+		".machine.DeskError":    "local only: the diagnostic of this machine's own Desk publish, never carried for another machine",
 	}
 	snapshotter, _ := newLive(t, oneRepoSources("/repos/widgets"), &fakeExporter{answer: failing(errBoom)}, nil)
 	refreshAndSettle(t, snapshotter)
@@ -1195,8 +1197,8 @@ func TestMapLiveCarriesEveryFieldOfEveryEntryOrSaysWhyNot(t *testing.T) {
 			t.Errorf("%s is listed as not published and is published", path)
 		}
 	}
-	if len(notPublished) != 2 {
-		t.Errorf("%d fields are listed as not published, want 2", len(notPublished))
+	if len(notPublished) != 3 {
+		t.Errorf("%d fields are listed as not published, want 3", len(notPublished))
 	}
 
 	// The document's own fields: the collections are mapped, and each other field

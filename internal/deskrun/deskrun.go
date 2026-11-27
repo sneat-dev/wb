@@ -5,6 +5,7 @@ package deskrun
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,8 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/api/desk"
+	"github.com/sneat-dev/wb/internal/cockpit/fleet"
+	"github.com/sneat-dev/wb/internal/cockpitrun"
 	"github.com/sneat-dev/wb/internal/credentialfile"
 	"github.com/sneat-dev/wb/internal/deskclient"
 	"github.com/sneat-dev/wb/internal/deskpublish"
@@ -28,6 +31,8 @@ type Client interface {
 	Token(context.Context, string) (desk.ConnectTokenResponse, error)
 	Self(context.Context) (desk.MachineSelf, error)
 	Revoke(context.Context) error
+	Publish(context.Context, desk.SnapshotRequest) (desk.SnapshotReceipt, error)
+	Heartbeat(context.Context, desk.HeartbeatRequest) error
 }
 
 // Dependencies are the effects the commands have, replaced in tests.
@@ -41,14 +46,22 @@ type Dependencies struct {
 	Sleep       func(context.Context, time.Duration) error
 	Now         func() time.Time
 	Random      io.Reader
-	WBVersion   string
-	OS, Arch    string
+	// Export reads this machine's export from its running daemon, with the
+	// throughput block (cockpitrun.Export with WithThroughput).
+	Export    func(ctx context.Context, projectsRoot string) cockpitrun.ExportResult
+	WBVersion string
+	OS, Arch  string
 }
 
 // DefaultPlatform fills OS and Arch from the running binary.
 func DefaultPlatform(deps Dependencies) Dependencies {
 	deps.OS, deps.Arch = runtime.GOOS, runtime.GOARCH
 	return deps
+}
+
+// ExportFromDaemon is the production Export.
+func ExportFromDaemon(ctx context.Context, projectsRoot string) cockpitrun.ExportResult {
+	return cockpitrun.Export(ctx, cockpitrun.DefaultExportDependencies(), cockpitrun.ExportRequest{Root: projectsRoot, WithThroughput: true})
 }
 
 // NewDeskClient is the production NewClient.
@@ -429,4 +442,61 @@ func (s *Service) ExportTaskKey(out io.Writer, stdoutIsTerminal bool) error {
 	}
 	_, err = fmt.Fprintln(out, key.Text())
 	return err
+}
+
+// PushResult is `wb desk push --json`.
+type PushResult struct {
+	DeskURL    string     `json:"desk_url"`
+	Detail     desk.Level `json:"detail"`
+	Hash       string     `json:"hash"`
+	AcceptedAt time.Time  `json:"accepted_at"`
+	Heartbeat  bool       `json:"heartbeat"`
+}
+
+// Push publishes this machine's state now, read from its running daemon and
+// reduced exactly as the daemon's own publisher reduces it, then sends a
+// heartbeat. Without a running daemon there is nothing to read: exit 1.
+func (s *Service) Push(ctx context.Context, projectsRoot string) (PushResult, error) {
+	configPath := s.deps.ConfigPath()
+	config, err := wbconfig.LoadDesk(configPath)
+	if err != nil {
+		return PushResult{}, s.exit(2, err.Error())
+	}
+	if !config.Connected() {
+		return PushResult{}, s.exit(1, "this machine is not connected to Desk; run wb desk connect")
+	}
+	exported := s.deps.Export(ctx, projectsRoot)
+	switch exported.Failure {
+	case "":
+	case cockpitrun.ExportFailure(fleet.ErrorDaemonNotRunning):
+		return PushResult{}, s.exit(1, "the WB daemon is not running, so there is no state to publish; start it with wb daemon start")
+	default:
+		return PushResult{}, s.exit(1, "the daemon's export failed: "+string(exported.Failure))
+	}
+	var envelope fleet.Envelope
+	if err := json.Unmarshal(exported.Body, &envelope); err != nil {
+		return PushResult{}, fmt.Errorf("read the daemon's export: %w", err)
+	}
+	var key deskpublish.TaskKey
+	if config.Detail == desk.LevelRepositories {
+		if key, _, err = deskpublish.LoadOrCreateTaskKey(TaskKeyPath(configPath), s.deps.Random); err != nil {
+			return PushResult{}, err
+		}
+	}
+	snapshot, err := deskpublish.Reduce(envelope, exported.Throughput, config.Detail, key)
+	if err != nil {
+		return PushResult{}, s.exit(1, "nothing to publish: "+err.Error())
+	}
+	client, err := s.deps.NewClient(config.URL, config.CredentialFile)
+	if err != nil {
+		return PushResult{}, s.exit(2, err.Error())
+	}
+	now := s.deps.Now()
+	receipt, err := client.Publish(ctx, snapshot.Request(now))
+	if err != nil {
+		return PushResult{}, s.exit(1, "publish to Desk: "+err.Error())
+	}
+	beat := client.Heartbeat(ctx, desk.HeartbeatRequest{SchemaVersion: desk.SchemaVersion, ObservedAt: now,
+		WBVersion: s.deps.WBVersion, LastSnapshotHash: receipt.Hash}) == nil
+	return PushResult{DeskURL: config.URL, Detail: config.Detail, Hash: receipt.Hash, AcceptedAt: receipt.AcceptedAt, Heartbeat: beat}, nil
 }

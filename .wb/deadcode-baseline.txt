@@ -323,18 +323,6 @@ github.com/sneat-dev/wb/internal/sessiontransport.TmuxCapabilities
 github.com/sneat-dev/wb/internal/sessiontransport.loadOverrideWithMarshal
 github.com/sneat-dev/wb/internal/sessiontransport.mappingValue
 
-# == A3. Scheduled by a live spec and plan: Desk detail reduction ==
-#
-# spec/features/desk-connect (Draft): detail-level-applied-on-the-machine, task-keys-correlate-without-names,
-# publish-on-change. spec/plans/desk-connect: Task 2 (reduction) lands before its caller, Task 6 (daemon
-# publisher), which wires every entry below.
-github.com/sneat-dev/wb/internal/deskpublish.Reduce
-github.com/sneat-dev/wb/internal/deskpublish.Snapshot.Request
-github.com/sneat-dev/wb/internal/deskpublish.TaskKey.Of
-github.com/sneat-dev/wb/internal/deskpublish.TaskKey.entry
-github.com/sneat-dev/wb/internal/deskpublish.TaskKey.mac
-github.com/sneat-dev/wb/internal/deskpublish.reduceDocument
-
 # == C. Possibly unwired by accident ==
 #
 # hub.WorkflowRunHarvester and hub.HTTPArtifactDownloader: spec/features/fleet-quality REQ

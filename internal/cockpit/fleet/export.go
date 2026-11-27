@@ -158,6 +158,7 @@ func ownEntries(document Document, now time.Time) (Document, ExportDrops) {
 	// has it, not exported (the strict decoder refuses it).
 	for index := range own.Machines {
 		own.Machines[index].PublishError = ""
+		own.Machines[index].DeskError = ""
 	}
 	machineID := ""
 	if len(own.Machines) > 0 {

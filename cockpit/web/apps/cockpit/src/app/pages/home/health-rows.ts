@@ -31,6 +31,7 @@ export function healthRows(health: FleetHealth, dropped: number): HealthRow[] {
     ...health.remoteErrors.map(machine('remote')),
     ...health.exportDropped.map(machine('export')),
     ...health.publishErrors.map(machine('publish')),
+    ...health.deskErrors.map(machine('desk')),
   ]
   for (const error of health.scanErrors) {
     rows.push({

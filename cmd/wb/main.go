@@ -295,7 +295,7 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"verify receipt": true, "repo transfer cleanup": true,
 		"fleet": true, "fleet overview": true, "fleet stats": true, "fleet status": true, "fleet merge-policy": true, "fleet default-branch": true, "remote publish": true,
 		"remote status": true, "remote machines": true, "remote enroll": true,
-		"desk connect": true, "desk disconnect": true,
+		"desk connect": true, "desk disconnect": true, "desk push": true,
 		"remote claim": true, "remote release": true, "remote claims": true,
 		"peers invite": true, "peers join": true, "peers list": true, "peers get": true,
 		"peers block": true, "peers unblock": true, "peers disconnect": true,

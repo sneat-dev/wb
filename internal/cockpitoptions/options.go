@@ -1,6 +1,7 @@
 package cockpitoptions
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -11,9 +12,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sneat-dev/wb/api/desk"
 	"github.com/sneat-dev/wb/internal/buildinfo"
 	cockpitfleet "github.com/sneat-dev/wb/internal/cockpit/fleet"
 	"github.com/sneat-dev/wb/internal/cockpit/machinemetrics"
+	"github.com/sneat-dev/wb/internal/deskclient"
+	"github.com/sneat-dev/wb/internal/deskpublish"
+	"github.com/sneat-dev/wb/internal/deskrun"
 	"github.com/sneat-dev/wb/internal/lifecyclehooks"
 	"github.com/sneat-dev/wb/internal/prsnapshot"
 	"github.com/sneat-dev/wb/internal/prwatch"
@@ -109,6 +114,7 @@ func Options(request Request, deps Dependencies) cockpitfleet.Options {
 		Remotes: targets, Transports: transports, SSHRoutes: sshRoutes,
 		Terminals:    cockpitfleet.NewLocalTerminals(projectsRoot, home),
 		Publisher:    publisher,
+		Desk:         deskPublisher(configPath, deps.Version(), rand.Reader, logf, newDeskClient),
 		PullRequests: pullRequestWatcher(), PullRequestLimit: config.PullRequestLimit, PullRequestHourlyBudget: config.PullRequestHourlyBudget,
 		Logf: logf,
 	}
@@ -248,4 +254,37 @@ type Dependencies struct {
 
 func DefaultDependencies(configPath string, exitFactory func(int, string) error) Dependencies {
 	return Dependencies{Hostname: os.Hostname, Version: func() string { return buildinfo.Snapshot().Version }, Publish: remotepublish.DefaultDependencies(configPath, exitFactory), SSH: defaultSSH()}
+}
+
+// deskPublisher is the daemon's Desk publisher when the desk section names an
+// installed credential, else nil: a daemon that is not connected makes no
+// Desk request at all (desk-connect#req:desk-configuration).
+func deskPublisher(configPath, version string, random io.Reader, logf func(string, ...any), newClient func(url, credentialFile string) (deskpublish.Client, error)) cockpitfleet.DeskPublisher {
+	config, err := wbconfig.LoadDesk(configPath)
+	if err != nil {
+		logf("desk: not publishing: %v", err)
+		return nil
+	}
+	if !config.Connected() {
+		return nil
+	}
+	client, err := newClient(config.URL, config.CredentialFile)
+	if err != nil {
+		logf("desk: not publishing: %v", err)
+		return nil
+	}
+	var key deskpublish.TaskKey
+	if config.Detail == desk.LevelRepositories {
+		if key, _, err = deskpublish.LoadOrCreateTaskKey(deskrun.TaskKeyPath(configPath), random); err != nil {
+			logf("desk: not publishing: %v", err)
+			return nil
+		}
+	}
+	logf("desk: publishing to %s at %s detail", config.URL, config.Detail)
+	return deskpublish.NewPublisher(deskpublish.PublisherOptions{Client: client, Detail: config.Detail, Key: key,
+		MinInterval: config.PublishMinInterval, HeartbeatInterval: config.HeartbeatInterval, WBVersion: version, Logf: logf})
+}
+
+func newDeskClient(url, credentialFile string) (deskpublish.Client, error) {
+	return deskclient.New(url, deskclient.Options{CredentialFile: credentialFile})
 }

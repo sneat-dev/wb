@@ -312,7 +312,9 @@ var stringRules = map[string]textRule{
 	"Machine.remote_error": oneOf(),
 	// The code of this machine's own last failed publish is local only: an export
 	// never carries it (NewEnvelope clears it), and one that does is refused.
-	"Machine.publish_error":     oneOf(),
+	"Machine.publish_error": oneOf(),
+	// So is the code of its last failed Desk publish or heartbeat.
+	"Machine.desk_error":        oneOf(),
 	"Repository.host":           isHost,
 	"Repository.name":           isText,
 	"Repository.default_branch": isText,

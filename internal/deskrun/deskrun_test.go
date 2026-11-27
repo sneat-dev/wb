@@ -3,6 +3,7 @@ package deskrun
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -12,6 +13,8 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/api/desk"
+	"github.com/sneat-dev/wb/internal/cockpit/fleet"
+	"github.com/sneat-dev/wb/internal/cockpitrun"
 	"github.com/sneat-dev/wb/internal/deskclient"
 	"github.com/sneat-dev/wb/internal/deskpublish"
 	"github.com/sneat-dev/wb/internal/wbconfig"
@@ -46,6 +49,10 @@ type fakeClient struct {
 	self       desk.MachineSelf
 	started    *desk.ConnectStartRequest
 	credential string
+	publishErr error
+	beatErr    error
+	pushed     []desk.SnapshotRequest
+	beats      []desk.HeartbeatRequest
 }
 
 func (f *fakeClient) Start(_ context.Context, request desk.ConnectStartRequest) (desk.ConnectStartResponse, error) {
@@ -68,6 +75,16 @@ func (f *fakeClient) Token(context.Context, string) (desk.ConnectTokenResponse, 
 func (f *fakeClient) Self(context.Context) (desk.MachineSelf, error) { return f.self, f.selfErr }
 func (f *fakeClient) Revoke(context.Context) error                   { return f.revokeErr }
 
+func (f *fakeClient) Publish(_ context.Context, request desk.SnapshotRequest) (desk.SnapshotReceipt, error) {
+	f.pushed = append(f.pushed, request)
+	return desk.SnapshotReceipt{Hash: request.Hash, AcceptedAt: request.ObservedAt}, f.publishErr
+}
+
+func (f *fakeClient) Heartbeat(_ context.Context, request desk.HeartbeatRequest) error {
+	f.beats = append(f.beats, request)
+	return f.beatErr
+}
+
 func issued() desk.ConnectTokenResponse {
 	return desk.ConnectTokenResponse{Credential: "cred_1", Machine: desk.MachineRef{ID: machineID, Name: "macbook"},
 		PersonalSpaceID: "personal1", Shares: []desk.Share{{SpaceID: "team1", Level: desk.ShareRepositories, State: desk.SharePending}},
@@ -89,6 +106,7 @@ type harness struct {
 	now        time.Time
 	machineErr error
 	notice     bytes.Buffer
+	exported   cockpitrun.ExportResult
 }
 
 func newHarness(t *testing.T) *harness {
@@ -126,6 +144,7 @@ func (h *harness) service() *Service {
 		},
 		Now:       func() time.Time { return h.now },
 		Random:    strings.NewReader(strings.Repeat("r", 4*deskpublish.TaskKeyBytes)),
+		Export:    func(context.Context, string) cockpitrun.ExportResult { return h.exported },
 		WBVersion: "0.211.0", OS: "linux", Arch: "amd64",
 	}, exitFactory)
 }
@@ -572,6 +591,108 @@ func TestDefaultsSleepAndClient(t *testing.T) {
 	}
 }
 
+func exportOf(t *testing.T) cockpitrun.ExportResult {
+	t.Helper()
+	envelope := fleet.Envelope{SchemaVersion: fleet.ExportSchemaVersion, Machine: "macbook", Fleet: &fleet.Document{
+		RepositoriesTotal: 1, Repositories: []fleet.Repository{{Entry: fleet.Entry{ID: "rp-1"}, Name: "acme/widgets"}},
+		Worktrees: []fleet.Worktree{{Entry: fleet.Entry{ID: "wt-a"}, Repository: "rp-1", Task: "task-a", Branch: "feature/a"}}}}
+	body, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cockpitrun.ExportResult{Body: body, Throughput: &fleet.Throughput{WindowDays: 7}}
+}
+
+func TestPushPublishesTheDaemonsStateReducedLikeTheDaemon(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.connected()
+	h.exported = exportOf(t)
+	result, err := h.service().Push(context.Background(), h.dir)
+	if err != nil || !result.Heartbeat || result.Detail != desk.LevelRepositories || len(h.client.pushed) != 1 {
+		t.Fatalf("push = %+v, %v", result, err)
+	}
+	sent := string(h.client.pushed[0].Envelope)
+	if strings.Contains(sent, "task-a") || strings.Contains(sent, "feature/a") || !strings.Contains(sent, `"window_days":7`) {
+		t.Fatalf("the pushed envelope is the repositories reduction with throughput: %s", sent)
+	}
+	if h.client.beats[0].LastSnapshotHash != result.Hash || h.client.credential != "cred_0" {
+		t.Fatalf("heartbeat %+v, credential %q", h.client.beats[0], h.client.credential)
+	}
+	h.client.beatErr = &deskclient.Error{Code: desk.ErrorTimeout}
+	if result, err := h.service().Push(context.Background(), h.dir); err != nil || result.Heartbeat {
+		t.Fatalf("a failed heartbeat after a publish is reported, not fatal: %+v, %v", result, err)
+	}
+	full := newHarness(t)
+	full.connected()
+	full.writeConfig(strings.Replace(mustRead(t, full.configPath), "detail: repositories", "detail: full", 1))
+	full.exported = exportOf(t)
+	if _, err := full.service().Push(context.Background(), full.dir); err != nil || !strings.Contains(string(full.client.pushed[0].Envelope), "task-a") {
+		t.Fatalf("full detail push = %v", err)
+	}
+}
+
+func mustRead(t *testing.T, path string) string {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+func TestPushFailures(t *testing.T) {
+	t.Parallel()
+	cases := map[string]struct {
+		setup func(*harness)
+		code  int
+		text  string
+	}{
+		"not connected": {func(h *harness) {}, 1, "not connected"},
+		"malformed":     {func(h *harness) { h.writeConfig("desk: [\n") }, 2, ""},
+		"no daemon": {func(h *harness) {
+			h.connected()
+			h.exported = cockpitrun.ExportResult{Failure: cockpitrun.ExportFailure(fleet.ErrorDaemonNotRunning)}
+		}, 1, "wb daemon start"},
+		"export failed": {func(h *harness) { h.connected(); h.exported = cockpitrun.ExportResult{Failure: "warming_up"} }, 1, "warming_up"},
+		"bad body":      {func(h *harness) { h.connected(); h.exported = cockpitrun.ExportResult{Body: []byte("{")} }, -1, "read the daemon's export"},
+		"metrics only":  {func(h *harness) { h.connected(); h.exported = cockpitrun.ExportResult{Body: []byte("{}")} }, 1, "nothing to publish"},
+		"no client": {func(h *harness) {
+			h.connected()
+			h.exported = exportOf(t)
+			h.clientErr = []error{errors.New("bad url")}
+		}, 2, "bad url"},
+		"desk refuses": {func(h *harness) {
+			h.connected()
+			h.exported = exportOf(t)
+			h.client.publishErr = &deskclient.Error{Code: desk.ErrorRevoked}
+		}, 1, "revoked"},
+		"exposed key": {func(h *harness) {
+			h.connected()
+			h.exported = exportOf(t)
+			_ = os.WriteFile(TaskKeyPath(h.configPath), []byte("x"), 0o644)
+		}, -1, "other users"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t)
+			tc.setup(h)
+			_, err := h.service().Push(context.Background(), h.dir)
+			if err == nil || exitCode(err) != tc.code || !strings.Contains(err.Error(), tc.text) {
+				t.Fatalf("error = %v (code %d)", err, exitCode(err))
+			}
+		})
+	}
+}
+
+func TestExportFromDaemonFindsNoDaemonUnderAnEmptyRoot(t *testing.T) {
+	t.Parallel()
+	if got := ExportFromDaemon(context.Background(), t.TempDir()); got.Failure != cockpitrun.ExportFailure(fleet.ErrorDaemonNotRunning) {
+		t.Fatalf("export under an empty root = %+v", got.Failure)
+	}
+}
+
 func TestADeniedConnectLeavesNoTaskKeyBehind(t *testing.T) {
 	t.Parallel()
 	key, _ := deskpublish.NewTaskKey(strings.NewReader(strings.Repeat("k", deskpublish.TaskKeyBytes)))
@@ -619,15 +740,6 @@ func TestStatusReportsALocalCredentialProblemAsLocal(t *testing.T) {
 	if err != nil || status.DeskError != "" || !strings.Contains(status.Problem, "credential file") || !strings.Contains(status.Fix, "chmod 600") {
 		t.Fatalf("credential problem = %+v, %v", status, err)
 	}
-}
-
-func mustRead(t *testing.T, path string) string {
-	t.Helper()
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(raw)
 }
 
 func TestConnectReportsATaskKeyThatCannotBeInstalled(t *testing.T) {

@@ -23,6 +23,9 @@ import {
   remoteEnroll,
   remotePublish,
   remotePublishDryRun,
+  deskConnect,
+  deskPush,
+  deskStatus,
   remoteStatus,
   selfUpdate,
   sessionList,
@@ -144,6 +147,9 @@ const TEMPLATES: Record<string, CopyCommand> = {
   daemonStart: daemonStart(),
   remoteEnroll: remoteEnroll(),
   cockpitExport: cockpitExport(),
+  deskConnect: deskConnect(),
+  deskStatus: deskStatus(),
+  deskPush: deskPush(),
 }
 
 describe('Copy command templates against the command manifest', () => {
@@ -412,6 +418,9 @@ describe('placeholders and the shell (REQ:copy-the-command)', () => {
     { name: 'daemonStart', open: daemonStart(to), filled: daemonStart(to) },
     { name: 'remoteEnroll', open: remoteEnroll(undefined, to), filled: remoteEnroll('https://hub.example', to) },
     { name: 'cockpitExport', open: cockpitExport(to), filled: cockpitExport(to) },
+    { name: 'deskConnect', open: deskConnect(to), filled: deskConnect(to) },
+    { name: 'deskStatus', open: deskStatus(to), filled: deskStatus(to) },
+    { name: 'deskPush', open: deskPush(to), filled: deskPush(to) },
     { name: 'newTask create', open: newTaskCommands({ task: 't', brief: '', repositories: ['o/r'], model: 'm' }).create as CopyCommand, filled: worktreeCreate('t', ['o/r'], { model: 'm', promptFile: 'f' }, to) },
     { name: 'newTask dispatch', open: newTaskCommands({ task: 't', brief: 'b', repositories: ['o/r'], model: 'm' }).dispatch[0], filled: agentDispatch('o/r', 't', { profile: 'p', brief: 'b' }, to) },
   ]

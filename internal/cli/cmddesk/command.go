@@ -20,6 +20,7 @@ type Operations struct {
 	Connect       func(context.Context, deskrun.ConnectRequest) (deskrun.ConnectResult, error)
 	Disconnect    func(ctx context.Context, projectsRoot string, noRestart bool) (deskrun.DisconnectResult, error)
 	Status        func(context.Context) (deskrun.StatusResult, error)
+	Push          func(ctx context.Context, projectsRoot string) (deskrun.PushResult, error)
 	ExportTaskKey func(out io.Writer, stdoutIsTerminal bool) error
 	IsTerminal    func(any) bool
 	Now           func() time.Time
@@ -36,6 +37,7 @@ publishes this machine's state, reduced to its detail level, over outbound HTTPS
 
   wb desk connect           approve this machine in the browser and install its credential
   wb desk status            show the connection and Desk's last publish and heartbeat
+  wb desk push              publish this machine's state now, from the running daemon
   wb desk disconnect        revoke the credential at Desk and remove it here
   wb desk task-key export   hand your task key to your next machine
 
@@ -43,7 +45,7 @@ At the default detail level, repositories, no task, branch or worktree name
 leaves the machine: task names travel as keyed hashes under a task key that
 Desk never holds.`,
 	}
-	cmd.AddCommand(newConnect(runtime, operations), newStatus(runtime, operations),
+	cmd.AddCommand(newConnect(runtime, operations), newStatus(runtime, operations), newPush(runtime, operations),
 		newDisconnect(runtime, operations), newTaskKey(runtime, operations))
 	return cmd
 }
@@ -121,6 +123,38 @@ Exits 1 when the machine is not connected or Desk reports an error.`,
 	}
 	shared.AddJSONFormatFlags(command, &jsonOut)
 	return command
+}
+
+func newPush(runtime shared.Runtime, operations Operations) *cobra.Command {
+	var jsonOut bool
+	command := &cobra.Command{
+		Use:   "push",
+		Short: "Publish this machine's state to Desk now",
+		Long: `Reads this machine's state from the running WB daemon, reduces it to the
+machine's detail level exactly as the daemon's own publisher does, publishes it
+to Desk and sends a heartbeat. The daemon publishes on its own after every
+change; push is for not waiting. Exits 1 when the machine is not connected,
+the daemon is not running, or Desk refuses the snapshot.`,
+		Args: cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			result, err := operations.Push(command.Context(), runtime.Flags().ProjectsRoot)
+			if err != nil {
+				return err
+			}
+			return writePush(command.OutOrStdout(), result, jsonOut)
+		},
+	}
+	shared.AddJSONFormatFlags(command, &jsonOut)
+	return command
+}
+
+func writePush(out io.Writer, result deskrun.PushResult, jsonOut bool) error {
+	if jsonOut {
+		return json.NewEncoder(out).Encode(result)
+	}
+	_, err := fmt.Fprintf(out, "Published to %s\n  detail      %s\n  snapshot    %s\n  heartbeat   %s\n",
+		result.DeskURL, result.Detail, result.Hash, map[bool]string{true: "sent", false: "failed (the daemon will retry)"}[result.Heartbeat])
+	return err
 }
 
 func newDisconnect(runtime shared.Runtime, operations Operations) *cobra.Command {

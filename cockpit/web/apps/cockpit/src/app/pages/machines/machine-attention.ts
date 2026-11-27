@@ -30,6 +30,7 @@ export function attentionOf(model: FleetModel, machineId: string): Attention {
     ['remote', health.remoteErrors],
     ['export', health.exportDropped],
     ['publish', health.publishErrors],
+    ['desk', health.deskErrors],
   ]
   const notes: AttentionNote[] = []
   const commands: PanelCommand[] = []

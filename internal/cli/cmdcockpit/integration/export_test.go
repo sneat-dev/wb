@@ -780,3 +780,18 @@ func mustStatePath(t *testing.T, root string) string {
 
 // Native response-size fixture asserts the existing protocol budget.
 const cockpitDocumentLimit = cockpitfleet.MaxEnvelopeBytes - (128 << 10) - 4096
+
+func TestExportReadsTheThroughputBlockOnlyWhenAsked(t *testing.T) {
+	t.Parallel()
+	daemon := newFakeCockpitDaemon(t)
+	daemon.document.Throughput = &cockpitfleet.Throughput{WindowDays: 7, PerDay: []cockpitfleet.ThroughputDay{}, Slowest: []cockpitfleet.ThroughputTask{}}
+	deps := exportDependencies(readyRecord(daemon.listen()), true, true)
+	plain := cockpitrun.Export(context.Background(), deps, cockpitrun.ExportRequest{Root: "/projects"})
+	if plain.Failure != "" || plain.Throughput != nil || strings.Contains(string(plain.Body), "throughput") {
+		t.Fatalf("a plain export reads no throughput: %+v", plain.Failure)
+	}
+	asked := cockpitrun.Export(context.Background(), deps, cockpitrun.ExportRequest{Root: "/projects", WithThroughput: true})
+	if asked.Failure != "" || asked.Throughput == nil || asked.Throughput.WindowDays != 7 || strings.Contains(string(asked.Body), "throughput") {
+		t.Fatalf("an export asked for throughput returns it beside the envelope: %+v %+v", asked.Failure, asked.Throughput)
+	}
+}

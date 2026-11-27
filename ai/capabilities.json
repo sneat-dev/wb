@@ -6156,6 +6156,74 @@
       "notes": "The local credential is removed even when Desk is unreachable."
     },
     {
+      "id": "wb.desk.push",
+      "feature_refs": [
+        "spec/features/desk-connect/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb desk push",
+              "flags": [
+                "--format",
+                "--json"
+              ],
+              "modes": [
+                "Reads this machine's state from the running daemon, reduces it to the machine's detail level as the daemon's publisher does, publishes it to Desk and sends a heartbeat; exits 1 when not connected, the daemon is not running, or Desk refuses."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb desk push --help",
+              "contains": [
+                "running WB daemon",
+                "Exits 1"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/desk.md",
+              "marker": "# Connect this machine to Sneat Dev Desk",
+              "examples": [
+                "wb desk push"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/deskrun/deskrun_test.go",
+              "name": "TestPushPublishesTheDaemonsStateReducedLikeTheDaemon",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/cli/cmddesk/command_test.go",
+              "name": "TestPushPublishesThroughTheOperationAndRendersIt",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "The daemon publishes after every change on its own; push only saves the wait."
+    },
+    {
       "id": "wb.desk.status",
       "feature_refs": [
         "spec/features/desk-connect/README.md"

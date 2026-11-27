@@ -100,7 +100,7 @@ spec, or move the hosted-only code into the sneat-go repository.
 apply inside their transaction; `api/githubapp/machine_snapshots_test.go` holds
 the service to it. It is public API for external store adapters.
 
-## A3. Scheduled by a live spec or plan (36 entries)
+## A3. Scheduled by a live spec or plan (30 entries)
 
 * 6 in `internal/herdr` and 24 in `internal/sessiontransport`:
   `spec/features/herdr-session-transport` (Draft) requirements
@@ -111,11 +111,6 @@ the service to it. It is public API for external store adapters.
   the environment, fakeable exec seam), Task 2 (interface, capability matrix,
   override, none transport), Task 5 (selection) and Task 10 (failure modes).
   The plan is Draft, not approved; the feature is a live Draft spec.
-* 6 in `internal/deskpublish`: `spec/features/desk-connect` (Draft)
-  requirements `detail-level-applied-on-the-machine`,
-  `task-keys-correlate-without-names` and `publish-on-change`;
-  `spec/plans/desk-connect` Task 2 (the reduction) lands before Task 6 (the
-  daemon publisher), which calls every entry. The plan is Draft.
 
 ## C. Possibly unwired by accident (5 entries)
 

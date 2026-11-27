@@ -21,11 +21,19 @@ import (
 type ExportRequest struct {
 	Root        string
 	MetricsOnly bool
+	// WithThroughput also reads the daemon's own throughput block, which the
+	// scoped read leaves out, for the Desk publish (desk-connect#req:publish-on-change).
+	// A failure to read it is not a failure of the export.
+	WithThroughput bool
 }
 type ExportResult struct {
 	Body    []byte
 	Drops   cockpitfleet.ExportDrops
 	Failure ExportFailure
+	// Throughput is the daemon's own throughput block, which the envelope
+	// leaves out; read only with ExportRequest.WithThroughput, for the Desk
+	// publish to put it back (desk-connect#req:publish-on-change).
+	Throughput *cockpitfleet.Throughput
 }
 
 // ExportDependencies is everything `wb cockpit export` touches. It
@@ -173,7 +181,14 @@ func Export(ctx context.Context, deps ExportDependencies, request ExportRequest)
 	if _, err := cockpitfleet.DecodeEnvelope(bytes.NewReader(body), metricsOnly, deps.Now()); err != nil {
 		return fail(errExportFailed)
 	}
-	return ExportResult{Body: append(body, '\n'), Drops: drops}
+	result := ExportResult{Body: append(body, '\n'), Drops: drops}
+	if request.WithThroughput {
+		var whole cockpitfleet.Document
+		if _, failure := cockpitExportGet(ctx, Client, base, cockpitfleet.FleetRoute, url.Values{}, cockpitfleet.MaxEnvelopeBytes, &whole); failure == "" {
+			result.Throughput = whole.Throughput
+		}
+	}
+	return result
 }
 
 // cockpitLoopbackBase is the Cockpit API address of a daemon recorded as

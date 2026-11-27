@@ -40,6 +40,7 @@ func defaultDeskDependencies() deskrun.Dependencies {
 		Sleep:       deskrun.Sleep,
 		Now:         time.Now,
 		Random:      rand.Reader,
+		Export:      deskrun.ExportFromDaemon,
 		WBVersion:   buildinfo.Version(),
 	})
 }
@@ -47,7 +48,7 @@ func defaultDeskDependencies() deskrun.Dependencies {
 func newDeskCmd(inv *invocation) *cobra.Command {
 	service := deskrun.New(defaultDeskDependencies(), newCLIErrorRuntime().ExitError)
 	return cmddesk.New(newCLIRuntime(inv), cmddesk.Operations{
-		Connect: service.Connect, Disconnect: service.Disconnect, Status: service.Status,
+		Connect: service.Connect, Disconnect: service.Disconnect, Status: service.Status, Push: service.Push,
 		ExportTaskKey: service.ExportTaskKey, IsTerminal: console.IsTerminal, Now: time.Now,
 	})
 }

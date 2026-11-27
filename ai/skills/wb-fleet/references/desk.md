@@ -11,6 +11,7 @@ over outbound HTTPS, reduced on the machine to its detail level.
 | Send full detail (task and branch names) instead of the default | `wb desk connect --detail full` |
 | Connect a second machine with the same task key | `wb desk task-key export \| ssh vm1 wb desk connect --task-key-stdin` |
 | Check the connection, shares, last publish and heartbeat | `wb desk status` |
+| Publish this machine's state now instead of waiting for the daemon | `wb desk push` |
 | Revoke this machine's credential and remove it | `wb desk disconnect` |
 
 To give a second machine the same task key, pipe it over SSH:

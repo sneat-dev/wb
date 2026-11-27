@@ -312,6 +312,21 @@ Desk payload MUST live in the public package `api/desk`. The daemon sends its
 version, which WB records as `schema_unsupported` and reports with the update command. A
 published version keeps decoding at Desk for at least 90 days after its successor ships.
 
+#### REQ: push-publishes-now
+
+`wb desk push` MUST read this machine's export from its running daemon, together with the
+daemon's throughput block. It reduces the export exactly as the daemon's publisher does
+(REQ:detail-level-applied-on-the-machine), publishes it, and sends one heartbeat. It exits 1
+in each of these cases:
+
+- the machine is not connected;
+- the daemon is not running, in which case it names `wb daemon start`;
+- the daemon has nothing to export yet;
+- Desk refuses the snapshot.
+
+A failed heartbeat after an accepted publish is reported in the result but is not a failure.
+The daemon publishes on its own after every change, so `push` only saves the wait.
+
 #### REQ: commands-are-documented
 
 Each of `wb desk connect`, `status`, `push`, `disconnect`, and `task-key export` MUST have a row in

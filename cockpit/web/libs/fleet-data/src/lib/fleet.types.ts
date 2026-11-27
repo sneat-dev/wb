@@ -33,6 +33,8 @@ export interface Machine extends Entry {
   export_dropped?: number
   /** The code of this machine's last failed or degraded periodic publish (REQ:home-fleet-health); on the local machine's entry only, absent when healthy or when publishing is off. */
   publish_error?: PublishError
+  /** The code of this machine's last failed Desk publish or heartbeat (desk-connect#req:revocation-is-respected); on the local machine's entry only, absent when healthy or not connected. */
+  desk_error?: DeskError
   /** That machine's agents were cut; carried by the entry of a live-remote or cached machine, never by the local one (the document's own flag says it). */
   agents_truncated?: boolean
 }
@@ -40,6 +42,10 @@ export interface Machine extends Entry {
 /** The typed codes of the local machine's `publish_error`: a closed list, never an error text. */
 export const PUBLISH_ERRORS = ['collect_failed', 'store_unavailable', 'publish_failed', 'optional_fields_dropped'] as const
 export type PublishError = (typeof PUBLISH_ERRORS)[number]
+
+/** The typed codes of the local machine's `desk_error` (api/desk ErrorCodes): a closed list, never an error text. */
+export const DESK_ERRORS = ['unreachable', 'timeout', 'revoked', 'rejected_payload', 'schema_unsupported', 'too_large', 'rate_limited'] as const
+export type DeskError = (typeof DESK_ERRORS)[number]
 
 /** The typed codes of a machine's `remote_error` (REQ:remote-error-is-visible). */
 export const REMOTE_ERRORS = [

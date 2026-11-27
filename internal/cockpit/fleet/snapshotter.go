@@ -144,6 +144,10 @@ type Options struct {
 	// default, publishes nothing. It is called off the pass, in a goroutine of
 	// its own, and decides for itself whether the time has come.
 	Publisher RemotePublisher
+	// Desk publishes this machine's state to Sneat Dev Desk after a successful
+	// pass (desk-connect#req:publish-on-change); nil, the default, makes no
+	// Desk request. It runs beside Publisher, independently of it.
+	Desk DeskPublisher
 	// Remotes are the other machines the local configuration names, each read
 	// in the background through Transports, in that order
 	// (cockpit-views#req:remote-exporter-transports). With no transport nothing
@@ -367,6 +371,10 @@ type Snapshotter struct {
 	publishBusy atomic.Bool
 	// publishDiag is the publisher's diagnostic as of its last attempt.
 	publishDiag string
+	// desk, deskBusy and deskDiag are the same for the Desk publisher.
+	desk     DeskPublisher
+	deskBusy atomic.Bool
+	deskDiag string
 }
 
 // New builds a Snapshotter that has taken no snapshot: Document is the empty
@@ -392,6 +400,7 @@ func New(options Options) *Snapshotter {
 	}
 	snapshotter.sampler = options.Sampler
 	snapshotter.publisher = options.Publisher
+	snapshotter.desk = options.Desk
 	snapshotter.live, snapshotter.transports, snapshotter.remoteTick = map[string]*liveMachine{}, slices.Clone(options.Transports), options.RemoteTick
 	if len(snapshotter.transports) > 0 {
 		for _, target := range options.Remotes {
@@ -744,6 +753,7 @@ func (s *Snapshotter) Refresh(ctx context.Context) error {
 	s.complete = true
 	s.publishLocked()
 	s.startPublish(ctx)
+	s.startDeskPublish(ctx)
 	return errors.Join(append(failures, machineFailures...)...)
 }
 
@@ -1600,7 +1610,7 @@ func (s *Snapshotter) assemble(now time.Time) (assembled Document, sizes documen
 		Entry:     localEntry(localMachineID(s.machine), s.machine, now),
 		WBVersion: s.version, RepositoryCount: len(document.Repositories), WorktreeCount: len(document.Worktrees),
 		OS: s.hardware.OS, Arch: s.hardware.Arch, CPUCount: s.hardware.CPUCount, BootTime: s.hardware.BootTime,
-		PublishError: s.publishDiag,
+		PublishError: s.publishDiag, DeskError: s.deskDiag,
 	})
 	localHosts := map[string]bool{}
 	for _, repository := range document.Repositories {

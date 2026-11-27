@@ -215,3 +215,23 @@ func TestOutputFailuresAreReported(t *testing.T) {
 		}
 	}
 }
+
+func TestPushPublishesThroughTheOperationAndRendersIt(t *testing.T) {
+	t.Parallel()
+	var root string
+	operations := Operations{Push: func(_ context.Context, projectsRoot string) (deskrun.PushResult, error) {
+		root = projectsRoot
+		return deskrun.PushResult{DeskURL: "https://desk.sneat.dev", Detail: desk.LevelRepositories, Hash: "sha256:ab", Heartbeat: false}, nil
+	}}
+	stdout, _, err := run(t, operations, "push")
+	if err != nil || root != "/projects" || !strings.Contains(stdout, "sha256:ab") || !strings.Contains(stdout, "the daemon will retry") {
+		t.Fatalf("push = %q, %v", stdout, err)
+	}
+	if stdout, _, _ := run(t, operations, "push", "--json"); !strings.Contains(stdout, `"hash":"sha256:ab"`) {
+		t.Fatalf("json = %q", stdout)
+	}
+	failing := Operations{Push: func(context.Context, string) (deskrun.PushResult, error) { return deskrun.PushResult{}, &exit{code: 1} }}
+	if _, _, err := run(t, failing, "push"); code(err) != 1 {
+		t.Fatalf("error = %v", err)
+	}
+}
