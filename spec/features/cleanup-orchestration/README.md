@@ -831,6 +831,27 @@ unbounded `scanning…`.
 The final summary MUST close the same counters, so the last event and the
 report agree.
 
+#### REQ: progress-off-terminal
+
+Liveness MUST reach a caller that is not a terminal. Agents run `wb clean`
+from a tool whose stderr is a pipe, and on 2026-11-27 an agent on a full VM
+reported that "the dry run timed out": the run printed nothing, so its tool's
+command timeout killed a sweep that was working. A silent sweep is
+indistinguishable from a hung one.
+
+- On a terminal, or with `--verbose`, every candidate gets its own start and
+  finish line, as `#req:progress-liveness` requires.
+- Otherwise, unless `--quiet` is given, liveness events MUST be coalesced
+  into one heartbeat line on stderr at least every 15 seconds while the
+  sweep runs, and once at the end. Each heartbeat carries the counter
+  against its denominator, the elapsed time, and each in-flight candidate
+  with the step it is in:
+  `wb clean: [12/40] 1m10s; in flight: sneat-go/task-x (pull requests)`.
+- The step is one of `git`, `pull requests`, `work log` or `size`, so a
+  slow run shows where its time goes.
+- No heartbeat is written for a sweep that finishes inside the first
+  interval. A short run stays as quiet as it is today.
+
 #### REQ: incremental-findings
 
 A run MUST NOT accumulate its findings in memory and emit them only when the
@@ -1168,7 +1189,7 @@ object per stdout line whose union carries the same fields as the envelope.
 
 ### AC: a-sweep-proves-it-is-alive
 
-**Requirements:** cleanup-orchestration#req:progress-liveness, cleanup-orchestration#req:progress-carries-a-denominator, cleanup-orchestration#req:progress-adapts-to-the-stream-not-the-content, cleanup-orchestration#req:progress-surfaces-throttling-and-slow-candidates, cleanup-orchestration#req:progress-is-presentation-only
+**Requirements:** cleanup-orchestration#req:progress-liveness, cleanup-orchestration#req:progress-carries-a-denominator, cleanup-orchestration#req:progress-adapts-to-the-stream-not-the-content, cleanup-orchestration#req:progress-surfaces-throttling-and-slow-candidates, cleanup-orchestration#req:progress-is-presentation-only, cleanup-orchestration#req:progress-off-terminal
 
 Given a fixture fleet of 60 candidates in which each candidate's inspection is
 made to take a measurable interval, when `wb clean --format json` runs with
@@ -1187,6 +1208,12 @@ output. Given the same run with stderr attached to a pseudo-terminal and
 `--non-interactive` unset, an in-place display is permitted; with
 `--non-interactive` set, it is not; and in neither case is any **finding**
 rendered into an in-place region that a later redraw overwrites.
+
+Given the same fleet run with stderr attached to a pipe and neither
+`--verbose` nor `--quiet`, then no two consecutive stderr heartbeats are more
+than 15 seconds apart, each names the in-flight candidates with their step,
+and a run of 3 candidates that finishes within the first interval writes no
+heartbeat at all.
 
 Given a hosted double that answers with `403` and `Retry-After` for two
 candidates, and one candidate made to exceed the threshold fraction of its

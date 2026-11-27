@@ -11,7 +11,7 @@ status: Stable
 
 ## Summary
 
-Apply size, age and free-space policy to WB-owned immutable Linux dependency archives at real job boundaries. This is the directly authorized 2026-11-02 archive-helper adoption slice; it does not approve or implement the broader Draft [Disk Reclaim](../disk-reclaim/README.md) feature.
+Apply size, age and free-space policy to WB-owned immutable Linux dependency archives at real job boundaries. This is the directly authorized 2026-11-02 archive-helper adoption slice; it does not approve or implement the broader Draft [Disk Prune](../disk-prune/README.md) feature.
 
 ## Problem
 

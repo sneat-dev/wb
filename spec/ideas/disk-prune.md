@@ -1,14 +1,14 @@
 ---
 format: https://specscore.md/idea-specification
-status: Approved
+status: Specifying
 ---
 
 # Idea: Disk prune acts on what wb disk reports
 
-**Status:** Approved
+**Status:** Specifying
 **Date:** 2026-11-27
 **Owner:** ai
-**Promotes To:** —
+**Promotes To:** disk-prune
 **Supersedes:** —
 **Related Ideas:** extends:scratch-has-an-owner
 
@@ -37,7 +37,7 @@ open handles, no live Go process) and `go clean -cache` (5.9 GB).
 
 `wb cache prune`, which agent memory mentions, was never implemented: it
 exists only as a planned verb in the streams spec (commit 9a3480e9). The
-Draft Feature [disk-reclaim](../features/disk-reclaim/README.md) designed a
+Draft Feature [disk-prune](../features/disk-prune/README.md) designed a
 `wb disk reclaim`, but no code was ever written for it.
 
 ### What wb-state actually is
@@ -113,7 +113,7 @@ The daemon trigger follows in a second phase of the same Plan.
 
 ## SpecScore Integration
 
-- **New Features this would create:** none; it revises [disk-reclaim](../features/disk-reclaim/README.md)
+- **New Features this would create:** none; it revises [disk-prune](../features/disk-prune/README.md)
 - **Existing Features affected:** disk-reclaim (rename to `wb disk prune`, scope per this Idea)
 - **Dependencies:** worktree-lifecycle, daemon-lifecycle
 
