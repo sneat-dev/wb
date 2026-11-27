@@ -100,7 +100,7 @@ spec, or move the hosted-only code into the sneat-go repository.
 apply inside their transaction; `api/githubapp/machine_snapshots_test.go` holds
 the service to it. It is public API for external store adapters.
 
-## A3. Scheduled by a live spec or plan (53 entries)
+## A3. Scheduled by a live spec or plan (78 entries)
 
 * 6 in `internal/herdr` and 24 in `internal/sessiontransport`:
   `spec/features/herdr-session-transport` (Draft) requirements
@@ -111,11 +111,13 @@ the service to it. It is public API for external store adapters.
   the environment, fakeable exec seam), Task 2 (interface, capability matrix,
   override, none transport), Task 5 (selection) and Task 10 (failure modes).
   The plan is Draft, not approved; the feature is a live Draft spec.
-* 23 in `api/desk`: `spec/features/desk-connect` (Draft) requirements
-  `wire-contract-versioned`, `device-code-enrollment`, `publish-on-change`
-  and `heartbeat`; `spec/plans/desk-connect` Task 1 lands the public contract
-  first, and Tasks 3, 5 and 6 (client, `wb desk` commands, daemon publisher)
-  call every entry. The plan is Draft.
+* 23 in `api/desk`, 12 in `internal/deskpublish` and 13 in
+  `internal/deskclient`: `spec/features/desk-connect` (Draft) requirements
+  `wire-contract-versioned`, `device-code-enrollment`, `publish-on-change`,
+  `heartbeat`, `detail-level-applied-on-the-machine` and
+  `task-keys-correlate-without-names`; `spec/plans/desk-connect` Tasks 1-3
+  (contract, reduction, client) land first, and Tasks 5 and 6 (`wb desk`
+  commands, daemon publisher) call every entry. The plan is Draft.
 
 ## C. Possibly unwired by accident (5 entries)
 

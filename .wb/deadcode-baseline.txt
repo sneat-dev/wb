@@ -323,10 +323,10 @@ github.com/sneat-dev/wb/internal/sessiontransport.TmuxCapabilities
 github.com/sneat-dev/wb/internal/sessiontransport.loadOverrideWithMarshal
 github.com/sneat-dev/wb/internal/sessiontransport.mappingValue
 
-# == A3. Scheduled by a live spec and plan: Desk wire contract ==
+# == A3. Scheduled by a live spec and plan: Desk wire contract, reduction and client ==
 #
 # spec/features/desk-connect (Draft): wire-contract-versioned, device-code-enrollment, publish-on-change,
-# heartbeat. spec/plans/desk-connect: Task 1 (api/desk contract) lands before its callers; Task 3 (Desk
+# heartbeat. spec/plans/desk-connect: Tasks 1-3 (contract, reduction, client) land before their callers; Task 3 (Desk
 # HTTP client), Task 5 (wb desk commands) and Task 6 (daemon publisher) wire every entry below.
 github.com/sneat-dev/wb/api/desk.ConnectStartRequest.Validate
 github.com/sneat-dev/wb/api/desk.ConnectStartResponse.Validate
@@ -351,6 +351,31 @@ github.com/sneat-dev/wb/api/desk.checkText
 github.com/sneat-dev/wb/api/desk.checkVersion
 github.com/sneat-dev/wb/api/desk.invalid
 github.com/sneat-dev/wb/api/desk.validateShares
+github.com/sneat-dev/wb/internal/deskclient.Client.Heartbeat
+github.com/sneat-dev/wb/internal/deskclient.Client.Publish
+github.com/sneat-dev/wb/internal/deskclient.Client.Revoke
+github.com/sneat-dev/wb/internal/deskclient.Client.Self
+github.com/sneat-dev/wb/internal/deskclient.Client.Start
+github.com/sneat-dev/wb/internal/deskclient.Client.Token
+github.com/sneat-dev/wb/internal/deskclient.Client.do
+github.com/sneat-dev/wb/internal/deskclient.CodeOf
+github.com/sneat-dev/wb/internal/deskclient.Error.Error
+github.com/sneat-dev/wb/internal/deskclient.New
+github.com/sneat-dev/wb/internal/deskclient.encode
+github.com/sneat-dev/wb/internal/deskclient.readCredential
+github.com/sneat-dev/wb/internal/deskclient.statusError
+github.com/sneat-dev/wb/internal/deskpublish.InstallTaskKey
+github.com/sneat-dev/wb/internal/deskpublish.LoadOrCreateTaskKey
+github.com/sneat-dev/wb/internal/deskpublish.NewTaskKey
+github.com/sneat-dev/wb/internal/deskpublish.ParseTaskKey
+github.com/sneat-dev/wb/internal/deskpublish.Reduce
+github.com/sneat-dev/wb/internal/deskpublish.Snapshot.Request
+github.com/sneat-dev/wb/internal/deskpublish.TaskKey.ID
+github.com/sneat-dev/wb/internal/deskpublish.TaskKey.Of
+github.com/sneat-dev/wb/internal/deskpublish.TaskKey.Text
+github.com/sneat-dev/wb/internal/deskpublish.TaskKey.entry
+github.com/sneat-dev/wb/internal/deskpublish.TaskKey.mac
+github.com/sneat-dev/wb/internal/deskpublish.reduceDocument
 
 # == C. Possibly unwired by accident ==
 #
