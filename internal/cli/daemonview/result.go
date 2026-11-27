@@ -60,6 +60,9 @@ func Result(out io.Writer, format string, result daemonruntime.Result) error {
 	if err == nil && result.Warning != "" {
 		_, err = fmt.Fprintf(out, ", warning=%q", result.Warning)
 	}
+	if err == nil && result.DiskAutoPrune != "" {
+		_, err = fmt.Fprintf(out, ", disk_auto_prune=%q", result.DiskAutoPrune)
+	}
 	if err == nil && result.ReachabilityTransport != "" {
 		_, err = fmt.Fprintf(out, ", api_transport=%s", result.ReachabilityTransport)
 	}

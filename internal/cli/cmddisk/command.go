@@ -26,6 +26,9 @@ type Dependencies struct {
 	Collect         func(context.Context, disk.Options) (disk.Report, error)
 	DependencyCache func(context.Context, []string, io.Writer, io.Writer) error
 	Prune           PruneDependencies
+	// ReceiptFinding names a failed or still-below-floor automatic prune for
+	// the projects root, or ""; nil reports nothing.
+	ReceiptFinding func(projectsRoot string) string
 }
 
 // New constructs a fresh disk command with invocation policy read at execution.
@@ -85,6 +88,11 @@ Exit codes: 0 nothing to flag, 1 findings, 2 usage.
 			})
 			if err != nil {
 				return err
+			}
+			if deps.ReceiptFinding != nil {
+				if finding := deps.ReceiptFinding(runtime.Flags().ProjectsRoot); finding != "" {
+					report.Findings = append(report.Findings, finding)
+				}
 			}
 
 			if err := writeReport(cmd.OutOrStdout(), options.format, report); err != nil {

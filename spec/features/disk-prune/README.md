@@ -573,7 +573,7 @@ This category runs only when `--category go-module-cache` is given.
   - `missing-at-proxy` for a 404 or 410;
   - `probe-budget` once the run's probes have used 120 s in total.
 
-  Probes run four at a time. Because the probe runs only at apply, the
+  Probes run one at a time within that budget. Because the probe runs only at apply, the
   plan's module estimate is an upper bound and is marked
   `estimate_is_upper_bound`.
 - **Not locally modified.** When an extracted directory exists, its
@@ -721,7 +721,8 @@ stderr only.
   before and after per filesystem, bytes per category, and skips.
 - **Exit and findings.** Exit codes follow REQ: exit-codes, so a run that
   leaves a filesystem below the floor exits `1`. A failed run, or free space
-  still below the floor, is a finding in `wb daemon status` and `wb disk`.
+  still below the floor, is shown by `wb daemon status` as `disk_auto_prune`
+  and is a finding in `wb disk`, which then exits `1`.
 - **Environment.** The daemon resolves roots in its own environment and
   records them in the receipt. A daemon whose `TMPDIR` or Go environment
   differs from the agents' prunes what it resolves, and says so.

@@ -23,6 +23,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/buildinfo"
 	"github.com/sneat-dev/wb/internal/daemon"
+	"github.com/sneat-dev/wb/internal/diskprune"
 	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/hubconfig"
 	"github.com/sneat-dev/wb/internal/loopbackhost"
@@ -177,6 +178,11 @@ type Result struct {
 	// is refused, but the caller still gets a working connection back instead
 	// of an outright failure (sneat-dev/wb#622 review item 9).
 	Warning string `json:"warning,omitempty"`
+
+	// DiskAutoPrune is the newest disk prune receipt's finding: an
+	// automatic run that failed or left a filesystem below the floor
+	// (disk-prune#req:daemon-auto-prune). Empty when there is none.
+	DiskAutoPrune string `json:"disk_auto_prune,omitempty"`
 }
 
 type HubStatus struct {
@@ -984,6 +990,7 @@ func (controller Controller) Status(ctx context.Context) (Result, error) {
 	if location, locationErr := ResolveLocation(controller.root); locationErr == nil {
 		result.WBHome, result.RuntimeDir, result.SocketPath, result.StatePath =
 			location.Home, location.RuntimeDir, location.SocketPath, location.StatePath
+		result.DiskAutoPrune = diskprune.ReceiptFinding(location.Home)
 	}
 	// The legacy endpoint is reported even when this home has no daemon: that
 	// is precisely the case in which a leftover daemon looks healthy while

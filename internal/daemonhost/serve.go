@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/daemonruntime"
+	"github.com/sneat-dev/wb/internal/diskprune"
 
 	"github.com/sneat-dev/wb/hub/narrate"
 	"github.com/sneat-dev/wb/internal/cockpit"
@@ -289,6 +290,10 @@ func (host *Host) servePrepared(projectsRoot string, ctx context.Context, out, e
 	// for, on the way out so no refresh outlives the daemon's state.
 	defer fleetSnapshotter.Start(ctx)()
 	queue.StartLeaseRecovery(ctx)
+	// Below the free-space floor the daemon runs wb disk prune --auto, at most
+	// hourly, only when disk.auto_prune is on (disk-prune#req:daemon-auto-prune).
+	// It re-reads the configuration on every check and stops with ctx.
+	go diskprune.NewAutoPruner(projectsRoot, location.Home, func(line string) { _, _ = fmt.Fprintln(errOut, line) }).Run(ctx)
 	if err := startRepositoryEventReceiver(ctx, projectsRoot, hubConfigPath(), errOut); err != nil {
 		_, _ = fmt.Fprintln(errOut, "repository event receiver disabled:", err)
 	}

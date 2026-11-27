@@ -277,3 +277,24 @@ func (fakeInfo) Mode() fs.FileMode  { return 0 }
 func (fakeInfo) ModTime() time.Time { return time.Time{} }
 func (fakeInfo) IsDir() bool        { return false }
 func (fakeInfo) Sys() any           { return nil }
+
+// lockless is a category with no resource directory, so its filesystem is
+// labelled by its item's own path.
+type lockless struct{ path string }
+
+func (lockless) name() string { return "lockless" }
+
+func (l lockless) plan(context.Context, *World, Options) *categoryPlan {
+	it := &item{ItemReport: ItemReport{Path: l.path, Status: StatusDelete}, estimate: 1, known: true}
+	return &categoryPlan{applicable: true, items: []*item{it}}
+}
+
+func TestFilesystemLabelFallsBackToTheItemPath(t *testing.T) {
+	t.Parallel()
+	tw := newTestWorld(t)
+	tw.categories = []category{lockless{path: tw.tmp}}
+	report := tw.run(Options{Categories: []string{"lockless"}})
+	if len(report.Filesystems) != 1 || report.Filesystems[0].Path != tw.tmp {
+		t.Fatalf("filesystems = %#v", report.Filesystems)
+	}
+}
