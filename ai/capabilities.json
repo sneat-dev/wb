@@ -6009,6 +6009,284 @@
       "notes": "Without publication flags, verified changes remain in isolated operation worktrees for review."
     },
     {
+      "id": "wb.desk.connect",
+      "feature_refs": [
+        "spec/features/desk-connect/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb desk connect",
+              "flags": [
+                "--desk",
+                "--detail",
+                "--format",
+                "--json",
+                "--machine",
+                "--no-browser",
+                "--no-restart",
+                "--space",
+                "--task-key-stdin"
+              ],
+              "modes": [
+                "Opens a browser-approved device grant, verifies the issued credential before installing it privately, writes only the desk fields of wb.yaml, and restarts a running daemon; with --detail alone on a connected machine, changes the detail level in place."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb desk connect --help",
+              "contains": [
+                "--detail",
+                "--space",
+                "--task-key-stdin"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/desk.md",
+              "marker": "# Connect this machine to Sneat Dev Desk",
+              "examples": [
+                "wb desk connect",
+                "wb desk connect --detail full",
+                "wb desk connect --task-key-stdin"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/deskrun/deskrun_test.go",
+              "name": "TestConnectApprovesInstallsAndRestarts",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/cli/cmddesk/command_test.go",
+              "name": "TestConnectPassesFlagsAndRendersTheResult",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "The device code and the credential never appear in argv, output, configuration or telemetry."
+    },
+    {
+      "id": "wb.desk.disconnect",
+      "feature_refs": [
+        "spec/features/desk-connect/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb desk disconnect",
+              "flags": [
+                "--format",
+                "--json",
+                "--no-restart"
+              ],
+              "modes": [
+                "Revokes the credential at Desk, removes it and the desk fields connect wrote, and restarts a running daemon; exits 1 with revoked false when Desk cannot be reached."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb desk disconnect --help",
+              "contains": [
+                "--no-restart",
+                "revoked"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/desk.md",
+              "marker": "# Connect this machine to Sneat Dev Desk",
+              "examples": [
+                "wb desk disconnect"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/deskrun/deskrun_test.go",
+              "name": "TestDisconnectRevokesThenRemovesLocally",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/cli/cmddesk/command_test.go",
+              "name": "TestDisconnectExitsOneWhenDeskCouldNotRevoke",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "The local credential is removed even when Desk is unreachable."
+    },
+    {
+      "id": "wb.desk.status",
+      "feature_refs": [
+        "spec/features/desk-connect/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb desk status",
+              "flags": [
+                "--format",
+                "--json"
+              ],
+              "modes": [
+                "Reports the desk configuration and Desk's record of this machine (spaces, shares, last snapshot and heartbeat); exits 1 when not connected or Desk reports an error."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb desk status --help",
+              "contains": [
+                "Exits 1"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/desk.md",
+              "marker": "# Connect this machine to Sneat Dev Desk",
+              "examples": [
+                "wb desk status"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/deskrun/deskrun_test.go",
+              "name": "TestStatusReportsConnectionAndDeskErrors",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/cli/cmddesk/command_test.go",
+              "name": "TestStatusExitsOneOnFindings",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Works without a running daemon: it reads wb.yaml and asks Desk directly."
+    },
+    {
+      "id": "wb.desk.task-key.export",
+      "feature_refs": [
+        "spec/features/desk-connect/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb desk task-key export",
+              "flags": [],
+              "modes": [
+                "Writes this machine's Desk task key to stdout for the person's next machine, refusing a terminal stdout."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb desk task-key export --help",
+              "contains": [
+                "--task-key-stdin"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/desk.md",
+              "marker": "# Connect this machine to Sneat Dev Desk",
+              "examples": [
+                "wb desk task-key export"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/deskrun/deskrun_test.go",
+              "name": "TestTaskKeyExportOnlyToAPipe",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/cli/cmddesk/command_test.go",
+              "name": "TestTaskKeyExportTellsTheOperationWhetherStdoutIsATerminal",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "The task key never goes to Desk; only its fingerprint does."
+    },
+    {
       "id": "wb.disk",
       "feature_refs": [],
       "since": "unreleased",
