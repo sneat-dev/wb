@@ -76,7 +76,9 @@ func mountPointsIn(path string) ([]string, error) {
 	}
 	var points []string
 	for _, line := range strings.Split(string(raw), "\n") {
-		if fields := strings.Fields(line); len(fields) >= 5 {
+		// Split on the ASCII space the kernel uses between fields: any other
+		// whitespace (a non-breaking space) belongs to the path itself.
+		if fields := strings.Split(line, " "); len(fields) >= 5 {
 			points = append(points, unescapeOctal(fields[4]))
 		}
 	}

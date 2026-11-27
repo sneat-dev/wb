@@ -175,8 +175,9 @@ with sizes, and exits `1` when there is work.
 ### REQ: scratch
 
 Scratch is a direct entry of a temporary directory (`os.TempDir()` and
-`GOTMPDIR`, each resolved and deduplicated; one that cannot be resolved is
-left out, never cleaned lexically into another path) whose name is one of:
+`GOTMPDIR`, each resolved to an absolute path and deduplicated; one that
+cannot be resolved is left out, never cleaned lexically into another path)
+whose name is one of:
 
 - `go-build<digits>` (go build and go test work directories);
 - `Test…<digits>`, `Benchmark…<digits>`, `Fuzz…<digits>` (what `t.TempDir`
@@ -186,7 +187,11 @@ left out, never cleaned lexically into another path) whose name is one of:
   and per-task Go caches `wb-<task>-cache` / `wb-<task>-go-cache`, where
   `<task>` uses only letters, digits, `.`, `_` and `-`.
 
-Nothing else in the temporary directory is ever considered. A candidate is
+Nothing else in the temporary directory is ever considered. A temporary
+directory that is, or lies inside, a git checkout (a `.git` in it or an
+ancestor) is skipped whole: its entries are that checkout's files. When Go's
+settings cannot be read, the Go caches cannot be located, and scratch
+removes nothing (`failed`). A candidate is
 removed only when all of these hold; otherwise it is kept and counted under
 its reason:
 
@@ -200,11 +205,12 @@ its reason:
   `--older-than` raises that (a Go duration such as `100h`, or whole days
   such as `5d`) and can never lower it.
 
-Its identity is taken before anything is inspected, and the name must still
-be that directory immediately before removal; one replaced meanwhile is
-kept. Removal never follows a symlink. A tree Go wrote read-only is made
-writable (directories only, each re-checked to be a real directory) and
-removed. A temporary directory that exists but cannot be listed, unreadable
+Its identity is taken before it is measured or inspected, and immediately
+before removal the name must still be that directory and the mount points
+are read again; a directory replaced meanwhile, or one that gained a mount,
+is kept. Removal never follows a symlink. A tree Go wrote read-only is made
+writable (directories only, through a descriptor opened without following
+symlinks) and removed. A temporary directory that exists but cannot be listed, unreadable
 mount points, or a cancelled run make the category `failed`.
 
 ### REQ: go-build-cache
@@ -224,8 +230,10 @@ read for any reason other than having exited means prune cannot tell.
 The category is skipped, and the run exits `1`, when a Go process runs (the
 PIDs are named) or when that cannot be told (no `/proc`, as on macOS). It is
 skipped without a finding when `GOCACHEPROG` is set, `GOCACHE` is `off` or
-relative, or there is no cache, and kept as `nothing to clear` when no shard
-holds an entry. Go's settings or `GOCACHE` that cannot be inspected make
+relative, there is no cache, or `GOCACHE` and `GOMODCACHE` overlap (the
+clean would take the module cache with it), and kept as `nothing to clear`
+when no shard (two lowercase hex digits) holds an entry. The size counts
+only the shards the clean removes. Go's settings or `GOCACHE` that cannot be inspected make
 the category `failed`. Go trims its build cache itself day to day;
 this category is for a full disk.
 

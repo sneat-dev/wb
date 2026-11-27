@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -121,7 +122,7 @@ func (options pruneOptions) validate(cmd *cobra.Command) (diskprune.Options, err
 func parseAge(raw string) (time.Duration, error) {
 	if days, ok := strings.CutSuffix(strings.TrimSpace(raw), "d"); ok {
 		n, err := strconv.Atoi(days)
-		if err != nil || n <= 0 || n > 36500 {
+		if err != nil || n <= 0 || int64(n) > math.MaxInt64/int64(24*time.Hour) {
 			return 0, fmt.Errorf("invalid number of days %q", raw)
 		}
 		return time.Duration(n) * 24 * time.Hour, nil

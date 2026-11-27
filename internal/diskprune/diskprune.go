@@ -111,6 +111,9 @@ type Env struct {
 	// GoCaches are the resolved GOCACHE and GOMODCACHE, which scratch never
 	// removes even when they sit in the temporary directory.
 	GoCaches []string
+	// GoCachesUnknown says why the Go caches could not be located; scratch
+	// then removes nothing.
+	GoCachesUnknown string
 	// MountPoints lists every mount point, so a scratch tree holding a bind
 	// mount on its own filesystem is kept.
 	MountPoints func() ([]string, error)

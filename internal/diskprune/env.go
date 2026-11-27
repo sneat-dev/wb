@@ -29,6 +29,8 @@ func NewEnv() Env {
 	settings, err := resolveGo()
 	if err != nil {
 		env.GoCacheError = "Go's settings cannot be read: " + err.Error()
+		// Scratch cannot tell where the Go caches are either, so it stops.
+		env.GoCachesUnknown = env.GoCacheError
 		return env
 	}
 	for _, cache := range []string{settings.GOCACHE, settings.GOMODCACHE} {
@@ -37,6 +39,12 @@ func NewEnv() Env {
 		}
 	}
 	env.GoCache, env.GoCacheProblem, env.GoCacheError = buildCache(settings)
+	if env.GoCache != "" && filepath.IsAbs(settings.GOMODCACHE) {
+		if mod := resolvedPath(settings.GOMODCACHE); within(mod, env.GoCache) || within(env.GoCache, mod) {
+			// go clean -cache would remove the module cache with it.
+			env.GoCache, env.GoCacheProblem = "", "GOCACHE and GOMODCACHE overlap"
+		}
+	}
 	env.GoClean = func(ctx context.Context) error { return goClean(ctx, env.GoCache) }
 	return env
 }
@@ -53,6 +61,11 @@ func tempDirs(dirs ...string) []string {
 			continue
 		}
 		real, err := filepath.EvalSymlinks(dir)
+		if err == nil {
+			// Absolute, so it compares with the absolute protected paths
+			// and mount points.
+			real, err = filepath.Abs(real)
+		}
 		if err != nil {
 			continue
 		}
@@ -82,6 +95,8 @@ func buildCache(settings goenv.Env) (cache, problem, failure string) {
 	if err != nil {
 		return "", "", "GOCACHE " + settings.GOCACHE + " cannot be inspected: " + err.Error()
 	}
+	// EvalSymlinks has just resolved it, so it exists; only its type is
+	// checked.
 	if info, err := os.Stat(real); err != nil || !info.IsDir() {
 		return "", "no build cache at " + settings.GOCACHE, ""
 	}

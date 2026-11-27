@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -538,8 +539,26 @@ func TestBuildCacheFailureAndEmptyCache(t *testing.T) {
 	if c := category(t, report, CategoryBuild); c.Status != StatusKeep || report.Outcome != OutcomeDone || empty.cleaned != 0 {
 		t.Fatalf("an empty cache = %#v", report)
 	}
-	if !hasEntries(filepath.Join(t.TempDir(), "absent")) {
+	if _, err := cacheShards(filepath.Join(t.TempDir(), "absent")); err == nil {
 		t.Fatal("an unreadable cache was taken as empty")
+	}
+	// Only two lowercase hex digits make a shard; an unreadable shard is a
+	// failure, never empty.
+	odd := newFixture(t)
+	odd.env.GoCache = t.TempDir()
+	mustWrite(t, filepath.Join(odd.env.GoCache, "zz", "file"), "x")
+	if c := category(t, Run(context.Background(), odd.env, Options{Categories: []string{CategoryBuild}}), CategoryBuild); c.Status != StatusKeep {
+		t.Fatalf("a non-shard directory = %#v", c)
+	}
+	if os.Geteuid() != 0 {
+		locked := newFixture(t)
+		if err := os.Chmod(filepath.Join(locked.env.GoCache, "0a"), 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(filepath.Join(locked.env.GoCache, "0a"), 0o755) })
+		if report := Run(context.Background(), locked.env, Options{Categories: []string{CategoryBuild}}); report.Outcome != OutcomeFailed {
+			t.Fatalf("an unreadable shard = %#v", report)
+		}
 	}
 }
 
@@ -580,10 +599,146 @@ func TestProcReadErrorsAndMountinfo(t *testing.T) {
 		t.Fatal("an invalid escape was decoded")
 	}
 	rootInfo, _ := os.Stat(t.TempDir())
-	if _, keep := scratchCheck(Env{}, Options{}, rootInfo, filepath.Join(t.TempDir(), "absent"), nil); keep != "unreadable" {
+	if keep := scratchCheck(Env{}, Options{}, rootInfo, filepath.Join(t.TempDir(), "absent"), nil); keep != "unreadable" {
 		t.Fatalf("an absent candidate = %q", keep)
 	}
 	if _, err := mountPoints(); err != nil {
 		t.Fatalf("the real mountinfo: %v", err)
 	}
+}
+
+// Scratch stops when the Go caches cannot be located, skips a temporary
+// directory inside a checkout, re-reads mount points before each removal,
+// and reports a cancelled run as failed even with nothing to do.
+func TestScratchStopsWithoutCacheLocationsAndInsideCheckouts(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.scratch("go-build1")
+	f.env.GoCachesUnknown = "Go's settings cannot be read"
+	if report := Run(context.Background(), f.env, Options{Apply: true, Categories: []string{CategoryScratch}}); report.Outcome != OutcomeFailed {
+		t.Fatalf("unknown cache locations = %#v", report)
+	}
+
+	g := newFixture(t)
+	inside := g.scratch("go-build2")
+	mustWrite(t, filepath.Join(g.tmp, ".git", "HEAD"), "ref")
+	report := Run(context.Background(), g.env, Options{Apply: true, Categories: []string{CategoryScratch}})
+	if c := category(t, report, CategoryScratch); !exists(inside) || len(c.Kept) != 1 {
+		t.Fatalf("a temporary directory inside a checkout = %#v", c)
+	}
+	if checkoutAround(filepath.Join(t.TempDir(), "x")) != "" && os.Getenv("CI") == "" {
+		t.Log("the test temporary directory is inside a checkout")
+	}
+
+	h := newFixture(t)
+	late := h.scratch("go-build3")
+	calls := 0
+	h.env.MountPoints = func() ([]string, error) {
+		calls++
+		if calls > 1 {
+			return []string{filepath.Join(late, "001")}, nil
+		}
+		return nil, nil
+	}
+	if c := category(t, Run(context.Background(), h.env, Options{Apply: true, Categories: []string{CategoryScratch}}), CategoryScratch); c.Kept["contains a mount"] != 1 || !exists(late) {
+		t.Fatalf("a mount added before removal = %#v", c)
+	}
+
+	empty := newFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if report := Run(ctx, empty.env, Options{Apply: true, Categories: []string{CategoryScratch}}); report.Outcome != OutcomeFailed {
+		t.Fatalf("a cancelled run with nothing to do = %#v", report)
+	}
+}
+
+// A relative temporary directory is stored absolute; mountinfo keeps a
+// non-breaking space inside a path.
+func TestRelativeTempDirAndNonBreakingSpaces(t *testing.T) {
+	t.Parallel()
+	for _, dir := range tempDirs(".") {
+		if !filepath.IsAbs(dir) {
+			t.Fatalf("a relative temporary directory was kept relative: %q", dir)
+		}
+	}
+	info := filepath.Join(t.TempDir(), "mountinfo")
+	mustWrite(t, info, "7 1 8:1 / /tmp/a\u00a0b rw - ext4 /dev/sda1 rw\n")
+	if points, err := mountPointsIn(info); err != nil || len(points) != 1 || points[0] != "/tmp/a\u00a0b" {
+		t.Fatalf("points = %q %v", points, err)
+	}
+}
+
+// With GOFLAGS=-modcache in Go's env file, the real go clean -cache that
+// prune runs leaves the module cache alone and clears the build cache.
+//
+//nolint:paralleltest // sets GOENV, GOMODCACHE and GOFLAGS
+func TestRealGoCleanNeverWidensToTheModuleCache(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go is not installed")
+	}
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, "env")
+	mustWrite(t, envFile, "GOFLAGS=-modcache\n")
+	modcache := filepath.Join(dir, "mod")
+	sentinel := filepath.Join(modcache, "cache", "download", "sentinel")
+	mustWrite(t, sentinel, "keep me")
+	cache := filepath.Join(dir, "build")
+	mustWrite(t, filepath.Join(cache, "0a", "0a"+strings.Repeat("0", 62)+"-a"), "entry")
+	t.Setenv("GOENV", envFile)
+	t.Setenv("GOMODCACHE", modcache)
+	t.Setenv("GOFLAGS", "")
+	if err := goClean(context.Background(), cache); err != nil {
+		t.Fatal(err)
+	}
+	if !exists(sentinel) {
+		t.Fatal("go clean -cache removed the module cache")
+	}
+	if exists(filepath.Join(cache, "0a")) {
+		t.Fatal("go clean -cache left the build cache")
+	}
+}
+
+// GOCACHE and GOMODCACHE that overlap: go clean -cache would take the
+// module cache with it, so the build cache is not cleared.
+//
+//nolint:paralleltest // replaces resolveGo
+func TestOverlappingGoCachesAreNotCleared(t *testing.T) {
+	dir := t.TempDir()
+	real := resolveGo
+	t.Cleanup(func() { resolveGo = real })
+	resolveGo = func() (goenv.Env, error) {
+		return goenv.Env{GOCACHE: dir, GOMODCACHE: filepath.Join(dir, "ab")}, nil
+	}
+	if env := NewEnv(); env.GoCache != "" || !strings.Contains(env.GoCacheProblem, "overlap") {
+		t.Fatalf("overlapping caches = %q %q", env.GoCache, env.GoCacheProblem)
+	}
+}
+
+// An entry that vanishes between the listing and its inspection is kept as
+// unreadable; the no-follow chmod never follows a symlink.
+//
+//nolint:paralleltest // replaces lstatEntry
+func TestVanishingEntryAndNoFollowChmod(t *testing.T) {
+	f := newFixture(t)
+	f.scratch("go-build1")
+	real := lstatEntry
+	t.Cleanup(func() { lstatEntry = real })
+	lstatEntry = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+	if c := category(t, Run(context.Background(), f.env, Options{Categories: []string{CategoryScratch}}), CategoryScratch); c.Kept["unreadable"] != 1 {
+		t.Fatalf("a vanished entry = %#v", c)
+	}
+	lstatEntry = real
+	target := t.TempDir()
+	if err := os.Chmod(target, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	chmodDirNoFollow(link)
+	if info, _ := os.Stat(target); info.Mode().Perm() != 0o500 {
+		t.Fatalf("a symlink was followed: %v", info.Mode())
+	}
+	_ = os.Chmod(target, 0o755)
 }

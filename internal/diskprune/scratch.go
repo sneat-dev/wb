@@ -31,6 +31,12 @@ func scratchName(name string) bool {
 
 func pruneScratch(ctx context.Context, env Env, o Options) CategoryReport {
 	report := CategoryReport{Name: CategoryScratch, Status: StatusKeep, Kept: map[string]int{}}
+	if env.GoCachesUnknown != "" {
+		// Without the Go caches' locations a cache in TMPDIR could be taken
+		// for scratch.
+		report.Status, report.Reason, report.Kept = StatusFailed, env.GoCachesUnknown, nil
+		return report
+	}
 	mounts, err := env.MountPoints()
 	if err != nil {
 		report.Status, report.Reason, report.Kept = StatusFailed, "mount points cannot be read: "+err.Error(), nil
@@ -53,6 +59,12 @@ roots:
 			failure = "temporary directory " + root + " cannot be read: " + err.Error()
 			continue
 		}
+		if checkout := checkoutAround(root); checkout != "" {
+			// TMPDIR inside (or being) a checkout: its entries are that
+			// checkout's files, never scratch.
+			report.Kept["temporary directory inside the checkout "+checkout]++
+			continue
+		}
 		for _, entry := range entries {
 			if ctx.Err() != nil {
 				failure = "cancelled"
@@ -62,11 +74,16 @@ roots:
 				continue
 			}
 			path := filepath.Join(root, entry.Name())
-			// Measured first, so the eligibility check is the last word
-			// before the removal.
+			// The identity is taken first, then the size, then the checks,
+			// so a directory renamed into place at any point is caught by
+			// the comparison before removal.
+			checked, err := lstatEntry(path)
+			if err != nil {
+				report.Kept["unreadable"]++
+				continue
+			}
 			bytes := env.Measure(ctx, path)
-			checked, keep := scratchCheck(env, o, rootInfo, path, mounts)
-			if keep != "" {
+			if keep := scratchCheck(env, o, rootInfo, path, mounts); keep != "" {
 				report.Kept[keep]++
 				continue
 			}
@@ -80,6 +97,12 @@ roots:
 				// replaced meanwhile (a producer recreating it) is kept.
 				if now, err := os.Lstat(path); err != nil || !os.SameFile(now, checked) {
 					report.Kept["replaced while checked"]++
+					continue
+				}
+				// Mount points are read again for each removal: one added
+				// inside an old tree meanwhile is still seen.
+				if fresh, err := env.MountPoints(); err != nil || containsMount(path, fresh) {
+					report.Kept["contains a mount"]++
 					continue
 				}
 				if err := env.RemoveAll(path); err != nil {
@@ -102,6 +125,9 @@ roots:
 			}
 		}
 	}
+	if failure == "" && ctx.Err() != nil {
+		failure = "cancelled"
+	}
 	if failure != "" {
 		report.Status, report.Reason = StatusFailed, failure
 	}
@@ -116,27 +142,38 @@ roots:
 // the temporary directory's filesystem, not a Go cache, contain no mount
 // point (bind mounts on the same filesystem included), no checkout and no
 // socket or FIFO, and nothing in it may have changed for the scratch age.
-func scratchCheck(env Env, o Options, rootInfo os.FileInfo, path string, mounts []string) (os.FileInfo, string) {
-	// The identity is taken before anything is inspected, so a directory
-	// swapped in while the tree is walked is never the one removed.
-	checked, err := os.Lstat(path)
-	if err != nil {
-		return nil, "unreadable"
-	}
+func scratchCheck(env Env, o Options, rootInfo os.FileInfo, path string, mounts []string) string {
 	for _, cache := range env.GoCaches {
 		if within(cache, path) || within(path, cache) {
-			return nil, "is or holds a Go cache"
+			return "is or holds a Go cache"
 		}
 	}
+	if containsMount(path, mounts) {
+		return "contains a mount"
+	}
+	return scratchKeepReasonWith(env, o, rootInfo, path, func(_ string, info os.FileInfo) uint64 { return deviceOf(info) })
+}
+
+func containsMount(path string, mounts []string) bool {
 	for _, mount := range mounts {
 		if within(mount, path) {
-			return nil, "contains a mount"
+			return true
 		}
 	}
-	if keep := scratchKeepReasonWith(env, o, rootInfo, path, func(_ string, info os.FileInfo) uint64 { return deviceOf(info) }); keep != "" {
-		return nil, keep
+	return false
+}
+
+// checkoutAround is the git checkout dir lies in (or is), found by a .git
+// entry in dir or an ancestor; "" when there is none.
+func checkoutAround(dir string) string {
+	for current := filepath.Clean(dir); ; current = filepath.Dir(current) {
+		if _, err := os.Lstat(filepath.Join(current, ".git")); err == nil {
+			return current
+		}
+		if current == filepath.Dir(current) {
+			return ""
+		}
 	}
-	return checked, ""
 }
 
 // within reports whether candidate is path or lies below it.
@@ -207,11 +244,13 @@ func removeAll(path string) error {
 		// Checked again just before, so a directory replaced by a symlink
 		// since the walk listed it is never followed.
 		if err == nil && d.IsDir() {
-			if info, err := os.Lstat(p); err == nil && info.IsDir() {
-				_ = os.Chmod(p, 0o700)
-			}
+			chmodDirNoFollow(p)
 		}
 		return nil
 	})
 	return os.RemoveAll(path)
 }
+
+// lstatEntry is os.Lstat; a seam for an entry that vanishes between the
+// listing and its inspection.
+var lstatEntry = os.Lstat

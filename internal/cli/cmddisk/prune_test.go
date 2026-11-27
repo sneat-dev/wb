@@ -70,7 +70,7 @@ func TestPruneRejectsInvalidFlagsBeforeReading(t *testing.T) {
 	for _, args := range [][]string{
 		{"--category", "docker"}, {"--category", "go-module-cache"}, {"--category", "node-package-store"},
 		{"--category="}, {"--category=scratch,"}, {"--category=scratch", "--category="},
-		{"--older-than", "soon"}, {"--older-than", "1h"}, {"--older-than="}, {"--older-than", "0d"}, {"--older-than", "xd"},
+		{"--older-than", "soon"}, {"--older-than", "1h"}, {"--older-than="}, {"--older-than", "0d"}, {"--older-than", "xd"}, {"--older-than", "106752d"},
 		{"--format", "yaml"},
 	} {
 		h := &pruneHarness{}
@@ -94,6 +94,9 @@ func TestPrunePassesTheSelection(t *testing.T) {
 	}
 	if !h.options.Apply || len(h.options.Categories) != 2 || h.options.ScratchAge != 5*24*time.Hour {
 		t.Fatalf("options = %#v", h.options)
+	}
+	if _, err := h.execute("--older-than", "36501d"); err != nil || h.options.ScratchAge != 36501*24*time.Hour {
+		t.Fatalf("a long age in days: %#v %v", h.options, err)
 	}
 	if _, err := h.execute("--older-than", "100h"); err != nil || h.options.ScratchAge != 100*time.Hour || h.options.Apply {
 		t.Fatalf("hours: %#v %v", h.options, err)
