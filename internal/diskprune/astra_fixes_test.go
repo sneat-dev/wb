@@ -165,7 +165,7 @@ func TestReadSmallRegularRefusesSpecialFiles(t *testing.T) {
 	if err := syscall.Mkfifo(filepath.Join(cache, "README"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if isGoBuildCacheShape(cache) {
+	if shape, _ := isGoBuildCacheShape(cache); shape {
 		t.Fatal("a FIFO README made a Go cache")
 	}
 }

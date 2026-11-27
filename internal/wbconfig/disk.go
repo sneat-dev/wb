@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"syscall"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -86,16 +87,22 @@ func parseDisk(raw []byte) (DiskConfig, error) {
 // LoadDisk reads the disk: section from path. An absent file or section is
 // not an error: the defaults apply.
 func LoadDisk(path string) (DiskConfig, error) {
-	// Only a regular file is read: a FIFO under the name would block the
-	// daemon, which reads this file on every check, and its shutdown.
-	info, err := os.Stat(path)
+	// Only a regular file is read, opened without blocking and checked on
+	// the open descriptor: a FIFO under the name (even one swapped in after
+	// a check) would block the daemon, which reads this file on every check,
+	// and its shutdown.
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if errors.Is(err, os.ErrNotExist) {
 		return DefaultDiskConfig(), nil
 	}
-	if err == nil && !info.Mode().IsRegular() {
-		return DiskConfig{}, fmt.Errorf("config %s is not a regular file", path)
+	var raw []byte
+	if err == nil {
+		defer func() { _ = file.Close() }()
+		if info, statErr := file.Stat(); statErr != nil || !info.Mode().IsRegular() {
+			return DiskConfig{}, fmt.Errorf("config %s is not a regular file", path)
+		}
+		raw, err = io.ReadAll(file)
 	}
-	raw, err := os.ReadFile(path)
 	if err != nil {
 		return DiskConfig{}, fmt.Errorf("read config %s: %w", path, err)
 	}

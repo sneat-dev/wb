@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -145,8 +146,8 @@ unmet, a failure or a fail-closed skip; see "outcome"), 2 usage.
 	flags := command.Flags()
 	flags.BoolVar(&options.apply, "apply", false, "Delete what the plan lists; without it nothing changes")
 	flags.StringVar(&options.untilFree, "until-free", "", "Free-space target per filesystem: 15%, 20GiB or max (default disk.minimum_available, 10%)")
-	flags.StringSliceVar(&options.categories, "category", nil, "Restrict to a category (repeatable): scratch, go-build-cache")
-	flags.StringVar(&options.olderThan, "older-than", "", "Raise every age floor to at least this duration, such as 100h; never lowers one")
+	flags.StringArrayVar(&options.categories, "category", nil, "Restrict to a category (repeatable): scratch, go-build-cache")
+	flags.StringVar(&options.olderThan, "older-than", "", "Raise every age floor to at least this duration, such as 100h or 3d; never lowers one")
 	flags.BoolVar(&options.allowFullClean, "allow-full-clean", false, "Also remove every Go build-cache entry while no Go tool runs; a build that starts meanwhile can fail once")
 	flags.BoolVar(&options.auto, "auto", false, "The daemon's unattended subset: apply scratch and the build-cache trim to the floor")
 	flags.StringVar(&options.format, "format", "text", "Stdout format: text or json")
@@ -169,6 +170,19 @@ func (options pruneOptions) validate() (diskprune.Options, error) {
 			return o, fmt.Errorf("--%s was given an empty value", name)
 		}
 	}
+	// Each occurrence is split here, not by the flag library, so an empty
+	// one (--category=scratch --category=) or an empty list element is
+	// seen and refused.
+	var categories []string
+	for _, occurrence := range options.categories {
+		for _, category := range strings.Split(occurrence, ",") {
+			if strings.TrimSpace(category) == "" {
+				return o, fmt.Errorf("--category was given an empty value")
+			}
+			categories = append(categories, strings.TrimSpace(category))
+		}
+	}
+	options.categories = categories
 	for _, category := range options.categories {
 		switch {
 		case slices.Contains(diskprune.SelectableCategories, category):
@@ -187,7 +201,7 @@ func (options pruneOptions) validate() (diskprune.Options, error) {
 		o.Target = target
 	}
 	if options.olderThan != "" {
-		age, err := time.ParseDuration(options.olderThan)
+		age, err := parseAge(options.olderThan)
 		if err != nil || age <= 0 {
 			return o, fmt.Errorf("--older-than %q: use a positive duration such as 100h", options.olderThan)
 		}
@@ -395,4 +409,16 @@ func signedHuman(bytes int64) string {
 		return "-" + diskusage.Human(-bytes)
 	}
 	return "+" + diskusage.Human(bytes)
+}
+
+// parseAge is a Go duration, or a whole number of days such as 3d.
+func parseAge(raw string) (time.Duration, error) {
+	if days, ok := strings.CutSuffix(strings.TrimSpace(raw), "d"); ok {
+		n, err := strconv.Atoi(days)
+		if err != nil || n <= 0 || n > 36500 {
+			return 0, fmt.Errorf("invalid number of days %q", raw)
+		}
+		return time.Duration(n) * 24 * time.Hour, nil
+	}
+	return time.ParseDuration(raw)
 }

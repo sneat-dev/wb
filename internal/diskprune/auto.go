@@ -122,6 +122,11 @@ func NewestReceipt(stateDir, trigger string) (Receipt, string, bool) {
 		if json.Unmarshal(raw, &receipt) != nil {
 			continue
 		}
+		// A run that never took the lock measured nothing: it neither
+		// clears nor replaces the last real result.
+		if receipt.Outcome == OutcomeLocked {
+			continue
+		}
 		if trigger == "" || receipt.Trigger == trigger {
 			return receipt, path, true
 		}
@@ -244,10 +249,13 @@ func newAutoPruner(projectsRoot, stateDir string, log func(string), configPath f
 		Roots: func() []string {
 			env, _ := ResolveGoEnv()
 			dirs, _ := tempDirs(realWorldDeps())
-			// Exactly the roots --auto prunes: the temporary directories and
-			// GOCACHE. A low filesystem holding only report-only data never
-			// triggers it.
-			return append(dirs, env.GOCACHE)
+			// Exactly the roots --auto can prune: the temporary directories,
+			// and GOCACHE when it is a cache prune can trim. A low filesystem
+			// holding only report-only data never triggers it.
+			if unsupportedCache(env) == "" {
+				dirs = append(dirs, env.GOCACHE)
+			}
+			return dirs
 		},
 		Probe: disk.Probe,
 		Prune: func(ctx context.Context, floor float64) (*World, Report, error) {

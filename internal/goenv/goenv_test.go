@@ -103,13 +103,15 @@ func TestGoEnvFailures(t *testing.T) {
 	}
 }
 
-// A go env line too long to read fails closed: a GOCACHEPROG or GOPRIVATE
-// after it must not silently fall back to defaults.
-func TestGoEnvFileWithAnUnreadableLineFailsClosed(t *testing.T) {
+// Lines are split at LF only, as Go splits them: a CRLF value keeps its CR
+// (so it names a different directory, as it does for Go), and a very long
+// line does not hide a later setting.
+func TestGoEnvFileIsSplitAsGoSplitsIt(t *testing.T) {
 	t.Parallel()
-	long := "GOFLAGS=" + strings.Repeat("x", 2<<20) + "\nGOCACHEPROG=/bin/cacher\n"
-	if _, err := resolveGoEnv(fakeGoEnvSources(map[string]string{"GOENV": "/custom/env"}, map[string]string{"/custom/env": long})); err == nil {
-		t.Fatal("an over-long go env line was skipped")
+	long := "GOFLAGS=" + strings.Repeat("x", 2<<20) + "\nGOCACHEPROG=/bin/cacher\nGOMODCACHE=/mods\r\n"
+	env, err := resolveGoEnv(fakeGoEnvSources(map[string]string{"GOENV": "/custom/env"}, map[string]string{"/custom/env": long}))
+	if err != nil || env.GOCACHEPROG != "/bin/cacher" || env.GOMODCACHE != "/mods\r" {
+		t.Fatalf("env = %#v %v", env.GOCACHEPROG, err)
 	}
 }
 

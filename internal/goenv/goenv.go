@@ -4,12 +4,13 @@
 package goenv
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // Env is the subset of Go's configuration prune depends on, resolved
@@ -120,36 +121,32 @@ func readGoEnvFile(src goEnvSources) (map[string]string, error) {
 		return nil, err
 	}
 	values := map[string]string{}
-	scanner := bufio.NewScanner(strings.NewReader(string(raw)))
-	scanner.Buffer(make([]byte, 64<<10), 1<<20)
-	for scanner.Scan() {
-		// Exactly cmd/go's reading of its env file: a line counts only when
-		// it starts with an upper-case letter and has an "="; neither side
-		// is trimmed. A " GOCACHE=..." line Go ignores is ignored here too.
-		line := scanner.Text()
+	// Exactly cmd/go's reading of its env file: split at LF only (a CR stays
+	// part of the value, as it does for Go), with no line-length limit; a
+	// line counts only when it starts with an upper-case letter and has an
+	// "="; neither side is trimmed. A " GOCACHE=..." line Go ignores is
+	// ignored here too.
+	for _, line := range strings.Split(string(raw), "\n") {
 		key, value, ok := strings.Cut(line, "=")
 		if !ok || line[0] < 'A' || line[0] > 'Z' {
 			continue
 		}
 		values[key] = value
 	}
-	// A line too long to read could hide a later GOCACHEPROG or GOPRIVATE;
-	// defaults in their place would enable deletion Go itself would not.
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
 	return values, nil
 }
 
-// readRegular reads path only when it is a regular file: a FIFO under the
-// name would block the daemon that reads it.
+// readRegular reads path only when it is a regular file. It opens without
+// blocking and checks the type on the opened descriptor, so a FIFO under the
+// name (even one swapped in after a check) never blocks the daemon.
 func readRegular(path string) ([]byte, error) {
-	info, err := os.Stat(path)
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
-	if !info.Mode().IsRegular() {
+	defer func() { _ = file.Close() }()
+	if info, err := file.Stat(); err != nil || !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("%s is not a regular file", path)
 	}
-	return os.ReadFile(path)
+	return io.ReadAll(file)
 }

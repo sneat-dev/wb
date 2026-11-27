@@ -81,8 +81,14 @@ func classifyScratch(path, name string) (scratchShape, bool) {
 	if prefix := longestPrefix(name, regenerablePrefixes); prefix != "" && numberedDir.MatchString(strings.TrimPrefix(name, prefix)) {
 		return scratchShape{candidate: true, floor: floorWB}, true
 	}
-	if agentGoCache.MatchString(name) && isGoBuildCacheShape(path) {
-		return scratchShape{candidate: true, floor: floorWB}, true
+	if agentGoCache.MatchString(name) {
+		shape, err := isGoBuildCacheShape(path)
+		if err != nil {
+			return scratchShape{keep: "partial-scan: " + err.Error()}, true
+		}
+		if shape {
+			return scratchShape{candidate: true, floor: floorWB}, true
+		}
 	}
 	return scratchShape{keep: "not-a-known-producer"}, true
 }
@@ -114,11 +120,12 @@ var hexShard = regexp.MustCompile(`^[0-9a-f]{2}$`)
 
 // isGoBuildCacheShape accepts exactly a Go build cache: Go's README, shard
 // directories of entry files, and Go's bookkeeping files. A fuzz/ tree is
-// accepted here and kept later as cache data.
-func isGoBuildCacheShape(path string) bool {
+// accepted here and kept later as cache data. A shard that cannot be listed
+// is an error, never a "not a cache" verdict: the evidence is incomplete.
+func isGoBuildCacheShape(path string) (bool, error) {
 	entries, err := os.ReadDir(path)
 	if err != nil {
-		return false
+		return false, err
 	}
 	sawReadme := false
 	for _, entry := range entries {
@@ -129,14 +136,14 @@ func isGoBuildCacheShape(path string) bool {
 		case (name == "trim.txt" || name == "testexpire.txt") && entry.Type().IsRegular():
 		case name == "fuzz" && entry.IsDir():
 		case hexShard.MatchString(name) && entry.IsDir():
-			if !onlyEntryFiles(filepath.Join(path, name)) {
-				return false
+			if only, err := onlyEntryFiles(filepath.Join(path, name)); err != nil || !only {
+				return false, err
 			}
 		default:
-			return false
+			return false, nil
 		}
 	}
-	return sawReadme
+	return sawReadme, nil
 }
 
 // cacheEntry is a Go build-cache entry file: a SHA-256 hex digest and -a
@@ -157,17 +164,17 @@ func isGoCacheReadme(path string) bool {
 	return err == nil && strings.HasPrefix(string(raw), goCacheReadme)
 }
 
-func onlyEntryFiles(dir string) bool {
+func onlyEntryFiles(dir string) (bool, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return false
+		return false, err
 	}
 	for _, entry := range entries {
 		if !entry.Type().IsRegular() || !isCacheEntry(filepath.Base(dir), entry.Name()) {
-			return false
+			return false, nil
 		}
 	}
-	return true
+	return true, nil
 }
 
 // processEvidence is the category-level verdict on the process table.

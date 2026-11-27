@@ -392,7 +392,7 @@ func applyPlans(ctx context.Context, w *World, o Options, plans []*categoryPlan,
 		if !plan.applicable || ctx.Err() != nil {
 			continue
 		}
-		lock, err := w.LockDirs(plan.locks)
+		lock, err := w.LockDirs(w.notHeld(plan.locks))
 		if err != nil {
 			reason := "lock-unavailable"
 			if errors.Is(err, ErrLocked) {
@@ -692,3 +692,21 @@ func stopFilesystem(state *filesystemState, note string, reasons map[string]bool
 
 // runCancelled reports whether the Run in progress was cancelled.
 func (w *World) runCancelled() bool { return w.runCtx != nil && w.runCtx.Err() != nil }
+
+// notHeld drops the roots that are the directory the run lock already holds
+// (TMPDIR=$HOME, say): a second flock of the same inode by WB itself would
+// conflict with its own run lock.
+func (w *World) notHeld(paths []string) []string {
+	home, err := os.Stat(w.Home)
+	if err != nil {
+		return paths
+	}
+	var out []string
+	for _, path := range paths {
+		if info, err := os.Stat(path); err == nil && os.SameFile(info, home) {
+			continue
+		}
+		out = append(out, path)
+	}
+	return out
+}

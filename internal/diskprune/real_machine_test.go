@@ -59,8 +59,14 @@ func TestRealMachineDryRunNeverMutates(t *testing.T) {
 		t.Fatalf("the real plan did not finish: %v", ctx.Err())
 	}
 	raw, _ := os.ReadFile(recorder)
-	if len(w.Protected) > 3 && !strings.Contains(string(raw), "worktree list --porcelain -z") {
-		t.Fatalf("the recorder saw no git call although %d roots are protected: %q", len(w.Protected), raw)
+	clones := 0
+	for _, root := range w.Protected {
+		if _, err := os.Stat(filepath.Join(root, ".git")); err == nil {
+			clones++
+		}
+	}
+	if clones > 0 && !strings.Contains(string(raw), "worktree list --porcelain -z") {
+		t.Fatalf("the recorder saw no git call although %d checkouts are protected: %q", clones, raw)
 	}
 	for _, call := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
 		if call != "" && !strings.HasPrefix(call, "git -C ") {

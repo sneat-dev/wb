@@ -208,7 +208,11 @@ func trimEntries(ctx context.Context, w *World, root string, anchor Anchor, file
 	tracker.applied = true
 	tracker.mu.Unlock()
 	var result itemResult
-	floor := time.Duration(0)
+	// cutoff is absolute: entries modified after it are kept. It is fixed
+	// when the process table is read (the clock is read first, so ages
+	// measured a moment later only move it earlier), never recomputed from a
+	// later clock against an earlier age.
+	var cutoff time.Time
 	shard := ""
 	for index, file := range files {
 		if ctx.Err() != nil {
@@ -225,6 +229,7 @@ func trimEntries(ctx context.Context, w *World, root string, anchor Anchor, file
 		}
 		if index%recheckEvery == 0 || file.dir != shard {
 			shard = file.dir
+			read := w.Now()
 			table := w.freshTable()
 			if full {
 				if reason := processEvidence(table, root); reason != "" {
@@ -234,7 +239,8 @@ func trimEntries(ctx context.Context, w *World, root string, anchor Anchor, file
 					return itemResult{unlinked: result.unlinked, status: StatusSkipped, reason: "requested-step-skipped: busy", pids: pids}
 				}
 			} else {
-				floor, _ = buildFloor(table, root, olderThan)
+				floor, _ := buildFloor(table, root, olderThan)
+				cutoff = read.Add(-floor)
 			}
 		}
 		info, err := os.Lstat(filepath.Join(file.dir, file.name))
@@ -244,7 +250,7 @@ func trimEntries(ctx context.Context, w *World, root string, anchor Anchor, file
 			result.partial = result.partial || !errors.Is(err, os.ErrNotExist)
 			continue
 		}
-		if !full && w.Now().Sub(info.ModTime()) < floor {
+		if !full && info.ModTime().After(cutoff) {
 			continue
 		}
 		bytes, err := w.RemoveFile(anchor, file.shard, file.name, file.identity)
@@ -261,10 +267,11 @@ func trimEntries(ctx context.Context, w *World, root string, anchor Anchor, file
 	return result
 }
 
-func olderThan(files []cacheFile, now time.Time, floor time.Duration) []cacheFile {
+// notAfter is the files modified no later than the cutoff.
+func notAfter(files []cacheFile, cutoff time.Time) []cacheFile {
 	var out []cacheFile
 	for _, file := range files {
-		if now.Sub(file.modified) >= floor {
+		if !file.modified.After(cutoff) {
 			out = append(out, file)
 		}
 	}
@@ -303,12 +310,13 @@ func (buildCacheCategory) plan(ctx context.Context, w *World, o Options) *catego
 		plan.skip(reason)
 		return plan
 	}
+	read := w.Now()
 	table := w.freshTable()
 	floor, pid := buildFloor(table, root, o.OlderThan)
 	plan.EffectiveFloor, plan.FloorSetByPID = floor.String(), pid
 	files, anchor, partial := readCacheFiles(w, root)
 	plan.Partial = partial
-	eligible := olderThan(files, w.Now(), floor)
+	eligible := notAfter(files, read.Add(-floor))
 	tracker := newShardTracker(eligible)
 	plan.shards = tracker.report
 	estimate := sumBytes(eligible)
@@ -351,7 +359,8 @@ func (fullCleanCategory) plan(ctx context.Context, w *World, o Options) *categor
 		plan.skip("requested-step-skipped: age-filter-unsupported")
 		return plan
 	case unsupportedCache(w.Go) != "":
-		plan.skip(unsupportedCache(w.Go))
+		// Asked for explicitly, and impossible: a finding, with the reason.
+		plan.skip("requested-step-skipped: " + unsupportedCache(w.Go))
 		return plan
 	case insideAny(root, w.Protected) != "":
 		plan.skip("protected: " + insideAny(root, w.Protected))
@@ -374,13 +383,14 @@ func (fullCleanCategory) plan(ctx context.Context, w *World, o Options) *categor
 		return plan
 	}
 	floor, _ := buildFloor(table, root, 0)
+	cutoff := w.Now().Add(-floor)
 	files, anchor, partial := readCacheFiles(w, root)
 	plan.Partial = partial
 	// The estimate is what the trim leaves; apply re-reads the cache and
 	// takes every entry that remains.
 	var younger []cacheFile
 	for _, file := range files {
-		if w.Now().Sub(file.modified) < floor {
+		if file.modified.After(cutoff) {
 			younger = append(younger, file)
 		}
 	}

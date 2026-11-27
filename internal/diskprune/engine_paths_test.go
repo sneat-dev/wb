@@ -157,18 +157,21 @@ func TestScratchShapeChecks(t *testing.T) {
 	if hasNumberedSubdirs(filepath.Join(dir, "TestX1")) {
 		t.Fatal("a non-numbered subdirectory passed")
 	}
-	if isGoBuildCacheShape(filepath.Join(dir, "absent")) {
+	if _, err := isGoBuildCacheShape(filepath.Join(dir, "absent")); err == nil {
 		t.Fatal("a missing cache has a cache shape")
 	}
 	noReadme := filepath.Join(dir, "c1")
 	mustWrite(t, filepath.Join(noReadme, "0a", "0a01-a"), "x", 0o644)
-	if isGoBuildCacheShape(noReadme) {
+	if shape, _ := isGoBuildCacheShape(noReadme); shape {
 		t.Fatal("a cache without Go's README passed")
 	}
 	foreign := filepath.Join(dir, "c2")
 	mustWrite(t, filepath.Join(foreign, "README"), "", 0o644)
 	mustWrite(t, filepath.Join(foreign, "0a", "sub", "f"), "x", 0o644)
-	if isGoBuildCacheShape(foreign) || onlyEntryFiles(filepath.Join(dir, "absent")) {
+	if shape, _ := isGoBuildCacheShape(foreign); shape {
+		t.Fatal("a foreign file made a Go cache")
+	}
+	if _, err := onlyEntryFiles(filepath.Join(dir, "absent")); err == nil {
 		t.Fatal("a shard with a subdirectory passed")
 	}
 	if it := planScratchEntry(newTestWorld(t).World, Options{}, Table{}, dir, "go-build404", newReclaimAccumulator()); it != nil {

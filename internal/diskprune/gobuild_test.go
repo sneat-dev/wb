@@ -139,10 +139,13 @@ func TestBuildCacheEdgeCases(t *testing.T) {
 		tw.Go = env
 		tw.categories = []category{buildCacheCategory{}, fullCleanCategory{}}
 		report := tw.run(Options{Categories: []string{CategoryBuild}, AllowFullClean: true})
-		for _, cat := range report.Categories {
-			if !strings.HasPrefix(cat.Reason, "unsupported-cache") {
-				t.Errorf("%s: %s = %#v", name, cat.Name, cat)
-			}
+		// The trim explains itself; the full clean, explicitly asked for and
+		// impossible, is a finding.
+		if cat := categoryByName(t, report, CategoryBuild); !strings.HasPrefix(cat.Reason, "unsupported-cache") {
+			t.Errorf("%s: trim = %#v", name, cat)
+		}
+		if cat := categoryByName(t, report, categoryFullClean); !strings.HasPrefix(cat.Reason, "requested-step-skipped: unsupported-cache") || report.Outcome == OutcomeDone {
+			t.Errorf("%s: full clean = %#v (outcome %s)", name, cat, report.Outcome)
 		}
 	}
 	tw := newTestWorld(t)

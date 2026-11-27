@@ -228,8 +228,9 @@ Every pre-existing entry under the state directories is left unchanged.
   `npm-cache`, `go-module-cache`) is a usage error. A category left out of
   `--category` is not walked and is reported `skipped: not-selected`, so the
   report never lists candidates the run would not act on.
-- **Age floors.** `--older-than <dur>` raises every category's age floor to
-  at least `dur` and never lowers one. Each category's default floor is
+- **Age floors.** `--older-than <dur>` (a Go duration such as `100h`, or
+  whole days such as `3d`) raises every category's age floor to at least
+  `dur` and never lowers one. Each category's default floor is
   stated in its REQ. The full build-cache clean is an indivisible
   operation that cannot honour an age. When `--older-than` is given it is
   skipped as `requested-step-skipped: age-filter-unsupported`.
@@ -256,7 +257,8 @@ Every pre-existing entry under the state directories is left unchanged.
   `flock` on its root directory (`GOCACHE`, each temporary
   directory) for as long as it works there. Two users or
   homes that share one physical cache are therefore serialised too. A
-  category whose lock is held is skipped as `locked`.
+  category whose lock is held is skipped as `locked`. A root that is the
+  run lock's own directory (`TMPDIR=$HOME`) is not locked a second time.
 - **Lock failures.** A lock that cannot be taken for any reason, including
   `flock` being unsupported on a network home, means nothing under it is
   deleted, and the reason is reported.
@@ -477,6 +479,10 @@ cache miss.
 
   Every entry a running build has looked up was refreshed to within an
   hour before its lookup, so no such entry is ever old enough to delete.
+  The floor is applied as an absolute cutoff, fixed when the process table
+  is read (the clock first, then the table): an entry is eligible only when
+  modified no later than that cutoff, however long planning and applying
+  take.
   The plan and the report state the effective floor and the PID that set
   it.
 - **Without `/proc`.** The floor is 72 h and cannot be lowered.
@@ -484,7 +490,9 @@ cache miss.
   (corpus data that is not regenerable), and the directory tree itself.
 - **Unsupported configurations.** The category is skipped as
   `unsupported-cache` when `GOCACHE` is `off`, empty, relative or not a
-  directory, or when `GOCACHEPROG` is set.
+  directory, or when `GOCACHEPROG` is set. The full clean, explicitly
+  requested, is then `requested-step-skipped: unsupported-cache`, a
+  finding; the daemon does not trigger on such a cache's filesystem.
 - **Full clean.** With `--allow-full-clean`, prune runs the trim again with
   no age floor. It removes every entry file and keeps everything listed
   above. It never runs `go clean`, which would delete whatever a shard
@@ -618,6 +626,8 @@ stderr only.
 - **Receipts.** Each run appends a receipt under `<root>/.wb/disk/receipts/`,
   best-effort per REQ: zero-free-space. It records the trigger, free space
   before and after per filesystem, bytes per category, and skips.
+  A `locked` receipt measured nothing: the `wb disk` finding comes from the
+  newest automatic receipt that is not `locked`.
 - **Exit and findings.** Exit codes follow REQ: exit-codes, so a run that
   leaves a filesystem below the floor exits `1`. A failed run, or free space
   still below the floor, is shown by `wb daemon status` as `disk_auto_prune`

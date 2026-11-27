@@ -101,6 +101,8 @@ func TestPruneRejectsInvalidFlagsBeforeReading(t *testing.T) {
 		{"--auto", "--allow-full-clean"}, {"--allow-full-clean", "--category", "scratch"}, {"--format", "yaml"},
 		// An empty value, as from an unset shell variable, never widens a run.
 		{"--category="}, {"--until-free="}, {"--older-than="}, {"--category=scratch,"},
+		{"--category=scratch", "--category="}, {"--category", "go-module-cache"}, {"--category", "node-package-store"},
+		{"--older-than", "0d"}, {"--older-than", "xd"},
 	} {
 		h := newPruneHarness(t)
 		h.worldErr = errors.New("the world must not be read")
@@ -374,5 +376,18 @@ func TestPruneHeartbeatCoversDiscovery(t *testing.T) {
 	_, errOut, err := h.execute(shared.Flags{}, false)
 	if err != nil || strings.Count(errOut, "discover") < 2 || !strings.Contains(errOut, "heartbeat every 10s") {
 		t.Fatalf("err %v, progress %q", err, errOut)
+	}
+}
+
+// --older-than takes days as the spec writes them, and a comma list of
+// categories, as one flag or repeated.
+func TestPruneAcceptsDaysAndCategoryLists(t *testing.T) {
+	t.Parallel()
+	h := newPruneHarness(t)
+	if _, _, err := h.execute(shared.Flags{}, false, "--older-than", "2d", "--category", "scratch,go-build-cache"); err != nil && exitCode(err) == shared.ExitUsage {
+		t.Fatalf("usage error: %v", err)
+	}
+	if h.options.OlderThan != 48*time.Hour || len(h.options.Categories) != 2 {
+		t.Fatalf("options = %#v", h.options)
 	}
 }

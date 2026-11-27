@@ -30,7 +30,13 @@ func RemoveFileBeneath(anchor Anchor, rel, name string, expect Identity) (int64,
 	defer func() { _ = unix.Close(dirfd) }()
 	// The directory actually opened must be on the mount the file was
 	// checked on: a shard replaced by a mount since is not the cache.
-	if mount, err := fdMountID(dirfd); err != nil || mount != expect.MountID {
+	// An unreadable mount ID is an inspection failure, reported as such;
+	// only a verified mismatch is a change.
+	mount, err := fdMountID(dirfd)
+	if err != nil {
+		return 0, fmt.Errorf("mount id of %s: %w", rel, err)
+	}
+	if mount != expect.MountID {
 		return 0, ErrChanged
 	}
 	var stat unix.Stat_t

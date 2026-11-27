@@ -384,3 +384,139 @@ func TestMountedScratchEntryAndFileAnchor(t *testing.T) {
 		t.Fatalf("a malformed mount ID was parsed: %v", lines)
 	}
 }
+
+// The build-tool floor is an absolute cutoff fixed when the process table is
+// read: as the clock advances during planning and applying, an entry just
+// inside the floor of a long-running build stays inside it.
+func TestBuildFloorIsAnAbsoluteCutoff(t *testing.T) {
+	t.Parallel()
+	tw := newTestWorld(t)
+	// A 30-hour build: the floor is 31 h. The entry is one second inside it.
+	root := buildCacheFixture(t, tw, map[string]time.Duration{"0a01-a": 31*time.Hour - time.Second})
+	start := tw.Now()
+	ticks := 0
+	tw.Now = func() time.Time {
+		ticks++
+		return start.Add(time.Duration(ticks) * 5 * time.Second)
+	}
+	// As /proc does, the build's age is read against the clock at the time
+	// the table is read: it started 30 h before the run began.
+	tw.Processes = func() Table {
+		age := tw.Now().Sub(start.Add(-30 * time.Hour))
+		return Table{Processes: []Process{{PID: 9, Comm: "go", Argv: []string{"go", "build", "./..."}, Readable: true, Age: age}}}
+	}
+	report := tw.run(Options{Apply: true, Categories: []string{CategoryBuild}, Target: Target{Kind: TargetMax}})
+	if !exists(filepath.Join(root, "0a", cacheName("0a01-a"))) {
+		t.Fatalf("an entry inside the build's floor was deleted: %#v", categoryByName(t, report, CategoryBuild))
+	}
+}
+
+// A locked automatic attempt measured nothing: the finding of the last real
+// run stands.
+func TestLockedReceiptDoesNotClearTheFinding(t *testing.T) {
+	t.Parallel()
+	state := t.TempDir()
+	at := time.Now().Add(-time.Minute)
+	if err := WriteReceipt(state, Receipt{Time: at, Trigger: "daemon", Outcome: OutcomeTargetUnmet}); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteReceipt(state, Receipt{Time: at.Add(30 * time.Second), Trigger: "daemon", Outcome: OutcomeLocked}); err != nil {
+		t.Fatal(err)
+	}
+	if finding := ReceiptFinding(state); !strings.Contains(finding, OutcomeTargetUnmet) {
+		t.Fatalf("finding = %q", finding)
+	}
+}
+
+// A category root that is the run lock's own directory (TMPDIR=$HOME) is
+// not locked a second time, so prune never locks itself out.
+func TestRunLockDirectoryIsNotLockedTwice(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	other := t.TempDir()
+	w := &World{Home: home}
+	if got := w.notHeld([]string{home, other, filepath.Join(home, "absent")}); len(got) != 2 || got[0] != other {
+		t.Fatalf("locks = %v", got)
+	}
+	missing := &World{Home: filepath.Join(home, "absent")}
+	if got := missing.notHeld([]string{other}); len(got) != 1 {
+		t.Fatalf("locks without a home = %v", got)
+	}
+}
+
+// A mount ID that cannot be read on the opened directory is an inspection
+// error, never a silent "changed".
+//
+//nolint:paralleltest // replaces the statx seam
+func TestUnreadableMountIDIsAnError(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "s", "e"), "x", 0o644)
+	anchor, err := AnchorOf(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := identityOf(t, filepath.Join(root, "s", "e"))
+	realStatx := statx
+	t.Cleanup(func() { statx = realStatx })
+	calls := 0
+	statx = func(dirfd int, path string, flags int, mask int, stx *unix.Statx_t) error {
+		calls++
+		if calls == 3 {
+			return errors.New("EIO")
+		}
+		return realStatx(dirfd, path, flags, mask, stx)
+	}
+	if _, err := RemoveFileBeneath(anchor, "s", "e", entry); err == nil || errors.Is(err, ErrChanged) {
+		t.Fatalf("an unreadable mount ID: %v", err)
+	}
+}
+
+// An agent Go cache whose shard cannot be listed is partial evidence, not
+// "not a known producer"; a worktree record without an absolute path is a
+// gap.
+func TestUnreadableShardAndMalformedWorktreeRecord(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() != 0 {
+		dir := filepath.Join(t.TempDir(), "wb-task-cache")
+		mustWrite(t, filepath.Join(dir, "README"), goCacheReadme, 0o644)
+		if err := os.MkdirAll(filepath.Join(dir, "0a"), 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(filepath.Join(dir, "0a"), 0o755) })
+		if shape, _ := classifyScratch(dir, "wb-task-cache"); !strings.HasPrefix(shape.keep, "partial-scan") {
+			t.Fatalf("an unreadable shard = %#v", shape)
+		}
+	}
+	if _, err := parseWorktreeList("worktree /a\x00\x00HEAD abc\x00\x00"); err == nil {
+		t.Fatal("a record without a worktree path was accepted")
+	}
+	if _, err := parseWorktreeList("worktree relative\x00\x00"); err == nil {
+		t.Fatal("a relative worktree path was accepted")
+	}
+}
+
+// The trigger fires only below the floor: healthy, unmeasurable and empty
+// filesystems do not trigger, a low one does.
+func TestAutoTriggerOnlyBelowTheFloor(t *testing.T) {
+	t.Parallel()
+	free := map[string]int64{"/healthy": 50, "/low": 5}
+	pruner := &AutoPruner{
+		Roots: func() []string { return []string{"/healthy", "/unknown", "/empty"} },
+		Probe: func(path string) (diskFilesystem, error) {
+			switch path {
+			case "/unknown":
+				return diskFilesystem{}, errors.New("statfs")
+			case "/empty":
+				return diskFilesystem{}, nil
+			}
+			return diskFilesystem{TotalBytes: 100, AvailableBytes: free[path]}, nil
+		},
+	}
+	if pruner.below(0.1) {
+		t.Fatal("healthy filesystems triggered a prune")
+	}
+	pruner.Roots = func() []string { return []string{"/healthy", "/low"} }
+	if !pruner.below(0.1) {
+		t.Fatal("a filesystem below the floor did not trigger")
+	}
+}

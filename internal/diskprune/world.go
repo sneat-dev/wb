@@ -249,22 +249,25 @@ func findCheckouts(readDir func(string) ([]os.DirEntry, error), root string, ski
 	return found, err
 }
 
-// parseWorktreeList reads `git worktree list --porcelain`.
-// parseWorktreeList reads `git worktree list --porcelain -z`: NUL-terminated
-// fields, so a path holding a newline is read whole. Output that is not
-// NUL-terminated is refused rather than guessed at.
+// parseWorktreeList reads `git worktree list --porcelain -z`: records of
+// NUL-terminated fields, each record ended by an empty field. Every record
+// must begin with a non-empty absolute "worktree" path, so a path holding a
+// newline is read whole and a malformed record is a gap, never skipped.
 func parseWorktreeList(out string) ([]string, error) {
 	if out == "" {
 		return nil, nil
 	}
-	if !strings.HasSuffix(out, "\x00") {
-		return nil, errors.New("output is not NUL-terminated")
+	if !strings.HasSuffix(out, "\x00\x00") {
+		return nil, errors.New("output is not NUL-terminated records")
 	}
 	var paths []string
-	for _, field := range strings.Split(strings.TrimSuffix(out, "\x00"), "\x00") {
-		if path, ok := strings.CutPrefix(field, "worktree "); ok {
-			paths = append(paths, path)
+	for _, record := range strings.Split(strings.TrimSuffix(out, "\x00\x00"), "\x00\x00") {
+		first, _, _ := strings.Cut(record, "\x00")
+		path, ok := strings.CutPrefix(first, "worktree ")
+		if !ok || !filepath.IsAbs(path) {
+			return nil, fmt.Errorf("a record does not begin with an absolute worktree path: %q", first)
 		}
+		paths = append(paths, path)
 	}
 	return paths, nil
 }
