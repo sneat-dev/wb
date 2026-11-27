@@ -49,7 +49,7 @@ func newTestWorld(t *testing.T) *testWorld {
 		},
 		Identity:           StatIdentity,
 		BindOfSubdirectory: func(string) (bool, error) { return false, nil },
-		RemoveFile:         RemoveFileAt,
+		RemoveFile:         RemoveFileBeneath,
 		Scan:               scanTree,
 		LockDirs:           LockDirs,
 		Admit: func(context.Context) (string, time.Duration, func()) {
@@ -122,4 +122,13 @@ type diskFilesystem = disk.Filesystem
 func cacheName(short string) string {
 	digest, suffix := short[:len(short)-2], short[len(short)-2:]
 	return digest + strings.Repeat("0", 64-len(digest)) + suffix
+}
+
+// removeIn removes name directly in dir, anchored at dir itself.
+func removeIn(dir, name string, id Identity) (int64, error) {
+	anchor, err := AnchorOf(dir)
+	if err != nil {
+		return 0, err
+	}
+	return RemoveFileBeneath(anchor, "", name, id)
 }

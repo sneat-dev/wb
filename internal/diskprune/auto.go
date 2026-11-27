@@ -3,6 +3,7 @@ package diskprune
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -56,13 +57,25 @@ func ReceiptFor(trigger string, at time.Time, w *World, report Report) Receipt {
 // and the failure is the caller's to report, never fatal to the prune.
 func WriteReceipt(stateDir string, receipt Receipt) error {
 	dir := ReceiptsDir(stateDir)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	// Neither the receipts directory nor the receipt may be reached through
-	// a symlink, or a receipt could be written into a checkout.
-	for _, path := range []string{filepath.Join(stateDir, "disk"), dir} {
-		if info, err := os.Lstat(path); err != nil || !info.IsDir() {
+	// Neither the state directory, nor disk/, nor receipts/ may be reached
+	// through a symlink, or a receipt (or a directory for it) could be
+	// created inside a checkout. Each component is checked before anything
+	// is created beneath it.
+	for _, path := range []string{stateDir, filepath.Join(stateDir, "disk"), dir} {
+		info, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			mkdir := os.Mkdir
+			if path == stateDir {
+				// A fresh machine's state directory; its parents are the
+				// projects root's.
+				mkdir = os.MkdirAll
+			}
+			if err := mkdir(path, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+				return err
+			}
+			info, err = os.Lstat(path)
+		}
+		if err != nil || !info.IsDir() {
 			return fmt.Errorf("receipt directory %s is not a real directory", path)
 		}
 	}
@@ -99,7 +112,9 @@ func NewestReceipt(stateDir, trigger string) (Receipt, string, bool) {
 	sort.Sort(sort.Reverse(sort.StringSlice(names)))
 	for _, name := range names {
 		path := filepath.Join(ReceiptsDir(stateDir), name)
-		raw, err := os.ReadFile(path)
+		// A receipt is a small regular file; anything else under the name,
+		// a FIFO above all, is skipped rather than allowed to block.
+		raw, err := readRegularFile(path, 1<<20, false)
 		if err != nil {
 			continue
 		}

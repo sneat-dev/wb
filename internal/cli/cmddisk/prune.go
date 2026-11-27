@@ -53,6 +53,10 @@ type pruneOptions struct {
 	apply, auto, allowFullClean, verbose bool
 	untilFree, olderThan, format         string
 	categories                           []string
+	// given names the restricting flags present on the command line, so an
+	// explicitly empty value (--category="$UNSET") is refused rather than
+	// read as no restriction.
+	given map[string]bool
 }
 
 func newPruneCmd(runtime shared.Runtime, deps PruneDependencies) *cobra.Command {
@@ -63,8 +67,8 @@ func newPruneCmd(runtime shared.Runtime, deps PruneDependencies) *cobra.Command 
 		Long: strings.TrimSpace(`
 Give back the space wb disk reports, cheapest to rebuild first, stopping once
 each affected filesystem meets its free-space target. Without --apply this
-only plans: nothing is created, deleted, renamed or locked, and neither go nor
-pnpm is run.
+only plans: nothing is created, deleted, renamed or locked, and go is never
+run.
 
 ` + shared.CleanVersusPrune + `
 
@@ -77,21 +81,24 @@ Categories, in pruning order:
   go-build-cache      Go build-cache entries older than the floor: the larger
                       of --older-than (default 24h) and the oldest running Go
                       build tool's age plus one hour
-  node-package-store  pnpm store prune, run by pnpm itself
   go-module-cache     only with --category go-module-cache: versions no sum
                       file in the fleet names, older than 7 days, that the
                       proxy can provably serve again
   --allow-full-clean  every build-cache entry, only while no Go tool runs
 
 Never pruned: worktrees (wb clean), WB state and the retired ~/.wb (reported
-for a person to decide), and the npm cache (measured only). Prune never runs
-go clean.
+for a person to decide), and the pnpm store and npm cache (measured only; run
+pnpm store prune yourself). Prune never runs go clean.
 
 Exit codes: 0 nothing needs attention, 1 findings (a plan with work, a target
 unmet, a failure or a fail-closed skip; see "outcome"), 2 usage.
 `),
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			options.given = map[string]bool{}
+			for _, name := range []string{"category", "until-free", "older-than"} {
+				options.given[name] = cmd.Flags().Changed(name)
+			}
 			o, err := options.validate()
 			if err != nil {
 				return runtime.ExitError(shared.ExitUsage, err.Error())
@@ -140,10 +147,10 @@ unmet, a failure or a fail-closed skip; see "outcome"), 2 usage.
 	flags := command.Flags()
 	flags.BoolVar(&options.apply, "apply", false, "Delete what the plan lists; without it nothing changes")
 	flags.StringVar(&options.untilFree, "until-free", "", "Free-space target per filesystem: 15%, 20GiB or max (default disk.minimum_available, 10%)")
-	flags.StringSliceVar(&options.categories, "category", nil, "Restrict to a category (repeatable): scratch, go-build-cache, node-package-store, go-module-cache")
+	flags.StringSliceVar(&options.categories, "category", nil, "Restrict to a category (repeatable): scratch, go-build-cache, go-module-cache")
 	flags.StringVar(&options.olderThan, "older-than", "", "Raise every age floor to at least this duration, such as 100h; never lowers one")
 	flags.BoolVar(&options.allowFullClean, "allow-full-clean", false, "Also remove every Go build-cache entry while no Go tool runs; a build that starts meanwhile can fail once")
-	flags.BoolVar(&options.auto, "auto", false, "The daemon's unattended subset: apply scratch, the build-cache trim and pnpm to the floor")
+	flags.BoolVar(&options.auto, "auto", false, "The daemon's unattended subset: apply scratch and the build-cache trim to the floor")
 	flags.StringVar(&options.format, "format", "text", "Stdout format: text or json")
 	flags.BoolVarP(&options.verbose, "verbose", "v", false, "Print each category as it runs, even when stderr is not a terminal")
 	return command
@@ -154,6 +161,15 @@ func (options pruneOptions) validate() (diskprune.Options, error) {
 	o := diskprune.Options{Apply: options.apply, Auto: options.auto, AllowFullClean: options.allowFullClean}
 	if options.format != "text" && options.format != "json" {
 		return o, fmt.Errorf("unsupported --format %q: use text or json", options.format)
+	}
+	for name, given := range options.given {
+		empty := (name == "category" && len(options.categories) == 0) ||
+			(name == "until-free" && strings.TrimSpace(options.untilFree) == "") ||
+			(name == "older-than" && strings.TrimSpace(options.olderThan) == "")
+		if given && empty {
+			// An empty restriction would silently widen a destructive run.
+			return o, fmt.Errorf("--%s was given an empty value", name)
+		}
 	}
 	for _, category := range options.categories {
 		switch {

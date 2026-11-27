@@ -71,12 +71,12 @@ func TestTrimStopsAtTargetAndReportsPartialShards(t *testing.T) {
 	partial := newTestWorld(t)
 	buildCacheFixture(t, partial, map[string]time.Duration{"0a01-a": 100 * time.Hour, "0a02-a": 90 * time.Hour})
 	first := true
-	partial.RemoveFile = func(dir, name string, id Identity) (int64, error) {
+	partial.RemoveFile = func(anchor Anchor, rel, name string, id Identity) (int64, error) {
 		if first {
 			first = false
 			return 0, ErrChanged
 		}
-		return RemoveFileAt(dir, name, id)
+		return RemoveFileBeneath(anchor, rel, name, id)
 	}
 	report = partial.run(Options{Apply: true, Categories: []string{CategoryBuild}, Floor: 0.01})
 	if shard := categoryByName(t, report, CategoryBuild).Shards[0]; shard.Status != StatusPartial {
@@ -173,28 +173,6 @@ func TestModuleExtractedIdentity(t *testing.T) {
 	}
 }
 
-// pnpm is checked again under the locks, immediately before pruning, and
-// untrusted evidence at that point stops it.
-func TestPnpmRecheckedBeforePrune(t *testing.T) {
-	t.Parallel()
-	tw, fake := pnpmWorld(t)
-	inner := fake.run
-	tw.Pnpm = func(ctx context.Context, args ...string) (string, error) {
-		if strings.Join(args, " ") == "config get cache-dir" {
-			tw.processes = []Process{{PID: 5, Comm: "pnpm", Argv: []string{"pnpm", "install"}, Readable: true}}
-		}
-		return inner(ctx, args...)
-	}
-	if it := categoryByName(t, tw.run(Options{Apply: true, Floor: 0.01}), CategoryPnpm).Items[0]; it.Reason != "busy" {
-		t.Fatalf("an install that started mid-query = %#v", it)
-	}
-	untrusted, _ := pnpmWorld(t)
-	untrusted.categories = []category{hookedCategory{inner: pnpmCategory{}, after: func() { untrusted.evidence = Evidence{Unknown: "fd exhaustion"} }}}
-	if it := categoryByName(t, untrusted.run(Options{Apply: true, Floor: 0.01}), CategoryPnpm).Items[0]; !strings.HasPrefix(it.Reason, "unknown") {
-		t.Fatalf("untrusted evidence at apply = %#v", it)
-	}
-}
-
 // Scratch counts a process naming the temporary directory's unresolved
 // spelling, keeps a candidate that is a resolved cache, keeps a real Go
 // cache that holds a fuzz corpus, and re-checks evidence at apply.
@@ -202,12 +180,12 @@ func TestScratchAliasesCachesAndApplyEvidence(t *testing.T) {
 	t.Parallel()
 	tw := newTestWorld(t)
 	tw.entry("go-build1", 8)
-	tw.TempAliases = map[string]string{tw.tmp: "/tmp-alias"}
+	tw.TempAliases = map[string][]string{tw.tmp: {"/tmp-first", "/tmp-alias"}}
 	tw.processes = []Process{{PID: 4, Comm: "cat", Readable: true, Cwd: "/tmp-alias/go-build1"}}
 	if it := itemsByName(tw.run(Options{Floor: 0.01}), CategoryScratch)["go-build1"]; it.Reason != "held-open" {
 		t.Fatalf("alias reference = %#v", it)
 	}
-	if tw.alias("/elsewhere/x") != "" {
+	if len(tw.aliases("/elsewhere/x")) != 0 {
 		t.Fatal("an unrelated path has an alias")
 	}
 
@@ -246,7 +224,7 @@ func TestRemovalChecksAFlatCandidateAndHardLinks(t *testing.T) {
 	if err := os.Link(filepath.Join(candidate, "f"), filepath.Join(parent, "keeper")); err != nil {
 		t.Fatal(err)
 	}
-	if bytes, err := RemoveFileAt(candidate, "f", identityOf(t, filepath.Join(candidate, "f"))); err != nil || bytes != 0 {
+	if bytes, err := removeIn(candidate, "f", identityOf(t, filepath.Join(candidate, "f"))); err != nil || bytes != 0 {
 		t.Fatalf("hard-linked unlink freed %d (%v)", bytes, err)
 	}
 	if err := os.Link(filepath.Join(parent, "keeper"), filepath.Join(parent, "second")); err != nil {
@@ -275,7 +253,7 @@ func TestRunLockFailureIsReported(t *testing.T) {
 
 // The world resolves a symlinked temporary directory and records the
 // spelling the environment used; relative cache values are left to the
-// category to refuse; checkout discovery stops at its depth and reports an
+// category to refuse; checkout discovery reaches any depth and reports an
 // unreadable directory.
 func TestWorldResolvesRootsAndDiscoversStrictly(t *testing.T) {
 	t.Parallel()
@@ -284,8 +262,14 @@ func TestWorldResolvesRootsAndDiscoversStrictly(t *testing.T) {
 	if err := os.Symlink(real, link); err != nil {
 		t.Fatal(err)
 	}
-	dirs, aliases := tempDirs(worldDeps{tempDir: func() string { return link }, getenv: func(string) string { return "" }})
-	if len(dirs) != 1 || aliases[dirs[0]] != link {
+	second := filepath.Join(t.TempDir(), "gotmp-link")
+	if err := os.Symlink(real, second); err != nil {
+		t.Fatal(err)
+	}
+	// TMPDIR and GOTMPDIR reach one directory by two symlinks: one root,
+	// both spellings kept for the reference check.
+	dirs, aliases := tempDirs(worldDeps{tempDir: func() string { return link }, getenv: func(string) string { return second }})
+	if len(dirs) != 1 || len(aliases[dirs[0]]) != 2 || aliases[dirs[0]][0] != link || aliases[dirs[0]][1] != second {
 		t.Fatalf("dirs %v aliases %v", dirs, aliases)
 	}
 	if resolvedRoot("off") != "off" {
@@ -293,8 +277,13 @@ func TestWorldResolvesRootsAndDiscoversStrictly(t *testing.T) {
 	}
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "a", "b", "c", "d", ".git", "HEAD"), "x", 0o644)
-	if found, err := findCheckouts(os.ReadDir, root, 3, true); err != nil || len(found) != 0 {
-		t.Fatalf("a checkout below the depth = %v, %v", found, err)
+	// A clone placed deeper than host/owner/repo (a GitLab subgroup) is
+	// found, and a symlink loop is walked once.
+	if err := os.Symlink(root, filepath.Join(root, "a", "loop")); err != nil {
+		t.Fatal(err)
+	}
+	if found, err := findCheckouts(os.ReadDir, root, true); err != nil || len(found) != 1 || !strings.HasSuffix(found[0], filepath.Join("b", "c", "d")) {
+		t.Fatalf("a deep checkout = %v, %v", found, err)
 	}
 	failure := errors.New("EACCES")
 	readDir := func(dir string) ([]os.DirEntry, error) {
@@ -303,7 +292,7 @@ func TestWorldResolvesRootsAndDiscoversStrictly(t *testing.T) {
 		}
 		return os.ReadDir(dir)
 	}
-	if _, err := findCheckouts(readDir, root, 3, true); !errors.Is(err, failure) {
+	if _, err := findCheckouts(readDir, root, true); !errors.Is(err, failure) {
 		t.Fatalf("an unreadable nested directory = %v", err)
 	}
 }
@@ -416,14 +405,14 @@ func TestFindCheckoutsFollowsSymlinksAndSkipsForeignDirectories(t *testing.T) {
 	if err := os.Symlink(target, filepath.Join(root, "github.com", "acme", "app")); err != nil {
 		t.Fatal(err)
 	}
-	found, err := findCheckouts(os.ReadDir, root, 3, true)
+	found, err := findCheckouts(os.ReadDir, root, true)
 	if err != nil || len(found) != 1 || !strings.HasSuffix(found[0], "app") {
 		t.Fatalf("symlinked clone: %v, %v", found, err)
 	}
 	if err := os.Symlink(filepath.Join(root, "absent"), filepath.Join(root, "github.com", "acme", "dangling")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := findCheckouts(os.ReadDir, root, 3, true); err == nil {
+	if _, err := findCheckouts(os.ReadDir, root, true); err == nil {
 		t.Fatal("a dangling symlinked placement was skipped silently")
 	}
 	ghost := t.TempDir()
@@ -441,13 +430,13 @@ func TestFindCheckoutsFollowsSymlinksAndSkipsForeignDirectories(t *testing.T) {
 		}
 		return entries, err
 	}
-	if _, err := findCheckouts(readDir, ghost, 3, true); !errors.Is(err, os.ErrPermission) {
+	if _, err := findCheckouts(readDir, ghost, true); !errors.Is(err, os.ErrPermission) {
 		t.Fatalf("an unreadable directory of this user's = %v", err)
 	}
 	if err := os.Remove(filepath.Join(ghost, "mine")); err != nil {
 		t.Fatal(err)
 	}
-	if found, err := findCheckouts(readDir, ghost, 3, true); err != nil || len(found) != 0 {
+	if found, err := findCheckouts(readDir, ghost, true); err != nil || len(found) != 0 {
 		t.Fatalf("another user's unreadable directory = %v, %v", found, err)
 	}
 }
@@ -497,8 +486,8 @@ func TestTrimProbeFailureAndCancellation(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	files, _ := readCacheFiles(tw.World, root)
-	if result := trimEntries(ctx, tw.World, root, files, 0, newShardTracker(files), false); result.unlinked != 0 || !exists(filepath.Join(root, "0a", cacheName("0a01-a"))) {
+	files, anchor, _ := readCacheFiles(tw.World, root)
+	if result := trimEntries(ctx, tw.World, root, anchor, files, 0, newShardTracker(files), false); result.unlinked != 0 || !exists(filepath.Join(root, "0a", cacheName("0a01-a"))) {
 		t.Fatalf("a cancelled trim removed %d bytes", result.unlinked)
 	}
 }

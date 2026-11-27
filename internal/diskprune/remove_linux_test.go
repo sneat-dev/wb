@@ -329,17 +329,17 @@ func TestRemoveFileAtChecksIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustWrite(t, path, "replacement", 0o644)
-	if _, err := RemoveFileAt(dir, "0a1b-a", checked); !errors.Is(err, ErrChanged) {
+	if _, err := removeIn(dir, "0a1b-a", checked); !errors.Is(err, ErrChanged) {
 		t.Fatalf("replaced file: %v", err)
 	}
 	fresh := identityOf(t, path)
-	if bytes, err := RemoveFileAt(dir, "0a1b-a", fresh); err != nil || bytes <= 0 {
+	if bytes, err := removeIn(dir, "0a1b-a", fresh); err != nil || bytes <= 0 {
 		t.Fatalf("remove = %d, %v", bytes, err)
 	}
-	if _, err := RemoveFileAt(dir, "0a1b-a", fresh); err == nil {
+	if _, err := removeIn(dir, "0a1b-a", fresh); err == nil {
 		t.Fatal("removing a missing file succeeded")
 	}
-	if _, err := RemoveFileAt(filepath.Join(dir, "missing"), "x", fresh); err == nil {
+	if _, err := removeIn(filepath.Join(dir, "missing"), "x", fresh); err == nil {
 		t.Fatal("missing directory accepted")
 	}
 	sub := filepath.Join(dir, "sub")
@@ -352,7 +352,7 @@ func TestRemoveFileAtChecksIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	chmodTreeWritable(t, dir)
-	if _, err := RemoveFileAt(sub, "f", stuck); err == nil || errors.Is(err, ErrChanged) {
+	if _, err := removeIn(sub, "f", stuck); err == nil || errors.Is(err, ErrChanged) {
 		t.Fatalf("unlink in a read-only directory: %v", err)
 	}
 }

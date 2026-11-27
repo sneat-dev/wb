@@ -8,6 +8,6 @@ func scanTree(root string, mount uint64, protected []string) scanResult {
 	return scanResult{Partial: true}
 }
 
-func scanTreeWithIDs(ids map[[2]uint64]string) func(string, uint64, []string) scanResult {
+func scanTreeWithIDs(ids map[[2]uint64]string, stop func() bool) func(string, uint64, []string) scanResult {
 	return scanTree
 }

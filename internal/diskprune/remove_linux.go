@@ -181,6 +181,15 @@ func (r treeRemover) empty(fd int, mount uint64, top string, outcome *TreeOutcom
 			return ErrContainsMount
 		}
 		err = r.empty(childfd, mount, top, outcome)
+		if err == nil {
+			// The name must still be the directory just emptied: one renamed
+			// away meanwhile, with another empty directory in its place, is
+			// not removed in its stead.
+			var emptied, named unix.Stat_t
+			if r.sys.fstat(childfd, &emptied) != nil || r.sys.fstatat(fd, name, &named) != nil || emptied.Dev != named.Dev || emptied.Ino != named.Ino {
+				err = ErrReplaced
+			}
+		}
 		_ = unix.Close(childfd)
 		if err != nil {
 			return err
@@ -241,10 +250,14 @@ var (
 	mountinfoPath = "/proc/self/mountinfo"
 )
 
-// mountIDFromMountinfo returns the ID of the mount whose mount point is the
-// longest prefix of path.
-func mountIDFromMountinfo(mountinfo, path string) (uint64, error) {
-	best, bestLen := uint64(0), -1
+// mountLine is one line of /proc/self/mountinfo.
+type mountLine struct {
+	id          uint64
+	root, point string
+}
+
+func parseMountinfo(mountinfo string) []mountLine {
+	var lines []mountLine
 	for _, line := range strings.Split(mountinfo, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 5 {
@@ -254,18 +267,45 @@ func mountIDFromMountinfo(mountinfo, path string) (uint64, error) {
 		if err != nil {
 			continue
 		}
-		// mountinfo escapes space, tab, newline and backslash as octal;
-		// a later line for the same point is a mount stacked on top, which
-		// is the one visible, so ties go to the later line.
-		point := unescapeMountinfo(fields[4])
-		if (point == "/" || within(path, point)) && len(point) >= bestLen {
-			best, bestLen = id, len(point)
+		// mountinfo escapes space, tab, newline and backslash as octal.
+		lines = append(lines, mountLine{id: id, root: unescapeMountinfo(fields[3]), point: unescapeMountinfo(fields[4])})
+	}
+	return lines
+}
+
+// visibleMount is the mount a lookup of path reaches, judged from mountinfo
+// alone: the longest mount point containing path. It is refused as
+// ambiguous when any mount point on the way is stacked (mounted more than
+// once): a mount over a lower one can hide a deeper mount the longest-prefix
+// rule would still pick.
+func visibleMount(mountinfo, path string) (mountLine, error) {
+	lines := parseMountinfo(mountinfo)
+	count := map[string]int{}
+	for _, line := range lines {
+		count[line.point]++
+	}
+	best, bestLen := mountLine{}, -1
+	for _, line := range lines {
+		if line.point != "/" && !within(path, line.point) {
+			continue
+		}
+		if count[line.point] > 1 {
+			return mountLine{}, fmt.Errorf("%s is stacked with another mount, so the mount of %s is ambiguous: %w", line.point, path, ErrUnsupported)
+		}
+		if len(line.point) > bestLen {
+			best, bestLen = line, len(line.point)
 		}
 	}
 	if bestLen < 0 {
-		return 0, fmt.Errorf("no mount in mountinfo contains %s: %w", path, ErrUnsupported)
+		return mountLine{}, fmt.Errorf("no mount in mountinfo contains %s: %w", path, ErrUnsupported)
 	}
 	return best, nil
+}
+
+// mountIDFromMountinfo is the fallback where statx gives no mount ID.
+func mountIDFromMountinfo(mountinfo, path string) (uint64, error) {
+	line, err := visibleMount(mountinfo, path)
+	return line.id, err
 }
 
 func procFDPath(fd int) (string, error) {
@@ -313,21 +353,22 @@ func bindOfSubdirectory(path string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	root, bestLen := "/", -1
-	for _, line := range strings.Split(string(raw), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 5 {
-			continue
+	// The mount a lookup actually reaches is named by its ID where statx
+	// gives one; the line with that ID says what the mount shows.
+	var stx unix.Statx_t
+	if statx(unix.AT_FDCWD, path, 0, unix.STATX_MNT_ID, &stx) == nil && stx.Mask&unix.STATX_MNT_ID != 0 {
+		for _, line := range parseMountinfo(string(raw)) {
+			if line.id == stx.Mnt_id {
+				return line.root != "/", nil
+			}
 		}
-		point := unescapeMountinfo(fields[4])
-		if (point == "/" || within(path, point)) && len(point) >= bestLen {
-			root, bestLen = unescapeMountinfo(fields[3]), len(point)
-		}
+		return false, fmt.Errorf("mount %d of %s is not in mountinfo", stx.Mnt_id, path)
 	}
-	if bestLen < 0 {
-		return false, fmt.Errorf("no mount in mountinfo contains %s", path)
+	line, err := visibleMount(string(raw), path)
+	if err != nil {
+		return false, err
 	}
-	return root != "/", nil
+	return line.root != "/", nil
 }
 
 // birthAt is the creation time of name under dirfd (dirfd itself when name is

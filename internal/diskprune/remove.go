@@ -1,6 +1,10 @@
 package diskprune
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+	"path/filepath"
+)
 
 // Identity is what a safety check recorded about an object, so deletion can
 // refuse anything that is no longer that object (disk-prune#req:deletion).
@@ -13,9 +17,33 @@ type Identity struct {
 	// records one (0 otherwise). A freed inode number is often handed straight
 	// to the next file; its birth time tells the two apart.
 	Birth int64
-	// Ctime is a regular file's status-change time in nanoseconds; Go's
-	// marking an entry as used since the plan changes it.
+	// Ctime is a single-link regular file's status-change time in
+	// nanoseconds (0 otherwise); Go's marking an entry as used since the
+	// plan changes it.
 	Ctime int64
+}
+
+// Anchor is a category root as the plan verified it: its resolved path and
+// identity. Files are removed only through a descriptor walk beneath it.
+type Anchor struct {
+	Root string
+	ID   Identity
+}
+
+// AnchorOf resolves root's symlinks and records the directory it names.
+func AnchorOf(root string) (Anchor, error) {
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return Anchor{}, err
+	}
+	id, err := StatIdentity(resolved)
+	if err != nil {
+		return Anchor{}, err
+	}
+	if !id.IsDir {
+		return Anchor{}, fmt.Errorf("%s is not a directory", resolved)
+	}
+	return Anchor{Root: resolved, ID: id}, nil
 }
 
 // sameInode reports whether dev, ino and birth name the checked inode.

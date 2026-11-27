@@ -1219,7 +1219,7 @@ candidate meets its free-space target (`--until-free`, default
 
 ```sh
 wb disk prune                                     # plan; exits 1 when there is work
-wb disk prune --apply                             # scratch, Go build-cache trim, pnpm store
+wb disk prune --apply                             # scratch, Go build-cache trim
 wb disk prune --category go-module-cache --apply  # opt-in: unreferenced, re-fetchable module versions
 wb disk prune --format json                       # outcome, reasons, per-filesystem figures
 ```
@@ -1229,7 +1229,7 @@ wb disk prune --format json                       # outcome, reasons, per-filesy
 The two verbs answer different questions about different bytes. Think of the
 machine as a workshop shared by many agents: each worktree is a **workbench**,
 and every bench draws from a **shared storeroom** of compiled Go packages,
-downloaded modules, Node packages and scraps on the floor of `/tmp`.
+downloaded modules and scraps on the floor of `/tmp`.
 
 ```text
                            THE DISK
@@ -1238,8 +1238,8 @@ downloaded modules, Node packages and scraps on the floor of `/tmp`.
  │  ┌─────────┐ ┌─────────┐          ┌──────────────────────┐   │
  │  │ task A  │ │ task B  │          │ Go build cache       │   │
  │  │ landed  │ │ in work │          │ Go module downloads  │   │
- │  └─────────┘ └─────────┘          │ pnpm store           │   │
- │  ┌─────────┐                      │ /tmp scratch         │   │
+ │  └─────────┘ └─────────┘          │ /tmp scratch         │   │
+ │  ┌─────────┐                      │                      │   │
  │  │ task C  │                      └──────────────────────┘   │
  │  │ landed  │                                ▲                │
  │  └─────────┘                                │                │
@@ -1264,7 +1264,10 @@ downloaded modules, Node packages and scraps on the floor of `/tmp`.
   data, because its worst mistake is breaking a build that is running.
 
 A worktree's own `node_modules` lives in the worktree, so `wb clean` reclaims it
-with the bench; prune never touches a worktree. Prune never runs `go clean`;
+with the bench; prune never touches a worktree. The shared pnpm store and npm
+cache are measured by `wb disk` but left alone: pruning them safely would
+depend on pnpm's internal layout, so run `pnpm store prune` yourself. Prune
+never runs `go clean`;
 `--allow-full-clean` removes every build-cache entry only while no Go tool runs.
 There is no `wb cache` command: `wb commands --search "cache"` finds
 `wb disk prune`. The daemon can run the unattended subset below the floor when

@@ -112,3 +112,15 @@ func TestGoEnvFileWithAnUnreadableLineFailsClosed(t *testing.T) {
 		t.Fatal("an over-long go env line was skipped")
 	}
 }
+
+// Lines Go ignores, an indented key or a comment, are ignored; values are
+// taken verbatim, as Go takes them.
+func TestGoEnvFileIsReadAsGoReadsIt(t *testing.T) {
+	t.Parallel()
+	env, err := resolveGoEnv(fakeGoEnvSources(map[string]string{"GOENV": "/custom/env"}, map[string]string{
+		"/custom/env": " GOCACHE=/backup/old-cache\n#GOSUMDB=off\ngoflags=-x\n=x\n\nGOMODCACHE=/mods\n",
+	}))
+	if err != nil || env.GOMODCACHE != "/mods" || env.GOSUMDB != "sum.golang.org" || strings.Contains(env.GOCACHE, "backup") {
+		t.Fatalf("env = %#v %v", env, err)
+	}
+}

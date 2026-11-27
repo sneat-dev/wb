@@ -17,8 +17,8 @@ status: Draft
 and deletes only with `--apply`. It removes regenerable bytes that nothing is
 using, cheapest to rebuild first, and stops once each affected filesystem
 meets its free-space target. That covers scratch whose producer is known,
-the Go build cache by last use, and unreferenced pnpm store entries; Go
-module versions only on request. WB state is reported, never pruned.
+and the Go build cache by last use; Go module versions only on request. WB
+state and the pnpm store are reported, never pruned.
 Worktrees stay with `wb clean`. Before any of that, `wb disk` must measure
 the right places, which today it does not.
 
@@ -78,7 +78,7 @@ scraps on the floor of `/tmp`.
  │  ┌─────────┐ ┌─────────┐          ┌──────────────────────┐   │
  │  │ task A  │ │ task B  │          │ Go build cache       │   │
  │  │ landed  │ │ in work │          │ Go module downloads  │   │
- │  └─────────┘ └─────────┘          │ pnpm store           │   │
+ │  └─────────┘ └─────────┘          │                      │   │
  │  ┌─────────┐                      │ /tmp scratch         │   │
  │  │ task C  │                      └──────────────────────┘   │
  │  │ landed  │                                ▲                │
@@ -170,9 +170,9 @@ test MUST fail when a non-test source file joins a string literal under
 
 Without `--apply`, prune MUST NOT create, delete, rename, truncate, chmod or
 lock anything in any root it measures or manages. The only external command it runs is
-`git worktree list --porcelain` in canonical clones. It reads `/proc`, and
-it runs neither `go` nor `pnpm`. Every mutation goes through a seam of the
-World (tree and file removal, locks, admission, pnpm, HTTP probes) that the
+`git worktree list --porcelain -z` in canonical clones. It reads `/proc`, and
+it never runs `go`. Every mutation goes through a seam of the
+World (tree and file removal, locks, admission, HTTP probes) that the
 planner never calls; a test against this machine's real directories fails if
 any is called, and records every external command the plan runs.
 
@@ -198,7 +198,7 @@ observed change in free space.
 Prune MUST NOT reuse the `wb clean` inventory walk, which purges terminal
 artifacts while it enumerates. Every fact prune needs about worktrees,
 claims, Work Logs and parked sessions comes from a read-only enumeration:
-directory listings, file reads and `git worktree list --porcelain`.
+directory listings, file reads and `git worktree list --porcelain -z`.
 
 On `--apply`, prune writes only these, best-effort:
 
@@ -223,27 +223,26 @@ Every pre-existing entry under the state directories is left unchanged.
   that can be stopped independently: each scratch entry, each build-cache
   shard and each module version.
 - **Categories.** `--category <name>` (repeatable) restricts the run. Valid
-  names are `scratch`, `go-build-cache`, `node-package-store` and
-  `go-module-cache`. An unknown or report-only name (`wb-state`,
-  `legacy-wb-home`, `worktrees`) is a usage error.
+  names are `scratch`, `go-build-cache` and `go-module-cache`. An unknown
+  or report-only name (`wb-state`, `legacy-wb-home`, `worktrees`,
+  `node-package-store`, `npm-cache`) is a usage error.
 - **Modules are opt-in.** `go-module-cache` runs only when
   `--category go-module-cache` is given. A run without `--category` covers
-  the other three, and lists the module cache as `requires-category`
+  the other two, and lists the module cache as `requires-category`
   without walking it, so a default or `--auto` run never pays for the
   fleet-wide reference scan. Any other category left out of `--category` is
   not walked either and is reported `skipped: not-selected`, so the report
   never lists candidates the run would not act on.
 - **Age floors.** `--older-than <dur>` raises every category's age floor to
   at least `dur` and never lowers one. Each category's default floor is
-  stated in its REQ. The pnpm store prune and the full build-cache clean
-  are indivisible operations that cannot honour an age. When
-  `--older-than` is given they are skipped as `age-filter-unsupported`.
+  stated in its REQ. The full build-cache clean is an indivisible
+  operation that cannot honour an age. When `--older-than` is given it is
+  skipped as `requested-step-skipped: age-filter-unsupported`.
 - **Order.** The order is fixed, cheapest to rebuild first:
   1. `scratch`;
   2. `go-build-cache` trim;
-  3. `node-package-store`;
-  4. `go-module-cache`;
-  5. `go-build-cache` full clean, when `--allow-full-clean` is given.
+  3. `go-module-cache`;
+  4. `go-build-cache` full clean, when `--allow-full-clean` is given.
 - **No escalation into nothing.** After each category, prune compares each
   filesystem's observed free-space gain with the bytes it unlinked there.
   When it unlinked more than 256 MiB and gained less than a tenth of that,
@@ -261,7 +260,7 @@ Every pre-existing entry under the state directories is left unchanged.
   lock deletes nothing, reports `another prune is running`, and exits `1`.
 - **Resource locks.** Each category also takes an exclusive, non-blocking
   `flock` on its root directory (`GOCACHE`, `GOMODCACHE`, each temporary
-  directory, the pnpm store) for as long as it works there. Two users or
+  directory) for as long as it works there. Two users or
   homes that share one physical cache are therefore serialised too. A
   category whose lock is held is skipped as `locked`.
 - **Lock failures.** A lock that cannot be taken for any reason, including
@@ -504,44 +503,15 @@ cache miss.
 
 ### REQ: node-package-store
 
-pnpm hard-links every store file into every consumer's `node_modules`, so
-deleting a store file directly corrupts installs. Prune MUST NOT delete
-store files itself.
-
-- **Plan.** pnpm has no faithful preview, so the estimate is `null`.
-  Projections after this category are `null` as well, and it never makes a
-  later item `beyond-target`. For information, the plan reports the bytes
-  of single-link files in the measured store directories.
-- **Apply environment.** Prune runs pnpm from `/` with
-  `COREPACK_ENABLE_NETWORK=0`, `COREPACK_ENABLE_DOWNLOAD_PROMPT=0` and
-  `COREPACK_ENABLE_AUTO_PIN=0`, so no pnpm is ever downloaded.
-- **Resolving.** It runs `pnpm --version`, `pnpm store path` and
-  `pnpm config get cache-dir`. An unset cache directory is pnpm's default,
-  `$XDG_CACHE_HOME/pnpm`, else `~/.cache/pnpm` (`~/Library/Caches/pnpm` on
-  macOS). The category is skipped:
-  - as `unknown` when the protected inventory is incomplete, when a store
-    holds a mount, or when a store lies on a bind mount of a subdirectory;
-  - as `unavailable` when any of them fails (not a finding);
-  - as `protected` when the store path or cache directory lies inside a
-    protected root, or contains one;
-  - as `store-not-measured` when the store path is not one of the measured
-    store directories or inside one;
-  - as `write-set-outside-target` when the store, its `tmp/` or the cache
-    directory lies on a filesystem that is not below its target (unless
-    the target is `max`).
-- **Locks.** The resource locks cover both the store and the cache
-  directory. pnpm 8 and later are supported; the version is recorded, and
-  an older one is `unavailable`.
-- **Pruning.** When no pnpm process is running, prune runs
-  `pnpm store prune` with the same working directory and environment. It
-  passes no `--store-dir`, because pnpm appends its store version to a
-  configured store directory. It runs `pnpm store path` again afterwards;
-  a different answer is reported as a failure. If pnpm refuses because a
-  store server is running, the category reports that refusal.
-- **Cost.** A worktree whose lockfile names a pruned package, but which has
-  no `node_modules` yet, downloads it again on its next install. Offline
-  reinstallation is not guaranteed, and the plan says so.
-- **npm.** The npm cache is measured but not pruned.
+The pnpm store and the npm cache are measured by `wb disk` and MUST NOT be
+pruned. pnpm hard-links every store file into every consumer's
+`node_modules`, so only pnpm can tell which files are unreferenced. Running
+`pnpm store prune` safely would mean verifying pnpm's own traversal: its
+internal store layout (`v*/files`, `v*/index`), its cache directory and
+every mount and symlink in them. That depends on pnpm internals and walks
+the whole store, which costs more than it saves. `wb disk` names
+`pnpm store prune` for a person to run, and `--category node-package-store`
+is a usage error.
 
 ### REQ: go-module-cache
 
@@ -549,7 +519,7 @@ This category runs only when `--category go-module-cache` is given.
 
 - **Reference set.** The set is every module version named in a sum file
   inside every canonical clone, and inside every worktree that any clone's
-  `git worktree list --porcelain` registers or any worktrees root holds.
+  `git worktree list --porcelain -z` registers or any worktrees root holds.
   Sum files are `go.sum`, `go.work.sum`, and every `<name>.sum` beside a
   `<name>.mod`, which covers alternate `-modfile`s. The search descends
   everywhere below a checkout root except `node_modules/` and `.git/`, so
@@ -583,7 +553,13 @@ This category runs only when `--category go-module-cache` is given.
   - at apply time, `GET <proxy>/<escaped module>/@v/<escaped version>.mod`
     returns 200 with exactly the local `.mod` bytes; and, when the local
     version has a `.zip`, `HEAD …/<escaped version>.zip` (following
-    redirects) returns 200. Each request has 10 s.
+    redirects) returns 200. Each request has 10 s. The probes connect
+    directly, never through an HTTP(S) forward proxy (through one the
+    destination could not be checked); follow only `https://` redirects, at
+    most five; refuse any connection that reaches a loopback address; and
+    reject a body over 1 MiB rather than compare a prefix. Where only a
+    forward proxy reaches the internet, every probe fails and no version is
+    deleted.
 
   Otherwise the version is kept as `not-refetchable`, with the reason:
   - `proxy-auth` for a 401 or 403;
@@ -726,8 +702,8 @@ stderr only.
   `wb disk prune --auto`, at most once per hour. Filesystems holding only
   report-only roots never trigger it.
 - **What `--auto` does.** `--auto` implies `--apply` with the floor as
-  target. It runs only scratch, the build-cache trim and the pnpm store
-  prune. It never prunes Go modules and never runs the full clean.
+  target. It runs only scratch and the build-cache trim. It never prunes Go
+  modules and never runs the full clean.
 - **Rate limit.** The hourly limit applies only to daemon-triggered runs; a
   manual `--auto` always runs, under the lock. The limit is kept in the
   daemon's memory and in the newest receipt. A daemon that restarts
@@ -764,9 +740,6 @@ Feature, should these risks materialise.
    than 24 h, are deleted.
 3. **A failed `Chtimes` inside Go** can leave a used build-cache entry
    looking older than it is. Go ignores that error.
-4. **`pnpm store prune` racing an install that starts after prune's process
-   check** can remove a package that install was about to link. pnpm
-   offers no lock prune could take.
 
 ## Acceptance Criteria
 
@@ -818,12 +791,12 @@ worktree holding terminal artifact debris and a live claim, a Go env
 file setting `GOCACHE`, and fake `go`, `git` and `pnpm` binaries that
 record their arguments
 **When** the user runs every category with `--until-free max --format json`:
-`wb disk prune --category scratch --category go-build-cache --category node-package-store --category go-module-cache --until-free max --format json`
+`wb disk prune --category scratch --category go-build-cache --category go-module-cache --until-free max --format json`
 **Then**:
 - a recursive listing of every root, the debris, the claim and the
   worktree's heartbeat, with modes and modification times, is identical
   before and after;
-- the recorder saw only `git worktree list --porcelain`, and never `go` or
+- the recorder saw only `git worktree list --porcelain -z`, and never `go` or
   `pnpm`;
 - the output validates against the documented shape;
 - exit is `1` with outcome `planned`.
@@ -952,32 +925,6 @@ subdirectories
 - with the second, scratch is unaffected;
 - with each case of the third, both categories are `unknown`;
 - every fail-closed case exits `1`.
-
-### AC: pnpm-under-node-is-detected
-
-**Requirements:** disk-prune#req:concurrency, disk-prune#req:node-package-store
-
-**Given** a fake `pnpm` recording its arguments and environment, a fake
-`/proc` with `node /usr/lib/node_modules/pnpm/bin/pnpm.cjs install`, and
-a `cache-dir` that the fake reports inside `<root>/.wb` in a third run
-**When** `--apply` runs; then again after that process exits; then with the
-protected `cache-dir`
-**Then**:
-- the first run reports the category `busy` and does not invoke `prune`;
-- the second runs `pnpm store prune` from `/` without `--store-dir`, with
-  `COREPACK_ENABLE_NETWORK=0`, and deletes no store file itself;
-- the third skips the category as `protected`.
-
-### AC: pnpm-store-prune-on-a-real-store
-
-**Requirements:** disk-prune#req:node-package-store
-
-**Given** the real `pnpm` binary when present (the test is skipped
-otherwise), a store with one package linked into a project and one
-package no project references
-**When** `--apply` runs on the node-package-store category
-**Then** the referenced package's files remain, the unreferenced package
-is gone, and `pnpm store path` gives the same answer before and after.
 
 ### AC: deletion-is-bound-to-the-checked-object
 
@@ -1185,11 +1132,12 @@ second home that shares this user's `GOCACHE` and holds its resource lock
 
 **Given** any fixture
 **When** prune runs with each of `--category docker`,
-`--category worktrees`, `--until-free 12XB`, `--older-than soon` and
-`--auto --category scratch`
+`--category worktrees`, `--category node-package-store`, `--until-free 12XB`,
+`--older-than soon`, `--auto --category scratch`, and an explicitly empty
+`--category=`, `--until-free=` or `--older-than=`
 **Then** each exits `2` before any filesystem read; and `--older-than 100h`
-raises the scratch and trim floors to 100 h, skips the pnpm prune as
-`age-filter-unsupported`, and leaves the module floor at 7 days.
+raises the scratch and trim floors to 100 h and leaves the module floor at
+7 days.
 
 ### AC: outcome-precedence
 

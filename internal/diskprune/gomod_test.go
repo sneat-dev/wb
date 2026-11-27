@@ -355,22 +355,22 @@ func TestModulesEdgeCases(t *testing.T) {
 			f.tw.LockModuleVersion = func(string) (func(), error) { return nil, errors.New("EIO") }
 		}, StatusFailed, ""},
 		"changed": {func(f *moduleFixture) {
-			f.tw.RemoveFile = func(string, string, Identity) (int64, error) { return 0, ErrChanged }
+			f.tw.RemoveFile = func(Anchor, string, string, Identity) (int64, error) { return 0, ErrChanged }
 		}, StatusSkipped, "changed"},
 		"remove error": {func(f *moduleFixture) {
-			f.tw.RemoveFile = func(string, string, Identity) (int64, error) { return 0, errors.New("EIO") }
+			f.tw.RemoveFile = func(Anchor, string, string, Identity) (int64, error) { return 0, errors.New("EIO") }
 		}, StatusFailed, ""},
 		"tree mount": {func(f *moduleFixture) {
 			f.tw.RemoveTree = func(string, string, Identity) (TreeOutcome, error) { return TreeOutcome{}, ErrContainsMount }
 		}, StatusSkipped, "contains-mount"},
 		"late zip error": {func(f *moduleFixture) {
 			calls := 0
-			f.tw.RemoveFile = func(dir, name string, id Identity) (int64, error) {
+			f.tw.RemoveFile = func(anchor Anchor, rel, name string, id Identity) (int64, error) {
 				calls++
 				if strings.HasSuffix(name, ".zip") {
 					return 0, errors.New("EIO")
 				}
-				return RemoveFileAt(dir, name, id)
+				return RemoveFileBeneath(anchor, rel, name, id)
 			}
 		}, StatusFailed, ""},
 		"identity at apply": {func(f *moduleFixture) {

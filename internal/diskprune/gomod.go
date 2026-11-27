@@ -103,8 +103,13 @@ func isSumFile(path, name string) (bool, error) {
 	return true, nil
 }
 
+// maxSumFile bounds one sum file; a fleet's largest go.work.sum is a few MiB.
+const maxSumFile = 256 << 20
+
 func readSumFile(path string, refs map[string]bool) error {
-	raw, err := os.ReadFile(path)
+	// A checkout's go.sum may be a symlink; a FIFO planted under the name
+	// must not hang the run.
+	raw, err := readRegularFile(path, maxSumFile, true)
 	if err != nil {
 		return err
 	}
@@ -165,6 +170,10 @@ type moduleVersion struct {
 	ziphash     string
 	// foreign is a file beside the version that Go does not write there.
 	foreign bool
+	// anchor is GOMODCACHE as planned, and rel the download directory
+	// beneath it: files are removed only through that walk.
+	anchor Anchor
+	rel    string
 }
 
 func (v moduleVersion) key() string { return v.path + "@" + v.version }
@@ -173,10 +182,11 @@ func (v moduleVersion) key() string { return v.path + "@" + v.version }
 // version that does not unescape is skipped: it is not a version Go wrote.
 func readModuleCache(w *World, root string) ([]moduleVersion, error) {
 	download := filepath.Join(root, "cache", "download")
-	rootMount, err := mountIDOf(root)
+	anchor, err := AnchorOf(root)
 	if err != nil {
 		return nil, err
 	}
+	rootMount := anchor.ID.MountID
 	// The walk must stay inside GOMODCACHE on its own mount: a symlinked
 	// cache/ or download/, or an @v directory on another mount, could make
 	// prune unlink files elsewhere.
@@ -240,7 +250,8 @@ func readModuleCache(w *World, root string) ([]moduleVersion, error) {
 		v := versions[key]
 		if v == nil {
 			v = &moduleVersion{path: modPath, version: version, escPath: escPath, escVersion: escVersion,
-				downloadDir: dir, extracted: filepath.Join(root, filepath.FromSlash(escPath)+"@"+escVersion), files: map[string]fileState{}}
+				downloadDir: dir, extracted: filepath.Join(root, filepath.FromSlash(escPath)+"@"+escVersion), files: map[string]fileState{},
+				anchor: anchor, rel: filepath.Join("cache", "download", filepath.FromSlash(escPath), "@v")}
 			versions[key] = v
 		}
 		if !downloadExts[ext] || !info.Mode().IsRegular() {
@@ -263,7 +274,15 @@ func readModuleCache(w *World, root string) ([]moduleVersion, error) {
 	}
 	out := make([]moduleVersion, 0, len(versions))
 	for _, v := range versions {
-		if info, err := os.Lstat(v.extracted); err == nil && info.IsDir() {
+		info, err := os.Lstat(v.extracted)
+		switch {
+		case err != nil && !errors.Is(err, os.ErrNotExist):
+			// Neither present nor absent: never treated as absent.
+			return nil, fmt.Errorf("inspect %s: %w", v.extracted, err)
+		case err == nil && !info.IsDir():
+			return nil, fmt.Errorf("%s is not a directory", v.extracted)
+		}
+		if err == nil {
 			v.hasExtraction = true
 			identity, err := w.Identity(v.extracted)
 			if err != nil {
@@ -271,7 +290,7 @@ func readModuleCache(w *World, root string) ([]moduleVersion, error) {
 			}
 			v.extractedID = identity
 		}
-		if raw, err := os.ReadFile(filepath.Join(v.downloadDir, v.escVersion+".ziphash")); err == nil {
+		if raw, err := readRegularFile(filepath.Join(v.downloadDir, v.escVersion+".ziphash"), 4<<10, false); err == nil {
 			v.ziphash = strings.TrimSpace(string(raw))
 		}
 		out = append(out, *v)
@@ -384,15 +403,28 @@ func (moduleCategory) plan(ctx context.Context, w *World, o Options) *categoryPl
 	var freshRefs map[string]bool
 	var freshErr error
 	var stamp string
+	var checkouts []string
 	current := func() (map[string]bool, error) {
 		mu.Lock()
 		defer mu.Unlock()
-		now, err := sumStamp(w.Checkouts, w.IgnoreSumFiles)
+		if checkouts == nil {
+			// Membership is read again when deletion starts: a checkout
+			// registered since the plan counts.
+			fresh, gap := w.Checkouts, ""
+			if w.RefreshCheckouts != nil {
+				fresh, gap = w.RefreshCheckouts()
+			}
+			if gap != "" {
+				return nil, errors.New(gap)
+			}
+			checkouts = fresh
+		}
+		now, err := sumStamp(checkouts, w.IgnoreSumFiles)
 		if err != nil {
 			return nil, err
 		}
 		if freshRefs == nil || now != stamp {
-			freshRefs, _, freshErr = referenceSet(w.Checkouts, w.IgnoreSumFiles)
+			freshRefs, _, freshErr = referenceSet(checkouts, w.IgnoreSumFiles)
 			stamp = now
 		}
 		return freshRefs, freshErr
@@ -427,7 +459,7 @@ func (moduleCategory) plan(ctx context.Context, w *World, o Options) *categoryPl
 			}
 		}
 		released := accumulator.add(moduleInodes(v, scan))
-		it.Status, it.estimate, it.known, it.Bytes = StatusDelete, released, true, released
+		it.Status, it.estimate, it.Bytes = StatusDelete, released, released
 		it.Reason = "no sum file in the fleet names " + v.key() + "; downloaded " + w.Now().Sub(v.newest).Round(time.Hour).String() + " ago"
 		version := v
 		it.apply = func(ctx context.Context) itemResult {
@@ -469,7 +501,7 @@ func moduleBusy(table Table) (string, []PIDReport) {
 // locallyModified compares the extracted tree with the recorded zip hash; a
 // mismatch is local edits a re-download would not restore.
 func locallyModified(v moduleVersion) string {
-	recorded, err := os.ReadFile(filepath.Join(v.downloadDir, v.escVersion+".ziphash"))
+	recorded, err := readRegularFile(filepath.Join(v.downloadDir, v.escVersion+".ziphash"), 4<<10, false)
 	if err != nil {
 		return "partial-scan: " + err.Error()
 	}
@@ -553,7 +585,7 @@ func applyModule(ctx context.Context, w *World, v moduleVersion, mount uint64, b
 		if !ok {
 			return nil
 		}
-		bytes, err := w.RemoveFile(v.downloadDir, v.escVersion+ext, file.Identity)
+		bytes, err := w.RemoveFile(v.anchor, v.rel, v.escVersion+ext, file.Identity)
 		result.unlinked += bytes
 		return err
 	}
@@ -562,7 +594,11 @@ func applyModule(ctx context.Context, w *World, v moduleVersion, mount uint64, b
 		return changedOr(result, err)
 	}
 	partial := filepath.Join(v.downloadDir, v.escVersion+".partial")
-	writeMarker(partial)
+	// Best-effort, as Go's own: a version without the marker is still never
+	// half-trusted, because its .ziphash is already gone.
+	if err := writeMarker(partial); err != nil {
+		result.note = ".partial marker not written: " + err.Error()
+	}
 	if v.hasExtraction {
 		outcome, err := w.RemoveTree(filepath.Dir(v.extracted), filepath.Base(v.extracted), v.extractedID)
 		tree := treeResult(outcome, err)
@@ -577,7 +613,9 @@ func applyModule(ctx context.Context, w *World, v moduleVersion, mount uint64, b
 			return changedOr(result, err)
 		}
 	}
-	_ = os.Remove(partial)
+	if err := os.Remove(partial); err != nil && !errors.Is(err, os.ErrNotExist) {
+		result.err = fmt.Errorf("version removed, but its .partial marker remains: %w", err)
+	}
 	return result
 }
 
@@ -606,7 +644,7 @@ func proveRefetch(ctx context.Context, w *World, v moduleVersion, budget *probeC
 	if reason := loopbackProxy(ctx, w); reason != "" {
 		return reason
 	}
-	local, err := os.ReadFile(filepath.Join(v.downloadDir, v.escVersion+".mod"))
+	local, err := readRegularFile(filepath.Join(v.downloadDir, v.escVersion+".mod"), maxProbeBody, false)
 	if err != nil {
 		// Without the cached go.mod there is nothing to prove the proxy
 		// serves the same version against.
@@ -676,15 +714,27 @@ func unchangedSincePlan(w *World, v moduleVersion, mount uint64) string {
 			return "changed: " + v.escVersion + ext + " is gone"
 		}
 	}
-	if v.hasExtraction && v.extractedID.MountID != mount {
-		return "contains-mount"
+	// The extraction must be exactly as planned: still absent, or still the
+	// same tree, on the cache's own mount now (a bind mount placed over it
+	// since keeps its inode but not its mount ID).
+	_, err = os.Lstat(v.extracted)
+	switch {
+	case !v.hasExtraction && err == nil:
+		return "changed: the version was extracted since the plan"
+	case !v.hasExtraction && !errors.Is(err, os.ErrNotExist):
+		return "changed: the extraction cannot be inspected: " + err.Error()
+	case v.hasExtraction && err != nil:
+		return "changed: the extracted tree is gone"
 	}
 	// Every download file, the .ziphash included, already compared equal in
 	// identity, size and times; any write changes ctime.
 	if v.hasExtraction {
 		identity, err := w.Identity(v.extracted)
-		if err != nil || identity.Dev != v.extractedID.Dev || identity.Ino != v.extractedID.Ino {
+		if err != nil || !v.extractedID.sameInode(identity.Dev, identity.Ino, identity.Birth) {
 			return "changed: the extracted tree is not the one the plan checked"
+		}
+		if identity.MountID != mount {
+			return "contains-mount"
 		}
 		if reason := extractedVerdict(w.Scan(v.extracted, mount, w.Protected)); reason != "" {
 			return reason
@@ -744,7 +794,9 @@ func sumStamp(checkouts, ignore []string) (string, error) {
 				}
 				return nil
 			}
-			if !strings.HasSuffix(entry.Name(), ".sum") {
+			// .mod and go.work files decide which sum files count, so a
+			// tools.mod added beside an existing tools.sum changes the stamp.
+			if ext := filepath.Ext(entry.Name()); ext != ".sum" && ext != ".mod" && ext != ".work" {
 				return nil
 			}
 			// A file that vanished mid-walk stamps as gone, which differs

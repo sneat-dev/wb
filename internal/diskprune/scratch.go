@@ -315,7 +315,7 @@ func planScratchEntry(w *World, o Options, table Table, root, name string, accum
 		it.Reason = "too-young: " + age.Round(time.Minute).String() + " < " + floor.String()
 		return it
 	}
-	if pids, unverified := references(table, path, w.alias(path)); len(pids) > 0 {
+	if pids, unverified := references(table, path, w.aliases(path)...); len(pids) > 0 {
 		it.PIDs = pids
 		it.Reason = "held-open"
 		if unverified {
@@ -325,7 +325,6 @@ func planScratchEntry(w *World, o Options, table Table, root, name string, accum
 	}
 	it.Status = StatusDelete
 	it.estimate = accumulator.add(scan.Inodes)
-	it.known = true
 	it.Bytes = it.estimate
 	it.Reason = "unused " + w.Now().Sub(scan.Newest).Round(time.Hour).String() + ", nothing references it"
 	it.apply = func(ctx context.Context) itemResult {
@@ -363,6 +362,12 @@ func scanVerdict(path string, protected, caches []string, scan scanResult) strin
 // process table, a fresh scan, then deletion bound to the checked identity.
 func applyScratch(ctx context.Context, w *World, floor time.Duration, root, name string, identity Identity) itemResult {
 	path := filepath.Join(root, name)
+	// Every check below must be of the planned directory: its identity,
+	// birth time included, is compared before the checks and again after
+	// the scan, and removal compares it once more.
+	if !w.stillIdentical(path, identity) {
+		return itemResult{status: StatusSkipped, reason: "changed: not the directory the plan checked"}
+	}
 	// Still this user's directory, still the producer's shape: an entry that
 	// changed owner, or a test directory that gained a non-numbered child,
 	// no longer qualifies.
@@ -377,7 +382,7 @@ func applyScratch(ctx context.Context, w *World, floor time.Duration, root, name
 	if reason := processEvidence(table, root); reason != "" {
 		return itemResult{status: StatusSkipped, reason: reason}
 	}
-	if pids, unverified := references(table, path, w.alias(path)); len(pids) > 0 {
+	if pids, unverified := references(table, path, w.aliases(path)...); len(pids) > 0 {
 		reason := "held-open"
 		if unverified {
 			reason = "busy-unverified"
@@ -390,6 +395,9 @@ func applyScratch(ctx context.Context, w *World, floor time.Duration, root, name
 	}
 	if w.Now().Sub(scan.Newest) < floor {
 		return itemResult{status: StatusSkipped, reason: "too-young"}
+	}
+	if !w.stillIdentical(path, identity) {
+		return itemResult{status: StatusSkipped, reason: "changed: not the directory the plan checked"}
 	}
 	if ctx.Err() != nil {
 		return itemResult{status: StatusSkipped, reason: "cancelled"}
@@ -431,19 +439,29 @@ func (w *World) cacheRoots() []string {
 	return []string{w.Go.GOCACHE, w.Go.GOMODCACHE}
 }
 
-// alias is path under the unresolved spelling of its temporary directory,
-// or "" when that spelling is the resolved one.
-func (w *World) alias(path string) string {
-	for resolved, original := range w.TempAliases {
+// aliases are path under every unresolved spelling of its temporary
+// directory; none when only the resolved spelling is in use.
+func (w *World) aliases(path string) []string {
+	var out []string
+	for resolved, spellings := range w.TempAliases {
 		if within(path, resolved) {
-			return original + strings.TrimPrefix(path, resolved)
+			for _, spelling := range spellings {
+				out = append(out, spelling+strings.TrimPrefix(path, resolved))
+			}
 		}
 	}
-	return ""
+	return out
 }
 
 // scratchName reports whether a temporary-directory entry's name is one prune
 // has an opinion about, without reading anything.
 func scratchName(name string) bool {
 	return goBuildDir.MatchString(name) || testTempDir.MatchString(name) || name == "wb" || strings.HasPrefix(name, "wb-")
+}
+
+// stillIdentical reports whether path still names the object identity
+// recorded, birth time and mount included.
+func (w *World) stillIdentical(path string, identity Identity) bool {
+	now, err := w.Identity(path)
+	return err == nil && identity.sameInode(now.Dev, now.Ino, now.Birth) && now.MountID == identity.MountID
 }

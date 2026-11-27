@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // Codex Astra code review behaviours.
@@ -27,9 +29,24 @@ func TestReceiptsRefuseSymlinksAndCollisions(t *testing.T) {
 	if err := WriteReceipt(state, Receipt{Time: time.Now(), Trigger: "manual"}); err == nil {
 		t.Fatal("a receipt was written through a symlinked directory")
 	}
-	entries, _ := os.ReadDir(elsewhere)
-	if len(entries) > 1 {
-		t.Fatalf("files appeared behind the symlink: %v", entries)
+	if entries, _ := os.ReadDir(elsewhere); len(entries) != 0 {
+		t.Fatalf("entries appeared behind the symlink: %v", entries)
+	}
+	// A symlinked state directory is refused as well, creating nothing.
+	linkedState := filepath.Join(t.TempDir(), "state")
+	if err := os.Symlink(elsewhere, linkedState); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteReceipt(linkedState, Receipt{Time: time.Now(), Trigger: "manual"}); err == nil {
+		t.Fatal("a receipt was written through a symlinked state directory")
+	}
+	if entries, _ := os.ReadDir(elsewhere); len(entries) != 0 {
+		t.Fatalf("entries appeared behind the symlinked state: %v", entries)
+	}
+	// A state directory that does not exist yet is created.
+	fresh := filepath.Join(t.TempDir(), "new", ".wb")
+	if err := WriteReceipt(fresh, Receipt{Time: time.Now(), Trigger: "manual"}); err != nil {
+		t.Fatalf("a fresh state directory: %v", err)
 	}
 	clean := t.TempDir()
 	receipt := Receipt{Time: time.Unix(1700000000, 0), Trigger: "manual"}
@@ -53,11 +70,8 @@ func TestBindMountedRootsAreRefused(t *testing.T) {
 		f.add("example.com/a", "v1.0.0", true, true)
 		f.tw.entry("go-build1", 8)
 		buildCacheFixture(t, f.tw, map[string]time.Duration{"0a01-a": 100 * time.Hour})
-		store := filepath.Join(t.TempDir(), "store")
-		mustWrite(t, filepath.Join(store, "v10", "x"), "x", 0o644)
-		f.tw.PnpmStores = []string{store}
 		f.tw.BindOfSubdirectory = bind
-		f.tw.categories = []category{scratchCategory{}, buildCacheCategory{}, pnpmCategory{}, moduleCategory{}, fullCleanCategory{}}
+		f.tw.categories = []category{scratchCategory{}, buildCacheCategory{}, moduleCategory{}, fullCleanCategory{}}
 		report := f.tw.run(Options{Categories: SelectableCategories, AllowFullClean: true, Floor: 0.01})
 		for _, cat := range report.Categories {
 			if !strings.HasPrefix(cat.Reason, "unknown") {
@@ -73,16 +87,16 @@ func TestBuildCacheRefusesMountedShards(t *testing.T) {
 	t.Parallel()
 	tw := newTestWorld(t)
 	root := buildCacheFixture(t, tw, map[string]time.Duration{"0a01-a": 100 * time.Hour})
-	files, partial := readCacheFiles(tw.World, root)
+	files, _, partial := readCacheFiles(tw.World, root)
 	if partial || len(files) != 1 {
 		t.Fatalf("files %v partial %t", files, partial)
 	}
 	stale := files[0].identity
 	stale.MountID++
-	if _, err := RemoveFileAt(files[0].dir, files[0].name, stale); !errors.Is(err, ErrChanged) {
+	if _, err := removeIn(files[0].dir, files[0].name, stale); !errors.Is(err, ErrChanged) {
 		t.Fatalf("a file checked on another mount was unlinked: %v", err)
 	}
-	if _, partial := readCacheFiles(tw.World, filepath.Join(t.TempDir(), "absent")); !partial {
+	if _, _, partial := readCacheFiles(tw.World, filepath.Join(t.TempDir(), "absent")); !partial {
 		t.Fatal("a missing cache must be partial")
 	}
 }
@@ -255,66 +269,6 @@ func TestSumStampFailures(t *testing.T) {
 	}
 }
 
-// pnpm: an incomplete protected inventory, a store holding a mount, an
-// unresolvable cache directory, and the default cache locations.
-func TestPnpmInventoryMountsAndDefaultCache(t *testing.T) {
-	t.Parallel()
-	gap, _ := pnpmWorld(t)
-	gap.ProtectedGap = "git worktree list failed"
-	if cat := categoryByName(t, gap.run(Options{}), CategoryPnpm); !strings.HasPrefix(cat.Reason, "unknown") {
-		t.Fatalf("gap = %#v", cat)
-	}
-	mounted, _ := pnpmWorld(t)
-	mounted.Scan = func(string, uint64, []string) scanResult { return scanResult{ContainsMount: true} }
-	if cat := categoryByName(t, mounted.run(Options{}), CategoryPnpm); !strings.HasPrefix(cat.Reason, "contains-mount") {
-		t.Fatalf("mounted store = %#v", cat)
-	}
-	none, fake := pnpmWorld(t)
-	fake.cacheDir = "undefined"
-	none.Home = ""
-	if it := categoryByName(t, none.run(Options{Apply: true, Floor: 0.01}), CategoryPnpm).Items[0]; it.Status != StatusDeleted && !strings.HasPrefix(it.Reason, "unknown") {
-		t.Fatalf("undefined cache dir = %#v", it)
-	}
-	w := &World{Home: "/home/u"}
-	if got := w.pnpmDefaultCache(); got != "/home/u/.cache/pnpm" && os.Getenv("XDG_CACHE_HOME") == "" {
-		t.Fatalf("default cache = %q", got)
-	}
-	if resolved("") != "" {
-		t.Fatal("an empty path resolved")
-	}
-	measured, _ := pnpmWorld(t)
-	measured.Identity = func(string) (Identity, error) { return Identity{}, errors.New("statx") }
-	if singleLinkBytes(measured.World, measured.PnpmStores) != 0 {
-		t.Fatal("an unmeasurable store has bytes")
-	}
-}
-
-// XDG_CACHE_HOME decides pnpm's default cache when set.
-//
-//nolint:paralleltest // sets XDG_CACHE_HOME
-func TestPnpmDefaultCacheFollowsXDG(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", "/xdg")
-	if got := (&World{Home: "/home/u"}).pnpmDefaultCache(); got != "/xdg/pnpm" {
-		t.Fatalf("xdg cache = %q", got)
-	}
-	t.Setenv("XDG_CACHE_HOME", "")
-	if got := (&World{Home: "/home/u"}).pnpmDefaultCache(); got != "/home/u/.cache/pnpm" {
-		t.Fatalf("linux cache = %q", got)
-	}
-}
-
-// pnpm with no way to name its cache directory is refused.
-func TestPnpmUnknownCacheDirectory(t *testing.T) {
-	t.Parallel()
-	tw, fake := pnpmWorld(t)
-	fake.cacheDir = ""
-	tw.Home = ""
-	w := tw.World
-	if got := w.pnpmDefaultCache(); got != filepath.Join(".cache", "pnpm") && os.Getenv("XDG_CACHE_HOME") == "" {
-		t.Fatalf("default without a home = %q", got)
-	}
-}
-
 // mountinfo escapes are decoded, a missing or matchless mountinfo is an
 // error, and a bind of a subdirectory is recognised.
 //
@@ -325,14 +279,37 @@ func TestMountinfoDecodingAndBinds(t *testing.T) {
 	}
 	info := filepath.Join(t.TempDir(), "mountinfo")
 	mustWrite(t, info, "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n7 1 8:1 /home/u/.wb/reports /mnt/with\\040space rw - ext4 /dev/sda1 rw\nshort\n", 0o644)
-	realPath := mountinfoPath
-	t.Cleanup(func() { mountinfoPath = realPath })
+	realPath, realStatx := mountinfoPath, statx
+	t.Cleanup(func() { mountinfoPath, statx = realPath, realStatx })
 	mountinfoPath = info
+	// With statx's mount ID, the line with that ID decides.
+	mountID := uint64(7)
+	statx = func(_ int, _ string, _ int, _ int, stx *unix.Statx_t) error {
+		stx.Mask, stx.Mnt_id = unix.STATX_MNT_ID, mountID
+		return nil
+	}
+	if bound, err := bindOfSubdirectory("/anything"); err != nil || !bound {
+		t.Fatalf("mount 7 = %t, %v", bound, err)
+	}
+	mountID = 1
+	if bound, err := bindOfSubdirectory("/anything"); err != nil || bound {
+		t.Fatalf("mount 1 = %t, %v", bound, err)
+	}
+	mountID = 99
+	if _, err := bindOfSubdirectory("/anything"); err == nil {
+		t.Fatal("a mount ID missing from mountinfo was classified")
+	}
+	// Without it, the longest containing mount point, unless stacked.
+	statx = func(int, string, int, int, *unix.Statx_t) error { return nil }
 	if bound, err := bindOfSubdirectory("/mnt/with space/tmp"); err != nil || !bound {
 		t.Fatalf("bind of a subdirectory = %t, %v", bound, err)
 	}
 	if bound, err := bindOfSubdirectory("/usr"); err != nil || bound {
 		t.Fatalf("the root mount = %t, %v", bound, err)
+	}
+	mustWrite(t, info, "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n5 1 8:1 / /a rw - ext4 /dev/sda1 rw\n6 5 8:1 /x /a/b rw - ext4 /dev/sda1 rw\n8 1 8:1 / /a rw - ext4 /dev/sda1 rw\n", 0o644)
+	if _, err := bindOfSubdirectory("/a/b/c"); err == nil {
+		t.Fatal("a mount under a stacked mount point was classified")
 	}
 	mustWrite(t, info, "short\n", 0o644)
 	if _, err := bindOfSubdirectory("/usr"); err == nil {
@@ -384,7 +361,7 @@ func TestScanRecognisesProtectedIdentities(t *testing.T) {
 	inner := filepath.Join(root, "alias")
 	mustWrite(t, filepath.Join(inner, "f"), "x", 0o644)
 	identity := identityOf(t, inner)
-	result := scanTreeWithIDs(map[[2]uint64]string{{identity.Dev, identity.Ino}: "/home/u/.wb"})(root, identityOf(t, root).MountID, nil)
+	result := scanTreeWithIDs(map[[2]uint64]string{{identity.Dev, identity.Ino}: "/home/u/.wb"}, nil)(root, identityOf(t, root).MountID, nil)
 	if result.Protected != "/home/u/.wb" {
 		t.Fatalf("protected identity = %#v", result)
 	}
@@ -463,7 +440,7 @@ func TestUnreadableRegisteredWorktreeIsAGap(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
 	deps.git = func(context.Context, string, ...string) (string, error) {
-		return "worktree " + clone + "\n\nworktree " + filepath.Join(locked, "wt") + "\n", nil
+		return "worktree " + clone + "\x00\x00worktree " + filepath.Join(locked, "wt") + "\x00\x00", nil
 	}
 	w, err := newWorld(context.Background(), "/r", nil, deps)
 	if err != nil {
@@ -471,16 +448,6 @@ func TestUnreadableRegisteredWorktreeIsAGap(t *testing.T) {
 	}
 	if os.Geteuid() != 0 && !strings.Contains(w.ProtectedGap, "cannot be read") {
 		t.Fatalf("gap = %q", w.ProtectedGap)
-	}
-}
-
-// pnpm's default cache on macOS.
-func TestPnpmDefaultCacheOnMacOS(t *testing.T) {
-	t.Parallel()
-	if os.Getenv("XDG_CACHE_HOME") == "" {
-		if got := pnpmDefaultCacheFor("darwin", "/Users/u"); got != "/Users/u/Library/Caches/pnpm" {
-			t.Fatalf("macOS cache = %q", got)
-		}
 	}
 }
 
@@ -494,7 +461,7 @@ func TestCacheWalksRefuseUnidentifiedOrForeignMounts(t *testing.T) {
 	tw := newTestWorld(t)
 	root := buildCacheFixture(t, tw, map[string]time.Duration{"0a01-a": 100 * time.Hour})
 	mountIDOf = func(path string) (uint64, error) { return 0, errors.New("statx") }
-	if files, partial := readCacheFiles(tw.World, root); !partial || len(files) != 0 {
+	if files, _, partial := readCacheFiles(tw.World, root); !partial || len(files) != 0 {
 		t.Fatalf("unidentified root: %v %t", files, partial)
 	}
 	mountIDOf = func(path string) (uint64, error) {
@@ -503,7 +470,7 @@ func TestCacheWalksRefuseUnidentifiedOrForeignMounts(t *testing.T) {
 		}
 		return realMountIDOf(path)
 	}
-	if files, partial := readCacheFiles(tw.World, root); !partial || len(files) != 0 {
+	if files, _, partial := readCacheFiles(tw.World, root); !partial || len(files) != 0 {
 		t.Fatalf("a mounted shard: %v %t", files, partial)
 	}
 	f := newModuleFixture(t)
@@ -542,5 +509,27 @@ func TestReusedInodeNumberIsNotTheCheckedFile(t *testing.T) {
 	checked := Identity{Dev: 1, Ino: 2, Birth: 100}
 	if checked.sameInode(1, 2, 200) || !checked.sameInode(1, 2, 100) || !(Identity{Dev: 1, Ino: 2}).sameInode(1, 2, 300) {
 		t.Fatal("birth time comparison")
+	}
+}
+
+// A registered worktree whose path holds a newline is read whole; output
+// that is not NUL-terminated is an inventory gap.
+func TestWorktreeListIsNULDelimited(t *testing.T) {
+	t.Parallel()
+	paths, err := parseWorktreeList("worktree /a/odd\nname\x00HEAD abc\x00\x00worktree /b\x00\x00")
+	if err != nil || len(paths) != 2 || paths[0] != "/a/odd\nname" {
+		t.Fatalf("paths %q err %v", paths, err)
+	}
+	if _, err := parseWorktreeList("worktree /a\n"); err == nil {
+		t.Fatal("newline-delimited output was accepted")
+	}
+	if paths, err := parseWorktreeList(""); err != nil || paths != nil {
+		t.Fatalf("empty output = %q %v", paths, err)
+	}
+	deps, clone, _ := fakeWorldDeps(t)
+	deps.git = func(context.Context, string, ...string) (string, error) { return "worktree " + clone + "\n", nil }
+	w, err := newWorld(context.Background(), "/r", nil, deps)
+	if err != nil || !strings.Contains(w.ProtectedGap, "NUL") {
+		t.Fatalf("gap = %q (%v)", w.ProtectedGap, err)
 	}
 }

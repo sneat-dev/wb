@@ -37,10 +37,9 @@ func TestRealMachineDryRunNeverMutates(t *testing.T) {
 	}
 	forbid := func(name string) { t.Errorf("plan called %s", name) }
 	w.RemoveTree = func(string, string, Identity) (TreeOutcome, error) { forbid("RemoveTree"); return TreeOutcome{}, nil }
-	w.RemoveFile = func(string, string, Identity) (int64, error) { forbid("RemoveFile"); return 0, nil }
+	w.RemoveFile = func(Anchor, string, string, Identity) (int64, error) { forbid("RemoveFile"); return 0, nil }
 	w.LockDirs = func([]string) (*Lock, error) { forbid("LockDirs"); return &Lock{}, nil }
 	w.LockModuleVersion = func(string) (func(), error) { forbid("LockModuleVersion"); return func() {}, nil }
-	w.Pnpm = func(context.Context, ...string) (string, error) { forbid("pnpm"); return "", nil }
 	w.HTTP = func(context.Context, string, string) (int, []byte, error) { forbid("HTTP"); return 0, nil, nil }
 	w.Admit = func(context.Context) (string, time.Duration, func()) { forbid("Admit"); return "", 0, func() {} }
 	report := Run(ctx, w, Options{
@@ -62,14 +61,14 @@ func TestRealMachineDryRunNeverMutates(t *testing.T) {
 		t.Fatalf("the real plan did not finish: %v", ctx.Err())
 	}
 	raw, _ := os.ReadFile(recorder)
-	if len(w.Checkouts) > 0 && !strings.Contains(string(raw), "worktree list --porcelain") {
+	if len(w.Checkouts) > 0 && !strings.Contains(string(raw), "worktree list --porcelain -z") {
 		t.Fatalf("the recorder saw no git call although %d checkouts were found: %q", len(w.Checkouts), raw)
 	}
 	for _, call := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
 		if call != "" && !strings.HasPrefix(call, "git -C ") {
 			t.Errorf("the plan ran %q", call)
 		}
-		if call != "" && !strings.HasSuffix(call, " worktree list --porcelain") {
+		if call != "" && !strings.HasSuffix(call, " worktree list --porcelain -z") {
 			t.Errorf("the plan ran %q", call)
 		}
 	}

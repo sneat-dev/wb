@@ -21,7 +21,10 @@ const (
 
 // cacheFile is one build-cache entry file as the plan saw it.
 type cacheFile struct {
+	// dir is the shard's path for reports; shard is its name beneath the
+	// anchor, which removal walks.
 	dir      string
+	shard    string
 	name     string
 	modified time.Time
 	identity Identity
@@ -75,22 +78,23 @@ func unsupportedCache(env GoEnv) string {
 }
 
 // readCacheFiles lists every shard's entry files, globally oldest first.
-func readCacheFiles(w *World, root string) ([]cacheFile, bool) {
-	entries, err := os.ReadDir(root)
+func readCacheFiles(w *World, root string) ([]cacheFile, Anchor, bool) {
+	anchor, err := AnchorOf(root)
 	if err != nil {
-		return nil, true
+		return nil, Anchor{}, true
+	}
+	entries, err := os.ReadDir(anchor.Root)
+	if err != nil {
+		return nil, anchor, true
 	}
 	var files []cacheFile
 	partial := false
-	rootMount, err := mountIDOf(root)
-	if err != nil {
-		return nil, true
-	}
+	rootMount := anchor.ID.MountID
 	for _, entry := range entries {
 		if !entry.IsDir() || !hexShard.MatchString(entry.Name()) {
 			continue
 		}
-		dir := filepath.Join(root, entry.Name())
+		dir := filepath.Join(anchor.Root, entry.Name())
 		// A shard that is a mount (say, a bind of a checkout) is not the
 		// cache: none of its files are entries prune may unlink.
 		if mount, err := mountIDOf(dir); err != nil || mount != rootMount {
@@ -116,11 +120,11 @@ func readCacheFiles(w *World, root string) ([]cacheFile, bool) {
 				partial = true
 				continue
 			}
-			files = append(files, cacheFile{dir: dir, name: file.Name(), modified: info.ModTime(), identity: identity, bytes: unlinkBytes(info)})
+			files = append(files, cacheFile{dir: dir, shard: entry.Name(), name: file.Name(), modified: info.ModTime(), identity: identity, bytes: unlinkBytes(info)})
 		}
 	}
 	sort.SliceStable(files, func(i, j int) bool { return files[i].modified.Before(files[j].modified) })
-	return files, partial
+	return files, anchor, partial
 }
 
 // shardTracker aggregates a trim per shard for reports, so a six-gigabyte
@@ -186,7 +190,7 @@ func (t *shardTracker) report() []ShardReport {
 // reads the process table afresh, recomputes the floor (or, for the full
 // clean, refuses while any Go tool runs or evidence is untrusted) and stops
 // once the filesystem reaches its target.
-func trimEntries(ctx context.Context, w *World, root string, files []cacheFile, olderThan time.Duration, tracker *shardTracker, full bool) itemResult {
+func trimEntries(ctx context.Context, w *World, root string, anchor Anchor, files []cacheFile, olderThan time.Duration, tracker *shardTracker, full bool) itemResult {
 	tracker.mu.Lock()
 	tracker.applied = true
 	tracker.mu.Unlock()
@@ -224,7 +228,7 @@ func trimEntries(ctx context.Context, w *World, root string, files []cacheFile, 
 		if err != nil || (!full && w.Now().Sub(info.ModTime()) < floor) {
 			continue
 		}
-		bytes, err := w.RemoveFile(file.dir, file.name, file.identity)
+		bytes, err := w.RemoveFile(anchor, file.shard, file.name, file.identity)
 		if errors.Is(err, ErrChanged) {
 			continue
 		}
@@ -278,7 +282,7 @@ func (buildCacheCategory) plan(ctx context.Context, w *World, o Options) *catego
 	table := w.freshTable()
 	floor, pid := buildFloor(table, root, o.OlderThan)
 	plan.EffectiveFloor, plan.FloorSetByPID = floor.String(), pid
-	files, partial := readCacheFiles(w, root)
+	files, anchor, partial := readCacheFiles(w, root)
 	plan.Partial = partial
 	eligible := olderThan(files, w.Now(), floor)
 	tracker := newShardTracker(eligible)
@@ -290,10 +294,10 @@ func (buildCacheCategory) plan(ctx context.Context, w *World, o Options) *catego
 	}
 	it := &item{
 		ItemReport: ItemReport{Path: root, Bytes: estimate, Status: StatusDelete, Reason: fmt.Sprintf("%d entries older than %s, oldest first", len(eligible), floor)},
-		root:       root, device: eligible[0].identity.Dev, estimate: estimate, known: true,
+		root:       root, device: eligible[0].identity.Dev, estimate: estimate,
 	}
 	it.apply = func(ctx context.Context) itemResult {
-		return trimEntries(ctx, w, root, eligible, o.OlderThan, tracker, false)
+		return trimEntries(ctx, w, root, anchor, eligible, o.OlderThan, tracker, false)
 	}
 	plan.items = []*item{it}
 	return plan
@@ -343,7 +347,7 @@ func (fullCleanCategory) plan(ctx context.Context, w *World, o Options) *categor
 		return plan
 	}
 	floor, _ := buildFloor(table, root, 0)
-	files, partial := readCacheFiles(w, root)
+	files, anchor, partial := readCacheFiles(w, root)
 	plan.Partial = partial
 	// The estimate is what the trim leaves; apply re-reads the cache and
 	// takes every entry that remains.
@@ -362,12 +366,20 @@ func (fullCleanCategory) plan(ctx context.Context, w *World, o Options) *categor
 	}
 	it := &item{
 		ItemReport: ItemReport{Path: root, Bytes: estimate, Status: StatusDelete, Reason: "every remaining entry, while no Go tool runs"},
-		root:       root, device: files[0].identity.Dev, estimate: estimate, known: true,
+		root:       root, device: files[0].identity.Dev, estimate: estimate,
 	}
 	it.apply = func(ctx context.Context) itemResult {
-		remaining, _ := readCacheFiles(w, root)
+		// The fresh enumeration must be of the very cache the plan checked:
+		// a GOCACHE path now leading to another directory (say, inside a
+		// checkout) is refused before any candidate is taken from it.
+		remaining, now, partial := readCacheFiles(w, root)
+		if now.Root != anchor.Root || !anchor.ID.sameInode(now.ID.Dev, now.ID.Ino, now.ID.Birth) || now.ID.MountID != anchor.ID.MountID {
+			return itemResult{status: StatusSkipped, reason: "changed: GOCACHE no longer names the directory the plan checked"}
+		}
 		tracker.reset(remaining)
-		return trimEntries(ctx, w, root, remaining, 0, tracker, true)
+		result := trimEntries(ctx, w, root, anchor, remaining, 0, tracker, true)
+		result.partial = result.partial || partial
+		return result
 	}
 	plan.items = []*item{it}
 	return plan

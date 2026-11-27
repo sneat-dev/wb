@@ -16,7 +16,7 @@ func newDiskCmd(inv *invocation) *cobra.Command {
 	})
 	for _, sub := range command.Commands() {
 		if sub.Name() == "prune" {
-			setDiscoveryTerms(sub, "cache prune prune cache clean cache free disk space reclaim space no space left on device disk full go build cache go module cache pnpm store scratch tmp quiet")
+			setDiscoveryTerms(sub, "cache prune prune cache clean cache free disk space reclaim space no space left on device disk full go build cache go module cache scratch tmp quiet")
 		}
 	}
 	return command

@@ -296,7 +296,7 @@ func candidateGroups(projectsRoot, home string) []group {
 				filepath.Join(userHome, "Library", "pnpm", "store"),
 				filepath.Join(userHome, ".npm"),
 			},
-			note: "hard-linked into consumers, so apparent size far exceeds what removal reclaims; wb disk prune runs pnpm store prune",
+			note: "hard-linked into consumers, so apparent size far exceeds what removal reclaims; run pnpm store prune to reclaim it (wb disk prune does not)",
 		})
 	}
 	groups = append(groups, group{

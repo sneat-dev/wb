@@ -16,16 +16,17 @@ import (
 const (
 	CategoryScratch   = "scratch"
 	CategoryBuild     = "go-build-cache"
-	CategoryPnpm      = "node-package-store"
 	CategoryModules   = "go-module-cache"
 	categoryFullClean = "go-build-cache-full-clean"
 )
 
 // SelectableCategories are the names --category accepts.
-var SelectableCategories = []string{CategoryScratch, CategoryBuild, CategoryPnpm, CategoryModules}
+var SelectableCategories = []string{CategoryScratch, CategoryBuild, CategoryModules}
 
-// ReportOnlyCategories are measured by wb disk but never pruned.
-var ReportOnlyCategories = []string{"wb-state", "legacy-wb-home", "worktrees"}
+// ReportOnlyCategories are measured by wb disk but never pruned. The pnpm
+// store is among them: pruning it safely would mean depending on pnpm's
+// internal layout and walking the whole store, which costs more than it saves.
+var ReportOnlyCategories = []string{"wb-state", "legacy-wb-home", "worktrees", "node-package-store", "npm-cache"}
 
 // Options is one invocation's selection.
 type Options struct {
@@ -55,7 +56,7 @@ func (o Options) explicit(name string) bool {
 // the default run and --auto cover the other three.
 func (o Options) selected(name string) bool {
 	if o.Auto {
-		return name == CategoryScratch || name == CategoryBuild || name == CategoryPnpm
+		return name == CategoryScratch || name == CategoryBuild
 	}
 	if len(o.Categories) == 0 {
 		return name != CategoryModules
@@ -93,7 +94,7 @@ type World struct {
 	TempDirs     []string
 	// TempAliases maps a resolved temporary directory to the spelling the
 	// environment used, when they differ, so processes naming either count.
-	TempAliases map[string]string
+	TempAliases map[string][]string
 	Go          GoEnv
 	// Protected are roots no category may delete inside or around.
 	Protected []string
@@ -102,6 +103,13 @@ type World struct {
 	Processes    func() Table
 	Probe        func(path string) (disk.Filesystem, error)
 	Identity     func(path string) (Identity, error)
+	// ProtectedIDs are the device and inode of each protected root, which a
+	// bind mount shares with the directory it shows.
+	ProtectedIDs map[[2]uint64]string
+	// RefreshCheckouts re-reads the fleet's checkouts (and reports a gap
+	// that makes the inventory incomplete), for module deletion's final
+	// reference check.
+	RefreshCheckouts func() ([]string, string)
 	// BindOfSubdirectory reports a root on a bind mount of a subdirectory,
 	// whose relationship to protected data cannot be established.
 	BindOfSubdirectory func(path string) (bool, error)
@@ -109,7 +117,7 @@ type World struct {
 	LockDirs           func(paths []string) (*Lock, error)
 	Admit              func(ctx context.Context) (status string, wait time.Duration, release func())
 	RemoveTree         func(parent, name string, id Identity) (TreeOutcome, error)
-	RemoveFile         func(dir, name string, id Identity) (int64, error)
+	RemoveFile         func(anchor Anchor, rel, name string, id Identity) (int64, error)
 	// Checkouts are every canonical clone and worktree whose sum files form
 	// the module reference set; IgnoreSumFiles are checkout-relative paths
 	// to skip (disk.prune.ignore_sum_files).
@@ -121,15 +129,12 @@ type World struct {
 	LookupHost func(ctx context.Context, host string) ([]string, error)
 	// LockModuleVersion takes Go's own per-version lock without blocking.
 	LockModuleVersion func(path string) (func(), error)
-	// PnpmStores are the store directories measured for the plan.
-	PnpmStores []string
-	// Pnpm runs pnpm from / under pnpmEnv; only apply calls it.
-	Pnpm     func(ctx context.Context, args ...string) (string, error)
-	Progress func(Event)
+	Progress          func(Event)
 
-	// belowTarget reports whether path's filesystem is still below its
-	// target; set by Run before applying.
-	belowTarget func(path string) bool
+	// runCtx is the context of the Run in progress, so a long scan stops
+	// when the run is cancelled (daemon shutdown).
+	runCtx context.Context
+
 	// targetMet reports whether path's filesystem has reached the target,
 	// and whether it could be measured at all; set by Run before applying.
 	targetMet func(path string) (met, measured bool)
@@ -159,7 +164,6 @@ type item struct {
 	root     string
 	device   uint64
 	estimate int64
-	known    bool
 	apply    func(ctx context.Context) itemResult
 }
 
@@ -169,6 +173,11 @@ type itemResult struct {
 	reason   string
 	pids     []PIDReport
 	err      error
+	// partial: apply's own fresh evidence was incomplete.
+	partial bool
+	// note is added to a successful item's reason: something best-effort
+	// that did not happen.
+	note string
 }
 
 // categoryPlan is a category's plan, filled by its planner and then by the
@@ -204,7 +213,6 @@ type filesystemState struct {
 	report    FilesystemReport
 	fs        disk.Filesystem
 	projected int64
-	unknown   bool
 	stopped   bool
 	catStart  int64
 	catAvail  int64
@@ -218,6 +226,7 @@ func Run(ctx context.Context, w *World, o Options) Report {
 	}
 	report := Report{SchemaVersion: 1, Mode: o.mode(), Admission: AdmissionReport{Status: "not-needed"}}
 	reasons := map[string]bool{}
+	w.runCtx = ctx
 	if o.Apply {
 		lock, err := w.LockDirs([]string{w.Home})
 		if err != nil {
@@ -264,12 +273,8 @@ func Run(ctx context.Context, w *World, o Options) Report {
 	w.progress(Event{Phase: "plan"})
 	filesystems := map[uint64]*filesystemState{}
 	project(w, o, plans, filesystems)
-	seedFilesystems(w, o, plans, filesystems)
+	seedFilesystems(w, o, plans, filesystems, reasons)
 
-	w.belowTarget = func(path string) bool {
-		fs, err := w.Probe(existingAncestor(path))
-		return err == nil && !o.Target.Met(fs) && !o.Target.Unreachable(fs)
-	}
 	// targetMet lets a category that deletes many small files stop as soon
 	// as its filesystem reaches the target; a probe that fails stops it too.
 	w.targetMet = func(path string) (bool, bool) {
@@ -311,8 +316,7 @@ func Run(ctx context.Context, w *World, o Options) Report {
 
 // project assigns each candidate its filesystem and, in pruning order, its
 // projected free space; items past the point where the target is met are
-// beyond-target. An item without a faithful estimate makes every later
-// projection on its filesystem unknown, and never ends a run early.
+// beyond-target. Every category gives a faithful estimate.
 func project(w *World, o Options, plans []*categoryPlan, filesystems map[uint64]*filesystemState) {
 	for _, plan := range plans {
 		if !plan.applicable {
@@ -331,20 +335,14 @@ func project(w *World, o Options, plans []*categoryPlan, filesystems map[uint64]
 				it.Status, it.Reason = StatusSkipped, "target-unreachable"
 				continue
 			}
-			if !state.unknown && o.Target.Met(disk.Filesystem{TotalBytes: state.fs.TotalBytes, AvailableBytes: state.projected}) {
+			if o.Target.Met(disk.Filesystem{TotalBytes: state.fs.TotalBytes, AvailableBytes: state.projected}) {
 				it.Status = StatusBeyondTarget
 				continue
 			}
-			if !it.known {
-				state.unknown = true
-				continue
-			}
 			state.report.EstimatedBytes += it.estimate
-			if !state.unknown {
-				state.projected += it.estimate
-				projected := state.projected
-				it.ProjectedAvailableBytes = &projected
-			}
+			state.projected += it.estimate
+			projected := state.projected
+			it.ProjectedAvailableBytes = &projected
 		}
 	}
 }
@@ -432,9 +430,7 @@ func applyPlans(ctx context.Context, w *World, o Options, plans []*categoryPlan,
 			state.catAvail, probed = currentAvailable(w, state)
 			if !probed {
 				// Without a measurement, space-not-returned cannot be judged.
-				state.stopped = true
-				state.report.Note = "probe-failed"
-				reasons[OutcomeFailClosed] = true
+				stopFilesystem(state, "probe-failed", reasons)
 			}
 		}
 		applied := false
@@ -457,6 +453,7 @@ func applyPlans(ctx context.Context, w *World, o Options, plans []*categoryPlan,
 			current, probed := currentAvailable(w, state)
 			if !probed {
 				it.Status, it.Reason = StatusSkipped, "probe-failed"
+				stopFilesystem(state, "probe-failed", reasons)
 				continue
 			}
 			if o.Target.Met(disk.Filesystem{TotalBytes: state.fs.TotalBytes, AvailableBytes: current}) {
@@ -466,6 +463,10 @@ func applyPlans(ctx context.Context, w *World, o Options, plans []*categoryPlan,
 			result := it.apply(ctx)
 			applied = true
 			applyResult(it, result)
+			plan.Partial = plan.Partial || result.partial
+			if result.reason == "probe-failed" {
+				stopFilesystem(state, "probe-failed", reasons)
+			}
 			state.report.UnlinkedBytes += result.unlinked
 			plan.UnlinkedBytes += result.unlinked
 			w.progress(Event{Phase: "apply", Category: plan.Name, Unlinked: plan.UnlinkedBytes})
@@ -476,7 +477,11 @@ func applyPlans(ctx context.Context, w *World, o Options, plans []*categoryPlan,
 		}
 		for _, state := range filesystems {
 			unlinked := state.report.UnlinkedBytes - state.catStart
-			now, _ := currentAvailable(w, state)
+			now, probed := currentAvailable(w, state)
+			if !probed {
+				stopFilesystem(state, "probe-failed", reasons)
+				continue
+			}
 			gain := now - state.catAvail
 			if unlinked > spaceNotReturnedThreshold && gain < unlinked/10 {
 				state.stopped = true
@@ -497,17 +502,6 @@ func currentAvailable(w *World, state *filesystemState) (int64, bool) {
 	return fs.AvailableBytes, true
 }
 
-// existingAncestor is path, or its nearest ancestor that exists, so a
-// directory a tool has yet to create is judged by the filesystem it will be
-// created on.
-func existingAncestor(path string) string {
-	for current := filepath.Clean(path); ; current = filepath.Dir(current) {
-		if _, err := os.Stat(current); err == nil || current == filepath.Dir(current) {
-			return current
-		}
-	}
-}
-
 func applyResult(it *item, result itemResult) {
 	it.PIDs = result.pids
 	if result.err != nil {
@@ -521,6 +515,9 @@ func applyResult(it *item, result itemResult) {
 		return
 	}
 	it.Status = StatusDeleted
+	if result.note != "" {
+		it.Reason += "; " + result.note
+	}
 }
 
 // collectReasons turns statuses into outcome reasons: failures, fail-closed
@@ -558,9 +555,17 @@ func finalFilesystems(w *World, o Options, filesystems map[uint64]*filesystemSta
 	for _, state := range filesystems {
 		after := state.fs
 		if o.Apply {
-			if fs, err := w.Probe(state.report.Path); err == nil {
-				after = fs
+			fs, err := w.Probe(state.report.Path)
+			if err != nil {
+				// No final measurement: no figures are invented, and the run
+				// cannot claim its target.
+				state.report.Note = "probe-failed"
+				state.report.After = SpaceReport{}
+				reasons[OutcomeFailClosed] = true
+				out = append(out, state.report)
+				continue
 			}
+			after = fs
 		}
 		state.report.After = SpaceReport{TotalBytes: after.TotalBytes, AvailableBytes: after.AvailableBytes}
 		state.report.ObservedGainBytes = after.AvailableBytes - state.fs.AvailableBytes
@@ -624,6 +629,19 @@ func (p *categoryPlan) render() CategoryReport {
 // a subdirectory: it may alias protected data under another path.
 func (w *World) bindProblem(roots ...string) string {
 	for _, root := range roots {
+		// A protected checkout that is a bind mount of directory D shows D's
+		// device and inode: a root at or below D is that checkout's data
+		// under another path.
+		for dir := filepath.Clean(root); ; dir = filepath.Dir(dir) {
+			if identity, err := StatIdentity(dir); err == nil {
+				if hit, ok := w.ProtectedIDs[[2]uint64{identity.Dev, identity.Ino}]; ok {
+					return "protected: " + root + " is inside " + hit + " under another path"
+				}
+			}
+			if dir == filepath.Dir(dir) {
+				break
+			}
+		}
 		bound, err := w.BindOfSubdirectory(root)
 		if err != nil {
 			return "unknown: the mount of " + root + " cannot be identified: " + err.Error()
@@ -635,19 +653,30 @@ func (w *World) bindProblem(roots ...string) string {
 	return ""
 }
 
-// seedFilesystems adds every selected category's root filesystem to the
-// report even when it yielded no candidate, so a filesystem still below its
-// target is reported target-unmet, never silently done.
-func seedFilesystems(w *World, o Options, plans []*categoryPlan, filesystems map[uint64]*filesystemState) {
+// seedFilesystems adds the filesystem of every root of every selected
+// category to the report, whatever the category's own status, so a
+// filesystem still below its target (the one that triggered the daemon, say)
+// is reported target-unmet, never silently done. A root whose filesystem
+// cannot be identified or measured is fail-closed.
+func seedFilesystems(w *World, o Options, plans []*categoryPlan, filesystems map[uint64]*filesystemState, reasons map[string]bool) {
 	for _, plan := range plans {
-		if !plan.selected || plan.Status == StatusSkipped || len(plan.locks) == 0 {
+		if !plan.selected {
 			continue
 		}
-		identity, err := w.Identity(plan.locks[0])
-		if err != nil {
-			continue
+		for _, root := range plan.locks {
+			identity, err := w.Identity(root)
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				reasons[OutcomeFailClosed] = true
+				continue
+			}
+			seed := &item{ItemReport: ItemReport{Path: root}, root: root, device: identity.Dev}
+			if filesystemFor(w, o, seed, root, filesystems) == nil {
+				reasons[OutcomeFailClosed] = true
+			}
 		}
-		filesystemFor(w, o, &item{ItemReport: ItemReport{Path: plan.locks[0]}, root: plan.locks[0], device: identity.Dev}, plan.locks[0], filesystems)
 	}
 }
 
@@ -665,3 +694,17 @@ func hasWork(plans []*categoryPlan) bool {
 	}
 	return false
 }
+
+// stopFilesystem ends deletion on a filesystem for the rest of the run. A
+// probe failure is fail-closed: what the filesystem holds is not known.
+func stopFilesystem(state *filesystemState, note string, reasons map[string]bool) {
+	if !state.stopped {
+		state.stopped, state.report.Note = true, note
+	}
+	if note == "probe-failed" {
+		reasons[OutcomeFailClosed] = true
+	}
+}
+
+// runCancelled reports whether the Run in progress was cancelled.
+func (w *World) runCancelled() bool { return w.runCtx != nil && w.runCtx.Err() != nil }

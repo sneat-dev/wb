@@ -41,7 +41,7 @@ func newAutoHarness(t *testing.T) *autoHarness {
 		},
 		Prune: func(context.Context, float64) (*World, Report, error) {
 			h.prunes++
-			return &World{TempDirs: []string{"/tmp"}}, Report{Outcome: h.report.Outcome, Categories: []CategoryReport{{Name: CategoryScratch, UnlinkedBytes: 9}, {Name: CategoryPnpm, Status: StatusSkipped, Reason: "busy"}}}, h.failure
+			return &World{TempDirs: []string{"/tmp"}}, Report{Outcome: h.report.Outcome, Categories: []CategoryReport{{Name: CategoryScratch, UnlinkedBytes: 9}, {Name: CategoryBuild, Status: StatusSkipped, Reason: "busy"}}}, h.failure
 		},
 		Now:    func() time.Time { return h.now },
 		Ticker: func(time.Duration) (<-chan time.Time, func()) { return h.ticks, func() {} },
@@ -63,7 +63,7 @@ func TestAutoPrunerRunsBelowTheFloorAtMostHourly(t *testing.T) {
 		t.Fatalf("prunes = %d, want 1 inside the hour", h.prunes)
 	}
 	receipt, path, ok := NewestReceipt(h.pruner.StateDir, "daemon")
-	if !ok || receipt.Outcome != OutcomeTargetUnmet || receipt.Unlinked[CategoryScratch] != 9 || receipt.Skips[CategoryPnpm] != "busy" || receipt.Roots["TMPDIR0"] != "/tmp" {
+	if !ok || receipt.Outcome != OutcomeTargetUnmet || receipt.Unlinked[CategoryScratch] != 9 || receipt.Skips[CategoryBuild] != "busy" || receipt.Roots["TMPDIR0"] != "/tmp" {
 		t.Fatalf("receipt = %#v at %s", receipt, path)
 	}
 	if finding := ReceiptFinding(h.pruner.StateDir); !strings.Contains(finding, "ended target-unmet") || !strings.Contains(finding, path) {

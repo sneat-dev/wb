@@ -3,12 +3,17 @@ package diskprune
 import (
 	"fmt"
 	"math"
+	"math/big"
+	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/sneat-dev/wb/internal/disk"
 	"github.com/sneat-dev/wb/internal/diskusage"
 )
+
+// plainDecimal is a byte quantity as a person writes one: 20, 1.5.
+var plainDecimal = regexp.MustCompile(`^[0-9]{1,30}(\.[0-9]{1,30})?$`)
 
 // TargetKind is how a free-space target is expressed.
 type TargetKind string
@@ -55,12 +60,21 @@ func ParseTarget(raw string) (Target, error) {
 		if !ok {
 			continue
 		}
-		amount, err := strconv.ParseFloat(strings.TrimSpace(number), 64)
-		bytes := amount * float64(unit.factor)
-		if err != nil || math.IsNaN(amount) || amount <= 0 || bytes >= math.MaxInt64 {
+		// Exact arithmetic on a plain decimal: the quantity, rounded down to
+		// whole bytes, must be at least one byte and fit an int64, so 0.5B
+		// is not a zero-byte target and a value near the limit is not lost
+		// to float rounding.
+		digits := strings.TrimSpace(number)
+		if !plainDecimal.MatchString(digits) {
 			break
 		}
-		return Target{Kind: TargetBytes, Bytes: int64(bytes)}, nil
+		amount, _ := new(big.Rat).SetString(digits)
+		product := new(big.Rat).Mul(amount, new(big.Rat).SetInt64(unit.factor))
+		bytes := new(big.Int).Quo(product.Num(), product.Denom())
+		if bytes.Sign() <= 0 || !bytes.IsInt64() {
+			break
+		}
+		return Target{Kind: TargetBytes, Bytes: bytes.Int64()}, nil
 	}
 	return Target{}, fmt.Errorf("--until-free %q: use a percentage such as 15%%, a size such as 20GiB, or max", raw)
 }

@@ -16,6 +16,9 @@ import (
 type scanSeams struct {
 	lstat   func(path string, stat *unix.Stat_t) error
 	mountID func(path string) (uint64, error)
+	// stop ends the walk early (the run was cancelled); what was not seen
+	// makes the result partial.
+	stop func() bool
 }
 
 func realScanSeams() scanSeams { return scanSeams{lstat: unix.Lstat, mountID: mountIDOf} }
@@ -29,9 +32,11 @@ func scanTree(root string, mount uint64, protected []string) scanResult {
 // scanTreeWithIDs also refuses a directory whose device and inode are a
 // protected root's, which catches a bind alias of protected data that no
 // path comparison can.
-func scanTreeWithIDs(ids map[[2]uint64]string) func(string, uint64, []string) scanResult {
+func scanTreeWithIDs(ids map[[2]uint64]string, stop func() bool) func(string, uint64, []string) scanResult {
 	return func(root string, mount uint64, protected []string) scanResult {
-		return realScanSeams().scan(root, mount, protected, ids)
+		seams := realScanSeams()
+		seams.stop = stop
+		return seams.scan(root, mount, protected, ids)
 	}
 }
 
@@ -39,7 +44,20 @@ func (s scanSeams) scan(root string, mount uint64, protected []string, ids map[[
 	var result scanResult
 	var newestDir time.Time
 	sawFile := false
+	// Only protected roots below root can be met during the walk; narrowing
+	// once keeps a scan of millions of entries from comparing each against
+	// every checkout in the fleet.
+	var below []string
+	for _, candidate := range protected {
+		if candidate != "" && within(filepath.Clean(candidate), root) && filepath.Clean(candidate) != filepath.Clean(root) {
+			below = append(below, filepath.Clean(candidate))
+		}
+	}
 	_ = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if s.stop != nil && s.stop() {
+			result.Partial = true
+			return fs.SkipAll
+		}
 		if err != nil {
 			result.Partial = true
 			if entry != nil && entry.IsDir() {
@@ -48,9 +66,11 @@ func (s scanSeams) scan(root string, mount uint64, protected []string, ids map[[
 			return nil
 		}
 		if path != root {
-			if hit := insideAny(path, protected); hit != "" && within(hit, path) {
-				result.Protected = hit
-				return fs.SkipDir
+			for _, hit := range below {
+				if within(hit, path) {
+					result.Protected = hit
+					return fs.SkipDir
+				}
 			}
 		}
 		var stat unix.Stat_t

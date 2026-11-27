@@ -301,7 +301,7 @@ type lockless struct{ path string }
 func (lockless) name() string { return "lockless" }
 
 func (l lockless) plan(context.Context, *World, Options) *categoryPlan {
-	it := &item{ItemReport: ItemReport{Path: l.path, Status: StatusDelete}, estimate: 1, known: true}
+	it := &item{ItemReport: ItemReport{Path: l.path, Status: StatusDelete}, estimate: 1}
 	return &categoryPlan{applicable: true, items: []*item{it}}
 }
 

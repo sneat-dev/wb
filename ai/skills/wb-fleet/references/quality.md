@@ -30,7 +30,7 @@ free-space target:
 
 ```sh
 wb disk prune                                     # plan to the 10% floor; exits 1 when there is work
-wb disk prune --apply                             # scratch, build-cache trim, pnpm store
+wb disk prune --apply                             # scratch, build-cache trim (pnpm store: report only)
 wb disk prune --until-free 20% --apply            # a higher target
 wb disk prune --category go-module-cache --apply  # opt-in: unreferenced, re-fetchable module versions
 wb disk prune --format json                       # outcome, reasons, per-filesystem figures

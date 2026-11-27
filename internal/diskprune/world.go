@@ -1,7 +1,6 @@
 package diskprune
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -11,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -34,7 +34,6 @@ type worldDeps struct {
 	tempDir     func() string
 	getenv      func(string) string
 	admitPrune  func(ctx context.Context, projectsRoot string) (status string, wait time.Duration, release func())
-	runPnpm     func(ctx context.Context, args ...string) (string, error)
 	fetchURL    func(ctx context.Context, method, url string) (int, []byte, error)
 	readProcess func() Table
 }
@@ -43,7 +42,7 @@ func realWorldDeps() worldDeps {
 	return worldDeps{
 		userHome: os.UserHomeDir, resolve: wbhome.Resolve, readDir: os.ReadDir,
 		git: runGit, goEnv: ResolveGoEnv, tempDir: os.TempDir, getenv: os.Getenv,
-		admitPrune: admitPrune, runPnpm: runPnpm, fetchURL: fetchURL, readProcess: ReadProcessTable,
+		admitPrune: admitPrune, fetchURL: fetchURL, readProcess: ReadProcessTable,
 	}
 }
 
@@ -73,13 +72,12 @@ func newWorld(ctx context.Context, projectsRoot string, ignoreSumFiles []string,
 		Now: time.Now, UID: os.Getuid(), Home: home, ProjectsRoot: resolution.Root,
 		StateDir: resolution.Write.Home, Go: env, IgnoreSumFiles: ignoreSumFiles,
 		Processes: deps.readProcess, Probe: disk.Probe, Identity: StatIdentity, Scan: scanTree,
-		LockDirs: LockDirs, RemoveTree: RemoveTree, RemoveFile: RemoveFileAt, LockModuleVersion: LockModuleVersion,
-		PnpmStores: []string{resolved(filepath.Join(home, ".local", "share", "pnpm", "store")), resolved(filepath.Join(home, "Library", "pnpm", "store"))},
-		Pnpm:       deps.runPnpm, HTTP: deps.fetchURL, LookupHost: net.DefaultResolver.LookupHost,
+		LockDirs: LockDirs, RemoveTree: RemoveTree, RemoveFile: RemoveFileBeneath, LockModuleVersion: LockModuleVersion,
+		HTTP: deps.fetchURL, LookupHost: net.DefaultResolver.LookupHost,
 		Admit: func(ctx context.Context) (string, time.Duration, func()) {
 			return deps.admitPrune(ctx, resolution.Root)
 		},
-		categories: []category{scratchCategory{}, buildCacheCategory{}, pnpmCategory{}, moduleCategory{}, fullCleanCategory{}},
+		categories: []category{scratchCategory{}, buildCacheCategory{}, moduleCategory{}, fullCleanCategory{}},
 	}
 	if legacy := filepath.Join(home, ".wb"); filepath.Clean(legacy) != filepath.Clean(w.StateDir) {
 		if info, err := os.Stat(legacy); err == nil && info.IsDir() {
@@ -88,24 +86,31 @@ func newWorld(ctx context.Context, projectsRoot string, ignoreSumFiles []string,
 	}
 	w.TempDirs, w.TempAliases = tempDirs(deps)
 	w.Protected, w.Checkouts, w.ProtectedGap = protectedInventory(ctx, w, resolution, deps)
-	w.Scan = scanTreeWithIDs(protectedIDs(w.Protected))
+	w.RefreshCheckouts = func() ([]string, string) {
+		_, checkouts, gap := protectedInventory(ctx, w, resolution, deps)
+		return checkouts, gap
+	}
+	w.ProtectedIDs = protectedIDs(w.Protected)
+	w.Scan = scanTreeWithIDs(w.ProtectedIDs, func() bool { return w.runCancelled() })
 	w.BindOfSubdirectory = bindOfSubdirectory
 	return w, nil
 }
 
 // tempDirs are the temporary directories scratch looks in, resolved and
 // deduplicated.
-func tempDirs(deps worldDeps) ([]string, map[string]string) {
+func tempDirs(deps worldDeps) ([]string, map[string][]string) {
 	var out []string
-	aliases := map[string]string{}
+	aliases := map[string][]string{}
 	seen := map[string]bool{}
 	for _, original := range []string{deps.tempDir(), deps.getenv("GOTMPDIR")} {
 		if original == "" {
 			continue
 		}
 		dir := resolved(original)
-		if dir != filepath.Clean(original) {
-			aliases[dir] = filepath.Clean(original)
+		// Every spelling is kept: TMPDIR and GOTMPDIR may reach one
+		// directory through different symlinks.
+		if spelling := filepath.Clean(original); spelling != dir && !slices.Contains(aliases[dir], spelling) {
+			aliases[dir] = append(aliases[dir], spelling)
 		}
 		if !seen[dir] {
 			seen[dir] = true
@@ -147,7 +152,7 @@ func protectedInventory(ctx context.Context, w *World, resolution wbhome.Resolut
 		add(layout.WorktreesRoot)
 		stores = append(stores, layout.WorktreesRoot)
 	}
-	clones, err := findCheckouts(deps.readDir, resolution.Root, 3, true)
+	clones, err := findCheckouts(deps.readDir, resolution.Root, true)
 	if err != nil {
 		noteGap("canonical clones could not be listed: " + err.Error())
 	}
@@ -163,12 +168,17 @@ func protectedInventory(ctx context.Context, w *World, resolution wbhome.Resolut
 		add(clone, filepath.Join(clone, ".worktrees"))
 		addCheckout(clone)
 		stores = append(stores, filepath.Join(clone, ".worktrees"))
-		out, err := deps.git(ctx, clone, "worktree", "list", "--porcelain")
+		out, err := deps.git(ctx, clone, "worktree", "list", "--porcelain", "-z")
 		if err != nil {
 			noteGap("git worktree list failed in " + clone + ": " + err.Error())
 			continue
 		}
-		for _, worktree := range parseWorktreeList(out) {
+		worktrees, err := parseWorktreeList(out)
+		if err != nil {
+			noteGap("git worktree list in " + clone + ": " + err.Error())
+			continue
+		}
+		for _, worktree := range worktrees {
 			add(worktree)
 			info, err := os.Stat(worktree)
 			switch {
@@ -185,7 +195,7 @@ func protectedInventory(ctx context.Context, w *World, resolution wbhome.Resolut
 	// registers it: its canonical clone may live elsewhere, or its
 	// registration may be broken.
 	for _, store := range stores {
-		held, err := findCheckouts(deps.readDir, store, 5, false)
+		held, err := findCheckouts(deps.readDir, store, false)
 		if err != nil {
 			noteGap("worktrees root " + store + " could not be listed: " + err.Error())
 		}
@@ -197,22 +207,30 @@ func protectedInventory(ctx context.Context, w *World, resolution wbhome.Resolut
 	return protected, checkouts, gap
 }
 
-// findCheckouts lists directories holding .git, at most depth levels below
-// root, without descending into a checkout. Any unreadable directory is an
-// error: a silently skipped clone would be neither protected nor read for
-// references. skipDot leaves out root's dot-directories (.wb, .worktrees),
-// which are not clone placements.
-func findCheckouts(readDir func(string) ([]os.DirEntry, error), root string, depth int, skipDot bool) ([]string, error) {
+// findCheckouts lists directories holding .git at any depth below root,
+// without descending into a checkout, and walks each directory once even
+// through a symlink loop. Any unreadable directory is an error: a silently
+// skipped clone would be neither protected nor read for references. skipDot
+// leaves out root's dot-directories (.wb, .worktrees), which are not clone
+// placements.
+func findCheckouts(readDir func(string) ([]os.DirEntry, error), root string, skipDot bool) ([]string, error) {
 	var found []string
+	visited := map[string]bool{}
 	var walk func(dir string, level int) error
 	walk = func(dir string, level int) error {
+		if key, ok := dirKey(dir); ok {
+			if visited[key] {
+				return nil
+			}
+			visited[key] = true
+		}
 		entries, err := readDir(dir)
 		if errors.Is(err, os.ErrNotExist) && dir == root {
 			return nil
 		}
-		if errors.Is(err, os.ErrPermission) && dir != root && !ownedByUserPath(dir) {
-			// Another user's unreadable directory (a root-owned lost+found)
-			// cannot hold this user's checkout.
+		if errors.Is(err, os.ErrPermission) && dir != root && !ownedByUserPath(dir) && !traversable(dir) {
+			// Another user's directory this user can neither list nor enter
+			// (a root-owned lost+found) cannot hold this user's checkout.
 			return nil
 		}
 		if err != nil {
@@ -223,9 +241,6 @@ func findCheckouts(readDir func(string) ([]os.DirEntry, error), root string, dep
 				found = append(found, dir)
 				return nil
 			}
-		}
-		if level == depth {
-			return nil
 		}
 		for _, entry := range entries {
 			path := filepath.Join(dir, entry.Name())
@@ -253,15 +268,23 @@ func findCheckouts(readDir func(string) ([]os.DirEntry, error), root string, dep
 }
 
 // parseWorktreeList reads `git worktree list --porcelain`.
-func parseWorktreeList(out string) []string {
+// parseWorktreeList reads `git worktree list --porcelain -z`: NUL-terminated
+// fields, so a path holding a newline is read whole. Output that is not
+// NUL-terminated is refused rather than guessed at.
+func parseWorktreeList(out string) ([]string, error) {
+	if out == "" {
+		return nil, nil
+	}
+	if !strings.HasSuffix(out, "\x00") {
+		return nil, errors.New("output is not NUL-terminated")
+	}
 	var paths []string
-	scanner := bufio.NewScanner(strings.NewReader(out))
-	for scanner.Scan() {
-		if path, ok := strings.CutPrefix(scanner.Text(), "worktree "); ok {
+	for _, field := range strings.Split(strings.TrimSuffix(out, "\x00"), "\x00") {
+		if path, ok := strings.CutPrefix(field, "worktree "); ok {
 			paths = append(paths, path)
 		}
 	}
-	return paths
+	return paths, nil
 }
 
 func runGit(ctx context.Context, dir string, args ...string) (string, error) {
@@ -277,20 +300,13 @@ func runGit(ctx context.Context, dir string, args ...string) (string, error) {
 	return string(out), err
 }
 
-// runPnpm runs pnpm from / under pnpmEnv, so corepack can neither download
-// nor prompt.
-func runPnpm(ctx context.Context, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "pnpm", args...)
-	cmd.Dir = "/"
-	cmd.Env = append(os.Environ(), pnpmEnv...)
-	out, err := cmd.Output()
-	return string(out), err
-}
+// maxProbeBody bounds a proxy response WB reads to compare a .mod file.
+const maxProbeBody = 1 << 20
 
 // probeClient proves re-fetchability only against an independent proxy:
-// every redirect must stay on https, and every connection it actually makes
-// is refused if it reaches a loopback address, which also defeats a DNS
-// answer that changes between the plan's check and the dial.
+// every redirect must stay on https, and every connection, made directly to
+// its destination, is refused if it reaches a loopback address, which also
+// defeats a DNS answer that changes between the plan's check and the dial.
 var probeClient = &http.Client{
 	Timeout: 10 * time.Second,
 	CheckRedirect: func(request *http.Request, via []*http.Request) error {
@@ -303,7 +319,10 @@ var probeClient = &http.Client{
 		return nil
 	},
 	Transport: &http.Transport{
-		Proxy:               http.ProxyFromEnvironment,
+		// Direct connections only: through a forward proxy the dial check
+		// would see the proxy, not the destination. Where a proxy is
+		// required the probes fail, and nothing is deleted.
+		Proxy:               nil,
 		DialContext:         (&net.Dialer{Timeout: 10 * time.Second, Control: refuseLoopback}).DialContext,
 		TLSHandshakeTimeout: 10 * time.Second,
 	},
@@ -332,7 +351,12 @@ func fetchURL(ctx context.Context, method, url string) (int, []byte, error) {
 		return 0, nil, err
 	}
 	defer func() { _ = response.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	// One byte past the limit tells a too-long body from one that fits, so
+	// a prefix can never pass as the whole.
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxProbeBody+1))
+	if err == nil && len(body) > maxProbeBody {
+		return response.StatusCode, nil, fmt.Errorf("%s: response is larger than %d bytes", url, maxProbeBody)
+	}
 	return response.StatusCode, body, err
 }
 
@@ -359,4 +383,16 @@ func protectedIDs(roots []string) map[[2]uint64]string {
 		}
 	}
 	return ids
+}
+
+// resolved is path with symlinks resolved when it exists, so it compares
+// against the resolved protected roots.
+func resolved(path string) string {
+	if path == "" {
+		return ""
+	}
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		return real
+	}
+	return filepath.Clean(path)
 }

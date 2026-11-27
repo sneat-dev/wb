@@ -178,7 +178,7 @@ func TestBuildCacheEdgeCases(t *testing.T) {
 	}
 	tw.Identity = StatIdentity
 	calls := 0
-	tw.RemoveFile = func(dir, name string, id Identity) (int64, error) {
+	tw.RemoveFile = func(anchor Anchor, rel, name string, id Identity) (int64, error) {
 		calls++
 		if calls == 1 {
 			return 0, ErrChanged
@@ -189,7 +189,7 @@ func TestBuildCacheEdgeCases(t *testing.T) {
 	if report.Outcome != OutcomeFailed || calls != 2 {
 		t.Fatalf("removal failure outcome %q calls %d", report.Outcome, calls)
 	}
-	if _, partial := readCacheFiles(tw.World, filepath.Join(t.TempDir(), "absent")); !partial {
+	if _, _, partial := readCacheFiles(tw.World, filepath.Join(t.TempDir(), "absent")); !partial {
 		t.Fatal("a missing cache must read as partial")
 	}
 }

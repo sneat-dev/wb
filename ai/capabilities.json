@@ -6187,11 +6187,11 @@
                 "--verbose"
               ],
               "modes": [
-                "Plans by default and deletes only with --apply: nothing is created, deleted, renamed or locked in a plan, and neither go nor pnpm runs.",
-                "Prunes cheapest to rebuild first (scratch, Go build-cache trim, pnpm store prune, then opt-in Go module versions) and stops once each filesystem holding a candidate meets --until-free (default disk.minimum_available).",
+                "Plans by default and deletes only with --apply: nothing is created, deleted, renamed or locked in a plan, and go never runs.",
+                "Prunes cheapest to rebuild first (scratch, Go build-cache trim, then opt-in Go module versions) and stops once each filesystem holding a candidate meets --until-free (default disk.minimum_available).",
                 "Deletes only through the descriptors it checked, never across a mount, never inside or around a protected root (state, worktree stores, canonical clones, registered worktrees); skips whatever a process references and fails closed on process evidence it cannot trust.",
                 "Go modules only with --category go-module-cache: versions no fleet sum file names, older than 7 days, that the HTTPS proxy provably serves again; never go clean -modcache. --allow-full-clean removes every build-cache entry only while no Go tool runs, never by running go clean.",
-                "WB state and the retired ~/.wb are reported by class, never pruned; worktrees stay with wb clean. --auto is the daemon's unattended subset to the floor."
+                "WB state and the retired ~/.wb are reported by class, never pruned; the pnpm store and npm cache are measured only; worktrees stay with wb clean. --auto is the daemon's unattended subset to the floor."
               ]
             }
           ],

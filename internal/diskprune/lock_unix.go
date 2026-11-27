@@ -68,9 +68,17 @@ func LockDirs(paths []string) (*Lock, error) {
 // never removed: removing it while another process holds it would let two
 // processes lock different inodes.
 func LockModuleVersion(path string) (func(), error) {
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CREAT|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o666)
+	// Go's own protocol (cmd/go's lockedfile.MutexAt) creates the .lock
+	// beside the version when it is missing; so does prune. The open never
+	// blocks, and only a regular file is a lock.
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CREAT|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0o666)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("%s is not a regular lock file", path)
 	}
 	if err := lockSyscalls.flock(fd, unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		_ = unix.Close(fd)

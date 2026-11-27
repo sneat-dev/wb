@@ -35,13 +35,12 @@ func fakeWorldDeps(t *testing.T) (worldDeps, string, string) {
 		},
 		readDir: os.ReadDir,
 		git: func(ctx context.Context, dir string, args ...string) (string, error) {
-			return "worktree " + clone + "\nHEAD abc\n\nworktree " + external + "\nbranch refs/heads/x\n\nworktree /gone/away\n", nil
+			return "worktree " + clone + "\x00HEAD abc\x00\x00worktree " + external + "\x00branch refs/heads/x\x00\x00worktree /gone/away\x00\x00", nil
 		},
 		goEnv:       func() (GoEnv, error) { return GoEnv{GOCACHE: "/c", GOMODCACHE: "/m"}, nil },
 		tempDir:     func() string { return home },
 		getenv:      func(key string) string { return map[string]string{"GOTMPDIR": filepath.Join(home, ".")}[key] },
 		admitPrune:  func(context.Context, string) (string, time.Duration, func()) { return "admitted", 0, func() {} },
-		runPnpm:     func(context.Context, ...string) (string, error) { return "", nil },
 		fetchURL:    func(context.Context, string, string) (int, []byte, error) { return 200, nil, nil },
 		readProcess: func() Table { return Table{} },
 	}
@@ -71,7 +70,7 @@ func TestNewWorldInventory(t *testing.T) {
 	} else {
 		release()
 	}
-	if len(w.categories) != 5 {
+	if len(w.categories) != 4 {
 		t.Fatalf("categories = %d", len(w.categories))
 	}
 }
@@ -116,7 +115,7 @@ func TestNewWorldFailures(t *testing.T) {
 	}
 }
 
-// The real helpers: git, pnpm, HTTP probes and admission.
+// The real helpers: git, HTTP probes and admission.
 //
 //nolint:paralleltest // shortens the package's admission bound
 func TestRealWorldHelpers(t *testing.T) {
@@ -124,10 +123,10 @@ func TestRealWorldHelpers(t *testing.T) {
 	if err := exec.Command("git", "init", "-q", repo).Run(); err != nil {
 		t.Skip("git unavailable")
 	}
-	if out, err := runGit(context.Background(), repo, "worktree", "list", "--porcelain"); err != nil || len(parseWorktreeList(out)) != 1 {
+	out, err := runGit(context.Background(), repo, "worktree", "list", "--porcelain", "-z")
+	if paths, perr := parseWorktreeList(out); err != nil || perr != nil || len(paths) != 1 {
 		t.Fatalf("git worktree list = %q, %v", out, err)
 	}
-	_, _ = runPnpm(context.Background(), "--version")
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTeapot)

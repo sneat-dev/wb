@@ -33,6 +33,8 @@ type pruneHarness struct {
 	ticks    chan time.Time
 	stopped  bool
 	events   []diskprune.Event
+	// discovering runs inside World, while the fleet is being discovered.
+	discovering func()
 }
 
 func newPruneHarness(t *testing.T) *pruneHarness {
@@ -44,6 +46,9 @@ func (h *pruneHarness) deps(interactive bool) PruneDependencies {
 	return PruneDependencies{
 		World: func(_ context.Context, root string, ignore []string) (*diskprune.World, error) {
 			h.ignore = ignore
+			if h.discovering != nil {
+				h.discovering()
+			}
 			return &diskprune.World{ProjectsRoot: root}, h.worldErr
 		},
 		Run: func(_ context.Context, w *diskprune.World, o diskprune.Options) diskprune.Report {
@@ -96,6 +101,8 @@ func TestPruneRejectsInvalidFlagsBeforeReading(t *testing.T) {
 		{"--until-free", "12XB"}, {"--older-than", "soon"}, {"--older-than", "-1h"},
 		{"--auto", "--category", "scratch"}, {"--auto", "--until-free", "5%"}, {"--auto", "--older-than", "1h"},
 		{"--auto", "--allow-full-clean"}, {"--allow-full-clean", "--category", "scratch"}, {"--format", "yaml"},
+		// An empty value, as from an unset shell variable, never widens a run.
+		{"--category="}, {"--until-free="}, {"--older-than="}, {"--category=scratch,"},
 	} {
 		h := newPruneHarness(t)
 		h.worldErr = errors.New("the world must not be read")
@@ -286,7 +293,11 @@ func TestDiskHelpExplainsCleanVersusPrune(t *testing.T) {
 			prune = sub
 		}
 	}
-	if prune == nil || !strings.Contains(prune.Long, "wb clean clears finished workbenches") || !strings.Contains(prune.Long, "never runs\ngo clean") {
+	long := ""
+	if prune != nil {
+		long = strings.Join(strings.Fields(prune.Long), " ")
+	}
+	if !strings.Contains(long, "wb clean clears finished workbenches") || !strings.Contains(long, "never runs go clean") || !strings.Contains(long, "pnpm store and npm cache (measured only") {
 		t.Fatal("wb disk prune help incomplete")
 	}
 }
@@ -345,5 +356,24 @@ func TestPruneWritesAReceiptForEveryApply(t *testing.T) {
 	deps.WriteReceipt = func(string, diskprune.Receipt) error { return errors.New("no space left on device") }
 	if errOut, err := run(deps, "--apply"); err != nil || !strings.Contains(errOut, "receipt not written: no space left on device") {
 		t.Fatalf("stderr %q err %v", errOut, err)
+	}
+}
+
+// A slow fleet discovery, before the engine has emitted anything, is still
+// covered by the heartbeat: the real command starts progress first.
+func TestPruneHeartbeatCoversDiscovery(t *testing.T) {
+	t.Parallel()
+	h := newPruneHarness(t)
+	h.discovering = func() {
+		// Heartbeat intervals pass while discovery works. The heartbeat takes
+		// the next tick only after writing the line for the previous one, so
+		// three sends guarantee two written lines.
+		for range 3 {
+			h.ticks <- time.Now()
+		}
+	}
+	_, errOut, err := h.execute(shared.Flags{}, false)
+	if err != nil || strings.Count(errOut, "discover") < 2 || !strings.Contains(errOut, "heartbeat every 10s") {
+		t.Fatalf("err %v, progress %q", err, errOut)
 	}
 }

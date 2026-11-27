@@ -122,12 +122,15 @@ func readGoEnvFile(src goEnvSources) (map[string]string, error) {
 	scanner := bufio.NewScanner(strings.NewReader(string(raw)))
 	scanner.Buffer(make([]byte, 64<<10), 1<<20)
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+		// Exactly cmd/go's reading of its env file: a line counts only when
+		// it starts with an upper-case letter and has an "="; neither side
+		// is trimmed. A " GOCACHE=..." line Go ignores is ignored here too.
+		line := scanner.Text()
 		key, value, ok := strings.Cut(line, "=")
-		if !ok || strings.HasPrefix(line, "#") {
+		if !ok || line[0] < 'A' || line[0] > 'Z' {
 			continue
 		}
-		values[strings.TrimSpace(key)] = strings.TrimSpace(value)
+		values[key] = value
 	}
 	// A line too long to read could hide a later GOCACHEPROG or GOPRIVATE;
 	// defaults in their place would enable deletion Go itself would not.
