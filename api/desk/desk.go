@@ -391,7 +391,8 @@ type SnapshotRequest struct {
 }
 
 // Validate checks the request. A `repositories` snapshot must name its task
-// key; a `full` one must not.
+// key; a `full` one must not. The envelope must carry nothing above the
+// declared detail (CheckLevel).
 func (request SnapshotRequest) Validate() error {
 	if err := checkVersion(request.SchemaVersion); err != nil {
 		return err
@@ -414,7 +415,7 @@ func (request SnapshotRequest) Validate() error {
 	if len(request.Envelope) == 0 || !json.Valid(request.Envelope) || request.Envelope[0] != '{' {
 		return invalid("envelope")
 	}
-	return nil
+	return CheckLevel(request.Envelope, request.Detail)
 }
 
 // SnapshotReceipt acknowledges an accepted snapshot.

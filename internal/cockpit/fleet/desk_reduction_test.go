@@ -95,6 +95,11 @@ func TestDeskReductionWithholdsNamesAtRepositoriesDetail(t *testing.T) {
 			t.Errorf("full detail carries %q", forbidden)
 		}
 	}
+	// Desk refuses the unreduced envelope at repositories with the same
+	// definition the reduction is held to.
+	if err := desk.CheckLevel(full.Envelope, desk.LevelRepositories); err == nil {
+		t.Error("CheckLevel accepts the full envelope at repositories detail")
+	}
 }
 
 // TestDeskSnapshotHashIgnoresWhatChangesEveryPass: two exports of an
