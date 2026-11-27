@@ -30,7 +30,7 @@ func LockDir(path string) (*Lock, error) {
 		if unix.Fstat(fd, &stat) == nil {
 			pid = lockHolder(lockSyscalls.procLocks, uint64(stat.Dev), uint64(stat.Ino))
 		}
-		unix.Close(fd)
+		_ = unix.Close(fd)
 		if err == unix.EWOULDBLOCK {
 			return nil, &LockedError{Path: path, PID: pid}
 		}
@@ -38,7 +38,7 @@ func LockDir(path string) (*Lock, error) {
 	}
 	return &Lock{release: func() {
 		_ = unix.Flock(fd, unix.LOCK_UN)
-		unix.Close(fd)
+		_ = unix.Close(fd)
 	}}, nil
 }
 
@@ -76,7 +76,7 @@ func LockModuleVersion(path string) (func(), error) {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
 	if err := lockSyscalls.flock(fd, unix.LOCK_EX|unix.LOCK_NB); err != nil {
-		unix.Close(fd)
+		_ = unix.Close(fd)
 		if err == unix.EWOULDBLOCK {
 			return nil, &LockedError{Path: path}
 		}
@@ -84,6 +84,6 @@ func LockModuleVersion(path string) (func(), error) {
 	}
 	return func() {
 		_ = unix.Flock(fd, unix.LOCK_UN)
-		unix.Close(fd)
+		_ = unix.Close(fd)
 	}, nil
 }

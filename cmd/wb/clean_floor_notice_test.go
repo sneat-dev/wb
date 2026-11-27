@@ -22,7 +22,9 @@ func TestCleanFloorNoticeNamesDiskPrune(t *testing.T) {
 	if notice := diskFloorNotice("", config, resolve, low); !strings.Contains(notice, "wb disk prune") || !strings.Contains(notice, "10% free-space floor") {
 		t.Fatalf("notice = %q", notice)
 	}
-	ample := func(string) (disk.Filesystem, error) { return disk.Filesystem{TotalBytes: 100, AvailableBytes: 50}, nil }
+	ample := func(string) (disk.Filesystem, error) {
+		return disk.Filesystem{TotalBytes: 100, AvailableBytes: 50}, nil
+	}
 	failing := func(string) (disk.Filesystem, error) { return disk.Filesystem{}, errors.New("statfs") }
 	for name, notice := range map[string]string{
 		"ample":   diskFloorNotice("", config, resolve, ample),

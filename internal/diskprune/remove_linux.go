@@ -61,7 +61,7 @@ func readDirNames(fd int) ([]string, error) {
 		return nil, err
 	}
 	dir := os.NewFile(uintptr(dup), "dir")
-	defer dir.Close()
+	defer func() { _ = dir.Close() }()
 	return dir.Readdirnames(-1)
 }
 
@@ -169,7 +169,7 @@ func (r treeRemover) empty(fd int, mount uint64, top string, outcome *TreeOutcom
 			return err
 		}
 		err = r.empty(childfd, mount, top, outcome)
-		unix.Close(childfd)
+		_ = unix.Close(childfd)
 		if err != nil {
 			return err
 		}

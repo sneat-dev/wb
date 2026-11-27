@@ -218,7 +218,7 @@ func TestHeartbeatLabelNamesTheCommand(t *testing.T) {
 func TestRealTickerTicks(t *testing.T) {
 	t.Parallel()
 	ticks, stop := realTicker(time.Millisecond)
-	defer stop()
+	t.Cleanup(stop)
 	select {
 	case <-ticks:
 	case <-time.After(5 * time.Second):

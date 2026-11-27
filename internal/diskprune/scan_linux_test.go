@@ -61,12 +61,12 @@ func TestScanFindsWhatMustBeKept(t *testing.T) {
 	if err := os.MkdirAll(sockDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.RemoveAll(sockDir) })
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
 	listener, err := net.Listen("unix", filepath.Join(sockDir, "s"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 	if !scanOf(t, sockDir).HasSpecial {
 		t.Fatal("socket missed")
 	}

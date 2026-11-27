@@ -82,7 +82,7 @@ func newModuleFixture(t *testing.T) *moduleFixture {
 	tw.Go = GoEnv{GOMODCACHE: cache, GOPROXY: "https://proxy.example,direct", GOSUMDB: "sum.golang.org", GOPRIVATE: "corp.example", GONOPROXY: "corp.example", GONOSUMDB: "corp.example"}
 	tw.HTTP = f.http
 	tw.LockModuleVersion = LockModuleVersion
-	tw.World.Now = func() time.Time { return time.Now().Add(30 * 24 * time.Hour) }
+	tw.Now = func() time.Time { return time.Now().Add(30 * 24 * time.Hour) }
 	tw.categories = []category{moduleCategory{}}
 	return f
 }
@@ -276,7 +276,7 @@ func TestModulesFailClosedAndBusy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer hold.Close()
+	defer func() { _ = hold.Close() }()
 	held, err := LockModuleVersion(hold.Name())
 	if err != nil {
 		t.Fatal(err)
@@ -319,7 +319,8 @@ func TestModulesEdgeCases(t *testing.T) {
 		f.add("example.com/a", "v1.0.0", true, true)
 		mutate(f)
 		cat := categoryByName(t, f.tw.run(Options{Categories: []string{CategoryModules}}), CategoryModules)
-		if cat.Status != StatusSkipped && !(name == "unreadable dl" && os.Geteuid() == 0) {
+		rootSeesEverything := name == "unreadable dl" && os.Geteuid() == 0
+		if cat.Status != StatusSkipped && !rootSeesEverything {
 			t.Errorf("%s: %#v", name, cat)
 		}
 	}

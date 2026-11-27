@@ -192,7 +192,7 @@ func fetchURL(ctx context.Context, method, url string) (int, []byte, error) {
 	if err != nil {
 		return 0, nil, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	return response.StatusCode, body, err
 }

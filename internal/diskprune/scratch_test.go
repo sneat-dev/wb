@@ -91,7 +91,7 @@ func TestScratchKeepsYoungProtectedAndCacheData(t *testing.T) {
 	t.Parallel()
 	tw := newTestWorld(t)
 	tw.entry("go-build1", 8)
-	tw.World.Now = time.Now
+	tw.Now = time.Now
 	clone := filepath.Join(tw.tmp, "go-build2", "acme", "app")
 	mustWrite(t, filepath.Join(clone, "main.go"), "package main", 0o644)
 	tw.Protected = []string{clone}
@@ -102,7 +102,7 @@ func TestScratchKeepsYoungProtectedAndCacheData(t *testing.T) {
 	}
 	if len(sock) < 100 {
 		if listener, err := net.Listen("unix", filepath.Join(sock, "s")); err == nil {
-			defer listener.Close()
+			defer func() { _ = listener.Close() }()
 		}
 	}
 	tw.UID = os.Getuid() + 1
@@ -294,7 +294,7 @@ func TestScratchRechecksBeforeEachDeletion(t *testing.T) {
 		}, StatusSkipped, "checkout-in-scratch"},
 		"young after plan": {func(tw *testWorld, path string) {
 			now := time.Now()
-			tw.World.Now = func() time.Time { return now }
+			tw.Now = func() time.Time { return now }
 		}, StatusSkipped, "too-young"},
 		"changed": {func(tw *testWorld, path string) {
 			tw.RemoveTree = func(string, string, Identity) (TreeOutcome, error) { return TreeOutcome{}, ErrChanged }
