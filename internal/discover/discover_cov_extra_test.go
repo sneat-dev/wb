@@ -45,6 +45,7 @@ func lgCovInstallFakeGh(t *testing.T, calls ...lgCovGhCall) {
 	binDir := t.TempDir()
 	var script strings.Builder
 	script.WriteString("#!/bin/sh\n")
+	script.WriteString("if [ -n \"$LGCOV_GH_LOG\" ]; then printf '%s\\n' \"$*\" >> \"$LGCOV_GH_LOG\"; fi\n")
 	for _, call := range calls {
 		script.WriteString("if [ \"$*\" = " + lgCovShellQuote(call.args) + " ]; then\n")
 		script.WriteString("\tprintf '%s' " + lgCovShellQuote(call.stdout) + "\n")
@@ -248,7 +249,7 @@ func TestListRemoteMapsRepositoryFields(t *testing.T) {
 		args: "repo list acme --limit 1000 --json name,isArchived,isFork,sshUrl,url",
 		stdout: `[{"name":"widgets","isArchived":false,"isFork":false,"sshUrl":"git@github.com:acme/widgets.git"},` +
 			`{"name":"legacy","isArchived":true,"isFork":true,"sshUrl":"git@github.com:acme/legacy.git"}]`,
-	})
+	}, lgCovGhCall{args: "config get git_protocol --host github.com", stdout: "ssh\n"})
 	repositories, err := ListRemote("acme")
 	if err != nil {
 		t.Fatal(err)
@@ -479,5 +480,36 @@ func TestListRemoteHonorsGitHubProtocol(t *testing.T) {
 				t.Fatalf("ListRemote() = %#v, want clone URL %q", repos, tc.want)
 			}
 		})
+	}
+}
+
+func TestListRemoteLooksUpTheProtocolOncePerHost(t *testing.T) {
+	lgCovInstallFakeGh(t,
+		lgCovGhCall{args: "repo list acme --limit 1000 --json name,isArchived,isFork,sshUrl,url",
+			stdout: `[{"name":"widgets","sshUrl":"git@github.com:acme/widgets.git","url":"https://github.com/acme/widgets.git"},` +
+				`{"name":"gadgets","sshUrl":"git@github.com:acme/gadgets.git","url":"http://github.com/acme/gadgets"}]`},
+		lgCovGhCall{args: "config get git_protocol --host github.com", stdout: "https\n"},
+	)
+	logPath := filepath.Join(t.TempDir(), "gh.log")
+	t.Setenv("LGCOV_GH_LOG", logPath)
+	repos, err := ListRemote("acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repos) != 2 {
+		t.Fatalf("ListRemote() = %#v, want 2 repositories", repos)
+	}
+	if repos[0].CloneURL != "https://github.com/acme/widgets.git" {
+		t.Fatalf("widgets clone URL = %q, want the .git suffix kept once", repos[0].CloneURL)
+	}
+	if repos[1].CloneURL != "git@github.com:acme/gadgets.git" {
+		t.Fatalf("gadgets clone URL = %q, want the SSH fallback for a non-https URL", repos[1].CloneURL)
+	}
+	logged, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(logged), "config get git_protocol"); got != 1 {
+		t.Fatalf("protocol lookups = %d, want 1 per host; log:\n%s", got, logged)
 	}
 }
