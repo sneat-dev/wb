@@ -3,6 +3,7 @@ package cmdworktree
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -284,3 +285,38 @@ func TestCleanCommandWarnsAboutEveryMalformedCandidate(t *testing.T) {
 		t.Fatalf("a failing stderr must surface: %v", err)
 	}
 }
+
+// Below the free-space floor wb clean ends with one stderr line naming wb
+// disk prune, leaving JSON stdout valid; a notice that cannot be written is
+// an error; no notice prints nothing.
+func TestCleanPrintsTheFloorNoticeOnStderr(t *testing.T) {
+	t.Parallel()
+	root := "root"
+	deps := cleanDeps(worktrees.CleanOutcome{SchemaVersion: 1}, nil)
+	deps.FloorNotice = func(projectsRoot string) string {
+		return "wb clean: " + projectsRoot + " is below the floor; run wb disk prune"
+	}
+	var stdout, stderr bytes.Buffer
+	if err := retirementExecute(NewClean(retirementRuntime(&root), deps), []string{"--format", "json"}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if json.Unmarshal(stdout.Bytes(), &decoded) != nil || !strings.Contains(stderr.String(), "wb clean: root is below the floor; run wb disk prune") {
+		t.Fatalf("stdout %q stderr %q", stdout.String(), stderr.String())
+	}
+	if err := retirementExecute(NewClean(retirementRuntime(&root), deps), nil, io.Discard, failingCleanWriter{}); err == nil {
+		t.Fatal("an unwritable notice was ignored")
+	}
+	deps.FloorNotice = func(string) string { return "" }
+	stderr.Reset()
+	if err := retirementExecute(NewClean(retirementRuntime(&root), deps), nil, io.Discard, &stderr); err != nil || strings.Contains(stderr.String(), "wb disk prune") {
+		t.Fatalf("empty notice printed %q (%v)", stderr.String(), err)
+	}
+	if !strings.Contains(NewClean(retirementRuntime(&root), deps).Long, "wb disk prune empties the shared storeroom") {
+		t.Fatal("wb clean help lacks the clean-versus-prune paragraph")
+	}
+}
+
+type failingCleanWriter struct{}
+
+func (failingCleanWriter) Write([]byte) (int, error) { return 0, errors.New("broken pipe") }

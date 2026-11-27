@@ -85,9 +85,11 @@ func TestNewWorldFailures(t *testing.T) {
 	t.Parallel()
 	failure := errors.New("injected")
 	for name, mutate := range map[string]func(*worldDeps){
-		"home":    func(d *worldDeps) { d.userHome = func() (string, error) { return "", failure } },
-		"resolve": func(d *worldDeps) { d.resolve = func(string) (wbhome.Resolution, error) { return wbhome.Resolution{}, failure } },
-		"go env":  func(d *worldDeps) { d.goEnv = func() (GoEnv, error) { return GoEnv{}, failure } },
+		"home": func(d *worldDeps) { d.userHome = func() (string, error) { return "", failure } },
+		"resolve": func(d *worldDeps) {
+			d.resolve = func(string) (wbhome.Resolution, error) { return wbhome.Resolution{}, failure }
+		},
+		"go env": func(d *worldDeps) { d.goEnv = func() (GoEnv, error) { return GoEnv{}, failure } },
 	} {
 		deps, _, _ := fakeWorldDeps(t)
 		mutate(&deps)

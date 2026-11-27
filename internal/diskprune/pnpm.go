@@ -59,7 +59,7 @@ func (pnpmCategory) plan(ctx context.Context, w *World, o Options) *categoryPlan
 	}
 	it := &item{
 		ItemReport: ItemReport{Path: stores[0], Bytes: single, Status: StatusDelete,
-			Reason: fmt.Sprintf("pnpm store prune; %d bytes of single-link store files; a worktree without node_modules downloads pruned packages again", single)},
+			Reason: "pnpm store prune; bytes shown are single-link store files, pnpm decides what goes; a worktree without node_modules downloads pruned packages again"},
 		device: identity.Dev,
 	}
 	it.apply = func(ctx context.Context) itemResult { return applyPnpm(ctx, w, stores) }

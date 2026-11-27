@@ -22,8 +22,28 @@ wb disk                    # full accounting, exits 1 on findings
 wb disk --skip-sizes       # headroom and roots only, no tree walk
 ```
 
-It reports; it never deletes. Retiring a worktree is `wb clean`, which
-knows what still holds unlanded work.
+`wb disk` only reports. Each finding names the verb that acts on it.
+
+`wb disk prune` gives the space back. It plans by default and deletes only with
+`--apply`, cheapest to rebuild first, stopping once each filesystem meets its
+free-space target:
+
+```sh
+wb disk prune                                     # plan to the 10% floor; exits 1 when there is work
+wb disk prune --apply                             # scratch, build-cache trim, pnpm store
+wb disk prune --until-free 20% --apply            # a higher target
+wb disk prune --category go-module-cache --apply  # opt-in: unreferenced, re-fetchable module versions
+wb disk prune --format json                       # outcome, reasons, per-filesystem figures
+```
+
+Clean versus prune: `wb clean` clears finished workbenches (a worktree whose
+commits provably landed; its worst mistake is losing work). `wb disk prune`
+empties the shared storeroom: caches and scratch that can be rebuilt or
+downloaded again, removed only when nothing is using them (its worst mistake is
+breaking a running build). Neither deletes Work Logs, locks, claims or reports.
+There is no `wb cache` command; `wb commands --search "cache"` finds `wb disk
+prune`. Prune never runs `go clean`; `--allow-full-clean` removes every
+build-cache entry only while no Go tool runs.
 
 `wb disk dependency-cache` is a separate, Linux non-root pnpm archive command.
 Its default plan does not write cache files or a source-worktree heartbeat.

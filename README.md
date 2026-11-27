@@ -379,7 +379,7 @@ path. In central mode `worktrees.root` optionally overrides the store root:
 ```yaml
 version: 1
 worktrees:
-  root: ~/.wb/worktrees
+  root: ~/wb-worktrees
 ```
 
 WB expands `~` and creates that checkout at
@@ -561,7 +561,7 @@ same bounded scheduler as `wb sync`: independent repositories overlap up to
 report stays in task/repository order. One failed task is reported without
 discarding another selected task's safe cleanup. Fleet `--all-merged` sweeping
 retains the default 24-hour merged-PR grace window. `--apply` writes an audit report
-below the authoritative WB home (normally `~/.wb/reports/worktree-cleanup/`)
+below the authoritative WB home (normally `<projects-root>/.wb/reports/worktree-cleanup/`)
 before removing exact worktree and branch refs; remote retirement uses
 force-with-lease against the observed source-branch SHA.
 
@@ -1205,6 +1205,71 @@ YAML report. These controls also apply to `wb coverage` and `wb verify`.
 Interactive fleet and single-repository runs show their current repository,
 module, and check on stderr without contaminating the report on stdout.
 
+### `wb disk` / `wb disk prune` — where the bytes are, and getting them back
+
+`wb disk` reports where the bytes WB causes to exist are, per category, with two
+figures each: what removing the category would actually reclaim, and what its
+trees appear to hold. It only reports; each finding names the verb that acts on
+it.
+
+`wb disk prune` gives the space back. It plans by default and deletes only with
+`--apply`, cheapest to rebuild first, and stops once each filesystem holding a
+candidate meets its free-space target (`--until-free`, default
+`disk.minimum_available`, 10%):
+
+```sh
+wb disk prune                                     # plan; exits 1 when there is work
+wb disk prune --apply                             # scratch, Go build-cache trim, pnpm store
+wb disk prune --category go-module-cache --apply  # opt-in: unreferenced, re-fetchable module versions
+wb disk prune --format json                       # outcome, reasons, per-filesystem figures
+```
+
+#### Clean versus prune
+
+The two verbs answer different questions about different bytes. Think of the
+machine as a workshop shared by many agents: each worktree is a **workbench**,
+and every bench draws from a **shared storeroom** of compiled Go packages,
+downloaded modules, Node packages and scraps on the floor of `/tmp`.
+
+```text
+                           THE DISK
+ ┌──────────────────────────────────────────────────────────────┐
+ │  WORKBENCHES (one per task)        SHARED STOREROOM          │
+ │  ┌─────────┐ ┌─────────┐          ┌──────────────────────┐   │
+ │  │ task A  │ │ task B  │          │ Go build cache       │   │
+ │  │ landed  │ │ in work │          │ Go module downloads  │   │
+ │  └─────────┘ └─────────┘          │ pnpm store           │   │
+ │  ┌─────────┐                      │ /tmp scratch         │   │
+ │  │ task C  │                      └──────────────────────┘   │
+ │  │ landed  │                                ▲                │
+ │  └─────────┘                                │                │
+ │       ▲                                     │                │
+ │   wb clean                            wb disk prune          │
+ │   "was this delivered?"               "is anyone using it,   │
+ │   risk: losing work                    can it come back?"    │
+ │   runs: after every landing           risk: broken build     │
+ │                                       runs: disk is low      │
+ │                                                              │
+ │  RECORDS (<root>/.wb, ~/.wb): Work Logs, locks, claims, hub, │
+ │  reports. Neither verb deletes these; prune reports on them. │
+ └──────────────────────────────────────────────────────────────┘
+```
+
+- **`wb clean` clears finished workbenches.** It retires a worktree only when
+  its commits have provably landed, checking Git, the pull request, the Work Log
+  and the locks, because its worst mistake is losing unlanded work.
+- **`wb disk prune` empties the storeroom.** Nothing in it is anyone's work; it
+  can all be rebuilt or downloaded again. It removes an item only when nothing
+  uses it, it cannot come back wrong, and it holds no checkout, socket or cache
+  data, because its worst mistake is breaking a build that is running.
+
+A worktree's own `node_modules` lives in the worktree, so `wb clean` reclaims it
+with the bench; prune never touches a worktree. Prune never runs `go clean`;
+`--allow-full-clean` removes every build-cache entry only while no Go tool runs.
+There is no `wb cache` command: `wb commands --search "cache"` finds
+`wb disk prune`. The daemon can run the unattended subset below the floor when
+`disk.auto_prune: true` is set in `~/.config/wb/wb.yaml` (off by default).
+
 ### `wb fleet` / `wb status` — local fleet Git health
 
 The normal fleet question is “which local checkouts need attention?” Prefer the
@@ -1355,7 +1420,7 @@ PR.
 
 Every run writes `deps-set.md` and `deps-set.yaml` below
 `<wb-home>/reports/<operation>` (or `--report-dir`; normally
-`~/.wb/reports/...`). Both formats
+`<projects-root>/.wb/reports/...`). Both formats
 record observed and target versions, resolved SHAs, reasons, changed files,
 verification, commits, PR links, CI checks, and merge outcomes. Git remains the
 source of detailed patches; the Markdown report includes the exact diff command.
@@ -1740,7 +1805,7 @@ share one layer and are listed under the table with their cycle path. Layering
 never fails or drops a repository because of a cycle.
 
 The default report directory is
-`<wb-home>/reports/deps-graph-<ecosystem>` (normally `~/.wb/reports/...`, so
+`<wb-home>/reports/deps-graph-<ecosystem>` (normally `<projects-root>/.wb/reports/...`, so
 `deps-graph-go` or `deps-graph-npm`; override it with `--report-dir`). Every
 run writes:
 

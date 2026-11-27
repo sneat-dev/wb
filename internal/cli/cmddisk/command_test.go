@@ -277,7 +277,7 @@ func TestHelpDescribesAccountingAndDefaultsWithoutCollecting(t *testing.T) {
 	if err := execute(command, &out, "--help"); err != nil {
 		t.Fatal(err)
 	}
-	for _, text := range []string{"RECLAIM", "APPARENT", "Nothing reported the growth", "nothing here deletes anything", "Exit codes: 0 nothing to flag, 1 findings, 2 usage.", "--format", "--skip-sizes", "--minimum-available"} {
+	for _, text := range []string{"RECLAIM", "APPARENT", "Nothing reported the growth", "wb disk itself only reports", "Exit codes: 0 nothing to flag, 1 findings, 2 usage.", "--format", "--skip-sizes", "--minimum-available"} {
 		if !strings.Contains(out.String(), text) {
 			t.Fatalf("help missing %q", text)
 		}

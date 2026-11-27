@@ -235,3 +235,25 @@ func TestUsageErrorsPointToTheNearestHelpPage(t *testing.T) {
 		t.Fatalf("unknown command did not name intent search: %q", stderr.String())
 	}
 }
+
+// There is no wb cache command and no alias (founder, 2026-11-27): an agent
+// that types wb cache prune gets the unknown-command hint, and the search the
+// hint names lists wb disk prune first.
+func TestCachePruneHintLeadsToDiskPrune(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"cache", "prune"}, &stdout, &stderr); code != exitUsage || !strings.Contains(stderr.String(), `wb commands --search "cache"`) {
+		t.Fatalf("wb cache prune exit %d stderr %q", code, stderr.String())
+	}
+	stdout.Reset()
+	if code := run([]string{"commands", "--search", "cache", "--format", "json"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("search exit = %d, stderr = %s", code, stderr.String())
+	}
+	var document struct {
+		Commands []struct {
+			Path string `json:"path"`
+		} `json:"commands"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &document); err != nil || len(document.Commands) == 0 || document.Commands[0].Path != "wb disk prune" {
+		t.Fatalf("search = %#v, %v", document.Commands, err)
+	}
+}

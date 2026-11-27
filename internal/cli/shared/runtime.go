@@ -24,3 +24,12 @@ const (
 	ExitFindings = 1
 	ExitUsage    = 2
 )
+
+// CleanVersusPrune is the one-paragraph difference between wb clean and wb
+// disk prune, carried by both verbs' help (disk-prune#req:cross-references).
+const CleanVersusPrune = `wb clean clears finished workbenches: it retires a worktree only when its
+commits have provably landed, because its worst mistake is losing work.
+wb disk prune empties the shared storeroom: caches and scratch that can be
+rebuilt or downloaded again, removed only when nothing is using them, because
+its worst mistake is breaking a build that is running. Neither deletes Work
+Logs, locks, claims or reports.`

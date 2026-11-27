@@ -170,6 +170,15 @@ type categoryPlan struct {
 	applicable bool
 }
 
+// root names the category's filesystem in reports: its first resource
+// directory (the temporary directory, GOCACHE, the store, GOMODCACHE).
+func (p *categoryPlan) root() string {
+	if len(p.locks) > 0 {
+		return p.locks[0]
+	}
+	return ""
+}
+
 func (p *categoryPlan) skip(reason string) {
 	p.Status = StatusSkipped
 	p.Reason = reason
@@ -280,7 +289,7 @@ func project(w *World, o Options, plans []*categoryPlan, filesystems map[uint64]
 			if it.Status != StatusDelete {
 				continue
 			}
-			state := filesystemFor(w, o, it, filesystems)
+			state := filesystemFor(w, o, it, plan.root(), filesystems)
 			if state == nil {
 				continue
 			}
@@ -307,17 +316,20 @@ func project(w *World, o Options, plans []*categoryPlan, filesystems map[uint64]
 	}
 }
 
-func filesystemFor(w *World, o Options, it *item, filesystems map[uint64]*filesystemState) *filesystemState {
+func filesystemFor(w *World, o Options, it *item, label string, filesystems map[uint64]*filesystemState) *filesystemState {
 	if state, ok := filesystems[it.device]; ok {
 		return state
 	}
-	fs, err := w.Probe(it.Path)
+	if label == "" {
+		label = it.Path
+	}
+	fs, err := w.Probe(label)
 	if err != nil {
 		it.Status, it.Error = StatusFailed, err.Error()
 		return nil
 	}
 	state := &filesystemState{fs: fs, projected: fs.AvailableBytes, report: FilesystemReport{
-		Device: strconv.FormatUint(it.device, 10), Path: it.Path,
+		Device: strconv.FormatUint(it.device, 10), Path: label,
 		Target: TargetReport{Kind: string(o.Target.Kind), Value: targetValue(o.Target)},
 		Before: SpaceReport{TotalBytes: fs.TotalBytes, AvailableBytes: fs.AvailableBytes},
 	}}
