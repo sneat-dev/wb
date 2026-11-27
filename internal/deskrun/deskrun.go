@@ -18,6 +18,7 @@ import (
 	"github.com/sneat-dev/wb/internal/credentialfile"
 	"github.com/sneat-dev/wb/internal/deskclient"
 	"github.com/sneat-dev/wb/internal/deskpublish"
+	"github.com/sneat-dev/wb/internal/filewrite"
 	"github.com/sneat-dev/wb/internal/wbconfig"
 )
 
@@ -290,7 +291,7 @@ func (s *Service) install(ctx context.Context, deskURL, credentialFile, credenti
 	if _, err := verifier.Self(ctx); err != nil {
 		return s.exit(1, "verify the Desk credential: "+err.Error())
 	}
-	if err := os.Rename(pending, credentialFile); err != nil {
+	if err := filewrite.Rename(pending, credentialFile, nil); err != nil {
 		return fmt.Errorf("install the Desk credential: %w", err)
 	}
 	return nil
