@@ -737,8 +737,9 @@ By default a run's stderr MUST consist only of:
 - one run-start line naming the selection and the unit count;
 - one progress line per unit, carrying the unit identity and a running `[n/N]`
   count, flushed as the event happens rather than buffered to the end;
-- one liveness line per candidate, as `#req:progress-liveness` requires, on a
-  terminal or under `--verbose`; otherwise the coalesced heartbeat of
+- on a terminal or under `--verbose`, at most two liveness lines per
+  candidate (one when its finish follows its start with nothing between),
+  as `#req:progress-liveness` requires; otherwise the coalesced heartbeat of
   `#req:progress-off-terminal`;
 - under `--format json` only, each completed clone's findings as
   `#req:incremental-findings` requires, since stdout is a single document in
@@ -834,6 +835,13 @@ unbounded `scanning…`.
 The final summary MUST close the same counters, so the last event and the
 report agree.
 
+Until the inventory walk is split into an enumeration phase and an
+inspection phase, this requirement is deferred. The walk purges terminal
+artifacts while it enumerates, so a separate counting pass would repeat
+that side effect. Until then, events carry the number inspected and the
+number found so far, and never present the latter as a total
+(`#req:progress-off-terminal`).
+
 #### REQ: progress-off-terminal
 
 Liveness MUST reach a caller that is not a terminal. Agents run `wb clean`
@@ -845,7 +853,9 @@ not be told apart from a hung one.
   finish line, as `#req:progress-liveness` requires. Each finish line names
   its own candidate; a duration is never printed on another candidate's
   line.
-- Otherwise, unless `--quiet` is given, liveness is coalesced into one
+- `--quiet` suppresses all liveness in every mode, including with
+  `--verbose`.
+- Otherwise, liveness is coalesced into one
   heartbeat line on stderr every 10 seconds while the sweep runs. The
   interval comes from an injectable clock. Each heartbeat carries:
   - the number of candidates inspected;
@@ -854,7 +864,7 @@ not be told apart from a hung one.
   - each in-flight candidate with the step it is in.
 
   For example:
-  `wb clean: inspected 12 of 40 found so far, 1m10s; in flight: sneat-go/task-x (pull requests)`.
+  `wb clean: inspected 12, 40 found so far, 1m10s; in flight: task-x sneat-co/sneat-go (pull requests)`.
 - The step is one of:
   - `git`: local integration checks;
   - `pull requests`: GitHub evidence;
@@ -1216,9 +1226,9 @@ made to take a measurable interval, when `wb clean --format json` runs with
 stdout and stderr captured separately and timestamped, then the first stderr
 liveness event is observed before 10% of the run's wall clock has elapsed;
 events continue to arrive throughout rather than in one burst at the end; each
-event names the candidate and carries a running count against the total 60,
-where that total was emitted before the first network call; and the closing
-counters equal the report's own counts.
+event names the candidate and carries the number inspected and found so far
+(the up-front total of `#req:progress-carries-a-denominator` is deferred);
+and the closing counters equal the report's own counts.
 
 Given the same run with stderr attached to a pipe, then no ANSI control
 sequence, cursor movement, or carriage-return redraw appears in the captured

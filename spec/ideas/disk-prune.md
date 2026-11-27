@@ -109,7 +109,7 @@ are deferred.
 | Tier | Assumption | How to validate |
 |------|------------|-----------------|
 | Must-be-true | A running Go build never reads a module version or build-cache entry that prune deletes | Hermetic test plus a concurrent `go test` while prune applies; check the module set against every `go.sum` |
-| Must-be-true | `pnpm store prune` only removes entries no consumer links | pnpm's documented contract; verify a frontend worktree still installs offline afterwards |
+| Must-be-true | `pnpm store prune` only removes entries no consumer links | pnpm's documented contract; a real-pnpm test keeps a linked package and removes an unlinked one (offline reinstall is not promised) |
 | Should-be-true | The go.sum-referenced module set is much smaller than the 21 GB cache | Count referenced versions against cached ones on the incident host in a dry run |
 | Might-be-true | The daemon trigger alone prevents recurrence without root-cause fixes | Watch incidents after the second phase ships |
 

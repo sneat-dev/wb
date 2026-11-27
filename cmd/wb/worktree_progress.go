@@ -131,7 +131,7 @@ func (p *inventoryProgress) beat() {
 // number grows while the walk runs.
 func (p *inventoryProgress) statusLocked() string {
 	var line strings.Builder
-	fmt.Fprintf(&line, "%s: inspected %d of %d found so far, %s", p.label, p.count, p.found,
+	fmt.Fprintf(&line, "%s: inspected %d, %d found so far, %s", p.label, p.count, p.found,
 		p.now().Sub(p.started).Round(time.Second))
 	if p.phase != "" {
 		fmt.Fprintf(&line, "; %s", p.phase)

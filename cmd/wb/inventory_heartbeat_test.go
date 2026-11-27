@@ -104,7 +104,7 @@ func TestPipedSweepWritesAHeartbeatAtEveryTick(t *testing.T) {
 	out.awaitWrite(t)
 	line := out.String()
 	for _, want := range []string{
-		"wb clean: inspected 1 of 40 found so far, 1m10s",
+		"wb clean: inspected 1, 40 found so far, 1m10s",
 		"in flight: task-x sneat-co/sneat-go (pull requests), task-z acme/z (starting)",
 	} {
 		if !strings.Contains(line, want) {
@@ -120,7 +120,7 @@ func TestPipedSweepWritesAHeartbeatAtEveryTick(t *testing.T) {
 	progress.report(worktrees.ListProgress{Index: 3, Task: "task-z", Path: "/p/acme/z", Done: true})
 	ticker.ticks <- clock.Now()
 	out.awaitWrite(t)
-	if !strings.Contains(out.String(), "inspected 3 of 40 found so far, 1m10s; work log and size 3/12\n") {
+	if !strings.Contains(out.String(), "inspected 3, 40 found so far, 1m10s; work log and size 3/12\n") {
 		t.Fatalf("second heartbeat = %q", out.String())
 	}
 
