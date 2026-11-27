@@ -272,6 +272,7 @@ type ghRepo struct {
 	IsArchived bool   `json:"isArchived"`
 	IsFork     bool   `json:"isFork"`
 	SSHURL     string `json:"sshUrl"`
+	URL        string `json:"url"`
 }
 
 // ListRemote returns all repos for owner via gh. The archived flag is
@@ -279,7 +280,7 @@ type ghRepo struct {
 func ListRemote(owner string) ([]Repo, error) {
 	out, err := githubobserver.Read(context.Background(), "", "repo", "list", owner,
 		"--limit", "1000",
-		"--json", "name,isArchived,isFork,sshUrl")
+		"--json", "name,isArchived,isFork,sshUrl,url")
 	if err != nil {
 		return nil, err
 	}
@@ -288,12 +289,26 @@ func ListRemote(owner string) ([]Repo, error) {
 		return nil, err
 	}
 	repos := make([]Repo, 0, len(raw))
+	protocols := make(map[string]string)
 	for _, r := range raw {
+		host := repopath.FromCloneURL(r.SSHURL, owner, r.Name).Host
+		protocol, known := protocols[host]
+		if !known && host != "" {
+			out, err := githubobserver.Read(context.Background(), "", "config", "get", "git_protocol", "--host", host)
+			if err == nil {
+				protocol = strings.TrimSpace(string(out))
+			}
+			protocols[host] = protocol
+		}
+		cloneURL := r.SSHURL
+		if protocol == "https" && strings.HasPrefix(r.URL, "https://") {
+			cloneURL = strings.TrimSuffix(r.URL, ".git") + ".git"
+		}
 		repos = append(repos, Repo{
 			Org:      owner,
 			Name:     r.Name,
-			Host:     repopath.FromCloneURL(r.SSHURL, owner, r.Name).Host,
-			CloneURL: r.SSHURL,
+			Host:     host,
+			CloneURL: cloneURL,
 			Archived: r.IsArchived,
 			IsFork:   r.IsFork,
 		})
