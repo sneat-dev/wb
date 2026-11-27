@@ -218,6 +218,8 @@ quarantines only the exact held inode and completes the usual terminal flow.
 			return nil
 		},
 		RunE: func(command *cobra.Command, args []string) error {
+			// A blank --repo must not silently widen bare-branch retirement to the fleet.
+			repository = strings.TrimSpace(repository)
 			if jsonShortcut {
 				format = "json"
 			}

@@ -240,6 +240,7 @@ func TestRetireKeepsInvalidAndTaskRecoveryNamesOutOfBareBranchCleanup(t *testing
 		args []string
 	}{
 		{"missing repository", []string{"renovate/javascript-dependencies"}},
+		{"blank repository", []string{"renovate/javascript-dependencies", "--repo= ", "--apply"}},
 		{"invalid ref", []string{"renovate/../unsafe", "--repo=sneat-co/sneat-firebase"}},
 		{"task recovery", []string{"renovate/javascript-dependencies", "--repo=sneat-co/sneat-firebase", "--resume-interrupted"}},
 	} {
