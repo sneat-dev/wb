@@ -227,9 +227,16 @@ changed with `wb desk connect --detail <level>` on a connected machine.
   - agent task names and worktree ids;
   - the name of the first failing check;
   - the names of the slowest tasks.
+
+  A worktree's entry id is an unkeyed hash that covers its task and branch, so Desk could
+  confirm a guessed name by hashing it. At this level, each such id is therefore replaced by an
+  id keyed under the task key, with its kind prefix kept.
 - **`full`** sends the export envelope as the hub export route builds it, which is at most
   Cockpit's anonymous metadata set
   ([cockpit](../cockpit/README.md)#req:anonymous-local-reads-metadata-only).
+
+At both levels, the daemon adds the machine's `throughput` block back. The export itself
+leaves it out, and it is in the metadata set.
 
 No level MUST ever send anything outside that set. That includes file content, file names,
 filesystem paths, diffs, commit subjects or messages, task summaries, prompts, log bodies,
