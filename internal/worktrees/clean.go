@@ -503,6 +503,12 @@ func summarizeClean(outcome *CleanOutcome) {
 	outcome.Totals["unmanaged"] = len(outcome.Unmanaged)
 }
 
+// IsQualifiedRetirementBranch reports whether name is a valid Git branch
+// that contains a slash and therefore cannot be a WB task name.
+func IsQualifiedRetirementBranch(ctx context.Context, name string) bool {
+	return strings.Contains(name, "/") && validBranch(ctx, name)
+}
+
 // ResolveRetireName maps a name that is not a WB task to the task whose
 // checkout has it as its branch. A task named batch5-assembly on branch batch5
 // used to answer `wb worktree retire batch5` with "task not found". It returns

@@ -3,6 +3,7 @@ package discover
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -44,6 +45,7 @@ func lgCovInstallFakeGh(t *testing.T, calls ...lgCovGhCall) {
 	binDir := t.TempDir()
 	var script strings.Builder
 	script.WriteString("#!/bin/sh\n")
+	script.WriteString("if [ -n \"$LGCOV_GH_LOG\" ]; then printf '%s\\n' \"$*\" >> \"$LGCOV_GH_LOG\"; fi\n")
 	for _, call := range calls {
 		script.WriteString("if [ \"$*\" = " + lgCovShellQuote(call.args) + " ]; then\n")
 		script.WriteString("\tprintf '%s' " + lgCovShellQuote(call.stdout) + "\n")
@@ -244,10 +246,10 @@ func TestReconcileTransfersFlagsAmbiguousTransfers(t *testing.T) {
 
 func TestListRemoteMapsRepositoryFields(t *testing.T) {
 	lgCovInstallFakeGh(t, lgCovGhCall{
-		args: "repo list acme --limit 1000 --json name,isArchived,isFork,sshUrl",
+		args: "repo list acme --limit 1000 --json name,isArchived,isFork,sshUrl,url",
 		stdout: `[{"name":"widgets","isArchived":false,"isFork":false,"sshUrl":"git@github.com:acme/widgets.git"},` +
 			`{"name":"legacy","isArchived":true,"isFork":true,"sshUrl":"git@github.com:acme/legacy.git"}]`,
-	})
+	}, lgCovGhCall{args: "config get git_protocol --host github.com", stdout: "ssh\n"})
 	repositories, err := ListRemote("acme")
 	if err != nil {
 		t.Fatal(err)
@@ -266,7 +268,7 @@ func TestListRemoteMapsRepositoryFields(t *testing.T) {
 
 func TestListRemoteReturnsNoRepositoriesForAnEmptyOwner(t *testing.T) {
 	lgCovInstallFakeGh(t, lgCovGhCall{
-		args:   "repo list empty --limit 1000 --json name,isArchived,isFork,sshUrl",
+		args:   "repo list empty --limit 1000 --json name,isArchived,isFork,sshUrl,url",
 		stdout: `[]`,
 	})
 	repositories, err := ListRemote("empty")
@@ -279,7 +281,7 @@ func TestListRemoteReturnsNoRepositoriesForAnEmptyOwner(t *testing.T) {
 }
 
 func TestListRemoteReportsFailures(t *testing.T) {
-	const listCall = "repo list acme --limit 1000 --json name,isArchived,isFork,sshUrl"
+	const listCall = "repo list acme --limit 1000 --json name,isArchived,isFork,sshUrl,url"
 	t.Run("gh error", func(t *testing.T) {
 		lgCovInstallFakeGh(t, lgCovGhCall{args: listCall, stderr: "gh: not logged into any GitHub hosts", exit: 1})
 		if _, err := ListRemote("acme"); err == nil {
@@ -451,5 +453,63 @@ func TestScanLocalSkipsAnUnreadableOrganizationDirectory(t *testing.T) {
 	}
 	if len(repositories) != 1 || repositories[0].Slug() != "zzz-readable/widgets" {
 		t.Fatalf("ScanLocal() = %#v, want the readable organization scanned and the sealed one skipped", repositories)
+	}
+}
+
+func TestListRemoteHonorsGitHubProtocol(t *testing.T) {
+	for _, tc := range []struct {
+		protocol string
+		exit     int
+		want     string
+	}{
+		{"https", 0, "https://github.com/acme/widgets.git"},
+		{"ssh", 0, "git@github.com:acme/widgets.git"},
+		{"https", 1, "git@github.com:acme/widgets.git"},
+	} {
+		t.Run(fmt.Sprintf("%s/%d", tc.protocol, tc.exit), func(t *testing.T) {
+			lgCovInstallFakeGh(t,
+				lgCovGhCall{args: "repo list acme --limit 1000 --json name,isArchived,isFork,sshUrl,url",
+					stdout: `[{"name":"widgets","sshUrl":"git@github.com:acme/widgets.git","url":"https://github.com/acme/widgets"}]`},
+				lgCovGhCall{args: "config get git_protocol --host github.com", stdout: tc.protocol + "\n", exit: tc.exit},
+			)
+			repos, err := ListRemote("acme")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(repos) != 1 || repos[0].CloneURL != tc.want {
+				t.Fatalf("ListRemote() = %#v, want clone URL %q", repos, tc.want)
+			}
+		})
+	}
+}
+
+func TestListRemoteLooksUpTheProtocolOncePerHost(t *testing.T) {
+	lgCovInstallFakeGh(t,
+		lgCovGhCall{args: "repo list acme --limit 1000 --json name,isArchived,isFork,sshUrl,url",
+			stdout: `[{"name":"widgets","sshUrl":"git@github.com:acme/widgets.git","url":"https://github.com/acme/widgets.git"},` +
+				`{"name":"gadgets","sshUrl":"git@github.com:acme/gadgets.git","url":"http://github.com/acme/gadgets"}]`},
+		lgCovGhCall{args: "config get git_protocol --host github.com", stdout: "https\n"},
+	)
+	logPath := filepath.Join(t.TempDir(), "gh.log")
+	t.Setenv("LGCOV_GH_LOG", logPath)
+	repos, err := ListRemote("acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repos) != 2 {
+		t.Fatalf("ListRemote() = %#v, want 2 repositories", repos)
+	}
+	if repos[0].CloneURL != "https://github.com/acme/widgets.git" {
+		t.Fatalf("widgets clone URL = %q, want the .git suffix kept once", repos[0].CloneURL)
+	}
+	if repos[1].CloneURL != "git@github.com:acme/gadgets.git" {
+		t.Fatalf("gadgets clone URL = %q, want the SSH fallback for a non-https URL", repos[1].CloneURL)
+	}
+	logged, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(logged), "config get git_protocol"); got != 1 {
+		t.Fatalf("protocol lookups = %d, want 1 per host; log:\n%s", got, logged)
 	}
 }
