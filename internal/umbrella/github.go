@@ -1,13 +1,13 @@
 package umbrella
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
+
+	"github.com/sneat-dev/wb/internal/runner"
 )
 
 // CommandResult captures stdout, stderr, and error from one gh invocation.
@@ -17,16 +17,13 @@ type CommandResult struct {
 	Err    error
 }
 
-// GitHubExecutor runs `gh` with args. Nil defaults to exec.CommandContext("gh", ...).
+// GitHubExecutor runs `gh` with args. Nil defaults to running gh through
+// internal/runner, which supplies the fleet's non-interactive child env.
 type GitHubExecutor func(ctx context.Context, args ...string) CommandResult
 
 func defaultGitHubExecutor(ctx context.Context, args ...string) CommandResult {
-	cmd := exec.CommandContext(ctx, "gh", args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err := cmd.Run()
-	return CommandResult{Stdout: stdout.Bytes(), Stderr: stderr.Bytes(), Err: err}
+	res, err := runner.Real{}.Run(ctx, "", "gh", args...)
+	return CommandResult{Stdout: []byte(res.Stdout), Stderr: []byte(res.Stderr), Err: err}
 }
 
 // GitHubProvider implements Provider against GitHub Issues via `gh api`.

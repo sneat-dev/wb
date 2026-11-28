@@ -3,8 +3,6 @@ package umbrella
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -305,8 +303,10 @@ func TestGitHubProviderRefusesInvalidRefsAndAPIErrors(t *testing.T) {
 	}
 }
 
-func TestDefaultGitHubExecutorRunsGHFromPath(t *testing.T) {
-	// Uses a temp script named gh only through a canceled context to exercise defaultGitHubExecutor without touching PATH.
+func TestDefaultGitHubExecutorReportsRunnerFailure(t *testing.T) {
+	// A canceled context (and, in the unit tier, the runner's real-process
+	// guard) makes the default executor fail without starting gh, so its
+	// error reaches the caller.
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -314,7 +314,6 @@ func TestDefaultGitHubExecutorRunsGHFromPath(t *testing.T) {
 	if _, err := p.Resolve(ctx, Ref{Registry: "github", ID: "sneat-co/backstage#845"}); err == nil {
 		t.Fatal("canceled context must fail defaultGitHubExecutor")
 	}
-	_ = filepath.Clean(os.DevNull)
 }
 
 func TestFormatHelpersTrailersPartOfStatusAndCloseSummary(t *testing.T) {
