@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build e2e && !windows
 
 package worktrees
 
@@ -16,7 +16,7 @@ import (
 )
 
 //nolint:paralleltest // replaces package-wide procalive.ReadProcStat and session resolver seams
-func TestRetireAcceptsInvokingSessionWhenRecordedOwnerIsZombie(t *testing.T) {
+func TestE2ERetireAcceptsInvokingSessionWhenRecordedOwnerIsZombie(t *testing.T) {
 	worktree := newJournalWorktree(t)
 
 	// Use the test runner's parent, a real live process owned by this user, as
