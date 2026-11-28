@@ -51,6 +51,15 @@ func (s *Snapshotter) serveFleet(writer http.ResponseWriter, request *http.Reque
 		writer.Header().Set(cockpit.CheckedAtHeader, checked.UTC().Format(time.RFC3339))
 	}
 	scope := request.URL.Query().Get(scopeQuery)
+	if scope == ScopeThroughput {
+		// Like the scopes below it is this machine's own part, so it is never
+		// demand for the other machines. The document types cannot fail to marshal.
+		body, _ := json.Marshal(struct {
+			Throughput *Throughput `json:"throughput,omitempty"`
+		}{s.LocalThroughput()})
+		cockpit.ServePayload(writer, request, cockpit.NewPayload(append(body, '\n'), s.compress))
+		return
+	}
 	if scope != ScopeOwn && scope != ScopeMachine {
 		s.fleetRead(from)
 		cockpit.ServePayload(writer, request, s.Payload())

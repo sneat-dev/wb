@@ -6,6 +6,8 @@ project:
     org: sneat-dev
     repo: wb
 
+plans_repo: sneat-dev/wb
+
 gates:
     feature.approved:
         reviewers:

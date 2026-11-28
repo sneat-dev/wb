@@ -30,6 +30,8 @@ Choose one command that answers the question:
 | Reserve a task fleet-wide before starting work | `wb remote claim <task>` | [remote.md](references/remote.md) |
 | Give up a task claim | `wb remote release <task>` | [remote.md](references/remote.md) |
 | See who holds every task claim | `wb remote claims` | [remote.md](references/remote.md) |
+| Connect this machine to Sneat Dev Desk | `wb desk connect` | [desk.md](references/desk.md) |
+| Check or remove the Desk connection | `wb desk status` / `wb desk disconnect` | [desk.md](references/desk.md) |
 | Admit a peer, or join a hub as one | `wb peers invite` / `wb peers join` | [peers.md](references/peers.md) |
 | List, inspect, block or unblock a peer | `wb peers list` / `get` / `block` / `unblock` / `disconnect` | [peers.md](references/peers.md) |
 

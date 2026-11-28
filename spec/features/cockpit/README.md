@@ -210,7 +210,12 @@ is this closed set of fields:
   its agents were cut (`agents_truncated`), and, on the local machine's entry only,
   the code of its last failed or degraded periodic publish (`publish_error`:
   `collect_failed`, `store_unavailable`, `publish_failed` or
-  `optional_fields_dropped`), never an error text;
+  `optional_fields_dropped`), never an error text, and, on the same entry only,
+  the code of its last failed Desk publish or heartbeat (`desk_error`:
+  `unreachable`, `timeout`, `revoked`, `rejected_payload`, `schema_unsupported`,
+  `too_large` or `rate_limited`;
+  [desk-connect](../desk-connect/README.md)#req:revocation-is-respected), never
+  an error text either;
 - a machine's resource samples, served only by the `machine-metrics` route and
   never in the fleet document, which are numbers and times only: CPU percent,
   one-minute load, memory used and total bytes, free and total bytes of the

@@ -222,7 +222,11 @@ type Machine struct {
 	// of this machine's snapshot (cockpit-views#req:periodic-remote-publish),
 	// on this machine's own entry only: absent when it is healthy and when
 	// publishing is off.
-	PublishError    string `json:"publish_error,omitempty"`
+	PublishError string `json:"publish_error,omitempty"`
+	// DeskError is the desk.ErrorCode of this machine's last failed Desk
+	// publish or heartbeat (desk-connect#req:revocation-is-respected), on this
+	// machine's own entry only; absent when healthy or not connected.
+	DeskError       string `json:"desk_error,omitempty"`
 	AgentsTruncated bool   `json:"agents_truncated,omitempty"`
 }
 

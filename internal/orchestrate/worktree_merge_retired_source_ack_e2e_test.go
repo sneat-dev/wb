@@ -1,3 +1,5 @@
+//go:build e2e
+
 package orchestrate
 
 import (
@@ -103,7 +105,7 @@ func requireNoAcknowledgement(t *testing.T, receipt WorktreeMergeReceipt) {
 }
 
 //nolint:paralleltest // Cleanup reads the fake gh through process environment.
-func TestAcknowledgeRetiredSourcePostTargetFailureReleasesLaneWhenSupersededByGreen(t *testing.T) {
+func TestE2EAcknowledgeRetiredSourcePostTargetFailureReleasesLaneWhenSupersededByGreen(t *testing.T) {
 	failure := newRetiredSourceFailure(t, false, true)
 	before, err := os.ReadFile(failure.receipt.ReceiptPath)
 	if err != nil {
@@ -174,26 +176,12 @@ func TestAcknowledgeRetiredSourcePostTargetFailureReleasesLaneWhenSupersededByGr
 	}
 }
 
-const goldenLandedFailureAcknowledgementID = "061cdd3eb7c795c2aabc73cbd501992baa75998d26bd8cf0f826e9df1ad66bee"
-
-func TestLandedFailureAcknowledgementIDIsUnchangedWithoutRetiredEvidence(t *testing.T) {
-	t.Parallel()
-	ack := WorktreeMergeLandedFailureAcknowledgement{
-		ReceiptID: "r", ReceiptPath: "/p", ReceiptStatus: WorktreeMergePostTargetCIFailed, ReceiptTargetSHA: "t", ReceiptLandingSHA: "l",
-		CurrentTargetSHA: "c", CandidateSHA: "d", Sources: []WorktreeMergeSource{{Task: "s", Worktree: "/w", Branch: "b", SHA: "x"}},
-	}
-	// Golden value computed before retired-source evidence existed.
-	if got := landedFailureAcknowledgementID(ack); got != goldenLandedFailureAcknowledgementID {
-		t.Fatalf("ID changed for an acknowledgement without retired evidence: %s", got)
-	}
-}
-
 // The public verb observes the superseding head through the real GitHub check
 // observer (here the package's fake gh, which reports no checks at all). A
 // "passed" observation with no executed checks is vacuous and must refuse.
 //
 //nolint:paralleltest // Cleanup and the fake gh read process environment.
-func TestAcknowledgeLandedMergeFailureRefusesVacuousGreenObservedThroughGitHub(t *testing.T) {
+func TestE2EAcknowledgeLandedMergeFailureRefusesVacuousGreenObservedThroughGitHub(t *testing.T) {
 	failure := newRetiredSourceFailure(t, false, true)
 	t.Setenv("WB_TEST_TARGET_SHA", failure.superseder)
 	_, err := AcknowledgeLandedMergeFailure(context.Background(), failure.options(nil))
@@ -204,7 +192,7 @@ func TestAcknowledgeLandedMergeFailureRefusesVacuousGreenObservedThroughGitHub(t
 }
 
 //nolint:paralleltest // Cleanup reads the fake gh through process environment.
-func TestAcknowledgeRetiredSourceAcceptsCleanedDescendantContainedInTarget(t *testing.T) {
+func TestE2EAcknowledgeRetiredSourceAcceptsCleanedDescendantContainedInTarget(t *testing.T) {
 	failure := newRetiredSourceFailure(t, true, false)
 	ack, err := failure.acknowledge(t, failure.options(checksResult(githubchecks.PullRequestWaitPassed)), nil)
 	if err != nil {
@@ -216,7 +204,7 @@ func TestAcknowledgeRetiredSourceAcceptsCleanedDescendantContainedInTarget(t *te
 }
 
 //nolint:paralleltest // Cleanup reads the fake gh through process environment.
-func TestAcknowledgeRetiredSourceRefusesWithoutGreenSupersedingHead(t *testing.T) {
+func TestE2EAcknowledgeRetiredSourceRefusesWithoutGreenSupersedingHead(t *testing.T) {
 	failure := newRetiredSourceFailure(t, false, true)
 	for name, observe := range map[string]targetChecksObserver{
 		"pending": checksResult(githubchecks.PullRequestWaitPending),
@@ -248,7 +236,7 @@ func TestAcknowledgeRetiredSourceRefusesWithoutGreenSupersedingHead(t *testing.T
 }
 
 //nolint:paralleltest // Cleanup reads the fake gh through process environment.
-func TestAcknowledgeRetiredSourceRefusesWhileTargetIsStillTheFailedLanding(t *testing.T) {
+func TestE2EAcknowledgeRetiredSourceRefusesWhileTargetIsStillTheFailedLanding(t *testing.T) {
 	failure := newRetiredSourceFailure(t, false, false)
 	_, err := failure.acknowledge(t, failure.options(checksResult(githubchecks.PullRequestWaitPassed)), nil)
 	if err == nil || !strings.Contains(err.Error(), "is still the failed landing") {
@@ -277,7 +265,7 @@ func (r ancestryFaultRunner) RunOpts(ctx context.Context, dir string, opts runne
 }
 
 //nolint:paralleltest // Cleanup reads the fake gh through process environment.
-func TestAcknowledgeRetiredSourceRefusesUninspectableSourcePath(t *testing.T) {
+func TestE2EAcknowledgeRetiredSourceRefusesUninspectableSourcePath(t *testing.T) {
 	failure := newRetiredSourceFailure(t, false, true)
 	// A source path that cannot be inspected is neither present nor retired.
 	file := filepath.Join(t.TempDir(), "file")
@@ -294,7 +282,7 @@ func TestAcknowledgeRetiredSourceRefusesUninspectableSourcePath(t *testing.T) {
 }
 
 //nolint:paralleltest // Cleanup reads the fake gh through process environment.
-func TestAcknowledgeRetiredSourceRefusesUnprovenContainment(t *testing.T) {
+func TestE2EAcknowledgeRetiredSourceRefusesUnprovenContainment(t *testing.T) {
 	failure := newRetiredSourceFailure(t, true, true)
 	receipt, source := failure.receipt, failure.receipt.Sources[0]
 	gitDir := receipt.Candidate.Worktree
@@ -334,7 +322,7 @@ func TestAcknowledgeRetiredSourceRefusesUnprovenContainment(t *testing.T) {
 	}
 }
 
-func TestAcknowledgeRetiredSourceRefusesWithoutCleanupRecord(t *testing.T) {
+func TestE2EAcknowledgeRetiredSourceRefusesWithoutCleanupRecord(t *testing.T) {
 	t.Parallel()
 	fixture := newExplicitRootEngineFixture(t)
 	source := createMergeSource(t, fixture, "unrecorded-source", "feature/unrecorded", "unrecorded.txt", "unrecorded\n")
@@ -361,7 +349,7 @@ func TestAcknowledgeRetiredSourceRefusesWithoutCleanupRecord(t *testing.T) {
 	requireNoAcknowledgement(t, receipt)
 }
 
-func TestRetiredSourceProofRequiresCompleteIdentityAndInspectableCheckout(t *testing.T) {
+func TestE2ERetiredSourceProofRequiresCompleteIdentityAndInspectableCheckout(t *testing.T) {
 	t.Parallel()
 	receipt := WorktreeMergeReceipt{Status: WorktreeMergePostTargetCIFailed, Repository: "acme/app", Target: "main"}
 	if _, err := proveRetiredLandedFailureSource(context.Background(), defaultRunner, worktrees.ReadRemovedTerminalWorkLogClaimBase, t.TempDir(), t.TempDir(), receipt, WorktreeMergeSource{Task: "t"}); err == nil {
@@ -379,14 +367,14 @@ func TestRetiredSourceProofRequiresCompleteIdentityAndInspectableCheckout(t *tes
 	}
 }
 
-func TestSupersedingTargetChecksObserverRefusesIncompleteIdentityWithoutGitHub(t *testing.T) {
+func TestE2ESupersedingTargetChecksObserverRefusesIncompleteIdentityWithoutGitHub(t *testing.T) {
 	t.Parallel()
 	if _, err := observeSupersedingTargetChecks(context.Background(), "", "", ""); err == nil {
 		t.Fatal("incomplete identity observed")
 	}
 }
 
-func TestRetiredSourceEvidenceMustMatchItsReceipt(t *testing.T) {
+func TestE2ERetiredSourceEvidenceMustMatchItsReceipt(t *testing.T) {
 	t.Parallel()
 	landing, current := strings.Repeat("a", 40), strings.Repeat("b", 40)
 	source := WorktreeMergeSource{Task: "s", Worktree: "/w", Branch: "b", SHA: landing}

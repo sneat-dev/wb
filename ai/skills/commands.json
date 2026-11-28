@@ -47,6 +47,9 @@
       "wb-deps",
       "wb-dependency-campaign"
     ],
+    "desk": [
+      "wb-fleet"
+    ],
     "disk": [
       "wb-fleet"
     ],

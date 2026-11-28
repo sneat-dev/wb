@@ -158,6 +158,7 @@ func ownEntries(document Document, now time.Time) (Document, ExportDrops) {
 	// has it, not exported (the strict decoder refuses it).
 	for index := range own.Machines {
 		own.Machines[index].PublishError = ""
+		own.Machines[index].DeskError = ""
 	}
 	machineID := ""
 	if len(own.Machines) > 0 {
@@ -269,6 +270,11 @@ const (
 	scopeQuery   = "scope"
 	ScopeOwn     = "own"
 	ScopeMachine = "machine"
+	// ScopeThroughput answers only this machine's throughput block, which the
+	// two scopes above leave out, for wb desk push
+	// (desk-connect#req:push-publishes-now). A daemon that does not know it
+	// answers the whole document.
+	ScopeThroughput = "throughput"
 )
 
 // ExportDropsHeader is the response header of a scoped read that says how many
