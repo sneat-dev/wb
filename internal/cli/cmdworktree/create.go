@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/sneat-dev/wb/internal/cli/shared"
+	"github.com/sneat-dev/wb/internal/umbrella"
 	"github.com/sneat-dev/wb/internal/worktreerun"
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
@@ -20,6 +21,7 @@ type CreateDependencies struct {
 	BeforeCreate       func(string, []string) error
 	Claim              func(*cobra.Command, bool, string, string) worktreerun.RemoteClaimOutcome
 	AfterCreate        func(*cobra.Command, string, []worktrees.CreateResult)
+	ResolveUmbrella    func(context.Context, string, []string, string) (umbrella.Ref, error)
 }
 
 // NewCreate constructs the managed worktree creation command.
@@ -27,7 +29,7 @@ func NewCreate(environment shared.Runtime, dependencies CreateDependencies) *cob
 	var branch, branchPrefix, base, format string
 	var mode string
 	var resume, noClaim bool
-	var effortID, runID, initiator, agentID, agentRuntime, model, cli, provider, taskSummary, originalPrompt string
+	var effortID, runID, initiator, agentID, agentRuntime, model, cli, provider, taskSummary, umbrellaFlag, originalPrompt string
 	command := &cobra.Command{
 		Use:   "create <task> [owner/repository...]",
 		Short: "Create isolated feature branches in the selected checkout root",
@@ -161,6 +163,17 @@ wb worktree create improve-login owner/repository --resume \
 			if err != nil {
 				return err
 			}
+			if strings.TrimSpace(umbrellaFlag) != "" {
+				resolver := dependencies.ResolveUmbrella
+				if resolver == nil {
+					resolver = defaultResolveUmbrella
+				}
+				resolvedRef, umbrellaErr := resolver(command.Context(), environment.Flags().ProjectsRoot, repositories, umbrellaFlag)
+				if umbrellaErr != nil {
+					return umbrellaErr
+				}
+				workLog.Umbrella = resolvedRef.String()
+			}
 			workLog, err = dependencies.PrepareLog(environment.Flags().ProjectsRoot, args[0], workLog)
 			if err != nil {
 				return err
@@ -209,6 +222,11 @@ wb worktree create improve-login owner/repository --resume \
 			// created is not made unusable by a marker it could not write, and
 			// the reason goes to stderr rather than into the result document.
 			dependencies.AfterCreate(command, base, results)
+			if workLog.Umbrella == "" && len(repositories) >= 2 && worktrees.UmbrellaForTask(environment.Flags().ProjectsRoot, args[0]) == "" {
+				_, _ = fmt.Fprintf(command.ErrOrStderr(),
+					"warning: task %q spans %d repositories and has no umbrella; attach one with: wb worktree set %s --umbrella <owner/repo#N>\n",
+					args[0], len(repositories), args[0])
+			}
 			return renderCreated(command.OutOrStdout(), format, claimResult, results)
 		},
 	}
@@ -227,6 +245,7 @@ wb worktree create improve-login owner/repository --resume \
 	command.Flags().StringVar(&cli, "cli", "", "optional invoking CLI/client identifier, supplied only when known")
 	command.Flags().StringVar(&provider, "provider", "", "optional routing/billing provider identifier, never a credential")
 	command.Flags().StringVar(&taskSummary, "summary", "", "optional short non-sensitive task summary for overlap checks; never prompt text or credentials")
+	command.Flags().StringVar(&umbrellaFlag, "umbrella", "", "optional umbrella reference indexing a cross-repo task (e.g. owner/repo#N or github:owner/repo#N)")
 	command.Flags().StringVar(&originalPrompt, "original-prompt-file", "", "required readable non-empty file containing the exact original prompt, or - to read it from stdin; archived under the WB state directory only")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	return command

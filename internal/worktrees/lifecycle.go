@@ -406,7 +406,10 @@ type ListResult struct {
 	WorkLogSessionID string `json:"work_log_session_id,omitempty"`
 	// TaskSummary is the optional bounded, non-sensitive description captured
 	// at creation. It is never reconstructed from the private prompt archive.
-	TaskSummary       string       `json:"task_summary,omitempty"`
+	TaskSummary string `json:"task_summary,omitempty"`
+	// Umbrella is the optional canonical typed umbrella reference ("<registry>:<id>")
+	// associated with this worktree's task.
+	Umbrella          string       `json:"umbrella,omitempty"`
 	OwnerState        string       `json:"owner_state"`
 	OpenPullRequest   *PullRequest `json:"open_pull_request,omitempty"`
 	MergedPullRequest *PullRequest `json:"merged_pull_request,omitempty"`
@@ -2048,6 +2051,14 @@ func activeWorkLogClaimAtPathWithReadNames(home, worktree string, tasks map[stri
 				// sidecar beside it; only a validated one is passed over.
 				if strings.HasSuffix(name, worktreeclaims.PullRequestBindingSuffix) {
 					if bindingErr := worktreeclaims.ValidatePullRequestBindingEntry(claims, name, claimFiles, readJSONAt); bindingErr != nil {
+						_ = claims.Close()
+						_ = runs.Close()
+						return nil, fmt.Errorf("unsafe Work Log claim entry %q: %w", name, bindingErr)
+					}
+					continue
+				}
+				if strings.HasSuffix(name, worktreeclaims.UmbrellaBindingSuffix) {
+					if bindingErr := worktreeclaims.ValidateUmbrellaBindingEntry(claims, name, claimFiles, readJSONAt); bindingErr != nil {
 						_ = claims.Close()
 						_ = runs.Close()
 						return nil, fmt.Errorf("unsafe Work Log claim entry %q: %w", name, bindingErr)
@@ -4080,15 +4091,22 @@ func (i *lifecycleInspection) enrichOwnership() error {
 		if claim, _, _, claimErr := activeWorkLogClaimReadOnly(home, i.worktree); claimErr == nil {
 			i.result.WorkLogSessionID = strings.TrimSpace(claim.WBSessionID)
 			i.result.TaskSummary = claim.TaskSummary
+			i.result.Umbrella = effectiveClaimUmbrella(home, claim)
 		} else if terminal, terminalErr := readWorkLogTerminalRecordReadOnly(home, i.worktree); terminalErr == nil && terminal != nil {
 			i.result.WorkLogSessionID = strings.TrimSpace(terminal.WBSessionID)
 			i.result.TaskSummary = terminal.TaskSummary
+			i.result.Umbrella = effectiveClaimUmbrella(home, terminal.Claim)
 			if terminal.FinalizeReport != nil {
 				i.result.TerminalResult = terminal.FinalizeReport.Result
 				i.result.TerminalMessage = terminal.FinalizeReport.Message
 				i.result.ReportPath = terminal.FinalizeReport.ReportPath
 				i.result.FinalizedAt = terminal.SealedAt
 			}
+		}
+	}
+	if i.result.Umbrella == "" {
+		if manifest, manifestErr := ReadManifest(i.worktree); manifestErr == nil {
+			i.result.Umbrella = strings.TrimSpace(manifest.Umbrella)
 		}
 	}
 	return nil

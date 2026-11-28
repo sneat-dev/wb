@@ -442,6 +442,7 @@ func (p Ports) WriteCreationJournal(effort, run, claimID string, result Creation
 		Provider:     strings.TrimSpace(options.Provider),
 		RunID:        run,
 		ClaimID:      claimID,
+		Umbrella:     strings.TrimSpace(options.Umbrella),
 		Provenance:   ProvenanceCreated,
 	}
 	if err := p.WriteManifest(result.WorktreeDir, manifest); err != nil {

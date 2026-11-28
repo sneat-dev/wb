@@ -465,6 +465,7 @@ func landWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions, sa
 			return receipt, err
 		}
 		if !receipt.Cleanup {
+			reportWorktreeMergeLandedUmbrella(ctx, options.ProjectsRoot, options.UmbrellaProviders, &receipt)
 			reportWorktreeMergeProgress(options.Progress, "landed", progress.Completed, receipt.ReceiptPath)
 			return receipt, nil
 		}
@@ -492,6 +493,7 @@ func landWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions, sa
 		receipt.Status = WorktreeMergeComplete
 		receipt.Failure = ""
 		receipt.UpdatedAt = time.Now().UTC()
+		reportWorktreeMergeLandedUmbrella(ctx, options.ProjectsRoot, options.UmbrellaProviders, &receipt)
 		if err := save(receipt); err != nil {
 			return receipt, err
 		}
@@ -938,6 +940,7 @@ func landWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions, sa
 	}
 	reportWorktreeMergeProgress(options.Progress, "reconcile_source_prs", progress.Completed, fmt.Sprintf("%d pull requests", len(receipt.SourcePullRequests)))
 	if !receipt.Cleanup {
+		reportWorktreeMergeLandedUmbrella(ctx, options.ProjectsRoot, options.UmbrellaProviders, &receipt)
 		reportWorktreeMergeProgress(options.Progress, "landed", progress.Completed, receipt.ReceiptPath)
 		return receipt, nil
 	}
@@ -953,6 +956,7 @@ func landWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions, sa
 	receipt.Status = WorktreeMergeComplete
 	receipt.Failure = ""
 	receipt.UpdatedAt = time.Now().UTC()
+	reportWorktreeMergeLandedUmbrella(ctx, options.ProjectsRoot, options.UmbrellaProviders, &receipt)
 	if err := save(receipt); err != nil {
 		return receipt, err
 	}

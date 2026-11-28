@@ -396,6 +396,16 @@ func printPullRequestLand(command *cobra.Command, result orchestrate.PullRequest
 				return err
 			}
 		}
+		if result.Umbrella != "" {
+			if _, err := fmt.Fprintf(out, "umbrella: %s\n", result.Umbrella); err != nil {
+				return err
+			}
+		}
+		if result.UmbrellaCloseCommand != "" {
+			if _, err := fmt.Fprintf(out, "all umbrella members finished; close with: %s\n", result.UmbrellaCloseCommand); err != nil {
+				return err
+			}
+		}
 	default:
 		if _, err := fmt.Fprintf(out, "%s: %s\n", result.Outcome, result.Reason); err != nil {
 			return err

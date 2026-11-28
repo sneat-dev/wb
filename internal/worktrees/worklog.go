@@ -104,6 +104,9 @@ type WorkLogOptions struct {
 	// TaskSummary is an optional, one-line, non-sensitive description of the
 	// work. It is separate from OriginalPrompt, which remains private local data.
 	TaskSummary string
+	// Umbrella is an optional canonical typed umbrella reference ("<registry>:<id>")
+	// indexing a cross-repo task.
+	Umbrella string
 	// WBSessionID links this claim to the live registered session that created
 	// it. Normal callers leave it empty and the current resolver supplies it.
 	WBSessionID           string
@@ -650,6 +653,7 @@ func recordWorkLogWithPreparation(home, task string, result CreateResult, option
 		ModelProvenance: provenance, ModelDeclaredBy: declaredBy(options),
 		CLI: strings.TrimSpace(options.CLI), Provider: strings.TrimSpace(options.Provider),
 		TaskSummary:   taskSummary,
+		Umbrella:      strings.TrimSpace(options.Umbrella),
 		WBSessionID:   sessionID,
 		PromptArchive: promptArchive, PromptDigest: promptDigest,
 		AcquiredVia: strings.TrimSpace(options.AcquiredVia), Mode: options.Mode, LeaseExpiresAt: claimLeaseExpiry(options.LeaseExpiresAt),
@@ -861,6 +865,9 @@ func workLogOptionsForClaimExtensionObserved(home string, requested WorkLogOptio
 	requested.AgentRuntime = claim.AgentRuntime
 	if strings.TrimSpace(requested.TaskSummary) == "" {
 		requested.TaskSummary = claim.TaskSummary
+	}
+	if strings.TrimSpace(requested.Umbrella) == "" {
+		requested.Umbrella = claim.Umbrella
 	}
 	if len(requested.snapshot.Contents) != 0 || strings.TrimSpace(requested.OriginalPrompt) != "" {
 		requested.RequireOriginalPrompt = false
@@ -3052,6 +3059,7 @@ func toClaimOptions(options WorkLogOptions) worktreeclaims.Options {
 		EffortID: options.EffortID, RunID: options.RunID, Initiator: options.Initiator,
 		AgentID: options.AgentID, AgentRuntime: options.AgentRuntime, Model: options.Model,
 		CLI: options.CLI, Provider: options.Provider, TaskSummary: options.TaskSummary,
+		Umbrella:    options.Umbrella,
 		WBSessionID: options.WBSessionID, OriginalPrompt: options.OriginalPrompt,
 		RequireOriginalPrompt: options.RequireOriginalPrompt, AcquiredVia: options.AcquiredVia,
 		Mode: options.Mode, LeaseExpiresAt: options.LeaseExpiresAt,
@@ -3063,6 +3071,7 @@ func fromClaimOptions(options worktreeclaims.Options) WorkLogOptions {
 		EffortID: options.EffortID, RunID: options.RunID, Initiator: options.Initiator,
 		AgentID: options.AgentID, AgentRuntime: options.AgentRuntime, Model: options.Model,
 		CLI: options.CLI, Provider: options.Provider, TaskSummary: options.TaskSummary,
+		Umbrella:    options.Umbrella,
 		WBSessionID: options.WBSessionID, OriginalPrompt: options.OriginalPrompt,
 		RequireOriginalPrompt: options.RequireOriginalPrompt, AcquiredVia: options.AcquiredVia,
 		Mode: options.Mode, LeaseExpiresAt: options.LeaseExpiresAt,

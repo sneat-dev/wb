@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/sneat-dev/wb/internal/repopath"
+	"github.com/sneat-dev/wb/internal/umbrella"
 	"gopkg.in/yaml.v3"
 )
 
@@ -36,6 +37,12 @@ type Config struct {
 		ArchiveRepository *string                                     `yaml:"archive_repository"`
 		Organizations     map[string]RetiredArchiveOrganizationConfig `yaml:"organizations"`
 	} `yaml:"retirement"`
+	// Umbrella configures default umbrella resolution. Both user/fleet
+	// (~/.config/wb/worktrees.yaml) and repository (.wb/worktrees.yaml)
+	// policies may set default_registry.
+	Umbrella struct {
+		DefaultRegistry *string `yaml:"default_registry"`
+	} `yaml:"umbrella"`
 }
 
 type RetiredArchiveOrganizationConfig struct {
@@ -109,6 +116,12 @@ func Decode(path string, contents []byte, validBranch BranchValidator) (Config, 
 			if err := ValidateRetiredArchiveRepositoryName(*policy.ArchiveRepository); err != nil {
 				return Config{}, false, fmt.Errorf("worktrees config %s retirement.organizations.%s.archive_repository: %w", path, organization, err)
 			}
+		}
+	}
+	if config.Umbrella.DefaultRegistry != nil {
+		registry := *config.Umbrella.DefaultRegistry
+		if err := umbrella.ValidateRegistryName(registry); err != nil {
+			return Config{}, false, fmt.Errorf("worktrees config %s umbrella.default_registry: %w", path, err)
 		}
 	}
 	return config, true, nil

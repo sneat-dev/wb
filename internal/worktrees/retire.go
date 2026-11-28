@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/githubobserver"
+	"github.com/sneat-dev/wb/internal/umbrella"
 	unix "github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktreebranches"
@@ -228,8 +229,24 @@ func retireWithEntryPorts(ctx context.Context, options RetireOptions, ports reti
 		}
 		result = prior
 	}
+	commitMessage := retireCommitMessage(resolution.Write.Home, claim, options.Message)
 	operation := retireTransactionOperation(options, root, resolution.Write.Home, entry, task, heldWorktree, lockedFence, ports.checkCustody)
-	return operation.ApplyTransaction(ctx, result, priorExists, current, options.Message)
+	return operation.ApplyTransaction(ctx, result, priorExists, current, commitMessage)
+}
+
+func retireCommitMessage(home string, claim workLogClaim, message string) string {
+	rawRef := effectiveClaimUmbrella(home, claim)
+	if rawRef == "" {
+		return message
+	}
+	parsed, err := umbrella.Parse(rawRef, "")
+	if err != nil {
+		return message
+	}
+	if strings.TrimSpace(message) == "" {
+		message = "Retire worktree source changes"
+	}
+	return umbrella.AppendTrailer(message, parsed)
 }
 
 func corroborateRetireResumeReceipt(prior, planned RetireResult, preserve, remoteSHA string) error {

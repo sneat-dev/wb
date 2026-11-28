@@ -12,12 +12,21 @@ import (
 )
 
 const PullRequestBindingSuffix = ".pull_request.json"
+const UmbrellaBindingSuffix = ".umbrella.json"
 
 type ClaimPullRequestBinding struct {
 	Repository  string    `json:"repository"`
 	PullRequest int       `json:"pull_request,omitempty"`
 	URL         string    `json:"url"`
+	LandedSHA   string    `json:"landed_sha,omitempty"`
 	RecordedAt  time.Time `json:"recorded_at"`
+}
+
+// ClaimUmbrellaBinding records an umbrella reference attached to an existing
+// immutable claim (e.g. via `wb worktree set --umbrella`).
+type ClaimUmbrellaBinding struct {
+	Umbrella   string    `json:"umbrella"`
+	RecordedAt time.Time `json:"recorded_at"`
 }
 type RegisteredPullRequestBinding struct {
 	Task        string
@@ -149,6 +158,42 @@ func readValidatedClaimPullRequestBinding(claims *os.File, claimID string, readJ
 	}
 	if boundClaim.ClaimID != claimID || binding.Repository != boundClaim.Repository || ValidatePullRequestBindingFields(binding) != nil || binding.RecordedAt.IsZero() {
 		return fmt.Errorf("invalid pull request binding for claim %s", claimID)
+	}
+	return nil
+}
+
+// ValidateUmbrellaBindingFields verifies that an umbrella sidecar carries a
+// non-empty typed reference "<registry>:<id>" without control characters.
+func ValidateUmbrellaBindingFields(binding ClaimUmbrellaBinding) error {
+	ref := strings.TrimSpace(binding.Umbrella)
+	if ref == "" || !strings.Contains(ref, ":") || strings.ContainsAny(ref, " \t\r\n\x00") {
+		return fmt.Errorf("refusing to record umbrella binding with reference %q", binding.Umbrella)
+	}
+	return nil
+}
+
+// ValidateUmbrellaBindingEntry proves that name, listed in a claims directory
+// whose entries are claimFiles, is the registered umbrella sidecar of a listed
+// sibling claim, read below the held descriptor.
+func ValidateUmbrellaBindingEntry(claims *os.File, name string, claimFiles map[string]bool, readJSON func(*os.File, string, any) error) error {
+	claimID := strings.TrimSuffix(name, UmbrellaBindingSuffix)
+	if name != claimID+UmbrellaBindingSuffix || !ValidClaimID(claimID) || !claimFiles[claimID+".json"] || readJSON == nil {
+		return fmt.Errorf("orphaned or unsafe umbrella binding %q", name)
+	}
+	return readValidatedClaimUmbrellaBinding(claims, claimID, readJSON)
+}
+
+func readValidatedClaimUmbrellaBinding(claims *os.File, claimID string, readJSON func(*os.File, string, any) error) error {
+	var binding ClaimUmbrellaBinding
+	if err := readJSON(claims, claimID+UmbrellaBindingSuffix, &binding); err != nil {
+		return err
+	}
+	var boundClaim Claim
+	if err := readJSON(claims, claimID+".json", &boundClaim); err != nil {
+		return err
+	}
+	if boundClaim.ClaimID != claimID || ValidateUmbrellaBindingFields(binding) != nil || binding.RecordedAt.IsZero() {
+		return fmt.Errorf("invalid umbrella binding for claim %s", claimID)
 	}
 	return nil
 }

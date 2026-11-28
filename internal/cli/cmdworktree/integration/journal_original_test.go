@@ -18,10 +18,10 @@ func TestCwWtReadPromptBody(t *testing.T) {
 	// Actual filesystem reader through the public command; domain append is a recorder.
 	readPromptBody := func(prompt, file string) ([]byte, error) {
 		var body []byte
-		command := cmdworktree.NewSet(shared.Runtime{Flags: func() shared.Flags { return shared.Flags{} }}, func(_ context.Context, o worktrees.LogSteerOptions) (worktrees.LogVerbResult, error) {
+		command := cmdworktree.NewSet(shared.Runtime{Flags: func() shared.Flags { return shared.Flags{} }}, cmdworktree.SetDependencies{Steer: func(_ context.Context, o worktrees.LogSteerOptions) (worktrees.LogVerbResult, error) {
 			body = o.Body
 			return worktrees.LogVerbResult{}, nil
-		})
+		}})
 		command.SilenceUsage = true
 		command.SilenceErrors = true
 		command.SetOut(io.Discard)

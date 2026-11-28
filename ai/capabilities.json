@@ -3419,7 +3419,8 @@
                 "--provider",
                 "--resume",
                 "--run",
-                "--summary"
+                "--summary",
+                "--umbrella"
               ],
               "modes": [
                 "Identical root-level alias for `wb worktree create`, built from the exact same constructor: same flags, same help text, same exit codes.",
@@ -14184,6 +14185,134 @@
       "notes": "Pickup starts a successor for a previously parked task."
     },
     {
+      "id": "wb.umbrella.close",
+      "feature_refs": [
+        "spec/features/work-log/README.md",
+        "spec/features/worktree-lifecycle/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb umbrella close",
+              "flags": [
+                "--apply",
+                "--format"
+              ],
+              "modes": [
+                "Dry run by default: verifies that the umbrella is open and every recorded member has landed or been archived with a restore pointer, naming every blocking member on refusal.",
+                "With --apply, posts the final summary comment (members, landed SHAs, archive refs) and closes the umbrella through its provider; never automatic."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb umbrella close --help",
+              "contains": [
+                "--apply",
+                "--format"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/SKILL.md",
+              "marker": "### Umbrella issues",
+              "examples": [
+                "wb umbrella close sneat-co/backstage#845",
+                "wb umbrella close sneat-co/backstage#845 --apply"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/cli/cmdumbrella/cmdumbrella_test.go",
+              "name": "TestUmbrellaCloseDryRunApplyAndRefusals",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Explicit dry-run/apply gate for closing a cross-repo umbrella reference once every member has landed or been archived with a restore pointer."
+    },
+    {
+      "id": "wb.umbrella.show",
+      "feature_refs": [
+        "spec/features/work-log/README.md",
+        "spec/features/worktree-lifecycle/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb umbrella show",
+              "flags": [
+                "--format"
+              ],
+              "modes": [
+                "Reports the umbrella's open/closed state from its provider plus every recorded member task, repository, PR, and state from WB's Work Log and retirement records."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb umbrella show --help",
+              "contains": [
+                "--format"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/SKILL.md",
+              "marker": "### Umbrella issues",
+              "examples": [
+                "wb umbrella show sneat-co/backstage#845"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/cli/cmdumbrella/cmdumbrella_test.go",
+              "name": "TestUmbrellaShowDisplaysStateMembersAndCloseOffer",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Read-only view of an umbrella reference and its recorded cross-repo task members."
+    },
+    {
       "id": "wb.upgrade",
       "feature_refs": [
         "spec/features/install/README.md"
@@ -15663,7 +15792,8 @@
                 "--provider",
                 "--resume",
                 "--run",
-                "--summary"
+                "--summary",
+                "--umbrella"
               ],
               "modes": [
                 "One immutable private claim per repository in one shared run",
@@ -20210,10 +20340,12 @@
               "flags": [
                 "--prompt",
                 "--prompt-file",
+                "--umbrella",
                 "--agent-runtime",
                 "--model",
                 "--cli",
-                "--provider"
+                "--provider",
+                "--format"
               ],
               "modes": [
                 "Records one human_declared instruction at the next prompt ordinal, backfilling a reconstructed manifest when the worktree predates the journal."

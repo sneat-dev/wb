@@ -10,6 +10,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/sneat-dev/wb/internal/continuationinput"
+	"github.com/sneat-dev/wb/internal/umbrella"
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
 )
@@ -663,44 +664,121 @@ registered session in --mode agent, or --mode manual with --initiator <human>.`,
 	return command
 }
 
-// NewSet constructs the worktree journal command.
-func NewSet(environment shared.Runtime, steer func(context.Context, worktrees.LogSteerOptions) (worktrees.LogVerbResult, error)) *cobra.Command {
-	var prompt, promptFile, runtime, model, cli, provider string
-	command := &cobra.Command{
-		Use:   "set [worktree-path]",
-		Short: "Record an instruction that directed this worktree's effort",
-		Long: `Append one instruction to this worktree's ordered prompt sequence.
+// SetDependencies are the mutations `wb worktree set` can perform.
+type SetDependencies struct {
+	Steer           func(context.Context, worktrees.LogSteerOptions) (worktrees.LogVerbResult, error)
+	ResolveUmbrella func(context.Context, string, []string, string) (umbrella.Ref, error)
+	SetUmbrella     func(context.Context, string, string, umbrella.Ref) (worktrees.SetUmbrellaResult, error)
+}
 
-This is the human-facing alias of 'wb worktree log steer'. It records a
-human_declared prompt at the next ordinal, which is what the commit admission
-gate asks for when it refuses a commit in a worktree with no recorded
-instruction.`,
+// NewSet constructs `wb worktree set` for recording prompts or attaching an umbrella.
+func NewSet(environment shared.Runtime, deps SetDependencies) *cobra.Command {
+	var prompt, promptFile, runtime, model, cli, provider, umbrellaFlag, format string
+	command := &cobra.Command{
+		Use:   "set [worktree-path|task]",
+		Short: "Record an instruction or attach an umbrella reference to a task",
+		Long: `Record metadata on an existing WB worktree or task.
+
+With --prompt or --prompt-file, this is the human-facing alias of
+'wb worktree log steer': it appends a human_declared prompt at the next
+ordinal, which is what the commit admission gate asks for when it refuses a
+commit in a worktree with no recorded instruction.
+
+With --umbrella <registry:id>, this attaches a typed umbrella reference (such
+as owner/repo#N or github:owner/repo#N) to every recorded claim of the task,
+so tasks created before an umbrella existed can adopt one without mutating
+immutable claims.`,
+		Example: `# Record a human steering instruction for the current worktree
+wb worktree set --prompt "fix the edge case"
+
+# Attach a GitHub umbrella issue to the current worktree's task
+wb worktree set --umbrella sneat-co/backstage#845
+
+# Attach an umbrella to a named multi-repo task
+wb worktree set cross-repo-umbrella-issue --umbrella sneat-co/backstage#845`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
-			path := "."
+			if err := shared.RequireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			target := "."
 			if len(args) == 1 {
-				path = args[0]
+				target = args[0]
 			}
-			body, err := readPromptBody(prompt, promptFile)
-			if err != nil {
+			hasPrompt := command.Flags().Changed("prompt") || command.Flags().Changed("prompt-file")
+			hasUmbrella := strings.TrimSpace(umbrellaFlag) != ""
+			if !hasPrompt && !hasUmbrella {
+				_, err := readPromptBody(prompt, promptFile)
 				return err
 			}
-			result, err := steer(command.Context(), worktrees.LogSteerOptions{
-				ProjectsRoot: environment.Flags().ProjectsRoot, Worktree: path, Body: body,
-				Source: worktrees.PromptSourceHuman, Runtime: runtime, Model: model, CLI: cli, Provider: provider,
-			})
-			if err != nil {
-				return err
+			var promptResult *worktrees.LogVerbResult
+			if hasPrompt {
+				body, err := readPromptBody(prompt, promptFile)
+				if err != nil {
+					return err
+				}
+				result, err := deps.Steer(command.Context(), worktrees.LogSteerOptions{
+					ProjectsRoot: environment.Flags().ProjectsRoot, Worktree: target, Body: body,
+					Source: worktrees.PromptSourceHuman, Runtime: runtime, Model: model, CLI: cli, Provider: provider,
+				})
+				if err != nil {
+					return err
+				}
+				promptResult = &result
 			}
-			_, err = fmt.Fprintf(command.OutOrStdout(), "recorded %s\n", result.Prompt)
-			return err
+			var umbrellaResult *worktrees.SetUmbrellaResult
+			if hasUmbrella {
+				resolver := deps.ResolveUmbrella
+				if resolver == nil {
+					resolver = defaultResolveUmbrella
+				}
+				ref, err := resolver(command.Context(), environment.Flags().ProjectsRoot, nil, umbrellaFlag)
+				if err != nil {
+					return err
+				}
+				setter := deps.SetUmbrella
+				if setter == nil {
+					setter = worktrees.SetTaskUmbrella
+				}
+				result, err := setter(command.Context(), environment.Flags().ProjectsRoot, target, ref)
+				if err != nil {
+					return err
+				}
+				umbrellaResult = &result
+			}
+			if format == "json" {
+				payload := map[string]any{}
+				if promptResult != nil {
+					payload["prompt"] = promptResult
+				}
+				if umbrellaResult != nil {
+					payload["umbrella"] = umbrellaResult
+				}
+				encoder := json.NewEncoder(command.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				return encoder.Encode(payload)
+			}
+			if promptResult != nil {
+				if _, err := fmt.Fprintf(command.OutOrStdout(), "recorded %s\n", promptResult.Prompt); err != nil {
+					return err
+				}
+			}
+			if umbrellaResult != nil {
+				if _, err := fmt.Fprintf(command.OutOrStdout(), "recorded umbrella %s for task %s (%d claim(s), %d repository/repositories)\n",
+					umbrellaResult.Umbrella, umbrellaResult.Task, umbrellaResult.Claims, len(umbrellaResult.Repositories)); err != nil {
+					return err
+				}
+			}
+			return nil
 		},
 	}
 	command.Flags().StringVar(&prompt, "prompt", "", "the exact instruction to record")
 	command.Flags().StringVar(&promptFile, "prompt-file", "", "read the exact instruction from a file instead")
+	command.Flags().StringVar(&umbrellaFlag, "umbrella", "", "attach an umbrella reference to this task (e.g. owner/repo#N or github:owner/repo#N)")
 	command.Flags().StringVar(&runtime, "agent-runtime", "", "recording runtime, when known")
 	command.Flags().StringVar(&model, "model", "", "recording model, when known")
 	command.Flags().StringVar(&cli, "cli", "", "recording CLI identifier, when known")
 	command.Flags().StringVar(&provider, "provider", "", "routing/billing provider identifier, never a credential")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	return command
 }

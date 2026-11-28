@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/cli/shared"
+	"github.com/sneat-dev/wb/internal/umbrella"
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
 )
@@ -38,6 +39,9 @@ type RetireDependencies struct {
 	Branch func(context.Context, worktrees.BranchCleanupOptions) (worktrees.BranchCleanupOutcome, error)
 	// Preserve is the --preserve transaction for unlanded work.
 	Preserve PreserveDependencies
+	// UmbrellaProviders overrides the umbrella provider registry; nil uses
+	// umbrella.DefaultProviders(nil).
+	UmbrellaProviders *umbrella.Registry
 }
 
 // PreserveDependencies drive retirement of work that never landed: it is
@@ -47,6 +51,7 @@ type PreserveDependencies struct {
 	Admit               func(*cobra.Command, bool) (worktrees.AgentIdentity, func(), error)
 	CheckOwnership      func(context.Context, string, string) error
 	ReleaseWhenComplete func(*cobra.Command, string, string) bool
+	UmbrellaProviders   *umbrella.Registry
 }
 
 // NewRetire constructs `wb worktree retire`, the per-item transaction.
@@ -408,6 +413,29 @@ quarantines only the exact held inode and completes the usual terminal flow.
 				}
 			}
 			if apply && len(tasks) != 0 {
+				for _, entry := range outcome.Results {
+					if !entry.Applied {
+						continue
+					}
+					prLabel := ""
+					if entry.MergedPullRequest != nil && entry.MergedPullRequest.Number > 0 {
+						prLabel = fmt.Sprintf("#%d", entry.MergedPullRequest.Number)
+					}
+					landedSHA := entry.AbsorbedBySHA
+					if landedSHA == "" && entry.MergedPullRequest != nil {
+						landedSHA = entry.MergedPullRequest.MergeSHA
+					}
+					if landedSHA == "" {
+						landedSHA = entry.HeadSHA
+					}
+					postUmbrellaStatusAndOfferClose(command.Context(), command, flags.ProjectsRoot, deps.UmbrellaProviders, format, umbrella.StatusUpdate{
+						Task:        entry.Task,
+						Repository:  entry.Repository,
+						PullRequest: prLabel,
+						Outcome:     "retired",
+						LandedSHA:   landedSHA,
+					}, entry.Umbrella)
+				}
 				appliedTasks := appliedCleanupTaskNames(outcome)
 				namedApplied := namedCleanupApplySatisfied(tasks, outcome)
 				// leakedReleases is wb#321's exit-code seam: see
@@ -540,6 +568,20 @@ func runPreserve(command *cobra.Command, runtime shared.Runtime, deps PreserveDe
 	}
 	if err != nil {
 		return err
+	}
+	if apply && result.Phase == "complete" {
+		archiveRef := result.ArchiveRef
+		if result.ArchiveRepository != "" && result.ArchiveRef != "" {
+			archiveRef = result.ArchiveRepository + ":" + result.ArchiveRef
+		} else if archiveRef == "" {
+			archiveRef = result.RetiredRef
+		}
+		postUmbrellaStatusAndOfferClose(command.Context(), command, flags.ProjectsRoot, deps.UmbrellaProviders, format, umbrella.StatusUpdate{
+			Task:       result.Task,
+			Repository: result.Repository,
+			Outcome:    "archived",
+			ArchiveRef: archiveRef,
+		}, "")
 	}
 	if releaseLeaked {
 		return fmt.Errorf("task %q retirement completed but remote claim release failed", task)

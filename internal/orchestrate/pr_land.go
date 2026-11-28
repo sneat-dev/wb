@@ -22,6 +22,7 @@ import (
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/streams"
+	"github.com/sneat-dev/wb/internal/umbrella"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -248,6 +249,9 @@ type PullRequestLandOptions struct {
 	// one. A landing with it set never arms auto-merge, never updates the
 	// branch and never calls a merge endpoint: it enqueues (pr_land_merge_queue.go).
 	mergeQueue *githubchecks.MergeQueuePolicy
+	// UmbrellaProviders overrides the umbrella provider registry; nil uses
+	// umbrella.DefaultProviders(nil).
+	UmbrellaProviders *umbrella.Registry
 }
 
 // resolveGit returns options.git, falling back to defaultGit (ports.go) when
@@ -383,6 +387,11 @@ type PullRequestLandResult struct {
 	// Promotion is what WB verified when this pull request promotes an
 	// integration branch.
 	Promotion *PromotionReceipt `json:"promotion,omitempty"`
+	// Umbrella is the canonical typed umbrella reference updated by this landing.
+	Umbrella string `json:"umbrella,omitempty"`
+	// UmbrellaCloseCommand is printed when every recorded member of Umbrella
+	// has landed or been archived; WB never closes an umbrella automatically.
+	UmbrellaCloseCommand string `json:"umbrella_close_command,omitempty"`
 }
 
 // ExitCode maps the outcome onto WB's exit contract.
@@ -977,7 +986,7 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	}
 
 	options.sourceCommits = sourceCommits
-	body := aggregatedCommitMessage(view, sourceCommits, result.ApprovedBy, options.Reason)
+	body := appendPullRequestUmbrellaTrailer(options.ProjectsRoot, options.Repository, view.Number, view.Head.Ref, aggregatedCommitMessage(view, sourceCommits, result.ApprovedBy, options.Reason))
 
 	// Arm auto-merge before waiting and then wait, bringing the candidate up
 	// to date whenever the target moves under it — the shared engine both
@@ -1404,6 +1413,7 @@ func finishLandedPullRequest(ctx context.Context, options PullRequestLandOptions
 		result.Evidence["closes_error"] = closesErr.Error()
 	}
 
+	reportPullRequestLandedUmbrella(ctx, options, &result, number)
 	result.Outcome = LandSuccess
 	return withSavings(result), nil
 }

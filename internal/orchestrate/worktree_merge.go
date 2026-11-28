@@ -24,6 +24,7 @@ import (
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/quality"
 	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/umbrella"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -315,10 +316,12 @@ type WorktreeMergeReceipt struct {
 	// guard ran. Recording it on the receipt is what lets `--format json`
 	// show a takeover's reason and prior owner, matching what `cmd/wb`'s help
 	// and ai/skills/wb-merge/SKILL.md promise.
-	LaneOwner   *landinglane.Record `json:"lane_owner,omitempty"`
-	ReceiptPath string              `json:"receipt_path"`
-	CreatedAt   time.Time           `json:"created_at"`
-	UpdatedAt   time.Time           `json:"updated_at"`
+	LaneOwner            *landinglane.Record `json:"lane_owner,omitempty"`
+	Umbrella             string              `json:"umbrella,omitempty"`
+	UmbrellaCloseCommand string              `json:"umbrella_close_command,omitempty"`
+	ReceiptPath          string              `json:"receipt_path"`
+	CreatedAt            time.Time           `json:"created_at"`
+	UpdatedAt            time.Time           `json:"updated_at"`
 }
 
 type WorktreeMergeLandOptions struct {
@@ -372,6 +375,9 @@ type WorktreeMergeLandOptions struct {
 	// Lane optionally names the acquiring session for the landing-lane
 	// ownership guard (see LaneGuardRequest). Left zero, no guard runs.
 	Lane LaneGuardRequest
+	// UmbrellaProviders overrides the umbrella provider registry; nil uses
+	// umbrella.DefaultProviders(nil).
+	UmbrellaProviders *umbrella.Registry
 	// CheckoutUpdated is called only after the checked-out canonical target
 	// has moved and the exact landed commit is proven reachable. Nil discards.
 	CheckoutUpdated func(context.Context, CheckoutUpdate)

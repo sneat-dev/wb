@@ -81,7 +81,8 @@ func performPullRequestCreateCommit(ctx context.Context, worktree string, option
 				command: "remove the listed paths from --add",
 			}, nil, nil
 		}
-		commitArgs := append([]string{"commit", "-m", options.Message, "--"}, paths...)
+		commitMsg := commitMessageWithUmbrella(options.ProjectsRoot, worktree, options.Message)
+		commitArgs := append([]string{"commit", "-m", commitMsg, "--"}, paths...)
 		if _, _, commitErr := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "git", commitArgs...); commitErr != nil {
 			if isNothingToCommit(commitErr) {
 				// A rerun with HEAD already ahead (the previous invocation's
@@ -151,7 +152,8 @@ func performPullRequestCreateCommit(ctx context.Context, worktree string, option
 			}, nil, nil
 		}
 	}
-	if _, _, commitErr := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "git", "commit", "-m", options.Message); commitErr != nil {
+	commitMsg := commitMessageWithUmbrella(options.ProjectsRoot, worktree, options.Message)
+	if _, _, commitErr := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "git", "commit", "-m", commitMsg); commitErr != nil {
 		if isNothingToCommit(commitErr) {
 			// A rerun with HEAD already ahead: the previous invocation's
 			// commit already happened, --commit-staged/--commit-all now find

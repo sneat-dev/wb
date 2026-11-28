@@ -15,6 +15,7 @@ import (
 	"github.com/sneat-dev/wb/internal/repopath"
 	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/streams"
+	"github.com/sneat-dev/wb/internal/umbrella"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -146,6 +147,9 @@ type PullRequestCreateOptions struct {
 	// create call that reaches the migrated call sites
 	// (spec/plans/coverage-to-100 task-17) never starts a real process.
 	run runner.Runner
+	// UmbrellaProviders overrides the umbrella provider registry; nil uses
+	// umbrella.DefaultProviders(nil).
+	UmbrellaProviders *umbrella.Registry
 }
 
 // resolveRunner returns options.run, falling back to defaultRunner
@@ -189,8 +193,9 @@ type PullRequestCreateResult struct {
 
 	// Task and ClaimID identify the durable Work Log claim the pull request
 	// was bound to, when binding succeeded.
-	Task    string `json:"task,omitempty"`
-	ClaimID string `json:"claim_id,omitempty"`
+	Task     string `json:"task,omitempty"`
+	ClaimID  string `json:"claim_id,omitempty"`
+	Umbrella string `json:"umbrella,omitempty"`
 
 	// CommittedPaths lists every path a requested --commit-staged/--commit-all
 	// committed, in the order `git diff-tree` reports them.
@@ -382,6 +387,7 @@ func createPullRequest(ctx context.Context, options PullRequestCreateOptions) (P
 	if err != nil {
 		return result, err
 	}
+	result.Umbrella = worktrees.UmbrellaForWorktree(options.ProjectsRoot, worktree)
 
 	url, adopted, err := openOrAdoptPullRequest(ctx, worktree, repository, branch, base, title, body, options.Draft,
 		Options{Timeout: options.Timeout, Retry: options.Retry, run: options.run}, options.Closes)
@@ -592,7 +598,7 @@ func createPullRequestAutoMerge(ctx context.Context, options PullRequestCreateOp
 		return result, fmt.Errorf("read commits of %s#%s: %w", repository, number, commitsErr)
 	}
 	subject := fmt.Sprintf("%s (#%s)", view.Title, number)
-	body := aggregatedCommitMessage(view, commits, result.ApprovedBy, "")
+	body := appendPullRequestUmbrellaTrailer(options.ProjectsRoot, repository, result.PullRequest, view.Head.Ref, aggregatedCommitMessage(view, commits, result.ApprovedBy, ""))
 	method := strings.TrimSpace(options.MergeMethod)
 	if method == "" {
 		method = "merge"

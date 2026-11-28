@@ -452,9 +452,10 @@ func nonTerminalClaims(projectsRoot, slug string) ([]string, error) {
 			return nil, err
 		}
 		for _, path := range matches {
-			// A claim landed through a pull request keeps a WB-written
-			// binding sidecar beside it; the claim itself is checked here.
-			if strings.HasSuffix(path, worktreeclaims.PullRequestBindingSuffix) {
+			// A claim landed through a pull request or bound to an umbrella keeps
+			// a WB-written binding sidecar beside it; the claim itself is checked here.
+			if strings.HasSuffix(path, worktreeclaims.PullRequestBindingSuffix) ||
+				strings.HasSuffix(path, worktreeclaims.UmbrellaBindingSuffix) {
 				continue
 			}
 			raw, err := os.ReadFile(path)

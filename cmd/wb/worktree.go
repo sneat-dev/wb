@@ -199,7 +199,7 @@ func remoteStoreClonePath(configPath, projectsRoot string) string {
 // deliberately records a prompt rather than setting a bypass flag: the act of
 // unblocking a commit is itself the record of who directed it.
 func newWorktreeSetCmd(inv *invocation) *cobra.Command {
-	return cmdworktree.NewSet(newCLIRuntime(inv), worktrees.LogSteer)
+	return cmdworktree.NewSet(newCLIRuntime(inv), cmdworktree.SetDependencies{Steer: worktrees.LogSteer})
 }
 
 func newWorktreeBackfillCmd(inv *invocation) *cobra.Command {

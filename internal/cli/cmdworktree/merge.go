@@ -1516,6 +1516,16 @@ func writeWorktreeMergeReceipt(writer io.Writer, format string, receipt orchestr
 			return err
 		}
 	}
+	if receipt.Umbrella != "" {
+		if _, err := fmt.Fprintf(writer, "umbrella: %s\n", receipt.Umbrella); err != nil {
+			return err
+		}
+	}
+	if receipt.UmbrellaCloseCommand != "" {
+		if _, err := fmt.Fprintf(writer, "all umbrella members finished; close with: %s\n", receipt.UmbrellaCloseCommand); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
