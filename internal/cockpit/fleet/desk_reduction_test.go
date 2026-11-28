@@ -80,7 +80,7 @@ func TestDeskReductionWithholdsNamesAtRepositoriesDetail(t *testing.T) {
 		t.Errorf("the publish request is not valid: %v", err)
 	}
 
-	full, err := deskpublish.Reduce(envelope, throughput, desk.LevelFull, deskpublish.TaskKey{})
+	full, err := deskpublish.Reduce(envelope, throughput, desk.LevelFull, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,6 +94,15 @@ func TestDeskReductionWithholdsNamesAtRepositoriesDetail(t *testing.T) {
 		if strings.Contains(fullBody, forbidden) {
 			t.Errorf("full detail carries %q", forbidden)
 		}
+	}
+	if err := desk.CheckLevel(full.RepositoriesEnvelope, desk.LevelRepositories); err != nil {
+		t.Errorf("full repositories copy fails CheckLevel: %v", err)
+	}
+	if string(full.RepositoriesEnvelope) != body {
+		t.Errorf("full repositories copy differs from repositories detail reduction")
+	}
+	if err := full.Request(time.Now()).Validate(); err != nil {
+		t.Errorf("the full publish request is not valid: %v", err)
 	}
 	// Desk refuses the unreduced envelope at repositories with the same
 	// definition the reduction is held to.

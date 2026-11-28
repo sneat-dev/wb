@@ -495,11 +495,9 @@ func (s *Service) Push(ctx context.Context, projectsRoot string) (PushResult, er
 	if err := json.Unmarshal(exported.Body, &envelope); err != nil {
 		return PushResult{}, fmt.Errorf("read the daemon's export: %w", err)
 	}
-	var key deskpublish.TaskKey
-	if config.Detail == desk.LevelRepositories {
-		if key, _, err = deskpublish.LoadOrCreateTaskKey(TaskKeyPath(configPath), s.deps.Random); err != nil {
-			return PushResult{}, err
-		}
+	key, _, err := deskpublish.LoadOrCreateTaskKey(TaskKeyPath(configPath), s.deps.Random)
+	if err != nil {
+		return PushResult{}, err
 	}
 	snapshot, err := deskpublish.Reduce(envelope, exported.Throughput, config.Detail, key)
 	if err != nil {

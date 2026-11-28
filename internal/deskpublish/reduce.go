@@ -20,17 +20,19 @@ var ErrNothingToPublish = errors.New("export holds no publishable fleet")
 
 // Snapshot is a reduced, canonically encoded envelope ready to publish.
 type Snapshot struct {
-	Detail    desk.Level
-	TaskKeyID string
-	Envelope  []byte
-	Hash      string
+	Detail               desk.Level
+	TaskKeyID            string
+	Envelope             []byte
+	RepositoriesEnvelope []byte
+	Hash                 string
 }
 
 // Request is the publish request for this snapshot observed at observedAt.
 func (snapshot Snapshot) Request(observedAt time.Time) desk.SnapshotRequest {
 	return desk.SnapshotRequest{SchemaVersion: desk.SchemaVersion, Detail: snapshot.Detail,
 		TaskKeyID: snapshot.TaskKeyID, ObservedAt: observedAt, Hash: snapshot.Hash,
-		Envelope: json.RawMessage(snapshot.Envelope)}
+		Envelope:             json.RawMessage(snapshot.Envelope),
+		RepositoriesEnvelope: json.RawMessage(snapshot.RepositoriesEnvelope)}
 }
 
 // The reduced types embed the fleet types and shadow the fields a level
@@ -96,39 +98,58 @@ type fullEnvelope struct {
 
 // Reduce applies level to an export envelope and this machine's throughput,
 // which the export itself leaves out
-// (desk-connect#req:detail-level-applied-on-the-machine). At `repositories`
-// it needs key; at `full` it ignores it.
+// (desk-connect#req:detail-level-applied-on-the-machine). Both levels require
+// key: at `repositories` it keys the envelope; at `full` it also builds a
+// `repositories` reduction of the same document so Desk can serve shares below
+// `full` without reducing snapshots itself.
 func Reduce(envelope fleet.Envelope, throughput *fleet.Throughput, level desk.Level, key TaskKey) (Snapshot, error) {
 	if envelope.Fleet == nil || envelope.Fleet.WarmingUp || fleet.Unlistable(*envelope.Fleet) {
 		return Snapshot{}, ErrNothingToPublish
+	}
+	if !level.Valid() {
+		return Snapshot{}, fmt.Errorf("unknown desk detail level %q", level)
+	}
+	if len(key.secret) != TaskKeyBytes {
+		return Snapshot{}, ErrInvalidTaskKey
 	}
 	document := stable(*envelope.Fleet)
 	document.Throughput = throughput
 	// The resource samples change on every pass and are not part of what a
 	// snapshot shows; the export time is the request's observed_at.
 	envelope.Metrics = nil
-	var value any
-	snapshot := Snapshot{Detail: level}
-	switch level {
-	case desk.LevelFull:
-		value = fullEnvelope{Envelope: envelope, Fleet: &document}
-	case desk.LevelRepositories:
-		if len(key.secret) != TaskKeyBytes {
-			return Snapshot{}, ErrInvalidTaskKey
-		}
-		value = reducedEnvelope{Envelope: envelope, Fleet: reduceDocument(&document, key)}
-		snapshot.TaskKeyID = key.ID()
-	default:
-		return Snapshot{}, fmt.Errorf("unknown desk detail level %q", level)
+	reduced := reducedEnvelope{Envelope: envelope, Fleet: reduceDocument(&document, key)}
+	values := []any{reduced}
+	if level == desk.LevelFull {
+		values = []any{fullEnvelope{Envelope: envelope, Fleet: &document}, reduced}
 	}
-	encoded, err := json.Marshal(value)
+	encoded, err := marshalEnvelopes(values...)
 	if err != nil {
-		return Snapshot{}, fmt.Errorf("encode desk snapshot: %w", err)
+		return Snapshot{}, err
 	}
-	sum := sha256.Sum256(encoded)
-	snapshot.Envelope = encoded
-	snapshot.Hash = "sha256:" + hex.EncodeToString(sum[:])
+	// The hash covers every envelope sent, so a changed task key republishes a
+	// `full` snapshot whose own envelope did not change.
+	digest := sha256.New()
+	for _, body := range encoded {
+		digest.Write(body)
+		digest.Write([]byte{'\n'})
+	}
+	snapshot := Snapshot{Detail: level, TaskKeyID: key.ID(), Envelope: encoded[0], Hash: "sha256:" + hex.EncodeToString(digest.Sum(nil))}
+	if len(encoded) > 1 {
+		snapshot.RepositoriesEnvelope = encoded[1]
+	}
 	return snapshot, nil
+}
+
+func marshalEnvelopes(values ...any) ([][]byte, error) {
+	encoded := make([][]byte, len(values))
+	for index, value := range values {
+		body, err := json.Marshal(value)
+		if err != nil {
+			return nil, fmt.Errorf("encode desk snapshot: %w", err)
+		}
+		encoded[index] = body
+	}
+	return encoded, nil
 }
 
 // stable is document without what changes on every pass although nothing in

@@ -627,8 +627,16 @@ func TestPushPublishesTheDaemonsStateReducedLikeTheDaemon(t *testing.T) {
 	full.connected()
 	full.writeConfig(strings.Replace(mustRead(t, full.configPath), "detail: repositories", "detail: full", 1))
 	full.exported = exportOf(t)
-	if _, err := full.service().Push(context.Background(), full.dir); err != nil || !strings.Contains(string(full.client.pushed[0].Envelope), "task-a") {
+	if _, err := full.service().Push(context.Background(), full.dir); err != nil {
 		t.Fatalf("full detail push = %v", err)
+	}
+	pushedFull := full.client.pushed[0]
+	if err := pushedFull.Validate(); err != nil || !strings.Contains(string(pushedFull.Envelope), "task-a") ||
+		len(pushedFull.RepositoriesEnvelope) == 0 || pushedFull.TaskKeyID == "" {
+		t.Fatalf("full detail push sent %+v, validate = %v", pushedFull, err)
+	}
+	if err := desk.CheckLevel(pushedFull.RepositoriesEnvelope, desk.LevelRepositories); err != nil {
+		t.Fatalf("full detail repositories envelope invalid: %v", err)
 	}
 }
 

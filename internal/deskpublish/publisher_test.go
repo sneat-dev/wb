@@ -193,7 +193,7 @@ func TestHeartbeatsStartWithTheFirstPassAndReportTheirOwnErrors(t *testing.T) {
 	client := &scriptedClient{beatErr: []error{&deskclient.Error{Code: desk.ErrorTimeout}}, beaten: make(chan struct{}, 4)}
 	at := &clock{now: time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)}
 	waits := make(chan struct{})
-	publisher := NewPublisher(PublisherOptions{Client: client, Detail: desk.LevelFull, MinInterval: time.Minute,
+	publisher := NewPublisher(PublisherOptions{Client: client, Detail: desk.LevelFull, Key: fixedKey(t, "h"), MinInterval: time.Minute,
 		HeartbeatInterval: 5 * time.Minute, WBVersion: "0.211.0", Now: at.Now,
 		Wait: func(ctx context.Context, d time.Duration) error {
 			if d != 5*time.Minute {
@@ -225,11 +225,76 @@ func TestHeartbeatsStartWithTheFirstPassAndReportTheirOwnErrors(t *testing.T) {
 	<-client.beaten
 	waitFor(t, func() bool { return publisher.Diagnostic() == "" })
 	client.mu.Lock()
-	beats := len(client.beats)
-	lastHash := client.beats[len(client.beats)-1].LastSnapshotHash
+	beats := append([]desk.HeartbeatRequest(nil), client.beats...)
+	published := append([]desk.SnapshotRequest(nil), client.published...)
 	client.mu.Unlock()
-	if beats != 2 || lastHash == "" {
-		t.Fatalf("two heartbeats, carrying the last hash: %d, %q", beats, lastHash)
+	if len(beats) != 2 || beats[1].LastSnapshotHash == "" || beats[1].IntervalSeconds != 300 || beats[1].LastError != desk.ErrorTimeout {
+		t.Fatalf("two heartbeats, carrying interval and prior heartbeat error: %+v", beats)
+	}
+	if len(published) != 1 || published[0].Validate() != nil || len(published[0].RepositoriesEnvelope) == 0 {
+		t.Fatalf("full publish should carry a valid repositories envelope: %+v", published)
+	}
+}
+
+func TestHeartbeatsCarryIntervalAndClearLastErrorAfterSuccess(t *testing.T) {
+	t.Parallel()
+	client := &scriptedClient{
+		publishErr: []error{&deskclient.Error{Code: desk.ErrorTooLarge}, nil},
+		beatErr:    []error{nil, nil, &deskclient.Error{Code: desk.ErrorTimeout}, nil, nil},
+	}
+	at := &clock{now: time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)}
+	publisher := NewPublisher(PublisherOptions{
+		Client:            client,
+		Detail:            desk.LevelFull,
+		Key:               fixedKey(t, "e"),
+		MinInterval:       time.Minute,
+		HeartbeatInterval: 3 * time.Minute,
+		WBVersion:         "0.211.0",
+		Now:               at.Now,
+		Wait:              stopAfterFirst,
+	})
+	// Prevent Publish from starting the background heartbeat goroutine so we
+	// drive each beat synchronously in exact order.
+	publisher.heartbeat.Do(func() {})
+	machine := &source{envelope: publishableEnvelope()}
+
+	// Failed publish sets last_error on the next heartbeat.
+	publisher.Publish(t.Context(), machine)
+	if !publisher.beat(t.Context()) {
+		t.Fatal("beat after publish failure should continue")
+	}
+	// Successful publish clears last_error on the following heartbeat.
+	at.advance(2 * time.Minute)
+	publisher.Publish(t.Context(), machine)
+	if !publisher.beat(t.Context()) {
+		t.Fatal("beat after publish recovery should continue")
+	}
+	// Failed heartbeat sets last_error on the next heartbeat, which succeeds and clears it.
+	if !publisher.beat(t.Context()) {
+		t.Fatal("transient heartbeat failure should continue")
+	}
+	if !publisher.beat(t.Context()) {
+		t.Fatal("recovering heartbeat should continue")
+	}
+	if !publisher.beat(t.Context()) {
+		t.Fatal("post-recovery heartbeat should continue")
+	}
+
+	client.mu.Lock()
+	beats := append([]desk.HeartbeatRequest(nil), client.beats...)
+	client.mu.Unlock()
+	wantErrors := []desk.ErrorCode{desk.ErrorTooLarge, "", "", desk.ErrorTimeout, ""}
+	if len(beats) != len(wantErrors) {
+		t.Fatalf("got %d beats, want %d", len(beats), len(wantErrors))
+	}
+	for index, want := range wantErrors {
+		beat := beats[index]
+		if err := beat.Validate(); err != nil {
+			t.Fatalf("beat[%d] invalid: %v", index, err)
+		}
+		if beat.IntervalSeconds != 180 || beat.LastError != want {
+			t.Fatalf("beat[%d] = interval %d, last_error %q; want 180, %q", index, beat.IntervalSeconds, beat.LastError, want)
+		}
 	}
 }
 

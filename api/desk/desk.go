@@ -31,17 +31,18 @@ const (
 
 // Bounds of the contract.
 const (
-	MaxGrantSeconds            = 600
-	MaxMachineNameLength       = 128
-	MaxVersionLength           = 64
-	MaxPlatformLength          = 32
-	MaxSpaceIDLength           = 128
-	MaxCredentialLength        = 1024
-	MaxDeviceCodeLength        = 512
-	MaxURILength               = 2048
-	MaxShares                  = 64
-	MaxCompressedSnapshotBytes = 1 << 20
-	MaxDecodedSnapshotBytes    = 8 << 20
+	MaxGrantSeconds             = 600
+	MaxHeartbeatIntervalSeconds = 86400
+	MaxMachineNameLength        = 128
+	MaxVersionLength            = 64
+	MaxPlatformLength           = 32
+	MaxSpaceIDLength            = 128
+	MaxCredentialLength         = 1024
+	MaxDeviceCodeLength         = 512
+	MaxURILength                = 2048
+	MaxShares                   = 64
+	MaxCompressedSnapshotBytes  = 1 << 20
+	MaxDecodedSnapshotBytes     = 8 << 20
 	// MaxResponseBytes caps every non-snapshot response body a client reads.
 	MaxResponseBytes = 64 << 10
 )
@@ -182,6 +183,11 @@ func checkVersion(version int) error {
 		return invalid("schema_version")
 	}
 	return nil
+}
+
+func isJSONObject(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return len(trimmed) > 0 && trimmed[0] == '{' && json.Valid(trimmed)
 }
 
 // MachineRef names a machine.
@@ -388,11 +394,18 @@ type SnapshotRequest struct {
 	ObservedAt    time.Time       `json:"observed_at"`
 	Hash          string          `json:"hash"`
 	Envelope      json.RawMessage `json:"envelope"`
+	// RepositoriesEnvelope is the machine's `repositories`-level reduction of
+	// the same snapshot, sent alongside a `full` envelope so Desk can serve
+	// shares below `full` without reducing snapshots itself.
+	RepositoriesEnvelope json.RawMessage `json:"repositories_envelope,omitempty"`
 }
 
-// Validate checks the request. A `repositories` snapshot must name its task
-// key; a `full` one must not. The envelope must carry nothing above the
-// declared detail (CheckLevel).
+// Validate checks the request. RepositoriesEnvelope is allowed only when
+// Detail is `full` and must pass CheckLevel at `repositories`. TaskKeyID is
+// required whenever a `repositories`-level envelope is present (either
+// Detail == `repositories`, or Detail == `full` with RepositoriesEnvelope),
+// and forbidden otherwise. The envelope must carry nothing above the declared
+// detail (CheckLevel).
 func (request SnapshotRequest) Validate() error {
 	if err := checkVersion(request.SchemaVersion); err != nil {
 		return err
@@ -400,7 +413,12 @@ func (request SnapshotRequest) Validate() error {
 	if !request.Detail.Valid() {
 		return invalid("detail")
 	}
-	if (request.Detail == LevelRepositories) != (request.TaskKeyID != "") {
+	hasRepositories := len(request.RepositoriesEnvelope) > 0
+	if hasRepositories && request.Detail != LevelFull {
+		return invalid("repositories_envelope")
+	}
+	needsTaskKey := request.Detail == LevelRepositories || hasRepositories
+	if needsTaskKey != (request.TaskKeyID != "") {
 		return invalid("task_key_id")
 	}
 	if request.TaskKeyID != "" && !taskKeyID.MatchString(request.TaskKeyID) {
@@ -412,10 +430,21 @@ func (request SnapshotRequest) Validate() error {
 	if !snapshotHash.MatchString(request.Hash) {
 		return invalid("hash")
 	}
-	if len(request.Envelope) == 0 || !json.Valid(request.Envelope) || request.Envelope[0] != '{' {
+	if !isJSONObject(request.Envelope) {
 		return invalid("envelope")
 	}
-	return CheckLevel(request.Envelope, request.Detail)
+	if err := CheckLevel(request.Envelope, request.Detail); err != nil {
+		return err
+	}
+	if hasRepositories {
+		if !isJSONObject(request.RepositoriesEnvelope) {
+			return invalid("repositories_envelope")
+		}
+		if err := CheckLevel(request.RepositoriesEnvelope, LevelRepositories); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // SnapshotReceipt acknowledges an accepted snapshot.
@@ -438,6 +467,10 @@ type HeartbeatRequest struct {
 	ObservedAt       time.Time `json:"observed_at"`
 	WBVersion        string    `json:"wb_version"`
 	LastSnapshotHash string    `json:"last_snapshot_hash,omitempty"`
+	// IntervalSeconds is the daemon's heartbeat interval, when set.
+	IntervalSeconds int `json:"interval_seconds,omitempty"`
+	// LastError is the publisher's last failure code; empty after a success.
+	LastError ErrorCode `json:"last_error,omitempty"`
 }
 
 // Validate checks the request.
@@ -453,6 +486,12 @@ func (request HeartbeatRequest) Validate() error {
 	}
 	if request.LastSnapshotHash != "" && !snapshotHash.MatchString(request.LastSnapshotHash) {
 		return invalid("last_snapshot_hash")
+	}
+	if request.IntervalSeconds < 0 || request.IntervalSeconds > MaxHeartbeatIntervalSeconds {
+		return invalid("interval_seconds")
+	}
+	if request.LastError != "" && !request.LastError.Valid() {
+		return invalid("last_error")
 	}
 	return nil
 }
