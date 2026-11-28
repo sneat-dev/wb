@@ -1037,7 +1037,10 @@ func prepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 			return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, ancestorErr, save)
 		}
 		if !containsOriginal {
-			if _, _, mergeErr := runCommand(ctx, run, options.Timeout, options.Retry, candidate.WorktreeDir, "git", "merge", "--no-edit", rebatch.OriginalCandidate.SHA); mergeErr != nil {
+			mergeArgs := worktreeMergeIntegrationArgs(options.ProjectsRoot, receipt.Sources,
+				fmt.Sprintf("Merge rebatched candidate %s", shortMergeRevision(rebatch.OriginalCandidate.SHA)),
+				rebatch.OriginalCandidate.SHA)
+			if _, _, mergeErr := runCommand(ctx, run, options.Timeout, options.Retry, candidate.WorktreeDir, "git", mergeArgs...); mergeErr != nil {
 				_, _, _ = runCommand(ctx, run, options.Timeout, 0, candidate.WorktreeDir, "git", "merge", "--abort")
 				return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, fmt.Errorf("merge original rebatch candidate %s: %w", rebatch.OriginalCandidate.SHA, mergeErr), save)
 			}
@@ -1063,7 +1066,10 @@ func prepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 			return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, ancestorErr, save)
 		}
 		if !ancestor {
-			if _, _, mergeErr := runCommand(ctx, run, options.Timeout, options.Retry, candidate.WorktreeDir, "git", "merge", "--no-edit", source.SHA); mergeErr != nil {
+			mergeArgs := worktreeMergeIntegrationArgs(options.ProjectsRoot, []WorktreeMergeSource{*source},
+				fmt.Sprintf("Merge %s (%s)", source.Branch, shortMergeRevision(source.SHA)),
+				source.SHA)
+			if _, _, mergeErr := runCommand(ctx, run, options.Timeout, options.Retry, candidate.WorktreeDir, "git", mergeArgs...); mergeErr != nil {
 				_, _, _ = runCommand(ctx, run, options.Timeout, 0, candidate.WorktreeDir, "git", "merge", "--abort")
 				conflict := fmt.Errorf("merge conflict while integrating %s at %s: %w", source.Branch, source.SHA, mergeErr)
 				return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, conflict, save)

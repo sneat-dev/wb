@@ -130,23 +130,23 @@ func TestE2EUmbrellaWorktreeResolutionAndEdgeCases(t *testing.T) {
 	}
 
 	// 3. RecordPullRequestLandedSHA edge cases: empty/non-positive, existing PR update, unmatched repo, bad projectsRoot.
-	RecordPullRequestLandedSHA(projectsRoot, "acme/app", 0, "feat-a", headSHA)
-	RecordPullRequestLandedSHA(projectsRoot, "acme/app", 5, "feat-a", "")
-	RecordPullRequestLandedSHA("", "acme/app", 5, "feat-a", headSHA)
-	RecordPullRequestLandedSHA(projectsRoot, "acme/app", 5, "feat-a", headSHA)
+	RecordPullRequestLandedSHA(projectsRoot, "acme/app", 0, "acme/app", "feat-a", headSHA)
+	RecordPullRequestLandedSHA(projectsRoot, "acme/app", 5, "acme/app", "feat-a", "")
+	RecordPullRequestLandedSHA("", "acme/app", 5, "acme/app", "feat-a", headSHA)
+	RecordPullRequestLandedSHA(projectsRoot, "acme/app", 5, "acme/app", "feat-a", headSHA)
 	// Update existing binding second time to hit `if rec.pr != nil`.
-	RecordPullRequestLandedSHA(projectsRoot, "acme/app", 5, "feat-a", strings.Repeat("e", 40))
+	RecordPullRequestLandedSHA(projectsRoot, "acme/app", 5, "acme/app", "feat-a", strings.Repeat("e", 40))
 
 	// 4. UmbrellaForPullRequest & UmbrellaForTask edge cases (unmatched, invalid umbrella string, bad root).
 	makeUmbrellaTestClaim(t, projectsRoot, "bad-umb", "acme/bad", "bad-br", "github:invalid", time.Now().UTC())
 	makeUmbrellaTestClaim(t, projectsRoot, "no-umb", "acme/none", "none-br", "", time.Now().UTC())
-	if _, _, ok := UmbrellaForPullRequest(projectsRoot, "acme/bad", 1, "bad-br", []string{"bad-umb"}); ok {
+	if _, _, ok := UmbrellaForPullRequest(projectsRoot, "acme/bad", 1, "acme/bad", "bad-br", []string{"bad-umb"}); ok {
 		t.Fatal("invalid umbrella matched PR")
 	}
-	if _, _, ok := UmbrellaForPullRequest(projectsRoot, "acme/none", 1, "none-br", []string{"no-umb"}); ok {
+	if _, _, ok := UmbrellaForPullRequest(projectsRoot, "acme/none", 1, "acme/none", "none-br", []string{"no-umb"}); ok {
 		t.Fatal("empty umbrella matched PR")
 	}
-	if _, _, ok := UmbrellaForPullRequest("", "acme/app", 1, "feat-a", nil); ok {
+	if _, _, ok := UmbrellaForPullRequest("", "acme/app", 1, "acme/app", "feat-a", nil); ok {
 		t.Fatal("empty projectsRoot matched PR")
 	}
 	if got := UmbrellaForTask("", "task-a"); got != "" {
@@ -165,40 +165,42 @@ func TestE2EUmbrellaWorktreeResolutionAndEdgeCases(t *testing.T) {
 		t.Fatalf("sorted members = %+v", sorted)
 	}
 
-	// 6. collectClaimsInHome skips non-dirs, unsafe segments, missing runs/claims, bad claim files, and fails when worklogs is a file.
+	// 6. collectClaimsInHome ignores missing runs/claims and atomic-write scratch files,
+	// and fails closed on malformed or unreadable claim entries.
 	makeUmbrellaTestClaim(t, projectsRoot, "extra", "acme/extra", "ex", "github:acme/app#10", time.Now().UTC())
-	if err := os.WriteFile(filepath.Join(home, "worklogs", "not-a-dir"), []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	if err := os.MkdirAll(filepath.Join(home, "worklogs", "no-runs"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(home, "worklogs", "extra", "runs", ".unsafe"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Join(home, "worklogs", "extra", "runs", "no-claims"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	extraClaimsDir := filepath.Join(home, "worklogs", "extra", "runs", "run-1", "claims")
-	if err := os.MkdirAll(filepath.Join(extraClaimsDir, "subdir.json"), 0o700); err != nil {
+	if err := os.WriteFile(filepath.Join(extraClaimsDir, ".tmp-scratch"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(extraClaimsDir, "badname.json"), []byte("{}"), 0o600); err != nil {
-		t.Fatal(err)
+	if _, err := collectClaimsInHome(home); err != nil {
+		t.Fatalf("collectClaimsInHome should allow missing runs/claims and scratch files: %v", err)
 	}
 	badClaimID := strings.Repeat("f", 64)
-	if err := os.WriteFile(filepath.Join(extraClaimsDir, badClaimID+".json"), []byte("{bad"), 0o600); err != nil {
+	badClaimPath := filepath.Join(extraClaimsDir, badClaimID+".json")
+	if err := os.WriteFile(badClaimPath, []byte("{bad"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := collectClaimsInHome(home); err == nil || !strings.Contains(err.Error(), badClaimPath) {
+		t.Fatalf("collectClaimsInHome should refuse malformed claim %s, got %v", badClaimPath, err)
+	}
+	_ = os.Remove(badClaimPath)
 	unreadableID := strings.Repeat("e", 64)
 	unreadablePath := filepath.Join(extraClaimsDir, unreadableID+".json")
 	if err := os.WriteFile(unreadablePath, []byte("{}"), 0o000); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(unreadablePath, 0o600) })
-	if _, err := collectClaimsInHome(home); err != nil {
-		t.Fatalf("collectClaimsInHome should skip unreadable/malformed entries: %v", err)
+	if _, err := collectClaimsInHome(home); err == nil || !strings.Contains(err.Error(), unreadablePath) {
+		t.Fatalf("collectClaimsInHome should refuse unreadable claim %s, got %v", unreadablePath, err)
 	}
+	_ = os.Chmod(unreadablePath, 0o600)
+	_ = os.Remove(unreadablePath)
 
 	// Corrupt worklogs path (regular file instead of dir) propagates errors across all callers.
 	badRoot := t.TempDir()
@@ -233,10 +235,10 @@ func TestE2EUmbrellaWorktreeResolutionAndEdgeCases(t *testing.T) {
 	if got := UmbrellaForTask(badRoot, "t"); got != "" {
 		t.Fatalf("UmbrellaForTask(badRoot) = %q", got)
 	}
-	if _, _, ok := UmbrellaForPullRequest(badRoot, "o/r", 1, "b", nil); ok {
+	if _, _, ok := UmbrellaForPullRequest(badRoot, "o/r", 1, "o/r", "b", nil); ok {
 		t.Fatal("UmbrellaForPullRequest(badRoot) succeeded")
 	}
-	RecordPullRequestLandedSHA(badRoot, "o/r", 1, "b", headSHA)
+	RecordPullRequestLandedSHA(badRoot, "o/r", 1, "o/r", "b", headSHA)
 	if _, err := SetTaskUmbrella(context.Background(), "bad\x00root", "t", ref); err == nil {
 		t.Fatal("SetTaskUmbrella accepted NUL projectsRoot")
 	}
@@ -267,7 +269,7 @@ func TestE2EUmbrellaWorktreeResolutionAndEdgeCases(t *testing.T) {
 		t.Fatalf("LoadWorkLogView terminal umbrella = (%+v, %v)", view.Claim, err)
 	}
 
-	// activeWorkLogClaimAtPath validates valid and rejects malformed .umbrella.json sidecars.
+	// activeWorkLogClaimAtPath validates valid and rejects malformed .umbrella.json and .landed.json sidecars.
 	sidecarRoot := t.TempDir()
 	sidecarHome, _ := wbhome.Root(sidecarRoot)
 	scClaim := makeUmbrellaTestClaim(t, sidecarRoot, "sc-task", "acme/app", "sc-br", "", time.Now().UTC())
@@ -275,9 +277,20 @@ func TestE2EUmbrellaWorktreeResolutionAndEdgeCases(t *testing.T) {
 	writeUmbrellaTestJSON(t, filepath.Join(scClaimsDir, scClaim.ClaimID+worktreeclaims.UmbrellaBindingSuffix), worktreeclaims.ClaimUmbrellaBinding{
 		Umbrella: "github:acme/app#10", RecordedAt: time.Now().UTC(),
 	})
+	writeUmbrellaTestJSON(t, filepath.Join(scClaimsDir, scClaim.ClaimID+worktreeclaims.LandingBindingSuffix), worktreeclaims.ClaimLandingBinding{
+		ClaimID: scClaim.ClaimID, Task: scClaim.Task, Repository: scClaim.Repository,
+		Target: "main", LandedSHA: headSHA, RecordedAt: time.Now().UTC(),
+	})
 	if found, err := activeWorkLogClaimAtPath(sidecarHome, "/other/worktree", map[string]bool{"sc-task": true}); err != nil || found != nil {
-		t.Fatalf("activeWorkLogClaimAtPath with valid umbrella sidecar = (%+v, %v)", found, err)
+		t.Fatalf("activeWorkLogClaimAtPath with valid umbrella+landing sidecars = (%+v, %v)", found, err)
 	}
+	writeUmbrellaTestJSON(t, filepath.Join(scClaimsDir, scClaim.ClaimID+worktreeclaims.LandingBindingSuffix), worktreeclaims.ClaimLandingBinding{
+		ClaimID: scClaim.ClaimID,
+	})
+	if _, err := activeWorkLogClaimAtPath(sidecarHome, "/other/worktree", map[string]bool{"sc-task": true}); err == nil {
+		t.Fatal("activeWorkLogClaimAtPath accepted invalid landing sidecar")
+	}
+	_ = os.Remove(filepath.Join(scClaimsDir, scClaim.ClaimID+worktreeclaims.LandingBindingSuffix))
 	writeUmbrellaTestJSON(t, filepath.Join(scClaimsDir, scClaim.ClaimID+worktreeclaims.UmbrellaBindingSuffix), worktreeclaims.ClaimUmbrellaBinding{
 		Umbrella: "invalid",
 	})
@@ -310,5 +323,80 @@ func TestE2EUmbrellaWorktreeResolutionAndEdgeCases(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chmod(roClaims, 0o700) })
 	if _, err := SetTaskUmbrella(context.Background(), roRoot, "ro-task", ref); err == nil {
 		t.Fatal("SetTaskUmbrella succeeded on read-only claims dir")
+	}
+
+	// Real-git handoff and failed-recycle recovery inherit effective umbrella from sidecar.
+	hoRoot := t.TempDir()
+	hoHome, err := wbhome.Root(hoRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hoWT := filepath.Join(hoRoot, "wt-ho")
+	if err := os.MkdirAll(hoWT, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, hoWT, "init", "-b", "ho-br")
+	gitTest(t, hoWT, "config", "user.email", "t@example.com")
+	gitTest(t, hoWT, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(hoWT, "f.txt"), []byte("f\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, hoWT, "add", "f.txt")
+	gitTest(t, hoWT, "commit", "-m", "init")
+	hoHead, err := git(context.Background(), hoWT, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hoHead = strings.TrimSpace(hoHead)
+	hoClaimID := worktreeclaims.WorkLogClaimID("ho-e2e", worktreeclaims.CreationResult{
+		Repository: "acme/app", WorktreeDir: hoWT, Branch: "ho-br", Base: "main", BaseSHA: hoHead,
+	})
+	hoClaim := workLogClaim{
+		Version: 2, EffortID: "ho-e2e", RunID: "run-1", ClaimID: hoClaimID, Task: "ho-e2e",
+		Repository: "acme/app", Worktree: hoWT, Branch: "ho-br", Base: "main", BaseSHA: hoHead,
+		Lifecycle: "active", RecordedAt: time.Now().UTC(), Model: "unknown", ModelProvenance: modelProvenanceUnknown,
+	}
+	hoClaimsDir := filepath.Join(hoHome, "worklogs", "ho-e2e", "runs", "run-1", "claims")
+	writeUmbrellaTestJSON(t, filepath.Join(hoClaimsDir, hoClaimID+".json"), hoClaim)
+	writeUmbrellaTestJSON(t, filepath.Join(hoWT, workLogProjectionDirectory, workLogProjectionName), workLogProjection{
+		Version: 1, EffortID: "ho-e2e", RunID: "run-1", ClaimID: hoClaimID, Lifecycle: "active",
+	})
+	if _, err := SetTaskUmbrella(context.Background(), hoRoot, "ho-e2e", ref); err != nil {
+		t.Fatalf("SetTaskUmbrella(ho-e2e): %v", err)
+	}
+	if err := transferWorkLogClaim(hoHome, hoWT, hoHead, "handoff", "next-e2e", ClaimExecutionIdentity{Model: "unknown"}); err != nil {
+		t.Fatalf("transferWorkLogClaim(ho-e2e): %v", err)
+	}
+	if got := UmbrellaForWorktree(hoRoot, hoWT); got != ref.String() {
+		t.Fatalf("UmbrellaForWorktree after real-git handoff = %q, want %q", got, ref.String())
+	}
+
+	// Failed-recycle recovery also inherits effective umbrella and refuses corrupt sidecar.
+	recClaimID := worktreeclaims.WorkLogClaimID("rec-e2e", worktreeclaims.CreationResult{
+		Repository: "acme/app", WorktreeDir: hoWT, Branch: "ho-br", Base: "main", BaseSHA: hoHead,
+	})
+	recClaim := workLogClaim{
+		Version: 2, EffortID: "rec-e2e", RunID: "run-1", ClaimID: recClaimID, Task: "rec-e2e",
+		Repository: "acme/app", Worktree: hoWT, Branch: "ho-br", Base: "main", BaseSHA: hoHead,
+		Lifecycle: "active", RecordedAt: time.Now().UTC(), Model: "unknown", ModelProvenance: modelProvenanceUnknown,
+	}
+	recClaimsDir := filepath.Join(hoHome, "worklogs", "rec-e2e", "runs", "run-1", "claims")
+	writeUmbrellaTestJSON(t, filepath.Join(recClaimsDir, recClaimID+".json"), recClaim)
+	recTerm := workLogTerminalRecord{Claim: recClaim, FinalCommit: hoHead, Disposition: "recycled", SealedAt: time.Now().UTC()}
+	recTerm.Lifecycle = "terminal"
+	writeUmbrellaTestJSON(t, filepath.Join(hoHome, "worklogs", "rec-e2e", "runs", "run-1", "terminals", recClaimID+".json"), recTerm)
+	recPrior := workLogProjection{Version: 1, EffortID: "rec-e2e", RunID: "run-1", ClaimID: recClaimID, Lifecycle: "active"}
+	writeUmbrellaTestJSON(t, filepath.Join(recClaimsDir, recClaimID+worktreeclaims.UmbrellaBindingSuffix), worktreeclaims.ClaimUmbrellaBinding{Umbrella: "invalid"})
+	if err := recoverFailedRecycleClaim(hoHome, hoWT, hoHead, recPrior); err == nil {
+		t.Fatal("recoverFailedRecycleClaim accepted corrupt umbrella sidecar")
+	}
+	writeUmbrellaTestJSON(t, filepath.Join(recClaimsDir, recClaimID+worktreeclaims.UmbrellaBindingSuffix), worktreeclaims.ClaimUmbrellaBinding{
+		Umbrella: ref.String(), RecordedAt: time.Now().UTC(),
+	})
+	if err := recoverFailedRecycleClaim(hoHome, hoWT, hoHead, recPrior); err != nil {
+		t.Fatalf("recoverFailedRecycleClaim: %v", err)
+	}
+	if got := UmbrellaForWorktree(hoRoot, hoWT); got != ref.String() {
+		t.Fatalf("UmbrellaForWorktree after recycle recovery = %q, want %q", got, ref.String())
 	}
 }

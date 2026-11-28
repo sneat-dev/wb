@@ -867,7 +867,11 @@ func workLogOptionsForClaimExtensionObserved(home string, requested WorkLogOptio
 		requested.TaskSummary = claim.TaskSummary
 	}
 	if strings.TrimSpace(requested.Umbrella) == "" {
-		requested.Umbrella = claim.Umbrella
+		effectiveRef, effErr := effectiveUmbrella(home, claim)
+		if effErr != nil {
+			return WorkLogOptions{}, effErr
+		}
+		requested.Umbrella = effectiveRef
 	}
 	if len(requested.snapshot.Contents) != 0 || strings.TrimSpace(requested.OriginalPrompt) != "" {
 		requested.RequireOriginalPrompt = false
@@ -2214,6 +2218,10 @@ func (p transferClaimPorts) transferWorkLogClaim(home, worktree, finalCommit, di
 	if err := p.corroborate(worktree, finalCommit, projection, claim); err != nil {
 		return err
 	}
+	effectiveRef, err := effectiveUmbrellaAt(claims, filepath.Join(locked.path, "claims"), claim)
+	if err != nil {
+		return err
+	}
 	successorClaimID := declaredSuccessorWorkLogClaimID(claim.ClaimID, successor, disposition, identity)
 	sealedAt, err := p.sealTerminal(home, runDir, worktreeclaims.TerminalSealRequest{
 		Claim: claim, FinalCommit: finalCommit, Disposition: disposition,
@@ -2223,6 +2231,7 @@ func (p transferClaimPorts) transferWorkLogClaim(home, worktree, finalCommit, di
 		return err
 	}
 	successorClaim := newSuccessorWorkLogClaim(claim, successorClaimID, sealedAt, successor, disposition, identity)
+	successorClaim.Umbrella = effectiveRef
 	claimName, outboxName, event, nextProjection := activeClaimPublication(successorClaim, disposition, projection)
 	if err := p.writeImmutable(claims, claimName, successorClaim, true); err != nil {
 		return fmt.Errorf("write immutable successor claim: %w", err)
@@ -2275,6 +2284,10 @@ func recoverFailedRecycleClaim(home, worktree, finalCommit string, prior workLog
 	if terminal.Disposition != "recycled" || terminal.FinalCommit != finalCommit || terminal.Lifecycle != "terminal" {
 		return fmt.Errorf("prior claim is not a matching recycled terminal")
 	}
+	effectiveRef, err := effectiveUmbrellaAt(claims, filepath.Join(locked.path, "claims"), claim)
+	if err != nil {
+		return err
+	}
 	const recoveryAgent = "wb-recycle-recovery"
 	const recoveryVia = "recycle_failed"
 	recoveryID := successorWorkLogClaimID(prior.ClaimID, recoveryAgent, recoveryVia)
@@ -2282,6 +2295,7 @@ func recoverFailedRecycleClaim(home, worktree, finalCommit string, prior workLog
 		claim, recoveryID, terminal.SealedAt, recoveryAgent, recoveryVia,
 		ClaimExecutionIdentity{Model: "unknown"},
 	)
+	recovery.Umbrella = effectiveRef
 	projection := workLogProjection{Version: 1, EffortID: prior.EffortID, RunID: prior.RunID}
 	claimName, outboxName, event, nextProjection := activeClaimPublication(recovery, recoveryVia, projection)
 	if err := writeJSONImmutableAt(claims, claimName, recovery, true); err != nil {

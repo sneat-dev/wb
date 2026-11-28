@@ -2065,6 +2065,14 @@ func activeWorkLogClaimAtPathWithReadNames(home, worktree string, tasks map[stri
 					}
 					continue
 				}
+				if strings.HasSuffix(name, worktreeclaims.LandingBindingSuffix) {
+					if bindingErr := worktreeclaims.ValidateLandingBindingEntry(claims, name, claimFiles, readJSONAt); bindingErr != nil {
+						_ = claims.Close()
+						_ = runs.Close()
+						return nil, fmt.Errorf("unsafe Work Log claim entry %q: %w", name, bindingErr)
+					}
+					continue
+				}
 				claimID := strings.TrimSuffix(name, ".json")
 				if name != claimID+".json" || !validClaimID(claimID) {
 					_ = claims.Close()

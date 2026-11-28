@@ -598,7 +598,7 @@ func createPullRequestAutoMerge(ctx context.Context, options PullRequestCreateOp
 		return result, fmt.Errorf("read commits of %s#%s: %w", repository, number, commitsErr)
 	}
 	subject := fmt.Sprintf("%s (#%s)", view.Title, number)
-	body := appendPullRequestUmbrellaTrailer(options.ProjectsRoot, repository, result.PullRequest, view.Head.Ref, aggregatedCommitMessage(view, commits, result.ApprovedBy, ""))
+	body := appendPullRequestUmbrellaTrailer(options.ProjectsRoot, repository, result.PullRequest, pullRequestHeadRepository(view), view.Head.Ref, aggregatedCommitMessage(view, commits, result.ApprovedBy, ""))
 	method := strings.TrimSpace(options.MergeMethod)
 	if method == "" {
 		method = "merge"

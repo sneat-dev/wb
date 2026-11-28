@@ -247,6 +247,22 @@ func (p HistoryPorts) validateRemovedTerminalWorkLogRun(home string, expectation
 			}
 			continue
 		}
+		if strings.HasSuffix(name, LandingBindingSuffix) {
+			claimID := strings.TrimSuffix(name, LandingBindingSuffix)
+			if !ValidClaimID(claimID) || !claimFiles[claimID+".json"] {
+				return "", fmt.Errorf("unsafe terminal Work Log claim entry %q for task %s", name, expectation.Task)
+			}
+			claims, err = p.OpenChild(runDir, "claims", false)
+			if err != nil {
+				return "", fmt.Errorf("reopen terminal Work Log claims for task %s: %w", expectation.Task, err)
+			}
+			readErr = readValidatedClaimLandingBinding(claims, claimID, p.ReadJSON)
+			_ = claims.Close()
+			if readErr != nil {
+				return "", fmt.Errorf("read terminal Work Log landing binding %q for task %s: %w", name, expectation.Task, readErr)
+			}
+			continue
+		}
 		claimID := strings.TrimSuffix(name, ".json")
 		if name != claimID+".json" || !ValidClaimID(claimID) {
 			return "", fmt.Errorf("unsafe terminal Work Log claim entry %q for task %s", name, expectation.Task)

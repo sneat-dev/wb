@@ -349,6 +349,19 @@ func TestUmbrellaCommandsRefuseUnknownRegistryAndErrors(t *testing.T) {
 		t.Fatalf("DefaultRegistry error = %v", err)
 	}
 
+	// Explicit typed reference bypasses DefaultRegistry resolution.
+	var explicitOut bytes.Buffer
+	cmdExplicit := New(testRuntime("/projects"), Dependencies{
+		DefaultRegistry: func() (string, error) { return "", errors.New("should not be called") },
+		Providers:       fakeGitHubProviders(t, "open", nil, nil),
+		Members:         func(string, umbrella.Ref) ([]umbrella.Member, error) { return nil, nil },
+	})
+	cmdExplicit.SetOut(&explicitOut)
+	cmdExplicit.SetArgs([]string{"show", "github:sneat-co/backstage#845"})
+	if err := cmdExplicit.Execute(); err != nil {
+		t.Fatalf("explicit typed ref failed despite bypassing default registry: %v", err)
+	}
+
 	cmdBadRef := New(testRuntime("/projects"), Dependencies{})
 	cmdBadRef.SetArgs([]string{"show", "not-a-valid-ref"})
 	if err := cmdBadRef.Execute(); err == nil {

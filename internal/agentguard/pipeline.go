@@ -131,7 +131,7 @@ var valueFlags = setOf(
 	"--review-comment-file", "--reviewed-source", "--role", "--route", "--run", "--runtime", "--scope",
 	"--session-freshness", "--sha", "--shard-attempt-timeout", "--stale", "--subject", "--successor",
 	"--summary", "--superseded-by", "--target", "--task", "--task-file", "--timeout", "--title",
-	"--to", "--ttl", "--undo", "--use-worktree", "--validation", "--version", "--via",
+	"--to", "--ttl", "--umbrella", "--undo", "--use-worktree", "--validation", "--version", "--via",
 	"--waive-aggregate", "--waive-baseline", "--waive-check", "--waive-reason",
 	"--wb-session-id", "--workers", "-j", "-m", "-o",
 )

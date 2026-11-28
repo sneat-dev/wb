@@ -6,10 +6,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubchecks"
 	"github.com/sneat-dev/wb/internal/umbrella"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktreeclaims"
@@ -101,12 +103,42 @@ func TestUmbrellaCommitTrailersAndPullRequestBodyPartOf(t *testing.T) {
 	}
 
 	// Pull request merge commit body trailer.
-	mergedBody := appendPullRequestUmbrellaTrailer(projectsRoot, "sneat-co/backstage", 846, "cross-repo", "Pull request: sneat-co/backstage#846\n")
+	mergedBody := appendPullRequestUmbrellaTrailer(projectsRoot, "sneat-co/backstage", 846, "sneat-co/backstage", "cross-repo", "Pull request: sneat-co/backstage#846\n")
 	if !strings.Contains(mergedBody, "Wb-Umbrella: github:sneat-co/backstage#845") {
 		t.Fatalf("appendPullRequestUmbrellaTrailer = %q", mergedBody)
 	}
-	if got := appendPullRequestUmbrellaTrailer(projectsRoot, "other/repo", 1, "b", "plain\n"); got != "plain\n" {
+	if got := appendPullRequestUmbrellaTrailer(projectsRoot, "other/repo", 1, "other/repo", "b", "plain\n"); got != "plain\n" {
 		t.Fatalf("unmatched PR trailer = %q", got)
+	}
+	// pullRequestHeadRepository handles nil and populated Head.Repo.
+	if got := pullRequestHeadRepository(githubchecks.PullRequestView{}); got != "" {
+		t.Fatalf("nil Head.Repo = %q", got)
+	}
+	var populatedView githubchecks.PullRequestView
+	populatedView.Head.Repo = &struct {
+		FullName string `json:"full_name"`
+	}{FullName: "sneat-co/backstage"}
+	if got := pullRequestHeadRepository(populatedView); got != "sneat-co/backstage" {
+		t.Fatalf("populated Head.Repo = %q", got)
+	}
+
+	// worktreeMergeIntegrationArgs adds Wb-Umbrella trailers when sources have umbrellas and leaves non-umbrella args unchanged.
+	sha := strings.Repeat("c", 40)
+	if args := worktreeMergeIntegrationArgs(projectsRoot, []WorktreeMergeSource{{Task: "missing", Worktree: t.TempDir()}}, "Merge x", sha); !reflect.DeepEqual(args, []string{"merge", "--no-edit", sha}) {
+		t.Fatalf("non-umbrella integration args = %v", args)
+	}
+	wtSecond, _ := seedUmbrellaClaim(t, projectsRoot, "second-umb", "acme/two", "second-umb", "github:acme/hub#1", 0)
+	wtMalformedArg, _ := seedUmbrellaClaim(t, projectsRoot, "malformed-arg", "acme/bad", "malformed-arg", "github:not-valid", 0)
+	argsWithTrailers := worktreeMergeIntegrationArgs(projectsRoot, []WorktreeMergeSource{
+		{Task: "cross-repo", Worktree: wtDir},
+		{Task: "second-umb", Worktree: wtSecond},
+		{Task: "malformed-arg", Worktree: wtMalformedArg},
+		{Task: "cross-repo", Worktree: t.TempDir()}, // task fallback
+	}, "Merge cross-repo", sha)
+	if len(argsWithTrailers) != 5 || argsWithTrailers[2] != "-m" ||
+		!strings.Contains(argsWithTrailers[3], "Wb-Umbrella: github:acme/hub#1") ||
+		!strings.Contains(argsWithTrailers[3], "Wb-Umbrella: github:sneat-co/backstage#845") {
+		t.Fatalf("umbrella integration args = %v", argsWithTrailers)
 	}
 
 	// Unsupported registry stored on manifest fails RenderLink cleanly.
@@ -142,14 +174,14 @@ func TestReportPullRequestAndWorktreeMergeLandedUmbrella(t *testing.T) {
 	})
 
 	// Nil result guard and unmatched PR guard.
-	reportPullRequestLandedUmbrella(context.Background(), PullRequestLandOptions{}, nil, "846")
+	reportPullRequestLandedUmbrella(context.Background(), PullRequestLandOptions{}, nil, "", "846")
 	unmatchedPR := PullRequestLandResult{Repository: "other/repo", PullRequest: 99, HeadRef: "other", MergeSHA: strings.Repeat("9", 40), Evidence: map[string]string{}}
-	reportPullRequestLandedUmbrella(context.Background(), PullRequestLandOptions{ProjectsRoot: projectsRoot, Repository: "other/repo", UmbrellaProviders: providers}, &unmatchedPR, "99")
+	reportPullRequestLandedUmbrella(context.Background(), PullRequestLandOptions{ProjectsRoot: projectsRoot, Repository: "other/repo", UmbrellaProviders: providers}, &unmatchedPR, "other/repo", "99")
 	if unmatchedPR.Umbrella != "" {
 		t.Fatalf("unmatched PR unexpectedly got umbrella %q", unmatchedPR.Umbrella)
 	}
 
-	// PR land posts status line, records LandedSHA, and offers close command once all members landed!
+	// PR land posts cross-repo qualified PR link, records LandedSHA, and offers close command once all members landed!
 	prResult := PullRequestLandResult{
 		Repository:  "sneat-co/backstage",
 		PullRequest: 846,
@@ -161,7 +193,7 @@ func TestReportPullRequestAndWorktreeMergeLandedUmbrella(t *testing.T) {
 		ProjectsRoot:      projectsRoot,
 		Repository:        "sneat-co/backstage",
 		UmbrellaProviders: providers,
-	}, &prResult, "846")
+	}, &prResult, "sneat-co/backstage", "846")
 	if prResult.Umbrella != "github:sneat-co/backstage#845" {
 		t.Fatalf("prResult.Umbrella = %q", prResult.Umbrella)
 	}
@@ -171,7 +203,7 @@ func TestReportPullRequestAndWorktreeMergeLandedUmbrella(t *testing.T) {
 	if prResult.UmbrellaCloseCommand != "wb umbrella close sneat-co/backstage#845 --apply" {
 		t.Fatalf("UmbrellaCloseCommand = %q", prResult.UmbrellaCloseCommand)
 	}
-	if len(posted) != 1 || !strings.Contains(posted[0], "repos/sneat-co/backstage/issues/845/comments") || !strings.Contains(posted[0], "PR #846") {
+	if len(posted) != 1 || !strings.Contains(posted[0], "repos/sneat-co/backstage/issues/845/comments") || !strings.Contains(posted[0], "PR sneat-co/backstage#846") {
 		t.Fatalf("posted comments = %v", posted)
 	}
 
@@ -190,14 +222,18 @@ func TestReportPullRequestAndWorktreeMergeLandedUmbrella(t *testing.T) {
 		ProjectsRoot:      projectsRoot,
 		Repository:        "sneat-co/backstage",
 		UmbrellaProviders: failProviders,
-	}, &prFail, "846")
+	}, &prFail, "sneat-co/backstage", "846")
 	if !strings.Contains(prFail.Evidence["umbrella_status_error"], "network down") {
 		t.Fatalf("expected umbrella_status_error, got %+v", prFail.Evidence)
 	}
 
-	// Worktree merge land posts status line and records finding on failure.
+	// Worktree merge land on a FRESH claim (no preceding PR landing) persists claim-bound landing
+	// proof, posts cross-repo qualified PR link, and becomes close-eligible without cleanup!
+	freshRoot := t.TempDir()
+	wtFresh, _ := seedUmbrellaClaim(t, freshRoot, "fresh-task", "trakhimenok/workbench", "fresh-task", "github:sneat-co/backstage#900", 0)
 	posted = nil
-	reportWorktreeMergeLandedUmbrella(context.Background(), projectsRoot, providers, nil)
+	reportWorktreeMergeLandedUmbrella(context.Background(), freshRoot, providers, nil)
+	recordWorktreeMergeLandedClaims(freshRoot, WorktreeMergeReceipt{})
 	wtBadOnly := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(wtBadOnly, ".wb", "local"), 0o700); err != nil {
 		t.Fatal(err)
@@ -207,27 +243,33 @@ func TestReportPullRequestAndWorktreeMergeLandedUmbrella(t *testing.T) {
 		t.Fatal(err)
 	}
 	receipt := WorktreeMergeReceipt{
-		Repository:  "sneat-co/backstage",
-		PullRequest: "https://github.com/sneat-co/backstage/pull/846",
+		Repository:  "trakhimenok/workbench",
+		Target:      "main",
+		PullRequest: "https://github.com/trakhimenok/workbench/pull/314",
 		LandingSHA:  strings.Repeat("9", 40),
 		Sources: []WorktreeMergeSource{
-			{Task: "cross-repo", Worktree: wt1},
-			{Task: "cross-repo", Worktree: wt1}, // duplicate deduped
+			{Task: "fresh-task", Worktree: wtFresh, Branch: "fresh-task"},
+			{Task: "fresh-task", Worktree: wtFresh, Branch: "fresh-task"}, // duplicate deduped
 			{Task: "no-umbrella", Worktree: t.TempDir()},
 			{Task: "bad-only", Worktree: wtBadOnly},
 		},
 	}
-	reportWorktreeMergeLandedUmbrella(context.Background(), projectsRoot, providers, &receipt)
-	if receipt.Umbrella != "github:sneat-co/backstage#845" || receipt.UmbrellaCloseCommand != "wb umbrella close sneat-co/backstage#845 --apply" {
-		t.Fatalf("receipt umbrella fields = (%q, %q)", receipt.Umbrella, receipt.UmbrellaCloseCommand)
+	reportWorktreeMergeLandedUmbrella(context.Background(), freshRoot, providers, &receipt)
+	if receipt.Umbrella != "github:sneat-co/backstage#900" || receipt.UmbrellaCloseCommand != "wb umbrella close sneat-co/backstage#900 --apply" {
+		t.Fatalf("fresh receipt umbrella fields = (%q, %q)", receipt.Umbrella, receipt.UmbrellaCloseCommand)
 	}
-	if len(posted) != 1 {
-		t.Fatalf("worktree merge posted %d comments, want 1", len(posted))
+	if len(posted) != 1 || !strings.Contains(posted[0], "PR trakhimenok/workbench#314") {
+		t.Fatalf("worktree merge posted = %v, want cross-repo qualified PR trakhimenok/workbench#314", posted)
+	}
+	ready, members, err := worktrees.UmbrellaReadyToClose(freshRoot, umbrella.Ref{Registry: "github", ID: "sneat-co/backstage#900"})
+	if err != nil || !ready || len(members) != 1 || members[0].State != "landed" || members[0].LandedSHA != strings.Repeat("9", 40) {
+		t.Fatalf("fresh worktree landing close readiness = (ready=%v, members=%+v, err=%v)", ready, members, err)
 	}
 
 	// Worktree merge failure records finding without aborting.
 	receiptFail := WorktreeMergeReceipt{
 		Repository: "sneat-co/backstage",
+		Target:     "main",
 		LandingSHA: strings.Repeat("9", 40),
 		Sources:    []WorktreeMergeSource{{Task: "cross-repo", Worktree: wt1}},
 	}

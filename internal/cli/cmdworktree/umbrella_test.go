@@ -492,7 +492,7 @@ func TestCmdWorktreeUmbrellaRemainingBranches(t *testing.T) {
 	if err := cmdRetire.Execute(); err != nil {
 		t.Fatalf("retire --apply: %v", err)
 	}
-	if len(cleanupPosted) != 1 || !strings.Contains(cleanupPosted[0], "PR #7") {
+	if len(cleanupPosted) != 1 || !strings.Contains(cleanupPosted[0], "PR o/r#7") {
 		t.Fatalf("retire cleanup posted = %v", cleanupPosted)
 	}
 
@@ -534,5 +534,36 @@ func TestCmdWorktreeUmbrellaRemainingBranches(t *testing.T) {
 	cmdAbortAll.SetArgs([]string{"t-active", "--disposition", "discarded", "--apply"})
 	if err := cmdAbortAll.Execute(); err != nil {
 		t.Fatalf("abort all PR variants: %v", err)
+	}
+}
+
+func TestExplicitTypedUmbrellaBypassesConflictingRepositoryDefaults(t *testing.T) {
+	t.Parallel()
+	projectsRoot := t.TempDir()
+	repo1 := filepath.Join(projectsRoot, "acme", "one")
+	repo2 := filepath.Join(projectsRoot, "acme", "two")
+	for _, pair := range []struct{ dir, reg string }{
+		{repo1, "synchestra"},
+		{repo2, "github"},
+	} {
+		if err := os.MkdirAll(filepath.Join(pair.dir, ".wb"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(pair.dir, ".wb", "worktrees.yaml"),
+			[]byte("version: 1\numbrella:\n  default_registry: "+pair.reg+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fakeProv := umbrella.DefaultProviders(func(context.Context, ...string) umbrella.CommandResult {
+		return umbrella.CommandResult{Stdout: []byte(`{"state":"open"}`)}
+	})
+	// Bare reference across conflicting repos still refuses.
+	if _, err := resolveUmbrellaWithProviders(context.Background(), projectsRoot, []string{"acme/one", "acme/two"}, "effort-1", fakeProv); err == nil || !strings.Contains(err.Error(), "disagree on umbrella.default_registry") {
+		t.Fatalf("bare ref across conflicting repos error = %v", err)
+	}
+	// Explicit typed reference bypasses default resolution and succeeds!
+	ref, err := resolveUmbrellaWithProviders(context.Background(), projectsRoot, []string{"acme/one", "acme/two"}, "github:acme/one#42", fakeProv)
+	if err != nil || ref.String() != "github:acme/one#42" {
+		t.Fatalf("explicit ref across conflicting repos = (%+v, %v), want github:acme/one#42", ref, err)
 	}
 }

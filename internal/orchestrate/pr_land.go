@@ -986,7 +986,7 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	}
 
 	options.sourceCommits = sourceCommits
-	body := appendPullRequestUmbrellaTrailer(options.ProjectsRoot, options.Repository, view.Number, view.Head.Ref, aggregatedCommitMessage(view, sourceCommits, result.ApprovedBy, options.Reason))
+	body := appendPullRequestUmbrellaTrailer(options.ProjectsRoot, options.Repository, view.Number, pullRequestHeadRepository(view), view.Head.Ref, aggregatedCommitMessage(view, sourceCommits, result.ApprovedBy, options.Reason))
 
 	// Arm auto-merge before waiting and then wait, bringing the candidate up
 	// to date whenever the target moves under it — the shared engine both
@@ -1359,12 +1359,13 @@ func finalizeLandedPullRequest(ctx context.Context, options PullRequestLandOptio
 	}
 	reportPullRequestLandProgress(options.OperationProgress, "sync_canonical", progress.Completed, result.CanonicalSync, 0, 0)
 
+	headRepo := pullRequestHeadRepository(view)
 	result.HeadRetained = integrationHeadReason(ctx, options, view, number, result.Promotion)
 	if result.HeadRetained != "" {
 		// An integration branch outlives every promotion: neither the branch
 		// nor the worktrees on it are retired.
 		result.Evidence["head_branch"] = "retained " + view.Head.Ref + ": " + result.HeadRetained
-		return finishLandedPullRequest(ctx, options, result, number)
+		return finishLandedPullRequest(ctx, options, result, headRepo, number)
 	}
 	reportPullRequestLandProgress(options.OperationProgress, "delete_remote_branch", progress.Started, view.Head.Ref, 0, 0)
 	if deleted, deleteErr := deleteRemoteBranch(ctx, options.resolveRunner(), canonical, options.Repository, view, landed, remoteHeadSHA); deleteErr != nil {
@@ -1398,11 +1399,11 @@ func finalizeLandedPullRequest(ctx context.Context, options PullRequestLandOptio
 		result.Evidence["cleanup"] = "fork source worktrees retained; target-repository worktrees do not belong to this pull request head"
 	}
 
-	return finishLandedPullRequest(ctx, options, result, number)
+	return finishLandedPullRequest(ctx, options, result, headRepo, number)
 }
 
 // finishLandedPullRequest reports what the landing closes and succeeds.
-func finishLandedPullRequest(ctx context.Context, options PullRequestLandOptions, result PullRequestLandResult, number string) (PullRequestLandResult, error) {
+func finishLandedPullRequest(ctx context.Context, options PullRequestLandOptions, result PullRequestLandResult, headRepo, number string) (PullRequestLandResult, error) {
 	// #615: report the issues this landing closes, from GitHub's own
 	// closingIssuesReferences — an informational finding, never a refusal,
 	// including when there are none.
@@ -1413,7 +1414,7 @@ func finishLandedPullRequest(ctx context.Context, options PullRequestLandOptions
 		result.Evidence["closes_error"] = closesErr.Error()
 	}
 
-	reportPullRequestLandedUmbrella(ctx, options, &result, number)
+	reportPullRequestLandedUmbrella(ctx, options, &result, headRepo, number)
 	result.Outcome = LandSuccess
 	return withSavings(result), nil
 }

@@ -84,9 +84,11 @@ type StatusUpdate struct {
 
 // FormatStatusLine renders a single-line status comment containing repo, PR,
 // outcome, and landed SHA or archive ref. Private text never enters this line.
+// Bare "#N" pull-request labels are qualified with the member repository
+// ("owner/repo#N") so cross-repository umbrella comments link the member PR.
 func FormatStatusLine(u StatusUpdate) string {
 	repo := sanitizeOneLine(u.Repository)
-	pr := sanitizeOneLine(u.PullRequest)
+	pr := formatStatusPullRequest(repo, sanitizeOneLine(u.PullRequest))
 	outcome := sanitizeOneLine(u.Outcome)
 	sha := shortSHA(sanitizeOneLine(u.LandedSHA))
 	archiveRef := sanitizeOneLine(u.ArchiveRef)
@@ -185,4 +187,14 @@ func shortSHA(sha string) string {
 func sanitizeOneLine(text string) string {
 	replacer := strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ")
 	return strings.TrimSpace(replacer.Replace(text))
+}
+
+func formatStatusPullRequest(repo, pr string) string {
+	if pr == "" || repo == "" {
+		return pr
+	}
+	if strings.HasPrefix(pr, "#") {
+		return repo + pr
+	}
+	return pr
 }

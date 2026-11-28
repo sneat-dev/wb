@@ -233,9 +233,13 @@ wb umbrella close github:sneat-co/backstage#845 --format json`,
 }
 
 func loadUmbrellaState(ctx context.Context, runtime shared.Runtime, deps Dependencies, raw string) (umbrella.Ref, umbrella.Info, []umbrella.Member, error) {
-	defaultRegistry, err := deps.resolveDefaultRegistry()
-	if err != nil {
-		return umbrella.Ref{}, umbrella.Info{}, nil, err
+	defaultRegistry := ""
+	if !umbrella.HasExplicitRegistry(raw) {
+		var err error
+		defaultRegistry, err = deps.resolveDefaultRegistry()
+		if err != nil {
+			return umbrella.Ref{}, umbrella.Info{}, nil, err
+		}
 	}
 	ref, err := umbrella.Parse(raw, defaultRegistry)
 	if err != nil {

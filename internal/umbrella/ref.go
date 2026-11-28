@@ -73,8 +73,15 @@ func ValidateRegistryName(name string) error {
 	return nil
 }
 
-// Parse parses a typed "<registry>:<id>" reference or a bare "<id>" using
-// defaultRegistry (or DefaultRegistry when empty).
+// HasExplicitRegistry reports whether raw includes an explicit "<registry>:"
+// prefix and therefore does not depend on a configured default registry.
+func HasExplicitRegistry(raw string) bool {
+	return strings.Contains(strings.TrimSpace(raw), ":")
+}
+
+// Parse parses a typed "<registry>:<id>" reference or a bare "<id>". Bare
+// GitHub-shaped references ("owner/repo#N") always resolve to RegistryGitHub;
+// other bare identifiers use defaultRegistry (or DefaultRegistry when empty).
 func Parse(raw string, defaultRegistry string) (Ref, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
@@ -103,6 +110,9 @@ func Parse(raw string, defaultRegistry string) (Ref, error) {
 		if id == "" {
 			return Ref{}, fmt.Errorf("umbrella reference %q is missing its identifier after %q", raw, registry+":")
 		}
+	} else if _, _, _, ghErr := ParseGitHubID(trimmed); ghErr == nil {
+		registry = RegistryGitHub
+		id = trimmed
 	} else {
 		registry = def
 		id = trimmed

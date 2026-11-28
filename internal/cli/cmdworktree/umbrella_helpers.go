@@ -16,9 +16,13 @@ func defaultResolveUmbrella(ctx context.Context, projectsRoot string, repositori
 }
 
 func resolveUmbrellaWithProviders(ctx context.Context, projectsRoot string, repositories []string, raw string, providers *umbrella.Registry) (umbrella.Ref, error) {
-	defaultRegistry, err := worktrees.ResolveUmbrellaDefaultRegistryForSlugs(projectsRoot, repositories)
-	if err != nil {
-		return umbrella.Ref{}, err
+	defaultRegistry := ""
+	if !umbrella.HasExplicitRegistry(raw) {
+		var err error
+		defaultRegistry, err = worktrees.ResolveUmbrellaDefaultRegistryForSlugs(projectsRoot, repositories)
+		if err != nil {
+			return umbrella.Ref{}, err
+		}
 	}
 	ref, err := umbrella.Parse(raw, defaultRegistry)
 	if err != nil {

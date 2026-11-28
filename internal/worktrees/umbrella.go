@@ -15,6 +15,7 @@ import (
 	"github.com/sneat-dev/wb/internal/umbrella"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktreeclaims"
+	"github.com/sneat-dev/wb/internal/worktreeproof"
 	"github.com/sneat-dev/wb/internal/worktreeretire"
 )
 
@@ -85,9 +86,19 @@ func ResolveUmbrellaDefaultRegistryForSlugs(projectsRoot string, slugs []string)
 }
 
 // SetTaskUmbrella attaches a validated canonical umbrella reference to every
-// recorded Work Log claim of a task. Target may be a linked worktree path
-// (including ".") or a task name.
+// recorded Work Log claim of a task under one per-task operation lock. Target
+// may be a linked worktree path (including ".") or a task name.
 func SetTaskUmbrella(ctx context.Context, projectsRoot, target string, ref umbrella.Ref) (SetUmbrellaResult, error) {
+	return setTaskUmbrellaWithHooks(ctx, projectsRoot, target, ref, nil, nil)
+}
+
+func setTaskUmbrellaWithHooks(
+	ctx context.Context,
+	projectsRoot, target string,
+	ref umbrella.Ref,
+	afterLock func(),
+	writeSidecar func(dir, name string, data []byte) error,
+) (SetUmbrellaResult, error) {
 	if ref.IsZero() {
 		return SetUmbrellaResult{}, fmt.Errorf("umbrella reference is required")
 	}
@@ -102,32 +113,91 @@ func SetTaskUmbrella(ctx context.Context, projectsRoot, target string, ref umbre
 	if err != nil {
 		return SetUmbrellaResult{}, err
 	}
+	if !validSafeSegment(taskName) {
+		return SetUmbrellaResult{}, fmt.Errorf("invalid task name %q", taskName)
+	}
+	operation, err := prepareOperationRoot(home, taskName, nil)
+	if err != nil {
+		return SetUmbrellaResult{}, fmt.Errorf("prepare task lock for %s: %w", taskName, err)
+	}
+	defer operation.close()
+	lock, err := acquireLockAt(operation.Directory, taskName)
+	if err != nil {
+		return SetUmbrellaResult{}, fmt.Errorf("lock task %s for umbrella update: %w", taskName, err)
+	}
+	defer func() { _ = lock.release() }()
+	if afterLock != nil {
+		afterLock()
+	}
+
 	records, err := collectClaimsInHome(home)
 	if err != nil {
 		return SetUmbrellaResult{}, err
 	}
+	var matching []claimRecord
+	for _, rec := range records {
+		if rec.claim.Task == taskName || rec.claim.EffortID == taskName {
+			matching = append(matching, rec)
+		}
+	}
+	if len(matching) == 0 {
+		return SetUmbrellaResult{}, fmt.Errorf("no work-log claims found for task %q", taskName)
+	}
+	sort.Slice(matching, func(i, j int) bool {
+		if matching[i].claimsDir != matching[j].claimsDir {
+			return matching[i].claimsDir < matching[j].claimsDir
+		}
+		return matching[i].claim.ClaimID < matching[j].claim.ClaimID
+	})
+
+	if writeSidecar == nil {
+		writeSidecar = func(dir, name string, data []byte) error {
+			return filewrite.WriteBytesAtomic(dir, name, data, 0o600)
+		}
+	}
+
 	now := time.Now().UTC()
 	binding := worktreeclaims.ClaimUmbrellaBinding{Umbrella: ref.String(), RecordedAt: now}
 	encoded, _ := json.MarshalIndent(binding, "", "  ")
 	encoded = append(encoded, '\n')
 
+	type priorSidecar struct {
+		rec         claimRecord
+		sidecarName string
+		prev        *worktreeclaims.ClaimUmbrellaBinding
+	}
+	updated := make([]priorSidecar, 0, len(matching))
 	repoSet := map[string]bool{}
-	written := 0
-	for _, rec := range records {
-		if rec.claim.Task != taskName && rec.claim.EffortID != taskName {
-			continue
-		}
+	for _, rec := range matching {
 		sidecarName := rec.claim.ClaimID + worktreeclaims.UmbrellaBindingSuffix
-		if err := filewrite.WriteBytesAtomic(rec.claimsDir, sidecarName, encoded, 0o600); err != nil {
-			return SetUmbrellaResult{}, fmt.Errorf("record umbrella binding for %s (%s): %w", taskName, rec.claim.Repository, err)
+		if writeErr := writeSidecar(rec.claimsDir, sidecarName, encoded); writeErr != nil {
+			var partial []string
+			for _, u := range updated {
+				var rbErr error
+				if u.prev != nil {
+					prevEncoded, _ := json.MarshalIndent(u.prev, "", "  ")
+					rbErr = writeSidecar(u.rec.claimsDir, u.sidecarName, append(prevEncoded, '\n'))
+				} else {
+					rbErr = os.Remove(filepath.Join(u.rec.claimsDir, u.sidecarName))
+				}
+				if rbErr != nil {
+					partial = append(partial, fmt.Sprintf("%s (%s)", u.rec.claim.ClaimID, u.rec.claim.Repository))
+				}
+			}
+			if len(partial) > 0 {
+				return SetUmbrellaResult{}, fmt.Errorf("record umbrella binding for %s (%s): %w; rollback incomplete, partially updated claims: %s",
+					taskName, rec.claim.Repository, writeErr, strings.Join(partial, ", "))
+			}
+			return SetUmbrellaResult{}, fmt.Errorf("record umbrella binding for %s (%s): %w", taskName, rec.claim.Repository, writeErr)
 		}
-		written++
+		updated = append(updated, priorSidecar{
+			rec:         rec,
+			sidecarName: sidecarName,
+			prev:        rec.umbrellaSidecar,
+		})
 		if rec.claim.Repository != "" {
 			repoSet[rec.claim.Repository] = true
 		}
-	}
-	if written == 0 {
-		return SetUmbrellaResult{}, fmt.Errorf("no work-log claims found for task %q", taskName)
 	}
 	repos := make([]string, 0, len(repoSet))
 	for repo := range repoSet {
@@ -137,7 +207,7 @@ func SetTaskUmbrella(ctx context.Context, projectsRoot, target string, ref umbre
 	return SetUmbrellaResult{
 		Task:         taskName,
 		Umbrella:     ref.String(),
-		Claims:       written,
+		Claims:       len(updated),
 		Repositories: repos,
 	}, nil
 }
@@ -205,8 +275,9 @@ func UmbrellaForTask(projectsRoot, task string) string {
 }
 
 // UmbrellaForPullRequest resolves the umbrella reference and task name for a
-// pull request using cleaned tasks, PR bindings, and repository/branch claims.
-func UmbrellaForPullRequest(projectsRoot, repository string, pullRequest int, headRef string, cleanedTasks []string) (umbrella.Ref, string, bool) {
+// pull request using explicit PR bindings, cleaned tasks, and (for unbound
+// claims with a matching head repository) repository/branch claims.
+func UmbrellaForPullRequest(projectsRoot, repository string, pullRequest int, headRepo, headRef string, cleanedTasks []string) (umbrella.Ref, string, bool) {
 	records, err := collectAllClaims(projectsRoot)
 	if err != nil {
 		return umbrella.Ref{}, "", false
@@ -233,19 +304,22 @@ func UmbrellaForPullRequest(projectsRoot, repository string, pullRequest int, he
 			}
 		}
 	}
-	// 2. Cleaned task match.
+	// 2. Cleaned task match (never overriding a conflicting explicit PR binding).
 	for _, rec := range records {
-		if taskSet[rec.claim.Task] && strings.EqualFold(rec.claim.Repository, repository) {
+		if taskSet[rec.claim.Task] && strings.EqualFold(rec.claim.Repository, repository) &&
+			(rec.pr == nil || rec.pr.PullRequest == pullRequest) {
 			if ref, task, ok := pick(rec); ok {
 				return ref, task, true
 			}
 		}
 	}
-	// 3. Repository + branch match.
-	for _, rec := range records {
-		if strings.EqualFold(rec.claim.Repository, repository) && rec.claim.Branch == headRef {
-			if ref, task, ok := pick(rec); ok {
-				return ref, task, true
+	// 3. Repository + branch fallback only for unbound claims with matching head repository.
+	if headRepo != "" && strings.EqualFold(headRepo, repository) && headRef != "" {
+		for _, rec := range records {
+			if rec.pr == nil && strings.EqualFold(rec.claim.Repository, repository) && rec.claim.Branch == headRef {
+				if ref, task, ok := pick(rec); ok {
+					return ref, task, true
+				}
 			}
 		}
 	}
@@ -253,24 +327,43 @@ func UmbrellaForPullRequest(projectsRoot, repository string, pullRequest int, he
 }
 
 // RecordPullRequestLandedSHA records the verified merge commit SHA onto the
-// existing pull-request binding sidecar of any matching claim so umbrella
-// status and close checks retain exact landing proof even when --keep is used.
-func RecordPullRequestLandedSHA(projectsRoot, repository string, pullRequest int, headRef, landedSHA string) {
+// pull-request binding sidecar of matching claims so umbrella status and close
+// checks retain exact landing proof even when --keep is used. Explicit PR
+// bindings are matched first and never overwritten for a different PR number;
+// branch fallback applies only to claims with no PR binding when headRepo
+// matches repository.
+func RecordPullRequestLandedSHA(projectsRoot, repository string, pullRequest int, headRepo, headRef, landedSHA string) {
 	landedSHA = strings.TrimSpace(landedSHA)
-	if landedSHA == "" || pullRequest <= 0 {
+	if landedSHA == "" || !worktreeproof.IsGitObjectID(landedSHA) || pullRequest <= 0 || strings.TrimSpace(repository) == "" {
 		return
 	}
 	records, err := collectAllClaims(projectsRoot)
 	if err != nil {
 		return
 	}
+	// 1. Match explicit PR bindings first.
+	matchedExplicit := false
 	for _, rec := range records {
-		if !strings.EqualFold(rec.claim.Repository, repository) {
+		if rec.pr != nil && strings.EqualFold(rec.pr.Repository, repository) && rec.pr.PullRequest == pullRequest {
+			binding := *rec.pr
+			binding.LandedSHA = landedSHA
+			encoded, _ := json.MarshalIndent(binding, "", "  ")
+			_ = filewrite.WriteBytesAtomic(rec.claimsDir, rec.claim.ClaimID+worktreeclaims.PullRequestBindingSuffix, append(encoded, '\n'), 0o600)
+			matchedExplicit = true
+		}
+	}
+	if matchedExplicit {
+		return
+	}
+	// 2. Branch fallback only for unbound claims with matching head repository.
+	if headRef == "" || headRepo == "" || !strings.EqualFold(headRepo, repository) {
+		return
+	}
+	for _, rec := range records {
+		if rec.pr != nil || !strings.EqualFold(rec.claim.Repository, repository) || rec.claim.Branch != headRef {
 			continue
 		}
-		matchesPR := rec.pr != nil && rec.pr.PullRequest == pullRequest
-		matchesBranch := headRef != "" && rec.claim.Branch == headRef
-		if !matchesPR && !matchesBranch {
+		if rec.terminal != nil && rec.terminal.SuccessorClaimID != "" {
 			continue
 		}
 		binding := worktreeclaims.ClaimPullRequestBinding{
@@ -280,18 +373,70 @@ func RecordPullRequestLandedSHA(projectsRoot, repository string, pullRequest int
 			LandedSHA:   landedSHA,
 			RecordedAt:  time.Now().UTC(),
 		}
-		if rec.pr != nil {
-			binding = *rec.pr
-			binding.LandedSHA = landedSHA
-		}
 		encoded, _ := json.MarshalIndent(binding, "", "  ")
 		_ = filewrite.WriteBytesAtomic(rec.claimsDir, rec.claim.ClaimID+worktreeclaims.PullRequestBindingSuffix, append(encoded, '\n'), 0o600)
 	}
 }
 
+// RecordClaimLanding persists claim-bound landing proof independently of
+// worktree cleanup so `wb worktree land --cleanup=false` makes every landed
+// source claim eligible for `wb umbrella close`.
+func RecordClaimLanding(projectsRoot, repository, task, worktree, branch, target, landedSHA string, pullRequest int, pullRequestURL string) error {
+	landedSHA = strings.TrimSpace(landedSHA)
+	if !worktreeproof.IsGitObjectID(landedSHA) {
+		return fmt.Errorf("invalid landed commit %q", landedSHA)
+	}
+	records, err := collectAllClaims(projectsRoot)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	for _, rec := range records {
+		if !strings.EqualFold(rec.claim.Repository, repository) {
+			continue
+		}
+		if rec.claim.Task != task && rec.claim.EffortID != task {
+			continue
+		}
+		if worktree != "" && filepath.Clean(rec.claim.Worktree) != filepath.Clean(worktree) {
+			continue
+		}
+		if branch != "" && rec.claim.Branch != branch {
+			continue
+		}
+		if rec.terminal != nil && rec.terminal.SuccessorClaimID != "" {
+			continue
+		}
+		effectiveTarget := strings.TrimSpace(target)
+		if effectiveTarget == "" {
+			effectiveTarget = rec.claim.Base
+		}
+		binding := worktreeclaims.ClaimLandingBinding{
+			ClaimID:        rec.claim.ClaimID,
+			Task:           rec.claim.Task,
+			Repository:     rec.claim.Repository,
+			Target:         effectiveTarget,
+			LandedSHA:      landedSHA,
+			PullRequest:    pullRequest,
+			PullRequestURL: strings.TrimSpace(pullRequestURL),
+			RecordedAt:     now,
+		}
+		if err := worktreeclaims.ValidateLandingBindingFields(binding); err != nil {
+			return err
+		}
+		encoded, _ := json.MarshalIndent(binding, "", "  ")
+		if err := filewrite.WriteBytesAtomic(rec.claimsDir, rec.claim.ClaimID+worktreeclaims.LandingBindingSuffix, append(encoded, '\n'), 0o600); err != nil {
+			return fmt.Errorf("record landing binding for %s (%s): %w", rec.claim.Task, rec.claim.Repository, err)
+		}
+	}
+	return nil
+}
+
 // UmbrellaMembers returns every recorded member (task, repository, PR, state,
 // landed SHA / archive restore pointer, and close eligibility) associated with
-// ref across all WB homes under projectsRoot.
+// ref across all WB homes under projectsRoot. It refuses if any membership
+// evidence cannot be completely validated or if a member task has split
+// umbrella references across its claims.
 func UmbrellaMembers(projectsRoot string, ref umbrella.Ref) ([]umbrella.Member, error) {
 	if ref.IsZero() {
 		return nil, fmt.Errorf("umbrella reference is required")
@@ -302,9 +447,17 @@ func UmbrellaMembers(projectsRoot string, ref umbrella.Ref) ([]umbrella.Member, 
 	}
 	target := ref.String()
 	matched := make([]claimRecord, 0)
+	matchedTasks := map[string]bool{}
 	for _, rec := range records {
 		if strings.EqualFold(rec.umbrella, target) {
 			matched = append(matched, rec)
+			matchedTasks[rec.claim.Task] = true
+		}
+	}
+	for _, rec := range records {
+		if matchedTasks[rec.claim.Task] && !strings.EqualFold(rec.umbrella, target) {
+			return nil, fmt.Errorf("inconsistent umbrella attachments for task %s: claim %s (%s) has %q, expected %q",
+				rec.claim.Task, filepath.Join(rec.claimsDir, rec.claim.ClaimID+".json"), rec.claim.Repository, rec.umbrella, target)
 		}
 	}
 	return buildMembersFromClaims(matched), nil
@@ -349,26 +502,62 @@ func UmbrellaReadyToClose(projectsRoot string, ref umbrella.Ref) (bool, []umbrel
 }
 
 type claimRecord struct {
-	home      string
-	runDir    string
-	claimsDir string
-	claim     workLogClaim
-	umbrella  string
-	pr        *worktreeclaims.ClaimPullRequestBinding
-	terminal  *workLogTerminalRecord
-	cleanup   *workLogCleanupRecord
-	retire    *worktreeretire.Transaction
+	home            string
+	runDir          string
+	claimsDir       string
+	claim           workLogClaim
+	umbrella        string
+	umbrellaSidecar *worktreeclaims.ClaimUmbrellaBinding
+	pr              *worktreeclaims.ClaimPullRequestBinding
+	landing         *worktreeclaims.ClaimLandingBinding
+	terminal        *workLogTerminalRecord
+	cleanup         *workLogCleanupRecord
+	retire          *worktreeretire.Transaction
+}
+
+// effectiveUmbrella returns the validated effective umbrella reference for
+// claim (sidecar wins over claim.Umbrella). Any unreadable or invalid sidecar
+// returns an error naming the sidecar path.
+func effectiveUmbrella(home string, claim workLogClaim) (string, error) {
+	if !validSafeSegment(claim.EffortID) || !validSafeSegment(claim.RunID) || !validClaimID(claim.ClaimID) {
+		return strings.TrimSpace(claim.Umbrella), nil
+	}
+	runDir, runPath, err := openWorkLogRun(home, claim.EffortID, claim.RunID, false)
+	if errors.Is(err, os.ErrNotExist) {
+		return strings.TrimSpace(claim.Umbrella), nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("open work-log run %s: %w", filepath.Join(home, "worklogs", claim.EffortID, "runs", claim.RunID), err)
+	}
+	defer func() { _ = runDir.Close() }()
+	claimsDir, err := openPrivateChild(runDir, "claims", false)
+	if errors.Is(err, os.ErrNotExist) {
+		return strings.TrimSpace(claim.Umbrella), nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("open work-log claims %s: %w", filepath.Join(runPath, "claims"), err)
+	}
+	defer func() { _ = claimsDir.Close() }()
+	return effectiveUmbrellaAt(claimsDir, filepath.Join(runPath, "claims"), claim)
+}
+
+func effectiveUmbrellaAt(claimsDir *os.File, claimsPath string, claim workLogClaim) (string, error) {
+	binding, found, err := worktreeclaims.ReadValidatedUmbrellaBinding(claimsDir, claim, readJSONAt)
+	if err != nil {
+		return "", fmt.Errorf("validate umbrella binding %s: %w", filepath.Join(claimsPath, claim.ClaimID+worktreeclaims.UmbrellaBindingSuffix), err)
+	}
+	if found {
+		return strings.TrimSpace(binding.Umbrella), nil
+	}
+	return strings.TrimSpace(claim.Umbrella), nil
 }
 
 func effectiveClaimUmbrella(home string, claim workLogClaim) string {
-	sidecarPath := filepath.Join(home, "worklogs", claim.EffortID, "runs", claim.RunID, "claims", claim.ClaimID+worktreeclaims.UmbrellaBindingSuffix)
-	if raw, err := os.ReadFile(sidecarPath); err == nil {
-		var binding worktreeclaims.ClaimUmbrellaBinding
-		if json.Unmarshal(raw, &binding) == nil && strings.TrimSpace(binding.Umbrella) != "" {
-			return strings.TrimSpace(binding.Umbrella)
-		}
+	ref, err := effectiveUmbrella(home, claim)
+	if err != nil {
+		return ""
 	}
-	return strings.TrimSpace(claim.Umbrella)
+	return ref
 }
 
 func collectAllClaims(projectsRoot string) ([]claimRecord, error) {
@@ -393,85 +582,251 @@ func collectAllClaims(projectsRoot string) ([]claimRecord, error) {
 	return all, nil
 }
 
+func readSortedDirNames(dir *os.File, path string, readNames func(*os.File) ([]string, error)) ([]string, error) {
+	names, err := readNames(dir)
+	if err != nil {
+		return nil, fmt.Errorf("read directory %s: %w", path, err)
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
 func collectClaimsInHome(home string) ([]claimRecord, error) {
-	worklogsDir := filepath.Join(home, "worklogs")
-	efforts, err := os.ReadDir(worklogsDir)
+	return collectClaimsInHomeWithReadNames(home, func(dir *os.File) ([]string, error) { return dir.Readdirnames(-1) })
+}
+
+func collectClaimsInHomeWithReadNames(home string, readNames func(*os.File) ([]string, error)) ([]claimRecord, error) {
+	worklogsPath := filepath.Join(home, "worklogs")
+	worklogs, err := openAbsoluteDirectoryNoFollow(worklogsPath, false)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read worklogs directory %s: %w", worklogsDir, err)
+		return nil, fmt.Errorf("read worklogs directory %s: %w", worklogsPath, err)
+	}
+	defer func() { _ = worklogs.Close() }()
+	efforts, err := readSortedDirNames(worklogs, worklogsPath, readNames)
+	if err != nil {
+		return nil, err
 	}
 	var records []claimRecord
 	for _, effort := range efforts {
-		if !effort.IsDir() || !validSafeSegment(effort.Name()) {
+		effortPath := filepath.Join(worklogsPath, effort)
+		if !validSafeSegment(effort) {
+			return nil, fmt.Errorf("unsafe work-log effort entry %s", effortPath)
+		}
+		effortDir, openErr := openPrivateChild(worklogs, effort, false)
+		if openErr != nil {
+			return nil, fmt.Errorf("open work-log effort directory %s: %w", effortPath, openErr)
+		}
+		runsPath := filepath.Join(effortPath, "runs")
+		runsDir, runsErr := openPrivateChild(effortDir, "runs", false)
+		_ = effortDir.Close()
+		if errors.Is(runsErr, os.ErrNotExist) {
 			continue
 		}
-		runsDir := filepath.Join(worklogsDir, effort.Name(), "runs")
-		runs, runsErr := os.ReadDir(runsDir)
 		if runsErr != nil {
-			continue
+			return nil, fmt.Errorf("open work-log runs directory %s: %w", runsPath, runsErr)
 		}
-		for _, run := range runs {
-			if !run.IsDir() || !validSafeSegment(run.Name()) {
-				continue
-			}
-			runPath := filepath.Join(runsDir, run.Name())
-			claimsDir := filepath.Join(runPath, "claims")
-			entries, claimsErr := os.ReadDir(claimsDir)
-			if claimsErr != nil {
-				continue
-			}
-			for _, entry := range entries {
-				if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-					continue
-				}
-				claimID := strings.TrimSuffix(entry.Name(), ".json")
-				if !validClaimID(claimID) {
-					continue
-				}
-				raw, readErr := os.ReadFile(filepath.Join(claimsDir, entry.Name()))
-				if readErr != nil {
-					continue
-				}
-				var claim workLogClaim
-				if json.Unmarshal(raw, &claim) != nil || claim.ClaimID != claimID {
-					continue
-				}
-				rec := claimRecord{
-					home:      home,
-					runDir:    runPath,
-					claimsDir: claimsDir,
-					claim:     claim,
-					umbrella:  effectiveClaimUmbrella(home, claim),
-				}
-				if prRaw, prErr := os.ReadFile(filepath.Join(claimsDir, claimID+worktreeclaims.PullRequestBindingSuffix)); prErr == nil {
-					var pr worktreeclaims.ClaimPullRequestBinding
-					if json.Unmarshal(prRaw, &pr) == nil && pr.PullRequest > 0 {
-						rec.pr = &pr
-					}
-				}
-				if termRaw, termErr := os.ReadFile(filepath.Join(runPath, "terminals", claimID+".json")); termErr == nil {
-					var term workLogTerminalRecord
-					if json.Unmarshal(termRaw, &term) == nil {
-						rec.terminal = &term
-					}
-				}
-				if cleanRaw, cleanErr := os.ReadFile(filepath.Join(runPath, "cleanups", claimID+".json")); cleanErr == nil {
-					var clean workLogCleanupRecord
-					if json.Unmarshal(cleanRaw, &clean) == nil {
-						rec.cleanup = &clean
-					}
-				}
-				retirePath := worktreeretire.ReportPath(home, worktreeretire.Transaction{Task: claim.Task, Repository: claim.Repository})
-				if tx, retireErr := worktreeretire.ReadReport(retirePath); retireErr == nil && (tx.ClaimID == "" || tx.ClaimID == claimID) {
-					rec.retire = &tx
-				}
-				records = append(records, rec)
-			}
+		runNames, readErr := readSortedDirNames(runsDir, runsPath, readNames)
+		if readErr != nil {
+			_ = runsDir.Close()
+			return nil, readErr
 		}
+		for _, run := range runNames {
+			runPath := filepath.Join(runsPath, run)
+			if !validSafeSegment(run) {
+				_ = runsDir.Close()
+				return nil, fmt.Errorf("unsafe work-log run entry %s", runPath)
+			}
+			runDir, runOpenErr := openPrivateChild(runsDir, run, false)
+			if runOpenErr != nil {
+				_ = runsDir.Close()
+				return nil, fmt.Errorf("open work-log run directory %s: %w", runPath, runOpenErr)
+			}
+			runRecords, collectErr := collectClaimsInRun(home, effort, run, runDir, runPath, readNames)
+			_ = runDir.Close()
+			if collectErr != nil {
+				_ = runsDir.Close()
+				return nil, collectErr
+			}
+			records = append(records, runRecords...)
+		}
+		_ = runsDir.Close()
 	}
 	return records, nil
+}
+
+func collectClaimsInRun(home, effort, run string, runDir *os.File, runPath string, readNames func(*os.File) ([]string, error)) ([]claimRecord, error) {
+	claimsPath := filepath.Join(runPath, "claims")
+	claimsDir, err := openPrivateChild(runDir, "claims", false)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("open work-log claims directory %s: %w", claimsPath, err)
+	}
+	defer func() { _ = claimsDir.Close() }()
+
+	entries, err := readSortedDirNames(claimsDir, claimsPath, readNames)
+	if err != nil {
+		return nil, err
+	}
+	claimFiles := make(map[string]bool, len(entries))
+	for _, name := range entries {
+		claimFiles[name] = true
+	}
+
+	terminalsPath := filepath.Join(runPath, "terminals")
+	terminalsDir, termDirErr := openPrivateChild(runDir, "terminals", false)
+	if termDirErr != nil && !errors.Is(termDirErr, os.ErrNotExist) {
+		return nil, fmt.Errorf("open work-log terminals directory %s: %w", terminalsPath, termDirErr)
+	}
+	if terminalsDir != nil {
+		defer func() { _ = terminalsDir.Close() }()
+	}
+
+	cleanupsPath := filepath.Join(runPath, "cleanups")
+	cleanupsDir, cleanDirErr := openPrivateChild(runDir, "cleanups", false)
+	if cleanDirErr != nil && !errors.Is(cleanDirErr, os.ErrNotExist) {
+		return nil, fmt.Errorf("open work-log cleanups directory %s: %w", cleanupsPath, cleanDirErr)
+	}
+	if cleanupsDir != nil {
+		defer func() { _ = cleanupsDir.Close() }()
+	}
+
+	var records []claimRecord
+	for _, name := range entries {
+		if strings.HasPrefix(name, ".") {
+			continue // incomplete atomic-write scratch
+		}
+		entryPath := filepath.Join(claimsPath, name)
+		if strings.HasSuffix(name, worktreeclaims.PullRequestBindingSuffix) {
+			if err := worktreeclaims.ValidatePullRequestBindingEntry(claimsDir, name, claimFiles, readJSONAt); err != nil {
+				return nil, fmt.Errorf("validate pull request binding %s: %w", entryPath, err)
+			}
+			continue
+		}
+		if strings.HasSuffix(name, worktreeclaims.UmbrellaBindingSuffix) {
+			if err := worktreeclaims.ValidateUmbrellaBindingEntry(claimsDir, name, claimFiles, readJSONAt); err != nil {
+				return nil, fmt.Errorf("validate umbrella binding %s: %w", entryPath, err)
+			}
+			continue
+		}
+		if strings.HasSuffix(name, worktreeclaims.LandingBindingSuffix) {
+			if err := worktreeclaims.ValidateLandingBindingEntry(claimsDir, name, claimFiles, readJSONAt); err != nil {
+				return nil, fmt.Errorf("validate landing binding %s: %w", entryPath, err)
+			}
+			continue
+		}
+		claimID := strings.TrimSuffix(name, ".json")
+		if name != claimID+".json" || !validClaimID(claimID) {
+			return nil, fmt.Errorf("unsafe work-log claim entry %s", entryPath)
+		}
+		var claim workLogClaim
+		if err := readJSONAt(claimsDir, name, &claim); err != nil {
+			return nil, fmt.Errorf("read work-log claim %s: %w", entryPath, err)
+		}
+		if claim.ClaimID != claimID || claim.EffortID != effort || claim.RunID != run ||
+			strings.TrimSpace(claim.Task) == "" || strings.TrimSpace(claim.Repository) == "" {
+			return nil, fmt.Errorf("corroborate work-log claim identity %s: mismatched claim_id, effort_id, run_id, task, or repository", entryPath)
+		}
+
+		umbrellaRef := strings.TrimSpace(claim.Umbrella)
+		var umbrellaSidecar *worktreeclaims.ClaimUmbrellaBinding
+		if binding, found, sidecarErr := worktreeclaims.ReadValidatedUmbrellaBinding(claimsDir, claim, readJSONAt); sidecarErr != nil {
+			return nil, fmt.Errorf("validate umbrella binding %s: %w", filepath.Join(claimsPath, claimID+worktreeclaims.UmbrellaBindingSuffix), sidecarErr)
+		} else if found {
+			umbrellaRef = strings.TrimSpace(binding.Umbrella)
+			umbrellaSidecar = &binding
+		}
+		rec := claimRecord{
+			home:            home,
+			runDir:          runPath,
+			claimsDir:       claimsPath,
+			claim:           claim,
+			umbrella:        umbrellaRef,
+			umbrellaSidecar: umbrellaSidecar,
+		}
+
+		if pr, found, err := worktreeclaims.ReadValidatedPullRequestBinding(claimsDir, claim, readJSONAt); err != nil {
+			return nil, fmt.Errorf("validate pull request binding %s: %w", filepath.Join(claimsPath, claimID+worktreeclaims.PullRequestBindingSuffix), err)
+		} else if found {
+			rec.pr = &pr
+		}
+
+		if landing, found, err := worktreeclaims.ReadValidatedLandingBinding(claimsDir, claim, readJSONAt); err != nil {
+			return nil, fmt.Errorf("validate landing binding %s: %w", filepath.Join(claimsPath, claimID+worktreeclaims.LandingBindingSuffix), err)
+		} else if found {
+			rec.landing = &landing
+		}
+
+		if terminalsDir != nil {
+			termPath := filepath.Join(terminalsPath, claimID+".json")
+			var term workLogTerminalRecord
+			if termErr := readJSONAt(terminalsDir, claimID+".json", &term); termErr == nil {
+				if err := corroborateTerminalForClaim(claim, term); err != nil {
+					return nil, fmt.Errorf("validate work-log terminal %s: %w", termPath, err)
+				}
+				rec.terminal = &term
+			} else if !errors.Is(termErr, os.ErrNotExist) {
+				return nil, fmt.Errorf("read work-log terminal %s: %w", termPath, termErr)
+			}
+		}
+
+		if cleanupsDir != nil {
+			cleanPath := filepath.Join(cleanupsPath, claimID+".json")
+			var clean workLogCleanupRecord
+			if cleanErr := readJSONAt(cleanupsDir, claimID+".json", &clean); cleanErr == nil {
+				if err := corroborateCleanupForClaim(claim, clean); err != nil {
+					return nil, fmt.Errorf("validate work-log cleanup %s: %w", cleanPath, err)
+				}
+				rec.cleanup = &clean
+			} else if !errors.Is(cleanErr, os.ErrNotExist) {
+				return nil, fmt.Errorf("read work-log cleanup %s: %w", cleanPath, cleanErr)
+			}
+		}
+
+		retirePath := worktreeretire.ReportPath(home, worktreeretire.Transaction{Task: claim.Task, Repository: claim.Repository})
+		if tx, retireErr := worktreeretire.ReadReport(retirePath); retireErr == nil {
+			if tx.Task != claim.Task || tx.Repository != claim.Repository {
+				return nil, fmt.Errorf("validate retirement receipt %s: mismatched task or repository", retirePath)
+			}
+			if tx.ClaimID == "" || tx.ClaimID == claimID {
+				rec.retire = &tx
+			}
+		} else if !errors.Is(retireErr, os.ErrNotExist) {
+			return nil, fmt.Errorf("read retirement receipt %s: %w", retirePath, retireErr)
+		}
+
+		records = append(records, rec)
+	}
+	return records, nil
+}
+
+func corroborateTerminalForClaim(claim workLogClaim, term workLogTerminalRecord) error {
+	if term.ClaimID != claim.ClaimID ||
+		term.EffortID != claim.EffortID ||
+		term.RunID != claim.RunID ||
+		term.Task != claim.Task ||
+		term.Repository != claim.Repository ||
+		term.Branch != claim.Branch ||
+		filepath.Clean(term.Worktree) != filepath.Clean(claim.Worktree) ||
+		term.Lifecycle != "terminal" ||
+		term.SealedAt.IsZero() {
+		return fmt.Errorf("terminal identity does not match claim %s", claim.ClaimID)
+	}
+	if term.Landed != nil && !worktreeclaims.ValidLandedEvidence(term.Landed) {
+		return fmt.Errorf("terminal landed evidence for claim %s is invalid", claim.ClaimID)
+	}
+	return nil
+}
+
+func corroborateCleanupForClaim(claim workLogClaim, clean workLogCleanupRecord) error {
+	if clean.ClaimID != claim.ClaimID || !worktreeproof.IsGitObjectID(clean.FinalCommit) || clean.CleanedAt.IsZero() {
+		return fmt.Errorf("cleanup identity does not match claim %s", claim.ClaimID)
+	}
+	return nil
 }
 
 func buildMembersFromClaims(records []claimRecord) []umbrella.Member {
@@ -534,6 +889,15 @@ func classifyClaimMember(rec claimRecord) umbrella.Member {
 			member.LandedSHA = rec.pr.LandedSHA
 			member.ReadyToClose = true
 		}
+	}
+	if rec.landing != nil {
+		member.State = "landed"
+		member.LandedSHA = rec.landing.LandedSHA
+		if rec.landing.PullRequest > 0 && member.PullRequest == 0 {
+			member.PullRequest = rec.landing.PullRequest
+			member.PullRequestURL = rec.landing.PullRequestURL
+		}
+		member.ReadyToClose = true
 	}
 	if rec.retire != nil && rec.retire.Phase == "complete" {
 		pointer := formatRetireRestorePointer(*rec.retire)

@@ -49,12 +49,23 @@ func TestParseResolvesTypedAndBareReferences(t *testing.T) {
 			wantDisplay:     "synchestra:effort-456",
 		},
 		{
+			name:            "bare github ref stays github even under non-github default registry",
+			raw:             "sneat-co/backstage#845",
+			defaultRegistry: "synchestra",
+			want:            Ref{Registry: "github", ID: "sneat-co/backstage#845"},
+			wantDisplay:     "sneat-co/backstage#845",
+		},
+		{
 			name:            "explicit registry overrides configured default",
 			raw:             "github:sneat-co/backstage#845",
 			defaultRegistry: "synchestra",
 			want:            Ref{Registry: "github", ID: "sneat-co/backstage#845"},
 			wantDisplay:     "sneat-co/backstage#845",
 		},
+	}
+
+	if !HasExplicitRegistry("github:sneat-co/backstage#845") || HasExplicitRegistry("sneat-co/backstage#845") {
+		t.Fatal("HasExplicitRegistry returned wrong result")
 	}
 
 	for _, tc := range cases {
@@ -370,10 +381,23 @@ func TestFormatHelpersTrailersPartOfStatusAndCloseSummary(t *testing.T) {
 	if strings.Contains(status, "\n") {
 		t.Fatalf("FormatStatusLine produced multiline string: %q", status)
 	}
-	for _, want := range []string{"sneat-co/backstage", "PR #846", "landed `0123456789ab`", "archive `retired/backstage/ref`", "note line", "task `cross-repo-umbrella-issue`"} {
+	for _, want := range []string{"sneat-co/backstage", "PR sneat-co/backstage#846", "landed `0123456789ab`", "archive `retired/backstage/ref`", "note line", "task `cross-repo-umbrella-issue`"} {
 		if !strings.Contains(status, want) {
 			t.Fatalf("FormatStatusLine = %q, missing %q", status, want)
 		}
+	}
+	// Cross-repository status comment qualifies bare #N with member repo, preserves qualified refs/URLs, and handles empty repo.
+	crossRepo := FormatStatusLine(StatusUpdate{Repository: "trakhimenok/workbench", PullRequest: "#12", Outcome: "landed"})
+	if !strings.Contains(crossRepo, "(PR trakhimenok/workbench#12)") {
+		t.Fatalf("cross-repo status line = %q, want qualified PR trakhimenok/workbench#12", crossRepo)
+	}
+	alreadyQualified := FormatStatusLine(StatusUpdate{Repository: "trakhimenok/workbench", PullRequest: "trakhimenok/workbench#12", Outcome: "landed"})
+	if !strings.Contains(alreadyQualified, "(PR trakhimenok/workbench#12)") {
+		t.Fatalf("already-qualified status line = %q", alreadyQualified)
+	}
+	noRepoPR := FormatStatusLine(StatusUpdate{PullRequest: "#12", Outcome: "landed"})
+	if !strings.Contains(noRepoPR, "(PR #12)") {
+		t.Fatalf("no-repo PR status line = %q", noRepoPR)
 	}
 
 	summary := FormatCloseSummary(ref, []Member{
