@@ -23,7 +23,7 @@ internal/daemonruntime/runtime.go	1	task-22
 internal/defaultbranch/policy.go	6	task-22
 internal/deps/command.go	1	task-14
 internal/depsrun/selection.go	1	task-16
-internal/disk/disk.go	1	task-15
+internal/diskprune/env.go	1	task-15
 internal/envguard/envguard.go	3	task-15
 internal/githubobserver/observer.go	1	task-15
 internal/gitops/gitops.go	2	task-8
