@@ -98,6 +98,9 @@ type GCOptions struct {
 	DeleteRemote bool
 	// Progress is passed to the inventory walk.
 	Progress func(ListProgress)
+	// ProgressDetail is passed to the inventory walk, and also receives the
+	// post-walk "work log" and "size" phases; see ListProgressDetail.
+	ProgressDetail func(ListProgressDetail)
 	// Select, when set, keeps only the inventoried checkouts it accepts. It is
 	// applied before classification, so a checkout outside the selection can
 	// neither appear in the report nor be retired: `wb clean` narrows the
@@ -231,6 +234,7 @@ func gcObserved(ctx context.Context, options GCOptions, observe func(string)) (G
 		GitHub:          true,
 		Workers:         options.Workers,
 		Progress:        options.Progress,
+		ProgressDetail:  options.ProgressDetail,
 		IncludeDetached: !options.SkipDetached,
 		TTL:             options.TTL,
 		Activity:        true,
@@ -260,7 +264,13 @@ func gcObserved(ctx context.Context, options GCOptions, observe func(string)) (G
 		// the classification below turns into a refusal.
 		applySupersessionReceipt(ctx, options.SupersededBy, &listed.Results[index])
 	}
-	for _, result := range listed.Results {
+	phase := func(name string, done int) {
+		if options.ProgressDetail != nil {
+			options.ProgressDetail(ListProgressDetail{Phase: name, PhaseDone: done, PhaseTotal: len(listed.Results)})
+		}
+	}
+	for index, result := range listed.Results {
+		phase("work log and size", index)
 		outcome.Inventoried = append(outcome.Inventoried, result.WorktreeDir)
 		if options.Select != nil && !options.Select(result) {
 			continue
@@ -510,8 +520,21 @@ func applyGC(ctx context.Context, options GCOptions, outcome *GCOutcome) error {
 		return err
 	}
 	retiredThisPass := make([]bool, len(outcome.Entries))
+	var progressMu sync.Mutex
+	finished, eligible := 0, 0
+	for _, entry := range outcome.Entries {
+		if entry.Eligible {
+			eligible++
+		}
+	}
 	runGCApplyConcurrently(outcome.Entries, options.Workers, func(index int) {
 		retiredThisPass[index] = applyGCEntry(ctx, options, sweepRoot, &outcome.Entries[index])
+		if options.ProgressDetail != nil {
+			progressMu.Lock()
+			finished++
+			options.ProgressDetail(ListProgressDetail{Phase: "retire", PhaseDone: finished, PhaseTotal: eligible})
+			progressMu.Unlock()
+		}
 	})
 	for index := range outcome.Entries {
 		entry := &outcome.Entries[index]

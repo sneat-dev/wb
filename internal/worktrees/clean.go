@@ -77,6 +77,7 @@ type CleanOptions struct {
 	SessionFreshness time.Duration
 	ResidueDepth     int
 	Progress         func(ListProgress)
+	ProgressDetail   func(ListProgressDetail)
 	BranchProgress   io.Writer
 	Now              func() time.Time
 }
@@ -350,7 +351,7 @@ func cleanGCOptions(options CleanOptions, selected cleanRepositorySet) GCOptions
 		SkipDetached: options.SkipDetached, OlderThan: options.OlderThan, TTL: options.TTL,
 		SessionFreshness: options.SessionFreshness, ResidueDepth: options.ResidueDepth, Workers: options.Workers,
 		SkipSizes: options.SkipSizes, DeleteRemote: options.Scope == CleanScopeAll, Now: options.Now,
-		Progress: options.Progress, Only: options.Only,
+		Progress: options.Progress, ProgressDetail: options.ProgressDetail, Only: options.Only,
 		Select: func(result ListResult) bool {
 			return selected.contains(result.Repository) && (branch == "" || result.Branch == branch)
 		},

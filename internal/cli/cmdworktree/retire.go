@@ -15,6 +15,9 @@ import (
 
 type InventoryProgress struct {
 	Report func(worktrees.ListProgress)
+	// Detail receives found counts, steps and phases; nil when the renderer
+	// has no use for them.
+	Detail func(worktrees.ListProgressDetail)
 	Finish func()
 }
 

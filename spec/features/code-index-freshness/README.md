@@ -10,7 +10,7 @@ status: Draft
 **Source Ideas:** —
 **Related Ideas:** [graph-assisted-fleet-optimization](../../ideas/graph-assisted-fleet-optimization.md) (Draft; not promoted by this Feature)
 **Depends On:** [Trusted Repository Update Hooks](../trusted-repository-update-hooks/README.md) (amended there by `version-2-extensions`)
-**Related:** [Machine Setup](../machine-setup/README.md) installs the profile and executor; [Disk Reclaim](../disk-reclaim/README.md) enforces the artifacts budget; [Expert Tool Routing](../expert-tool-routing/README.md) consumes freshness.
+**Related:** [Machine Setup](../machine-setup/README.md) installs the profile and executor; [Disk Prune](../disk-prune/README.md) enforces the artifacts budget; [Expert Tool Routing](../expert-tool-routing/README.md) consumes freshness.
 
 ## Summary
 
@@ -123,7 +123,7 @@ Executors gain `artifacts: [<relative path>...]`. `wb disk` MUST report the
 artifacts of every matched checkout as category `lifecycle-artifacts` (kind
 `cache`), split by checkout kind, and raise a finding when
 `lifecycle.artifacts_budget` (default 5 GiB) is exceeded.
-[Disk Reclaim](../disk-reclaim/README.md) enforces it.
+[Disk Prune](../disk-prune/README.md) enforces it.
 
 ### REQ: freshness-in-fleet-status
 

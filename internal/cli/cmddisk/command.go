@@ -13,6 +13,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/cli/shared"
 	"github.com/sneat-dev/wb/internal/disk"
+	"github.com/sneat-dev/wb/internal/wbconfig"
 )
 
 type diskOptions struct {
@@ -25,6 +26,7 @@ type diskOptions struct {
 type Dependencies struct {
 	Collect         func(context.Context, disk.Options) (disk.Report, error)
 	DependencyCache func(context.Context, []string, io.Writer, io.Writer) error
+	Prune           PruneDependencies
 }
 
 // New constructs a fresh disk command with invocation policy read at execution.
@@ -58,8 +60,11 @@ pnpm hard-links every store entry into every consumer, so an apparent size
 promises a reclaim that deleting cannot deliver. Every category is measured in
 one accounting walk, so content linked into two of them is counted once.
 
-This command only reports. Retiring a worktree is wb clean, which knows
-what holds unlanded work; nothing here deletes anything.
+wb disk itself only reports. Each finding names the verb that acts on it:
+wb disk prune for scratch and the caches, wb clean for worktrees, and a
+person for the retired ~/.wb.
+
+` + shared.CleanVersusPrune + `
 
 Exit codes: 0 nothing to flag, 1 findings, 2 usage.
 `),
@@ -72,6 +77,15 @@ Exit codes: 0 nothing to flag, 1 findings, 2 usage.
 			}
 			if options.minimum < 0 || options.minimum > 1 {
 				return runtime.ExitError(shared.ExitUsage, "--minimum-available must be between 0 and 1")
+			}
+			// The floor is the one the daemon and wb disk prune use,
+			// disk.minimum_available, unless the flag overrides it.
+			if !cmd.Flags().Changed("minimum-available") && deps.Prune.ConfigPath != nil {
+				config, err := wbconfig.LoadDisk(deps.Prune.ConfigPath())
+				if err != nil {
+					return runtime.ExitError(shared.ExitUsage, err.Error())
+				}
+				options.minimum = config.MinimumAvailable
 			}
 
 			report, err := deps.Collect(cmd.Context(), disk.Options{
@@ -99,6 +113,7 @@ Exit codes: 0 nothing to flag, 1 findings, 2 usage.
 	command.Flags().Float64Var(&options.minimum, "minimum-available", disk.DefaultMinimumAvailableRatio,
 		"Raise a finding when available space falls below this share of the volume")
 	command.AddCommand(newDependencyCacheCmd(runtime, deps))
+	command.AddCommand(newPruneCmd(runtime, deps.Prune))
 	return command
 }
 

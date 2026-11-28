@@ -3,6 +3,7 @@ package disk
 import (
 	"context"
 	"errors"
+	"github.com/sneat-dev/wb/internal/goenv"
 	"os"
 	"path/filepath"
 	"strings"
@@ -118,11 +119,19 @@ func TestCollectSortsMeasuredCategoriesAndSkipsSizesForPresentRoots(t *testing.T
 	}
 }
 
-func TestGoEnvOmitsCacheRootWhenToolchainCannotRun(t *testing.T) {
+// Cache roots come from Go's configuration read without running go; a
+// configuration that cannot be read, or a value that is not an absolute
+// path (GOCACHE=off), yields no root rather than a wrong one.
+func TestGoRootOmitsUnresolvableCaches(t *testing.T) {
 	t.Parallel()
-	calls := 0
-	got := goEnvWithOutput(func() ([]byte, error) { calls++; return nil, errors.New("toolchain unavailable") })
-	if got != "" || calls != 1 {
-		t.Fatalf("unknown cache root=%q,command calls=%d", got, calls)
+	pick := func(env goenv.Env) string { return env.GOCACHE }
+	if got := goRootWith(func() (goenv.Env, error) { return goenv.Env{}, errors.New("unreadable env file") }, pick); got != "" {
+		t.Fatalf("unreadable configuration root = %q", got)
+	}
+	if got := goRootWith(func() (goenv.Env, error) { return goenv.Env{GOCACHE: "off"}, nil }, pick); got != "" {
+		t.Fatalf("GOCACHE=off root = %q", got)
+	}
+	if got := goRootWith(func() (goenv.Env, error) { return goenv.Env{GOCACHE: "/c"}, nil }, pick); got != "/c" {
+		t.Fatalf("absolute root = %q", got)
 	}
 }

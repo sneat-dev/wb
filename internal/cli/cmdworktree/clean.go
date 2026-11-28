@@ -17,6 +17,10 @@ import (
 type CleanDependencies struct {
 	Run      func(context.Context, worktrees.CleanOptions) (worktrees.CleanOutcome, error)
 	Progress func(*cobra.Command, bool) InventoryProgress
+	// FloorNotice returns a one-line pointer to wb disk prune when the
+	// projects root's filesystem is below disk.minimum_available after the
+	// run, or "" (disk-prune#req:cross-references). Nil prints nothing.
+	FloorNotice func(projectsRoot string) string
 }
 
 // NewClean constructs `wb clean`, the one fleet verb that audits and retires
@@ -34,6 +38,8 @@ func NewClean(runtime shared.Runtime, deps CleanDependencies) *cobra.Command {
 linked worktree WB does not manage; with --apply, retire the ones that are
 provably finished. Dry run is the default. Every row names its class, the
 evidence behind it, and, when it is kept, the command that resolves it.
+
+` + shared.CleanVersusPrune + `
 
 Selectors narrow the dry run and --apply identically:
 
@@ -130,7 +136,7 @@ wb clean --org datatug --format json`,
 				Base: base, OlderThan: olderThan, Apply: apply, AllowResidue: allowResidue,
 				SupersededBy: supersededBy, Workers: parallel, SkipSizes: skipSizes, SkipDetached: skipDetached,
 				TTL: ttl, SessionFreshness: disabledWhenZero(sessionFreshness), ResidueDepth: residueDepth,
-				Progress: progress.Report,
+				Progress: progress.Report, ProgressDetail: progress.Detail,
 			})
 			if errors.Is(err, worktrees.ErrNoRepositoriesMatched) {
 				return runtime.ExitError(shared.ExitFindings, err.Error())
@@ -156,6 +162,13 @@ wb clean --org datatug --format json`,
 				}
 			} else if err := printClean(command, outcome); err != nil {
 				return err
+			}
+			if deps.FloorNotice != nil {
+				if notice := deps.FloorNotice(flags.ProjectsRoot); notice != "" {
+					if _, err := fmt.Fprintln(command.ErrOrStderr(), notice); err != nil {
+						return err
+					}
+				}
 			}
 			if outcome.Refused() > 0 {
 				return runtime.ExitError(shared.ExitFindings, fmt.Sprintf(

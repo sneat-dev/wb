@@ -737,7 +737,10 @@ By default a run's stderr MUST consist only of:
 - one run-start line naming the selection and the unit count;
 - one progress line per unit, carrying the unit identity and a running `[n/N]`
   count, flushed as the event happens rather than buffered to the end;
-- one liveness line per candidate, as `#req:progress-liveness` requires;
+- on a terminal or under `--verbose`, at most two liveness lines per
+  candidate (one when its finish follows its start with nothing between),
+  as `#req:progress-liveness` requires; otherwise the coalesced heartbeat of
+  `#req:progress-off-terminal`;
 - under `--format json` only, each completed clone's findings as
   `#req:incremental-findings` requires, since stdout is a single document in
   that mode and cannot carry them;
@@ -808,7 +811,8 @@ layer serves both. Neither may grow its own.
 
 Every sweep MUST emit a liveness event to stderr as each candidate resolves,
 flushed at that moment, and MUST NOT buffer liveness output until the run
-completes. The measured failure this replaces is a fourteen-minute
+completes. When stderr is not a terminal and `--verbose` is not given, the
+events are coalesced as `#req:progress-off-terminal` specifies. The measured failure this replaces is a fourteen-minute
 `wb clean` run that emitted 107,690 bytes, all of them
 at the end, with zero bytes at the four-, eight-, nine- and ten-minute marks.
 
@@ -830,6 +834,56 @@ unbounded `scanning…`.
 
 The final summary MUST close the same counters, so the last event and the
 report agree.
+
+Until the inventory walk is split into an enumeration phase and an
+inspection phase, this requirement is deferred. The walk purges terminal
+artifacts while it enumerates, so a separate counting pass would repeat
+that side effect. Until then, events carry the number inspected and the
+number found so far, and never present the latter as a total
+(`#req:progress-off-terminal`).
+
+#### REQ: progress-off-terminal
+
+Liveness MUST reach a caller that is not a terminal. Agents run `wb clean`
+from a tool whose stderr is a pipe, and on 2026-11-27 an agent on a full VM
+reported that "the dry run timed out": the run printed nothing, so it could
+not be told apart from a hung one.
+
+- On a terminal, or with `--verbose`, every candidate's start and finish are
+  shown as `#req:progress-liveness` requires. When the finish directly
+  follows its own start, they share one physical line; otherwise each gets
+  its own line, naming its candidate. A duration is never printed on
+  another candidate's line.
+- `--quiet` suppresses all liveness in every mode, including with
+  `--verbose`.
+- Otherwise, liveness is coalesced into one
+  heartbeat line on stderr every 10 seconds while the sweep runs. The
+  interval comes from an injectable clock. Each heartbeat carries:
+  - the number of candidates inspected;
+  - the number found so far;
+  - the elapsed time;
+  - each in-flight candidate with the step it is in.
+
+  For example:
+  `wb clean: inspected 12, 40 found so far, 1m10s; in flight: task-x sneat-co/sneat-go (pull requests)`.
+- The step is one of:
+  - `git`: local integration checks;
+  - `pull requests`: GitHub evidence;
+  - `work log and size`: the post-walk phase;
+  - `retire`: the apply phase.
+- The first heartbeat states the interval: `(heartbeat every 10s)`.
+- "Found so far" is not a total. Enumeration and inspection interleave per
+  layout, and enumerating purges terminal artifacts, so a separate counting
+  pass would repeat that side effect. The exact up-front denominator of
+  `#req:progress-carries-a-denominator` needs the walk split into an
+  enumeration phase and an inspection phase first. Until then, the heartbeat
+  never presents the running count as the total.
+- A sweep that finishes inside the first interval writes no heartbeat. One
+  that wrote any heartbeat writes a final line with the closing counts.
+
+A heartbeat does not stop a caller's absolute timeout. It lets the caller,
+or a person, see that the sweep is working, so they can choose to wait or to
+run it in the background.
 
 #### REQ: incremental-findings
 
@@ -1168,16 +1222,16 @@ object per stdout line whose union carries the same fields as the envelope.
 
 ### AC: a-sweep-proves-it-is-alive
 
-**Requirements:** cleanup-orchestration#req:progress-liveness, cleanup-orchestration#req:progress-carries-a-denominator, cleanup-orchestration#req:progress-adapts-to-the-stream-not-the-content, cleanup-orchestration#req:progress-surfaces-throttling-and-slow-candidates, cleanup-orchestration#req:progress-is-presentation-only
+**Requirements:** cleanup-orchestration#req:progress-liveness, cleanup-orchestration#req:progress-carries-a-denominator, cleanup-orchestration#req:progress-adapts-to-the-stream-not-the-content, cleanup-orchestration#req:progress-surfaces-throttling-and-slow-candidates, cleanup-orchestration#req:progress-is-presentation-only, cleanup-orchestration#req:progress-off-terminal
 
 Given a fixture fleet of 60 candidates in which each candidate's inspection is
 made to take a measurable interval, when `wb clean --format json` runs with
 stdout and stderr captured separately and timestamped, then the first stderr
 liveness event is observed before 10% of the run's wall clock has elapsed;
 events continue to arrive throughout rather than in one burst at the end; each
-event names the candidate and carries a running count against the total 60,
-where that total was emitted before the first network call; and the closing
-counters equal the report's own counts.
+event names the candidate and carries the number inspected and found so far
+(the up-front total of `#req:progress-carries-a-denominator` is deferred);
+and the closing counters equal the report's own counts.
 
 Given the same run with stderr attached to a pipe, then no ANSI control
 sequence, cursor movement, or carriage-return redraw appears in the captured
@@ -1187,6 +1241,21 @@ output. Given the same run with stderr attached to a pseudo-terminal and
 `--non-interactive` unset, an in-place display is permitted; with
 `--non-interactive` set, it is not; and in neither case is any **finding**
 rendered into an in-place region that a later redraw overwrites.
+
+The paragraphs above that require per-candidate events apply with stderr on
+a pseudo-terminal or under `--verbose`. Given the same fleet run with stderr
+attached to a pipe, an injected clock and neither `--verbose` nor `--quiet`,
+then:
+
+- a heartbeat is written at every 10-second tick of the injected clock;
+- each heartbeat names the in-flight candidates with their step and never
+  calls the running count a total;
+- a final line closes the counts;
+- a run of 3 candidates that finishes before the first tick writes no
+  heartbeat at all.
+
+Given two concurrent candidates where A starts, B starts, then A finishes
+under `--verbose`, A's duration appears on a line naming A.
 
 Given a hosted double that answers with `403` and `Retry-After` for two
 candidates, and one candidate made to exceed the threshold fraction of its

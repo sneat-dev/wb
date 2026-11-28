@@ -142,7 +142,7 @@ func TestCockpitLocalFromDaemonMintsOverTheOwnerChannel(t *testing.T) {
 
 func TestSideEffectFreeCommandsRecordNoHeartbeat(t *testing.T) {
 	t.Parallel()
-	for id, want := range map[string]bool{"version": true, "cockpit export": true, "cockpit": false, "daemon status": false, "": false} {
+	for id, want := range map[string]bool{"version": true, "cockpit export": true, "disk prune": true, "disk": false, "cockpit": false, "daemon status": false, "": false} {
 		if got := sideEffectFreeCommand(id); got != want {
 			t.Errorf("sideEffectFreeCommand(%q) = %v, want %v", id, got, want)
 		}

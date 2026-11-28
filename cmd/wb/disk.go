@@ -8,7 +8,15 @@ import (
 )
 
 func newDiskCmd(inv *invocation) *cobra.Command {
-	return cmddisk.New(newCLIRuntime(inv), cmddisk.Dependencies{Collect: disk.Collect, DependencyCache: dependencycache.Run})
+	command := cmddisk.New(newCLIRuntime(inv), cmddisk.Dependencies{
+		Collect: disk.Collect, DependencyCache: dependencycache.Run, Prune: cmddisk.DefaultPruneDependencies(),
+	})
+	for _, sub := range command.Commands() {
+		if sub.Name() == "prune" {
+			setDiscoveryTerms(sub, "cache prune prune cache clean cache free disk space reclaim space no space left on device disk full go build cache scratch tmp")
+		}
+	}
+	return command
 }
 
 func dependencyCachePlan(cmd *cobra.Command) bool {

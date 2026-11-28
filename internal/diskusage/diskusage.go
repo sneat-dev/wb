@@ -31,6 +31,9 @@ type Usage struct {
 	UnsharedBytes int64 `json:"unshared_bytes"`
 	SharedBytes   int64 `json:"shared_bytes"`
 	Files         int64 `json:"files"`
+	// Unreadable counts entries the walk could not read, so the figures
+	// are a lower bound whenever it is not zero.
+	Unreadable int64 `json:"unreadable,omitempty"`
 }
 
 // Add sums two measurements. Summing per-tree measurements is only exact when
@@ -41,6 +44,7 @@ func (u Usage) Add(other Usage) Usage {
 		UnsharedBytes: u.UnsharedBytes + other.UnsharedBytes,
 		SharedBytes:   u.SharedBytes + other.SharedBytes,
 		Files:         u.Files + other.Files,
+		Unreadable:    u.Unreadable + other.Unreadable,
 	}
 }
 
@@ -58,17 +62,30 @@ type seenInode struct {
 	seen   uint64
 }
 
-func measure(ctx context.Context, root string) (Usage, map[inodeKey]*seenInode, error) {
-	return measureStat(ctx, root, unix.Lstat)
+func measure(ctx context.Context, root string, exclude []string) (Usage, map[inodeKey]*seenInode, error) {
+	return measureStat(ctx, root, exclude, unix.Lstat)
 }
 
-func measureStat(ctx context.Context, root string, lstat func(string, *unix.Stat_t) error) (Usage, map[inodeKey]*seenInode, error) {
+func measureStat(ctx context.Context, root string, exclude []string, lstat func(string, *unix.Stat_t) error) (Usage, map[inodeKey]*seenInode, error) {
 	inodes := map[inodeKey]*seenInode{}
+	var unreadable int64
+	excluded := make(map[string]bool, len(exclude))
+	for _, path := range exclude {
+		excluded[filepath.Clean(path)] = true
+	}
 	walkErr := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
+		if entry != nil && entry.IsDir() && path != root && excluded[filepath.Clean(path)] {
+			// Another accounting root lives here and is measured under its own
+			// name; walking it again would attribute its bytes twice.
+			return fs.SkipDir
+		}
 		if err != nil {
+			if errors.Is(err, os.ErrPermission) {
+				unreadable++
+			}
 			if errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission) {
 				if entry != nil && entry.IsDir() {
 					return fs.SkipDir
@@ -82,6 +99,9 @@ func measureStat(ctx context.Context, root string, lstat func(string, *unix.Stat
 		}
 		var stat unix.Stat_t
 		if statErr := lstat(path, &stat); statErr != nil {
+			if !errors.Is(statErr, os.ErrNotExist) {
+				unreadable++
+			}
 			return nil
 		}
 		if stat.Mode&unix.S_IFMT != unix.S_IFREG {
@@ -103,7 +123,7 @@ func measureStat(ctx context.Context, root string, lstat func(string, *unix.Stat
 		// The callback absorbs missing paths; only other errors escape WalkDir.
 		return Usage{}, nil, fmt.Errorf("measure %s: %w", root, walkErr)
 	}
-	usage := Usage{}
+	usage := Usage{Unreadable: unreadable}
 	for _, record := range inodes {
 		usage.ApparentBytes += record.size
 		usage.Files += int64(record.seen)
@@ -148,7 +168,14 @@ func NewWalk() *Walk { return &Walk{inodes: map[inodeKey]*walkRecord{}} }
 // that tree on its own, exactly as Measure reports it; the cross-tree figures
 // come from Total.
 func (w *Walk) Measure(ctx context.Context, root string) (Usage, error) {
-	usage, inodes, err := measure(ctx, root)
+	return w.MeasureExcluding(ctx, root, nil)
+}
+
+// MeasureExcluding is Measure without the subtrees named in exclude. It exists
+// for roots that contain another measured root — a retired home holding a
+// checkout store — so each byte belongs to exactly one tree in the walk.
+func (w *Walk) MeasureExcluding(ctx context.Context, root string, exclude []string) (Usage, error) {
+	usage, inodes, err := measure(ctx, root, exclude)
 	if err != nil {
 		return Usage{}, err
 	}

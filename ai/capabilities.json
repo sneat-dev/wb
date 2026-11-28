@@ -6374,7 +6374,7 @@
                 "Separates what removing a category would actually reclaim from what its trees appear to hold. Git worktrees share objects with their canonical clone and pnpm hard-links store entries into every consumer, so apparent size overstates a reclaim; every category is measured in one accounting walk so content linked into two is counted once.",
                 "Raises findings for headroom below --minimum-available, for scratch that belongs to no task, and for roots that could not be measured \u2014 so a partial measurement is never mistaken for a tidy machine.",
                 "--skip-sizes reports roots and filesystem headroom without walking trees, because measuring a multi-gigabyte cache costs minutes of IO and the free-space figure is often the whole answer.",
-                "Reports only. Retiring a worktree remains wb clean, which knows what holds unlanded work."
+                "Reports only. Each finding names the verb that acts on it: wb disk prune for scratch and the caches, wb clean for worktrees, a person for the retired ~/.wb."
               ]
             }
           ],
@@ -6509,6 +6509,87 @@
         }
       },
       "notes": "Explicit Linux non-root managed archive slice; no global store or unrelated executor coverage. Cold/warm validation-runtime adoption qualification is pending. Existing broad Draft Disk Reclaim is not promoted or implemented by this command."
+    },
+    {
+      "id": "wb.disk.prune",
+      "feature_refs": [
+        "spec/features/disk-prune/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb disk prune",
+              "flags": [
+                "--apply",
+                "--category",
+                "--format",
+                "--older-than"
+              ],
+              "modes": [
+                "Plans by default and removes only with --apply; a plan changes nothing.",
+                "scratch: removes this user's own go-build*, Test*/Benchmark*/Fuzz* and WB scratch directories directly in TMPDIR (and GOTMPDIR) in which nothing changed for 3 days (--older-than raises it); keeps a symlink, another user's or another filesystem's directory, and any tree holding a mount, a .git or a socket.",
+                "go-build-cache: runs go clean -cache (GOFLAGS dropped) only while no Go process runs, checked again just before; skipped where that cannot be told (no /proc) or when GOCACHEPROG is set.",
+                "Never prunes worktrees (wb clean), WB state, the Go module cache, or the npm and pnpm stores; wb disk measures them."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb disk prune --help",
+              "contains": [
+                "--apply",
+                "--older-than",
+                "go clean -cache",
+                "wb clean clears finished workbenches"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/quality.md",
+              "marker": "# Coverage and verification",
+              "examples": [
+                "wb disk prune",
+                "wb disk prune --apply"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/diskprune/diskprune_test.go",
+              "name": "TestScratchPlanThenApplyRemovesOnlyKnownOldProducers",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/diskprune/diskprune_test.go",
+              "name": "TestBuildCacheClearedOnlyWhileGoIsIdle",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/cli/cmddisk/prune_test.go",
+              "name": "TestPruneRejectsInvalidFlagsBeforeReading",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Exists because the agent VM ran out of disk at least ten times (founder, 2026-11-27) and every recovery was by hand. Deliberately simple (founder, 2026-11-27): two rules a person can check, instead of proving from outside that nothing uses a cache. Go trims its build cache itself day to day; prune is for a full disk."
     },
     {
       "id": "wb.fleet",

@@ -19,7 +19,7 @@ func TestMeasureUsesLatestInodeTypeAndNormalizesZeroLinks(t *testing.T) {
 			if err := os.WriteFile(path, []byte("contents"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			usage, inodes, err := measureStat(context.Background(), root, func(path string, stat *unix.Stat_t) error {
+			usage, inodes, err := measureStat(context.Background(), root, nil, func(path string, stat *unix.Stat_t) error {
 				if scenario == "changed type" {
 					if err := os.Remove(path); err != nil {
 						return err

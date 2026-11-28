@@ -9,6 +9,6 @@ import "context"
 // caller sweeping a fleet must not fail because one path was already removed.
 // Unreadable subdirectories are skipped rather than fatal, for the same reason.
 func Measure(ctx context.Context, root string) (Usage, error) {
-	usage, _, err := measure(ctx, root)
+	usage, _, err := measure(ctx, root, nil)
 	return usage, err
 }
