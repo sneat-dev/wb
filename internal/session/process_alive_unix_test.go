@@ -43,7 +43,7 @@ func TestPruneRemovesZombieOwnedSessionRecord(t *testing.T) {
 	prevReadProcStat := procalive.ReadProcStat
 	procalive.ReadProcStat = func(pid int) ([]byte, error) {
 		if pid == zombiePID {
-			return []byte(fmt.Sprintf("%d (codex) Z 1 %d %d 0 -1\n", pid, pid, pid)), nil
+			return []byte(fmt.Sprintf("%d (codex) Z 1 %d %d 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0\n", pid, pid, pid)), nil
 		}
 		return prevReadProcStat(pid)
 	}
