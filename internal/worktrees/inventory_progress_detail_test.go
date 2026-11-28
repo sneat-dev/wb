@@ -10,6 +10,8 @@ import (
 // step each in-flight inspection is in, so a piped caller can see where the
 // time goes. Every candidate reaches the local git step, the GitHub step when
 // evidence is requested, and the post-walk phase counts every listed result.
+//
+//nolint:paralleltest // installPerCommitPullRequestFixture sets PATH to a fake gh executable
 func TestCleanupSweepReportsFoundCountsStepsAndPhases(t *testing.T) {
 	fixture := newGitFixture(t)
 	createTasks(t, fixture, 3)
