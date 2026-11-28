@@ -126,6 +126,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `task offload`, `task park`, `task pickup` | yes | rejected | rejected | yes |
 | `agent dispatch`, `run`, `compare`, `experiment`, `profiles`, `task-types`, `diff`, `review`, `prune`, `status`, `await`, `list`, `stats`, `logs`, `stop` | yes | rejected | rejected | yes |
 | `stream start`, `stream join`, `stream status`, `stream end`, `stream delete`, `stream sync` | yes | rejected | rejected | yes |
+| `umbrella show`, `umbrella close` | yes | rejected | rejected | yes |
 | `layout audit`, `layout clean`, `layout migrate` | yes | rejected | rejected | yes |
 | `archive clean` | yes | yes | rejected | yes |
 | `repo status` | rejected | rejected | rejected | yes |
@@ -152,7 +153,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `worktree backfill` | yes | rejected | rejected | yes |
 | `worktree adopt` | yes | yes with `--all-external`; rejected with a path | rejected | yes |
 | `worktree checkpoint-fetch` | rejected | rejected | rejected | yes |
-| `worktree set` | rejected | rejected | rejected | yes |
+| `worktree set` | yes | rejected | rejected | yes |
 | `branch list`, `count` | yes | yes | yes; exact owner of locally discovered canonical clones only | yes |
 | `branch quarantine` (leaf flags include `--annotate`, `--description`, repeatable `--replacement`, and `--retention`) | yes | yes | rejected | yes |
 | `branch archive-target` | rejected | rejected | rejected | yes |

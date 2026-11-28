@@ -83,7 +83,11 @@ func prepareWorktreeMergeRevertWithRunner(ctx context.Context, projectsRoot, inp
 	if _, _, err := runCommand(ctx, run, timeout, retry, created[0].WorktreeDir, "git", "apply", "--3way", "--reverse", "--index", patchPath); err != nil {
 		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
 	}
-	if _, _, err := runCommand(ctx, run, timeout, retry, created[0].WorktreeDir, "git", "commit", "-m", "revert: reverse worktree merge "+receipt.ID); err != nil {
+	revertMsg := "revert: reverse worktree merge " + receipt.ID
+	if len(receipt.Sources) > 0 {
+		revertMsg = commitMessageWithTaskUmbrella(projectsRoot, receipt.Sources[0].Task, revertMsg)
+	}
+	if _, _, err := runCommand(ctx, run, timeout, retry, created[0].WorktreeDir, "git", "commit", "-m", revertMsg); err != nil {
 		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
 	}
 	receipt.Phase = WorktreeMergePhaseRevert

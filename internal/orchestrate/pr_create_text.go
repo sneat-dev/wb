@@ -72,6 +72,10 @@ func pullRequestCreateBody(options PullRequestCreateOptions, worktree string, su
 	if err != nil {
 		return "", err
 	}
+	body, _, err = pullRequestBodyWithUmbrella(options.ProjectsRoot, worktree, body, options.UmbrellaProviders)
+	if err != nil {
+		return "", err
+	}
 	return withClosesPrefix(body, options.Closes), nil
 }
 

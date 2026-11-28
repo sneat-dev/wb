@@ -146,7 +146,19 @@ wb worktree summary improve-login --github --format json`,
 				encoder.SetIndent("", "  ")
 				return encoder.Encode(outcome)
 			}
-			return writeInventorySummary(command.OutOrStdout(), args[0], outcome.Results, github)
+			umbrellaRef, recordedMembers, _ := worktrees.TaskUmbrellaMembers(flags.ProjectsRoot, args[0])
+			if umbrellaRef == "" {
+				for _, entry := range outcome.Results {
+					if entry.Umbrella != "" {
+						umbrellaRef = entry.Umbrella
+						break
+					}
+				}
+			}
+			if err := writeInventorySummary(command.OutOrStdout(), args[0], outcome.Results, github, umbrellaRef, recordedMembers); err != nil {
+				return err
+			}
+			return writeUmbrellaCloseOffer(command.OutOrStdout(), flags.ProjectsRoot, umbrellaRef)
 		},
 	}
 	command.Annotations = map[string]string{"wb.dev/discovery-terms": "inspect progress status next action task work worktree branch pull request ready merge"}

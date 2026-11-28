@@ -6,14 +6,16 @@ import (
 	"fmt"
 
 	"github.com/sneat-dev/wb/internal/cli/shared"
+	"github.com/sneat-dev/wb/internal/umbrella"
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
 )
 
 type AbortDependencies struct {
-	Run         func(context.Context, worktrees.AbortOptions) ([]worktrees.AbortResult, error)
-	Release     func(*cobra.Command, string, string) bool
-	SkipRelease func(*cobra.Command, string)
+	Run               func(context.Context, worktrees.AbortOptions) ([]worktrees.AbortResult, error)
+	Release           func(*cobra.Command, string, string) bool
+	SkipRelease       func(*cobra.Command, string)
+	UmbrellaProviders *umbrella.Registry
 }
 
 func NewAbort(runtime shared.Runtime, deps AbortDependencies) *cobra.Command {
@@ -146,6 +148,32 @@ The default is a dry-run plan.`,
 				releaseLeaked = deps.Release(command, flags.ProjectsRoot, args[0])
 			case apply && releasable && remaining > 0:
 				deps.SkipRelease(command, fmt.Sprintf("%d repositories excluded by --filter still remain", remaining))
+			}
+			if apply {
+				for _, entry := range results {
+					if !entry.Applied || entry.Excluded {
+						continue
+					}
+					prLabel := ""
+					if entry.ClosedPullRequest != nil && entry.ClosedPullRequest.Number > 0 {
+						prLabel = fmt.Sprintf("#%d", entry.ClosedPullRequest.Number)
+					} else if entry.OpenPullRequest != nil && entry.OpenPullRequest.Number > 0 {
+						prLabel = fmt.Sprintf("#%d", entry.OpenPullRequest.Number)
+					} else if entry.MergedPullRequest != nil && entry.MergedPullRequest.Number > 0 {
+						prLabel = fmt.Sprintf("#%d", entry.MergedPullRequest.Number)
+					}
+					archiveRef := ""
+					if entry.DirtyCapture != nil && entry.DirtyCapture.SHA256 != "" {
+						archiveRef = "dirty-capture:" + entry.DirtyCapture.SHA256
+					}
+					postUmbrellaStatusAndOfferClose(command.Context(), command, flags.ProjectsRoot, deps.UmbrellaProviders, format, umbrella.StatusUpdate{
+						Task:        entry.Task,
+						Repository:  entry.Repository,
+						PullRequest: prLabel,
+						Outcome:     "aborted (" + string(disp) + ")",
+						ArchiveRef:  archiveRef,
+					}, entry.Umbrella)
+				}
 			}
 			if format == "json" {
 				encoder := json.NewEncoder(command.OutOrStdout())

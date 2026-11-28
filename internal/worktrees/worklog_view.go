@@ -55,6 +55,7 @@ type WorkLogClaimView struct {
 	CLI             string    `json:"cli,omitempty"`
 	Provider        string    `json:"provider,omitempty"`
 	TaskSummary     string    `json:"task_summary,omitempty"`
+	Umbrella        string    `json:"umbrella,omitempty"`
 	PromptDigest    string    `json:"prompt_sha256,omitempty"`
 	PromptArchive   string    `json:"prompt_archive,omitempty"`
 	ClaimPath       string    `json:"claim_path,omitempty"`
@@ -208,6 +209,9 @@ func (p workLogViewPorts) loadWorkLogView(ctx context.Context, options LoadWorkL
 			resolvedRepository, resolvedWorktree = resolution.repository, resolution.worktree
 		}
 		view.Claim = newWorkLogClaimView(claim, resolvedRepository, resolvedWorktree, claimPath)
+		if ref := effectiveClaimUmbrella(home, claim); ref != "" {
+			view.Claim.Umbrella = ref
+		}
 		if options.IncludePromptBodies {
 			if original, originalErr := p.originalPrompt(home, claim, prompts); originalErr == nil {
 				view.OriginalPrompt = original
@@ -221,6 +225,9 @@ func (p workLogViewPorts) loadWorkLogView(ctx context.Context, options LoadWorkL
 		if terminal, terminalErr := p.terminal(home, root); terminalErr == nil && terminal != nil {
 			claim := terminal.Claim
 			view.Claim = newWorkLogClaimView(claim, claim.Repository, claim.Worktree, "")
+			if ref := effectiveClaimUmbrella(home, claim); ref != "" {
+				view.Claim.Umbrella = ref
+			}
 			view.Terminal = &WorkLogTerminalView{
 				Disposition: terminal.Disposition, FinalCommit: terminal.FinalCommit, SealedAt: terminal.SealedAt,
 			}
@@ -275,6 +282,7 @@ func newWorkLogClaimView(claim workLogClaim, repository, worktree, claimPath str
 		Initiator: claim.Initiator, AgentID: claim.AgentID, AgentRuntime: claim.AgentRuntime,
 		Model: claim.Model, ModelProvenance: claim.ModelProvenance,
 		CLI: claim.CLI, Provider: claim.Provider, TaskSummary: claim.TaskSummary,
+		Umbrella:     claim.Umbrella,
 		PromptDigest: claim.PromptDigest, PromptArchive: claim.PromptArchive,
 		ClaimPath: claimPath,
 	}
@@ -546,6 +554,9 @@ func writeWorkLogIdentitySections(b *strings.Builder, view WorkLogView) {
 		}
 		if view.Manifest.Model != "" {
 			fmt.Fprintf(b, "model: %s\n", view.Manifest.Model)
+		}
+		if view.Manifest.Umbrella != "" {
+			fmt.Fprintf(b, "umbrella: %s\n", view.Manifest.Umbrella)
 		}
 		b.WriteString("\n")
 	}

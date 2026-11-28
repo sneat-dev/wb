@@ -25,7 +25,7 @@ type PromptSnapshot struct {
 }
 type Options struct {
 	EffortID, RunID, Initiator, AgentID, AgentRuntime, Model, CLI, Provider string
-	TaskSummary, WBSessionID, OriginalPrompt                                string
+	TaskSummary, Umbrella, WBSessionID, OriginalPrompt                      string
 	RequireOriginalPrompt                                                   bool
 	AcquiredVia                                                             string
 	// Mode is "" or "worktree" or "canonical". LeaseExpiresAt is required for

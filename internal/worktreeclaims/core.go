@@ -51,6 +51,7 @@ type Manifest struct {
 	DependencyCampaign bool      `yaml:"dependency_campaign,omitempty"`
 	RunID              string    `yaml:"run_id,omitempty"`
 	ClaimID            string    `yaml:"claim_id,omitempty"`
+	Umbrella           string    `yaml:"umbrella,omitempty"`
 	Provenance         string    `yaml:"provenance"`
 
 	// InferredFields and Evidence are populated only for a reconstructed

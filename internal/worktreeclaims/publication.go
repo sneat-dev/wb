@@ -120,6 +120,26 @@ func (p PublicationPorts) PublishClaim(home string, runDir *os.File, runPath str
 				}
 				continue
 			}
+			if strings.HasSuffix(name, UmbrellaBindingSuffix) {
+				boundID := strings.TrimSuffix(name, UmbrellaBindingSuffix)
+				if !ValidClaimID(boundID) || !claimFiles[boundID+".json"] || p.ReadJSONAt == nil {
+					return receipt, fmt.Errorf("unsafe immutable work-log claim entry %q", name)
+				}
+				if err := readValidatedClaimUmbrellaBinding(claims, boundID, p.ReadJSONAt); err != nil {
+					return receipt, fmt.Errorf("read immutable work-log umbrella binding %q: %w", name, err)
+				}
+				continue
+			}
+			if strings.HasSuffix(name, LandingBindingSuffix) {
+				boundID := strings.TrimSuffix(name, LandingBindingSuffix)
+				if !ValidClaimID(boundID) || !claimFiles[boundID+".json"] || p.ReadJSONAt == nil {
+					return receipt, fmt.Errorf("unsafe immutable work-log claim entry %q", name)
+				}
+				if err := readValidatedClaimLandingBinding(claims, boundID, p.ReadJSONAt); err != nil {
+					return receipt, fmt.Errorf("read immutable work-log landing binding %q: %w", name, err)
+				}
+				continue
+			}
 			otherID := strings.TrimSuffix(name, ".json")
 			if name != otherID+".json" || !ValidClaimID(otherID) {
 				return receipt, fmt.Errorf("unsafe immutable work-log claim entry %q", name)

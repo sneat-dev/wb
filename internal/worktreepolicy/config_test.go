@@ -122,3 +122,17 @@ func TestSafeSegmentsMatchFacadeGrammar(t *testing.T) {
 		}
 	}
 }
+
+func TestDecodeUmbrellaDefaultRegistry(t *testing.T) {
+	t.Parallel()
+	cfg, found, err := Decode("policy.yaml", []byte("version: 1\numbrella:\n  default_registry: synchestra\n"), func(string) bool { return true })
+	if err != nil || !found || cfg.Umbrella.DefaultRegistry == nil || *cfg.Umbrella.DefaultRegistry != "synchestra" {
+		t.Fatalf("Decode valid umbrella.default_registry = (%+v, %v, %v)", cfg, found, err)
+	}
+	if err := RepositoryPlacementPolicy(cfg, "base-sha", "/user/policy"); err != nil {
+		t.Fatalf("repository policy must allow umbrella.default_registry, got %v", err)
+	}
+	if _, _, err := Decode("policy.yaml", []byte("version: 1\numbrella:\n  default_registry: \" Bad! \"\n"), func(string) bool { return true }); err == nil || !strings.Contains(err.Error(), "umbrella.default_registry") {
+		t.Fatalf("Decode invalid umbrella.default_registry = %v, want error", err)
+	}
+}

@@ -24,6 +24,7 @@ import (
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/quality"
 	"github.com/sneat-dev/wb/internal/runner"
+	"github.com/sneat-dev/wb/internal/umbrella"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -315,10 +316,12 @@ type WorktreeMergeReceipt struct {
 	// guard ran. Recording it on the receipt is what lets `--format json`
 	// show a takeover's reason and prior owner, matching what `cmd/wb`'s help
 	// and ai/skills/wb-merge/SKILL.md promise.
-	LaneOwner   *landinglane.Record `json:"lane_owner,omitempty"`
-	ReceiptPath string              `json:"receipt_path"`
-	CreatedAt   time.Time           `json:"created_at"`
-	UpdatedAt   time.Time           `json:"updated_at"`
+	LaneOwner            *landinglane.Record `json:"lane_owner,omitempty"`
+	Umbrella             string              `json:"umbrella,omitempty"`
+	UmbrellaCloseCommand string              `json:"umbrella_close_command,omitempty"`
+	ReceiptPath          string              `json:"receipt_path"`
+	CreatedAt            time.Time           `json:"created_at"`
+	UpdatedAt            time.Time           `json:"updated_at"`
 }
 
 type WorktreeMergeLandOptions struct {
@@ -372,6 +375,9 @@ type WorktreeMergeLandOptions struct {
 	// Lane optionally names the acquiring session for the landing-lane
 	// ownership guard (see LaneGuardRequest). Left zero, no guard runs.
 	Lane LaneGuardRequest
+	// UmbrellaProviders overrides the umbrella provider registry; nil uses
+	// umbrella.DefaultProviders(nil).
+	UmbrellaProviders *umbrella.Registry
 	// CheckoutUpdated is called only after the checked-out canonical target
 	// has moved and the exact landed commit is proven reachable. Nil discards.
 	CheckoutUpdated func(context.Context, CheckoutUpdate)
@@ -1031,7 +1037,10 @@ func prepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 			return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, ancestorErr, save)
 		}
 		if !containsOriginal {
-			if _, _, mergeErr := runCommand(ctx, run, options.Timeout, options.Retry, candidate.WorktreeDir, "git", "merge", "--no-edit", rebatch.OriginalCandidate.SHA); mergeErr != nil {
+			mergeArgs := worktreeMergeIntegrationArgs(options.ProjectsRoot, receipt.Sources,
+				fmt.Sprintf("Merge rebatched candidate %s", shortMergeRevision(rebatch.OriginalCandidate.SHA)),
+				rebatch.OriginalCandidate.SHA)
+			if _, _, mergeErr := runCommand(ctx, run, options.Timeout, options.Retry, candidate.WorktreeDir, "git", mergeArgs...); mergeErr != nil {
 				_, _, _ = runCommand(ctx, run, options.Timeout, 0, candidate.WorktreeDir, "git", "merge", "--abort")
 				return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, fmt.Errorf("merge original rebatch candidate %s: %w", rebatch.OriginalCandidate.SHA, mergeErr), save)
 			}
@@ -1057,7 +1066,10 @@ func prepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 			return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, ancestorErr, save)
 		}
 		if !ancestor {
-			if _, _, mergeErr := runCommand(ctx, run, options.Timeout, options.Retry, candidate.WorktreeDir, "git", "merge", "--no-edit", source.SHA); mergeErr != nil {
+			mergeArgs := worktreeMergeIntegrationArgs(options.ProjectsRoot, []WorktreeMergeSource{*source},
+				fmt.Sprintf("Merge %s (%s)", source.Branch, shortMergeRevision(source.SHA)),
+				source.SHA)
+			if _, _, mergeErr := runCommand(ctx, run, options.Timeout, options.Retry, candidate.WorktreeDir, "git", mergeArgs...); mergeErr != nil {
 				_, _, _ = runCommand(ctx, run, options.Timeout, 0, candidate.WorktreeDir, "git", "merge", "--abort")
 				conflict := fmt.Errorf("merge conflict while integrating %s at %s: %w", source.Branch, source.SHA, mergeErr)
 				return failWorktreeMergeReceiptWithSave(receipt, WorktreeMergeConflict, conflict, save)

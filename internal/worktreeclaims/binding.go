@@ -2,6 +2,7 @@ package worktreeclaims
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,15 +10,40 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/worktreeproof"
 )
 
 const PullRequestBindingSuffix = ".pull_request.json"
+const UmbrellaBindingSuffix = ".umbrella.json"
+const LandingBindingSuffix = ".landed.json"
 
 type ClaimPullRequestBinding struct {
 	Repository  string    `json:"repository"`
 	PullRequest int       `json:"pull_request,omitempty"`
 	URL         string    `json:"url"`
+	LandedSHA   string    `json:"landed_sha,omitempty"`
 	RecordedAt  time.Time `json:"recorded_at"`
+}
+
+// ClaimUmbrellaBinding records an umbrella reference attached to an existing
+// immutable claim (e.g. via `wb worktree set --umbrella`).
+type ClaimUmbrellaBinding struct {
+	Umbrella   string    `json:"umbrella"`
+	RecordedAt time.Time `json:"recorded_at"`
+}
+
+// ClaimLandingBinding records verified target landing proof bound to a claim
+// independently of worktree cleanup (e.g. `wb worktree land --cleanup=false`).
+type ClaimLandingBinding struct {
+	ClaimID        string    `json:"claim_id"`
+	Task           string    `json:"task"`
+	Repository     string    `json:"repository"`
+	Target         string    `json:"target"`
+	LandedSHA      string    `json:"landed_sha"`
+	PullRequest    int       `json:"pull_request,omitempty"`
+	PullRequestURL string    `json:"pull_request_url,omitempty"`
+	RecordedAt     time.Time `json:"recorded_at"`
 }
 type RegisteredPullRequestBinding struct {
 	Task        string
@@ -119,7 +145,8 @@ func (p BindingPorts) ListRegisteredPullRequestBindingsInHome(home string) ([]Re
 // corrupt sidecar is never written (sneat-dev/wb#1007).
 func ValidatePullRequestBindingFields(binding ClaimPullRequestBinding) error {
 	if strings.TrimSpace(binding.Repository) == "" || binding.PullRequest <= 0 ||
-		!strings.HasSuffix(strings.TrimSpace(binding.URL), "/pull/"+strconv.Itoa(binding.PullRequest)) {
+		!strings.HasSuffix(strings.TrimSpace(binding.URL), "/pull/"+strconv.Itoa(binding.PullRequest)) ||
+		(binding.LandedSHA != "" && !worktreeproof.IsGitObjectID(binding.LandedSHA)) {
 		return fmt.Errorf("refusing to record pull request binding with repository %q, number %d, URL %q", binding.Repository, binding.PullRequest, binding.URL)
 	}
 	return nil
@@ -139,16 +166,152 @@ func ValidatePullRequestBindingEntry(claims *os.File, name string, claimFiles ma
 // readValidatedClaimPullRequestBinding reads only below the caller's held
 // claims descriptor and proves that owned metadata belongs to its sibling.
 func readValidatedClaimPullRequestBinding(claims *os.File, claimID string, readJSON func(*os.File, string, any) error) error {
-	var binding ClaimPullRequestBinding
-	if err := readJSON(claims, claimID+PullRequestBindingSuffix, &binding); err != nil {
-		return err
-	}
 	var boundClaim Claim
 	if err := readJSON(claims, claimID+".json", &boundClaim); err != nil {
 		return err
 	}
-	if boundClaim.ClaimID != claimID || binding.Repository != boundClaim.Repository || ValidatePullRequestBindingFields(binding) != nil || binding.RecordedAt.IsZero() {
+	if boundClaim.ClaimID != claimID {
 		return fmt.Errorf("invalid pull request binding for claim %s", claimID)
 	}
+	_, found, err := ReadValidatedPullRequestBinding(claims, boundClaim, readJSON)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return os.ErrNotExist
+	}
 	return nil
+}
+
+// ReadValidatedPullRequestBinding reads and validates a claim's optional pull
+// request binding sidecar below the caller's held claims descriptor.
+func ReadValidatedPullRequestBinding(claims *os.File, claim Claim, readJSON func(*os.File, string, any) error) (ClaimPullRequestBinding, bool, error) {
+	var binding ClaimPullRequestBinding
+	if err := readJSON(claims, claim.ClaimID+PullRequestBindingSuffix, &binding); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return ClaimPullRequestBinding{}, false, nil
+		}
+		return ClaimPullRequestBinding{}, false, err
+	}
+	if binding.Repository != claim.Repository || ValidatePullRequestBindingFields(binding) != nil || binding.RecordedAt.IsZero() {
+		return ClaimPullRequestBinding{}, false, fmt.Errorf("invalid pull request binding for claim %s", claim.ClaimID)
+	}
+	return binding, true, nil
+}
+
+// ValidateUmbrellaBindingFields verifies that an umbrella sidecar carries a
+// non-empty typed reference "<registry>:<id>" without control characters.
+func ValidateUmbrellaBindingFields(binding ClaimUmbrellaBinding) error {
+	ref := strings.TrimSpace(binding.Umbrella)
+	if ref == "" || !strings.Contains(ref, ":") || strings.ContainsAny(ref, " \t\r\n\x00") {
+		return fmt.Errorf("refusing to record umbrella binding with reference %q", binding.Umbrella)
+	}
+	return nil
+}
+
+// ValidateUmbrellaBindingEntry proves that name, listed in a claims directory
+// whose entries are claimFiles, is the registered umbrella sidecar of a listed
+// sibling claim, read below the held descriptor.
+func ValidateUmbrellaBindingEntry(claims *os.File, name string, claimFiles map[string]bool, readJSON func(*os.File, string, any) error) error {
+	claimID := strings.TrimSuffix(name, UmbrellaBindingSuffix)
+	if name != claimID+UmbrellaBindingSuffix || !ValidClaimID(claimID) || !claimFiles[claimID+".json"] || readJSON == nil {
+		return fmt.Errorf("orphaned or unsafe umbrella binding %q", name)
+	}
+	return readValidatedClaimUmbrellaBinding(claims, claimID, readJSON)
+}
+
+func readValidatedClaimUmbrellaBinding(claims *os.File, claimID string, readJSON func(*os.File, string, any) error) error {
+	var boundClaim Claim
+	if err := readJSON(claims, claimID+".json", &boundClaim); err != nil {
+		return err
+	}
+	if boundClaim.ClaimID != claimID {
+		return fmt.Errorf("invalid umbrella binding for claim %s", claimID)
+	}
+	_, found, err := ReadValidatedUmbrellaBinding(claims, boundClaim, readJSON)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return os.ErrNotExist
+	}
+	return nil
+}
+
+// ReadValidatedUmbrellaBinding reads and validates a claim's optional umbrella
+// binding sidecar below the caller's held claims descriptor.
+func ReadValidatedUmbrellaBinding(claims *os.File, claim Claim, readJSON func(*os.File, string, any) error) (ClaimUmbrellaBinding, bool, error) {
+	var binding ClaimUmbrellaBinding
+	if err := readJSON(claims, claim.ClaimID+UmbrellaBindingSuffix, &binding); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return ClaimUmbrellaBinding{}, false, nil
+		}
+		return ClaimUmbrellaBinding{}, false, err
+	}
+	if ValidateUmbrellaBindingFields(binding) != nil || binding.RecordedAt.IsZero() {
+		return ClaimUmbrellaBinding{}, false, fmt.Errorf("invalid umbrella binding for claim %s", claim.ClaimID)
+	}
+	return binding, true, nil
+}
+
+// ValidateLandingBindingFields verifies that a claim-bound landing sidecar
+// carries a corroborated claim id, task, repository, target, landed SHA, and
+// timestamp.
+func ValidateLandingBindingFields(binding ClaimLandingBinding) error {
+	if !ValidClaimID(binding.ClaimID) ||
+		strings.TrimSpace(binding.Task) == "" ||
+		strings.TrimSpace(binding.Repository) == "" ||
+		strings.TrimSpace(binding.Target) == "" ||
+		!worktreeproof.IsGitObjectID(binding.LandedSHA) ||
+		binding.PullRequest < 0 ||
+		(binding.PullRequest > 0 && binding.PullRequestURL != "" && !strings.HasSuffix(strings.TrimSpace(binding.PullRequestURL), "/pull/"+strconv.Itoa(binding.PullRequest))) ||
+		binding.RecordedAt.IsZero() {
+		return fmt.Errorf("refusing to record landing binding for claim %q (%s)", binding.ClaimID, binding.Repository)
+	}
+	return nil
+}
+
+// ValidateLandingBindingEntry proves that name, listed in a claims directory
+// whose entries are claimFiles, is a valid landing sidecar for its sibling claim.
+func ValidateLandingBindingEntry(claims *os.File, name string, claimFiles map[string]bool, readJSON func(*os.File, string, any) error) error {
+	claimID := strings.TrimSuffix(name, LandingBindingSuffix)
+	if name != claimID+LandingBindingSuffix || !ValidClaimID(claimID) || !claimFiles[claimID+".json"] || readJSON == nil {
+		return fmt.Errorf("orphaned or unsafe landing binding %q", name)
+	}
+	return readValidatedClaimLandingBinding(claims, claimID, readJSON)
+}
+
+func readValidatedClaimLandingBinding(claims *os.File, claimID string, readJSON func(*os.File, string, any) error) error {
+	var boundClaim Claim
+	if err := readJSON(claims, claimID+".json", &boundClaim); err != nil {
+		return err
+	}
+	if boundClaim.ClaimID != claimID {
+		return fmt.Errorf("invalid landing binding for claim %s", claimID)
+	}
+	_, found, err := ReadValidatedLandingBinding(claims, boundClaim, readJSON)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return os.ErrNotExist
+	}
+	return nil
+}
+
+// ReadValidatedLandingBinding reads and validates a claim's optional landing
+// sidecar below the caller's held claims descriptor, corroborating claim ID,
+// task, and repository against the sibling claim.
+func ReadValidatedLandingBinding(claims *os.File, claim Claim, readJSON func(*os.File, string, any) error) (ClaimLandingBinding, bool, error) {
+	var binding ClaimLandingBinding
+	if err := readJSON(claims, claim.ClaimID+LandingBindingSuffix, &binding); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return ClaimLandingBinding{}, false, nil
+		}
+		return ClaimLandingBinding{}, false, err
+	}
+	if binding.ClaimID != claim.ClaimID || binding.Task != claim.Task || binding.Repository != claim.Repository || ValidateLandingBindingFields(binding) != nil {
+		return ClaimLandingBinding{}, false, fmt.Errorf("invalid landing binding for claim %s", claim.ClaimID)
+	}
+	return binding, true, nil
 }

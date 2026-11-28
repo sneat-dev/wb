@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/umbrella"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -81,18 +82,27 @@ func inventoryAgeLabel(result worktrees.ListResult) string {
 	return age
 }
 
-func writeInventorySummary(out io.Writer, task string, results []worktrees.ListResult, withGitHub bool) error {
+func writeInventorySummary(out io.Writer, task string, results []worktrees.ListResult, withGitHub bool, umbrellaRef string, recordedMembers []umbrella.Member) error {
 	if _, err := fmt.Fprintf(out, "# WB worktree summary: %s\n\n", task); err != nil {
 		return err
 	}
-	if len(results) == 0 {
+	if umbrellaRef != "" {
+		if _, err := fmt.Fprintf(out, "umbrella: %s\n\n", umbrellaRef); err != nil {
+			return err
+		}
+	}
+	if len(results) == 0 && len(recordedMembers) == 0 {
 		_, err := fmt.Fprintln(out, "no live worktrees for this task")
 		return err
 	}
-	if _, err := fmt.Fprintf(out, "%d worktree(s)\n\n", len(results)); err != nil {
-		return err
+	if len(results) > 0 {
+		if _, err := fmt.Fprintf(out, "%d worktree(s)\n\n", len(results)); err != nil {
+			return err
+		}
 	}
+	liveRepos := map[string]bool{}
 	for index, result := range results {
+		liveRepos[result.Repository] = true
 		state := inventorySummaryState(result)
 		head := result.HeadSHA
 		if len(head) > 12 {
@@ -158,6 +168,41 @@ func writeInventorySummary(out io.Writer, task string, results []worktrees.ListR
 		}
 		if index+1 < len(results) {
 			if _, err := fmt.Fprintln(out); err != nil {
+				return err
+			}
+		}
+	}
+	for _, member := range recordedMembers {
+		if liveRepos[member.Repository] {
+			continue
+		}
+		if len(results) > 0 {
+			if _, err := fmt.Fprintln(out); err != nil {
+				return err
+			}
+		}
+		if _, err := fmt.Fprintf(out, "## %s\n", member.Repository); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(out, "state:    %s\n", member.State); err != nil {
+			return err
+		}
+		if member.PullRequest > 0 {
+			if _, err := fmt.Fprintf(out, "pr:       #%d\n", member.PullRequest); err != nil {
+				return err
+			}
+		}
+		if member.LandedSHA != "" {
+			sha := member.LandedSHA
+			if len(sha) > 12 {
+				sha = sha[:12]
+			}
+			if _, err := fmt.Fprintf(out, "landed:   %s\n", sha); err != nil {
+				return err
+			}
+		}
+		if member.RestorePointer != "" {
+			if _, err := fmt.Fprintf(out, "archive:  %s\n", member.RestorePointer); err != nil {
 				return err
 			}
 		}

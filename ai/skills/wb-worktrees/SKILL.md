@@ -23,6 +23,24 @@ as four separately-named tasks throws away the one thing a shared task slug
 buys: one task, landed with one `wb worktree land`/`wb land` call per
 repository.
 
+### Umbrella issues
+
+Cross-repository tasks can be indexed by one typed umbrella reference
+`<registry>:<id>` (GitHub by default: `github:owner/repo#N`, or bare
+`owner/repo#N`). Attach it at creation with `--umbrella <ref>`, or later with
+`wb worktree set --umbrella <ref>`. WB carries `Wb-Umbrella: <registry>:<id>`
+on commits it makes, adds `Part of <link>` to `wb pr create` bodies, posts a
+one-line status comment on `wb pr land`, `wb worktree land`, `retire` and
+`abort`, and offers the close command once every member has landed or been
+archived (never closing automatically):
+
+```sh
+wb worktree set <task> --umbrella sneat-co/backstage#845
+wb umbrella show sneat-co/backstage#845
+wb umbrella close sneat-co/backstage#845
+wb umbrella close sneat-co/backstage#845 --apply
+```
+
 **Finish work with `wb worktree land` (its root alias is `wb land`), never
 `gh pr merge`.** One call takes every worktree the task created IN ONE
 REPOSITORY — a call refuses worktrees from more than one repository (`all

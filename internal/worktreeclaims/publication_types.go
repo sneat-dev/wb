@@ -53,6 +53,7 @@ type Claim struct {
 	CLI             string                   `json:"cli,omitempty"`
 	Provider        string                   `json:"provider,omitempty"`
 	TaskSummary     string                   `json:"task_summary,omitempty"`
+	Umbrella        string                   `json:"umbrella,omitempty"`
 	WBSessionID     string                   `json:"wb_session_id,omitempty"`
 	PromptArchive   string                   `json:"prompt_archive,omitempty"` // run-relative
 	PromptDigest    string                   `json:"prompt_sha256,omitempty"`

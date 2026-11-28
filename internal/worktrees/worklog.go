@@ -104,6 +104,9 @@ type WorkLogOptions struct {
 	// TaskSummary is an optional, one-line, non-sensitive description of the
 	// work. It is separate from OriginalPrompt, which remains private local data.
 	TaskSummary string
+	// Umbrella is an optional canonical typed umbrella reference ("<registry>:<id>")
+	// indexing a cross-repo task.
+	Umbrella string
 	// WBSessionID links this claim to the live registered session that created
 	// it. Normal callers leave it empty and the current resolver supplies it.
 	WBSessionID           string
@@ -650,6 +653,7 @@ func recordWorkLogWithPreparation(home, task string, result CreateResult, option
 		ModelProvenance: provenance, ModelDeclaredBy: declaredBy(options),
 		CLI: strings.TrimSpace(options.CLI), Provider: strings.TrimSpace(options.Provider),
 		TaskSummary:   taskSummary,
+		Umbrella:      strings.TrimSpace(options.Umbrella),
 		WBSessionID:   sessionID,
 		PromptArchive: promptArchive, PromptDigest: promptDigest,
 		AcquiredVia: strings.TrimSpace(options.AcquiredVia), Mode: options.Mode, LeaseExpiresAt: claimLeaseExpiry(options.LeaseExpiresAt),
@@ -861,6 +865,13 @@ func workLogOptionsForClaimExtensionObserved(home string, requested WorkLogOptio
 	requested.AgentRuntime = claim.AgentRuntime
 	if strings.TrimSpace(requested.TaskSummary) == "" {
 		requested.TaskSummary = claim.TaskSummary
+	}
+	if strings.TrimSpace(requested.Umbrella) == "" {
+		effectiveRef, effErr := effectiveUmbrella(home, claim)
+		if effErr != nil {
+			return WorkLogOptions{}, effErr
+		}
+		requested.Umbrella = effectiveRef
 	}
 	if len(requested.snapshot.Contents) != 0 || strings.TrimSpace(requested.OriginalPrompt) != "" {
 		requested.RequireOriginalPrompt = false
@@ -2207,6 +2218,10 @@ func (p transferClaimPorts) transferWorkLogClaim(home, worktree, finalCommit, di
 	if err := p.corroborate(worktree, finalCommit, projection, claim); err != nil {
 		return err
 	}
+	effectiveRef, err := effectiveUmbrellaAt(claims, filepath.Join(locked.path, "claims"), claim)
+	if err != nil {
+		return err
+	}
 	successorClaimID := declaredSuccessorWorkLogClaimID(claim.ClaimID, successor, disposition, identity)
 	sealedAt, err := p.sealTerminal(home, runDir, worktreeclaims.TerminalSealRequest{
 		Claim: claim, FinalCommit: finalCommit, Disposition: disposition,
@@ -2216,6 +2231,7 @@ func (p transferClaimPorts) transferWorkLogClaim(home, worktree, finalCommit, di
 		return err
 	}
 	successorClaim := newSuccessorWorkLogClaim(claim, successorClaimID, sealedAt, successor, disposition, identity)
+	successorClaim.Umbrella = effectiveRef
 	claimName, outboxName, event, nextProjection := activeClaimPublication(successorClaim, disposition, projection)
 	if err := p.writeImmutable(claims, claimName, successorClaim, true); err != nil {
 		return fmt.Errorf("write immutable successor claim: %w", err)
@@ -2268,6 +2284,10 @@ func recoverFailedRecycleClaim(home, worktree, finalCommit string, prior workLog
 	if terminal.Disposition != "recycled" || terminal.FinalCommit != finalCommit || terminal.Lifecycle != "terminal" {
 		return fmt.Errorf("prior claim is not a matching recycled terminal")
 	}
+	effectiveRef, err := effectiveUmbrellaAt(claims, filepath.Join(locked.path, "claims"), claim)
+	if err != nil {
+		return err
+	}
 	const recoveryAgent = "wb-recycle-recovery"
 	const recoveryVia = "recycle_failed"
 	recoveryID := successorWorkLogClaimID(prior.ClaimID, recoveryAgent, recoveryVia)
@@ -2275,6 +2295,7 @@ func recoverFailedRecycleClaim(home, worktree, finalCommit string, prior workLog
 		claim, recoveryID, terminal.SealedAt, recoveryAgent, recoveryVia,
 		ClaimExecutionIdentity{Model: "unknown"},
 	)
+	recovery.Umbrella = effectiveRef
 	projection := workLogProjection{Version: 1, EffortID: prior.EffortID, RunID: prior.RunID}
 	claimName, outboxName, event, nextProjection := activeClaimPublication(recovery, recoveryVia, projection)
 	if err := writeJSONImmutableAt(claims, claimName, recovery, true); err != nil {
@@ -3052,6 +3073,7 @@ func toClaimOptions(options WorkLogOptions) worktreeclaims.Options {
 		EffortID: options.EffortID, RunID: options.RunID, Initiator: options.Initiator,
 		AgentID: options.AgentID, AgentRuntime: options.AgentRuntime, Model: options.Model,
 		CLI: options.CLI, Provider: options.Provider, TaskSummary: options.TaskSummary,
+		Umbrella:    options.Umbrella,
 		WBSessionID: options.WBSessionID, OriginalPrompt: options.OriginalPrompt,
 		RequireOriginalPrompt: options.RequireOriginalPrompt, AcquiredVia: options.AcquiredVia,
 		Mode: options.Mode, LeaseExpiresAt: options.LeaseExpiresAt,
@@ -3063,6 +3085,7 @@ func fromClaimOptions(options worktreeclaims.Options) WorkLogOptions {
 		EffortID: options.EffortID, RunID: options.RunID, Initiator: options.Initiator,
 		AgentID: options.AgentID, AgentRuntime: options.AgentRuntime, Model: options.Model,
 		CLI: options.CLI, Provider: options.Provider, TaskSummary: options.TaskSummary,
+		Umbrella:    options.Umbrella,
 		WBSessionID: options.WBSessionID, OriginalPrompt: options.OriginalPrompt,
 		RequireOriginalPrompt: options.RequireOriginalPrompt, AcquiredVia: options.AcquiredVia,
 		Mode: options.Mode, LeaseExpiresAt: options.LeaseExpiresAt,

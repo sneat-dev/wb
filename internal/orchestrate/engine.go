@@ -340,7 +340,8 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 		if _, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "git", "add", "-A"); err != nil {
 			return failResult(result, err)
 		}
-		if _, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "git", "commit", "-m", handler.CommitMessage(repository)); err != nil {
+		commitMsg := commitMessageWithUmbrella(options.GitHubDir, worktree, handler.CommitMessage(repository))
+		if _, _, err := runCommand(ctx, options.resolveRunner(), options.Timeout, options.Retry, worktree, "git", "commit", "-m", commitMsg); err != nil {
 			return failResult(result, err)
 		}
 	}

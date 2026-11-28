@@ -101,7 +101,7 @@ func TestCwWtPrintWorktreeSummaryBranches(t *testing.T) {
 		{Repository: "acme/e", Branch: "task/e", Base: "main", Clean: false, Locked: true},
 	}
 	var out bytes.Buffer
-	if err := writeInventorySummary(&out, "task", results, true); err != nil {
+	if err := writeInventorySummary(&out, "task", results, true, "", nil); err != nil {
 		t.Fatal(err)
 	}
 	text := out.String()
@@ -122,7 +122,7 @@ func TestCwWtPrintWorktreeSummaryBranches(t *testing.T) {
 	}
 
 	out.Reset()
-	if err := writeInventorySummary(&out, "task", nil, false); err != nil {
+	if err := writeInventorySummary(&out, "task", nil, false, "", nil); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "no live worktrees for this task") {
@@ -131,7 +131,7 @@ func TestCwWtPrintWorktreeSummaryBranches(t *testing.T) {
 
 	// A failed first write is reported.
 	for allow := 0; allow < 3; allow++ {
-		if err := writeInventorySummary(&activeLimitedWriter{Allow: allow}, "task", results, true); err == nil {
+		if err := writeInventorySummary(&activeLimitedWriter{Allow: allow}, "task", results, true, "", nil); err == nil {
 			t.Fatalf("printWorktreeSummary with %d writes allowed returned nil", allow)
 		}
 	}
@@ -190,6 +190,6 @@ func TestCwWtWriterSweepListAndSummary(t *testing.T) {
 	}
 	// Five rows at roughly twenty writes each, plus the header and spacer.
 	activeSweepWrites(t, 60, func(writer *activeLimitedWriter) error {
-		return writeInventorySummary(writer, "task", summary, true)
+		return writeInventorySummary(writer, "task", summary, true, "", nil)
 	})
 }

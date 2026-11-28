@@ -220,7 +220,7 @@ func TestJournalOptionalFlagsHumanSourceAndReadOnlyDefaults(t *testing.T) {
 	}
 	r := &journalRecording{}
 	var out bytes.Buffer
-	if err := journalExecute(NewSet(runtime, journalRecord[worktrees.LogSteerOptions](r, "steer")), nil, &out, "checkout", "--prompt", "human"); err != nil {
+	if err := journalExecute(NewSet(runtime, SetDependencies{Steer: journalRecord[worktrees.LogSteerOptions](r, "steer")}), nil, &out, "checkout", "--prompt", "human"); err != nil {
 		t.Fatal(err)
 	}
 	o := r.options.(worktrees.LogSteerOptions)
@@ -260,7 +260,7 @@ func TestJournalStandaloneAdaptersAndInputErrorOrder(t *testing.T) {
 			var args []string
 			switch name {
 			case "set":
-				c = NewSet(runtime, journalRecord[worktrees.LogSteerOptions](r, "steer"))
+				c = NewSet(runtime, SetDependencies{Steer: journalRecord[worktrees.LogSteerOptions](r, "steer")})
 				args = []string{"--prompt", "human"}
 			case "fetch":
 				c = NewCheckpointFetch(func(ctx context.Context, o worktrees.FetchRemoteCheckpointOptions) (worktrees.RemoteCheckpointFetchResult, error) {
@@ -354,7 +354,7 @@ func TestJournalStandaloneAdaptersAndInputErrorOrder(t *testing.T) {
 			t.Fatal("empty prompt accepted")
 		}
 	}
-	if err := journalExecute(NewSet(runtime, nil), nil, io.Discard); err == nil {
+	if err := journalExecute(NewSet(runtime, SetDependencies{}), nil, io.Discard); err == nil {
 		t.Fatal("missing human prompt")
 	}
 	conflict := journalExecute(NewWorkLog(runtime, journalOps(r), admit), nil, io.Discard, "finalize", "--report", "file", "--report-stdin")

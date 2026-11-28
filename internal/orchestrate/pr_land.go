@@ -22,6 +22,7 @@ import (
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/runner"
 	"github.com/sneat-dev/wb/internal/streams"
+	"github.com/sneat-dev/wb/internal/umbrella"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -248,6 +249,9 @@ type PullRequestLandOptions struct {
 	// one. A landing with it set never arms auto-merge, never updates the
 	// branch and never calls a merge endpoint: it enqueues (pr_land_merge_queue.go).
 	mergeQueue *githubchecks.MergeQueuePolicy
+	// UmbrellaProviders overrides the umbrella provider registry; nil uses
+	// umbrella.DefaultProviders(nil).
+	UmbrellaProviders *umbrella.Registry
 }
 
 // resolveGit returns options.git, falling back to defaultGit (ports.go) when
@@ -383,6 +387,11 @@ type PullRequestLandResult struct {
 	// Promotion is what WB verified when this pull request promotes an
 	// integration branch.
 	Promotion *PromotionReceipt `json:"promotion,omitempty"`
+	// Umbrella is the canonical typed umbrella reference updated by this landing.
+	Umbrella string `json:"umbrella,omitempty"`
+	// UmbrellaCloseCommand is printed when every recorded member of Umbrella
+	// has landed or been archived; WB never closes an umbrella automatically.
+	UmbrellaCloseCommand string `json:"umbrella_close_command,omitempty"`
 }
 
 // ExitCode maps the outcome onto WB's exit contract.
@@ -977,7 +986,7 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	}
 
 	options.sourceCommits = sourceCommits
-	body := aggregatedCommitMessage(view, sourceCommits, result.ApprovedBy, options.Reason)
+	body := appendPullRequestUmbrellaTrailer(options.ProjectsRoot, options.Repository, view.Number, pullRequestHeadRepository(view), view.Head.Ref, aggregatedCommitMessage(view, sourceCommits, result.ApprovedBy, options.Reason))
 
 	// Arm auto-merge before waiting and then wait, bringing the candidate up
 	// to date whenever the target moves under it — the shared engine both
@@ -1350,12 +1359,13 @@ func finalizeLandedPullRequest(ctx context.Context, options PullRequestLandOptio
 	}
 	reportPullRequestLandProgress(options.OperationProgress, "sync_canonical", progress.Completed, result.CanonicalSync, 0, 0)
 
+	headRepo := pullRequestHeadRepository(view)
 	result.HeadRetained = integrationHeadReason(ctx, options, view, number, result.Promotion)
 	if result.HeadRetained != "" {
 		// An integration branch outlives every promotion: neither the branch
 		// nor the worktrees on it are retired.
 		result.Evidence["head_branch"] = "retained " + view.Head.Ref + ": " + result.HeadRetained
-		return finishLandedPullRequest(ctx, options, result, number)
+		return finishLandedPullRequest(ctx, options, result, headRepo, number)
 	}
 	reportPullRequestLandProgress(options.OperationProgress, "delete_remote_branch", progress.Started, view.Head.Ref, 0, 0)
 	if deleted, deleteErr := deleteRemoteBranch(ctx, options.resolveRunner(), canonical, options.Repository, view, landed, remoteHeadSHA); deleteErr != nil {
@@ -1389,11 +1399,11 @@ func finalizeLandedPullRequest(ctx context.Context, options PullRequestLandOptio
 		result.Evidence["cleanup"] = "fork source worktrees retained; target-repository worktrees do not belong to this pull request head"
 	}
 
-	return finishLandedPullRequest(ctx, options, result, number)
+	return finishLandedPullRequest(ctx, options, result, headRepo, number)
 }
 
 // finishLandedPullRequest reports what the landing closes and succeeds.
-func finishLandedPullRequest(ctx context.Context, options PullRequestLandOptions, result PullRequestLandResult, number string) (PullRequestLandResult, error) {
+func finishLandedPullRequest(ctx context.Context, options PullRequestLandOptions, result PullRequestLandResult, headRepo, number string) (PullRequestLandResult, error) {
 	// #615: report the issues this landing closes, from GitHub's own
 	// closingIssuesReferences — an informational finding, never a refusal,
 	// including when there are none.
@@ -1404,6 +1414,7 @@ func finishLandedPullRequest(ctx context.Context, options PullRequestLandOptions
 		result.Evidence["closes_error"] = closesErr.Error()
 	}
 
+	reportPullRequestLandedUmbrella(ctx, options, &result, headRepo, number)
 	result.Outcome = LandSuccess
 	return withSavings(result), nil
 }
