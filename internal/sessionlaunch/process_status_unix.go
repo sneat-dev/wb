@@ -2,6 +2,6 @@
 
 package sessionlaunch
 
-import "syscall"
+import "github.com/sneat-dev/wb/internal/procalive"
 
-func processStatus(pid int) error { return syscall.Kill(pid, 0) }
+func processStatus(pid int) error { return procalive.Probe(pid) }

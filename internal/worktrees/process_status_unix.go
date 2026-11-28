@@ -2,10 +2,7 @@
 
 package worktrees
 
-import (
-	"errors"
-	"syscall"
-)
+import "github.com/sneat-dev/wb/internal/procalive"
 
-func processStatus(pid int) error { return syscall.Kill(pid, 0) }
-func processIsDead(pid int) bool  { return errors.Is(processStatus(pid), syscall.ESRCH) }
+func processStatus(pid int) error { return procalive.Probe(pid) }
+func processIsDead(pid int) bool  { return !procalive.Alive(pid) }

@@ -4,7 +4,6 @@ package daemonruntime
 
 import (
 	"context"
-	"errors"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -13,14 +12,11 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/daemon"
+	"github.com/sneat-dev/wb/internal/procalive"
 )
 
 func (native nativeOperations) processAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
+	return procalive.Alive(pid)
 }
 
 // stopDaemonProcess asks the process to exit. On this platform a plain
