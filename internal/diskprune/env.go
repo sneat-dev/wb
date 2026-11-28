@@ -122,11 +122,15 @@ func goClean(ctx context.Context, cache string) error {
 		}
 	}
 	cmd.Env = append(cmd.Env, "GOCACHE="+cache, "GOFLAGS= ")
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if out, err := runGoClean(cmd); err != nil {
 		return fmt.Errorf("go clean -cache: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
+
+// runGoClean runs the prepared go clean command; a seam so unit tests check
+// its exact arguments and environment without starting a process.
+var runGoClean = func(cmd *exec.Cmd) ([]byte, error) { return cmd.CombinedOutput() }
 
 func measure(ctx context.Context, path string) int64 {
 	usage, err := diskusage.NewWalk().Measure(ctx, path)
