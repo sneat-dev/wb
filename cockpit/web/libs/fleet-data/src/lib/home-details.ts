@@ -5,7 +5,7 @@
 // first paint of Home do not carry them: Home imports it after it has rendered
 // (`import()`), and the list pages read the cleanup sets through it.
 
-import { CommandTarget, CopyCommand, SshRoute, cockpitExport, daemonStart, fleetStatus, remoteEnroll, remotePublish, remotePublishDryRun, remoteStatus, selfUpdate } from './command-core'
+import { CommandTarget, CopyCommand, SshRoute, cockpitExport, daemonStart, deskConnect, deskPush, deskStatus, fleetStatus, remoteEnroll, remotePublish, remotePublishDryRun, remoteStatus, selfUpdate } from './command-core'
 import type { FleetModel } from './fleet-model'
 import { buildRepositories } from './model-repositories'
 import { ageTermOf, idleOver30Days, wholeDays } from './match'
@@ -21,7 +21,7 @@ function toTime(value: string | undefined): number | undefined {
   return Number.isNaN(time) ? undefined : time
 }
 const EMPTY_CLEANUP: Cleanup = { safeCount: 0, lookCount: 0, safeIds: new Set(), lookIds: new Set(), indicative: true, reviewLink: EMPTY_LINK, bars: [], unknownAge: 0 }
-const EMPTY_HEALTH: FleetHealth = { ok: true, staleMachines: [], olderWb: [], remoteErrors: [], exportDropped: [], publishErrors: [], scanErrors: [] }
+const EMPTY_HEALTH: FleetHealth = { ok: true, staleMachines: [], olderWb: [], remoteErrors: [], exportDropped: [], publishErrors: [], deskErrors: [], scanErrors: [] }
 
 const AGE_LABELS: Record<(typeof AGE_TERMS)[number], string> = {
   '<1d': 'today',
@@ -73,6 +73,7 @@ export function buildHealth(model: FleetModel): FleetHealth {
     const remoteErrors: HealthItem[] = []
     const exportDropped: HealthItem[] = []
     const publishErrors: HealthItem[] = []
+    const deskErrors: HealthItem[] = []
     for (const view of model.machines) {
       const machine = view.machine
       const base = { machine: machine.machine, machineId: machine.id, link: machineLink('machines', machine.id) }
@@ -94,6 +95,11 @@ export function buildHealth(model: FleetModel): FleetHealth {
         const { guidance, command } = publishFix(machine.publish_error)
         publishErrors.push({ ...base, text: `${machine.machine} ${guidance}`, command: healthCommand(command, machine.machine, true), link: machineLink('machines', machine.id) })
       }
+      if (machine.desk_error !== undefined) {
+        // Like publish_error, it is on this machine's own entry, so its commands run here.
+        const { guidance, command } = deskFix(machine.desk_error)
+        deskErrors.push({ ...base, text: `${machine.machine} ${guidance}`, command: healthCommand(command, machine.machine, true), link: machineLink('machines', machine.id) })
+      }
       if (machine.remote_error !== undefined) {
         // Enrolling configures this machine, so it runs here whatever the route.
         const here = ssh !== undefined || machine.remote_error === 'http_auth_failed'
@@ -107,12 +113,13 @@ export function buildHealth(model: FleetModel): FleetHealth {
         return { repository: repository.slug, command: command.ok ? { text: command.text } : { reason: command.reason }, link: chipLink('repositories', 'errors') }
       })
     return {
-      ok: staleMachines.length + olderWb.length + remoteErrors.length + exportDropped.length + publishErrors.length + scanErrors.length === 0,
+      ok: staleMachines.length + olderWb.length + remoteErrors.length + exportDropped.length + publishErrors.length + deskErrors.length + scanErrors.length === 0,
       staleMachines,
       olderWb,
       remoteErrors,
       exportDropped,
       publishErrors,
+      deskErrors,
       scanErrors,
     }
   })
@@ -188,6 +195,29 @@ export function publishFix(code: string): { guidance: string; command: CopyComma
       return { guidance: 'publishes without its agents, metrics and hardware: the hub is older than this wb and does not take them. Update the hub', command: { ok: false, reason: 'nothing to run here: update the hub' } }
   }
   return { guidance: 'has an unknown publish problem', command: { ok: false, reason: 'unknown error: there is no command to suggest' } }
+}
+
+/**
+ * A `desk_error` in words with its fixing guidance, and the command to copy; a code this library does not know says
+ * so and has no command. The commands run on this machine, whose entry carries the code.
+ */
+export function deskFix(code: string): { guidance: string; command: CopyCommand } {
+  switch (code) {
+    case 'revoked':
+      return { guidance: 'is no longer connected to Desk: its credential was revoked. Run `wb desk connect`', command: deskConnect() }
+    case 'schema_unsupported':
+      return { guidance: 'cannot publish to Desk: Desk no longer accepts this wb. Run `wb self-update`', command: selfUpdate() }
+    case 'unreachable':
+    case 'timeout':
+      return { guidance: 'cannot reach Desk; the daemon keeps retrying. Check `wb desk status`', command: deskStatus() }
+    case 'rejected_payload':
+      return { guidance: 'had its snapshot refused by Desk. Run `wb desk push` and read its error', command: deskPush() }
+    case 'too_large':
+      return { guidance: 'has a snapshot over Desk\'s size limit, so Desk shows an older one', command: { ok: false, reason: 'nothing to run here: the snapshot is over Desk\'s limit' } }
+    case 'rate_limited':
+      return { guidance: 'is publishing to Desk too often; the daemon waits as long as Desk asks', command: { ok: false, reason: 'nothing to run here: the daemon retries on its own' } }
+  }
+  return { guidance: 'has an unknown Desk problem', command: { ok: false, reason: 'unknown error: there is no command to suggest' } }
 }
 
 /** A `remote_error` in words; a code this page does not know is an unknown error. */

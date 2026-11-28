@@ -122,7 +122,7 @@ describe('owner gating on every page, for an anonymous session', () => {
 /** Every command text that Home's Fleet health offers to copy, which the rendered page keeps behind its Copy buttons. */
 function healthCommands(store: { model: () => ReturnType<typeof import('@cockpit/fleet-data').FleetStore.prototype.model> }): string[] {
   const health = buildHealth(store.model())
-  return [...health.staleMachines, ...health.olderWb, ...health.remoteErrors, ...health.exportDropped, ...health.publishErrors].flatMap((item) => ('text' in item.command ? [item.command.text] : []))
+  return [...health.staleMachines, ...health.olderWb, ...health.remoteErrors, ...health.exportDropped, ...health.publishErrors, ...health.deskErrors].flatMap((item) => ('text' in item.command ? [item.command.text] : []))
 }
 
 describe('what a copied command carries', () => {

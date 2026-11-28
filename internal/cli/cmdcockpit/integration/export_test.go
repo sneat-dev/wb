@@ -82,7 +82,11 @@ func newFakeCockpitDaemon(t *testing.T) *fakeCockpitDaemon {
 		var payload any = fake.document
 		switch request.URL.Path {
 		case cockpit.APIPrefix + cockpitfleet.FleetRoute:
-			if scope := request.URL.Query().Get("scope"); !fake.legacy && fleetStatus == 0 && body == "" && !cutShort && (scope == cockpitfleet.ScopeOwn || scope == cockpitfleet.ScopeMachine) {
+			if scope := request.URL.Query().Get("scope"); !fake.legacy && scope == cockpitfleet.ScopeThroughput {
+				payload = struct {
+					Throughput *cockpitfleet.Throughput `json:"throughput,omitempty"`
+				}{fake.document.Throughput}
+			} else if !fake.legacy && fleetStatus == 0 && body == "" && !cutShort && (scope == cockpitfleet.ScopeOwn || scope == cockpitfleet.ScopeMachine) {
 				own, drops := scoped(fake.document, scope)
 				writer.Header().Set(cockpitfleet.ExportDropsHeader, drops.Header())
 				payload = own
@@ -780,3 +784,23 @@ func mustStatePath(t *testing.T, root string) string {
 
 // Native response-size fixture asserts the existing protocol budget.
 const cockpitDocumentLimit = cockpitfleet.MaxEnvelopeBytes - (128 << 10) - 4096
+
+func TestExportReadsTheThroughputBlockOnlyWhenAsked(t *testing.T) {
+	t.Parallel()
+	daemon := newFakeCockpitDaemon(t)
+	daemon.document.Throughput = &cockpitfleet.Throughput{WindowDays: 7, PerDay: []cockpitfleet.ThroughputDay{}, Slowest: []cockpitfleet.ThroughputTask{}}
+	deps := exportDependencies(readyRecord(daemon.listen()), true, true)
+	plain := cockpitrun.Export(context.Background(), deps, cockpitrun.ExportRequest{Root: "/projects"})
+	if plain.Failure != "" || plain.Throughput != nil || strings.Contains(string(plain.Body), "throughput") {
+		t.Fatalf("a plain export reads no throughput: %+v", plain.Failure)
+	}
+	asked := cockpitrun.Export(context.Background(), deps, cockpitrun.ExportRequest{Root: "/projects", WithThroughput: true})
+	if asked.Failure != "" || asked.Throughput == nil || asked.Throughput.WindowDays != 7 || strings.Contains(string(asked.Body), "throughput") {
+		t.Fatalf("an export asked for throughput returns it beside the envelope: %+v %+v", asked.Failure, asked.Throughput)
+	}
+	daemon.legacy = true
+	older := cockpitrun.Export(context.Background(), deps, cockpitrun.ExportRequest{Root: "/projects", WithThroughput: true})
+	if older.Failure != "" || older.Throughput == nil || older.Throughput.WindowDays != 7 {
+		t.Fatalf("a daemon that does not know the scope answers the whole document, which still carries it: %+v", older.Throughput)
+	}
+}

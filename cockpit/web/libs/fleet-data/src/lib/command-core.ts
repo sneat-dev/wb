@@ -215,6 +215,21 @@ export function remoteStatus(target: CommandTarget = {}): CopyCommand {
   return command(target, wb('remote', 'status'))
 }
 
+/** Connect this machine to Desk again, after its credential was revoked. */
+export function deskConnect(target: CommandTarget = {}): CopyCommand {
+  return command(target, wb('desk', 'connect'))
+}
+
+/** This machine's Desk connection and Desk's record of it. */
+export function deskStatus(target: CommandTarget = {}): CopyCommand {
+  return command(target, wb('desk', 'status'))
+}
+
+/** Publish this machine's state to Desk now, to read Desk's answer. */
+export function deskPush(target: CommandTarget = {}): CopyCommand {
+  return command(target, wb('desk', 'push'))
+}
+
 export function selfUpdate(target: CommandTarget = {}): CopyCommand {
   return command(target, wb('self-update'))
 }

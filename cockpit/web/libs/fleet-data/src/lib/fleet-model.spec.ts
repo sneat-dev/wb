@@ -2,7 +2,7 @@ import { versionKey } from './list-rows'
 import { buildRepositories } from './model-repositories'
 import { Agent, FleetDocument, MachineMetrics, PullRequest, Worktree, agentsTruncated, anyAgentsTruncated } from './fleet.types'
 import { CURRENT_SAMPLE_MS, Derivation, FleetModel, FleetModels, RESUME_COUNT, agentTitle, badgeLabelAtLeast, compareVersions, countWords, machineLoad, parseVersion } from './fleet-model'
-import { buildCleanup, buildHealth, buildThroughput, publishErrorWords, publishFix, remoteErrorText, remoteFix } from './home-details'
+import { buildCleanup, buildHealth, buildThroughput, deskFix, publishErrorWords, publishFix, remoteErrorText, remoteFix } from './home-details'
 import { buildAgentRows, buildMachineRows, buildRepositoryRows, buildTaskRows, buildWorktreeRows } from './list-rows'
 import { NEEDS_YOU_VISIBLE, NeedsYouItem } from './view-types'
 import { hrefOf, linkProblems } from './vocabulary'
@@ -521,7 +521,7 @@ describe('machines and Fleet health', () => {
   // cockpit-views#ac:fleet-health-only-when-not-ok (the lines the library derives)
   it('is ok for a fleet in which every machine is live and current', () => {
     const model = modelOf({ machines: [m('alpha', { wb_version: '0.176.0' }), m('beta', { route: 'cached', wb_version: '0.176.0', observed_at: ago(HOUR) })], repositories: [repository('r1', 'alpha')] })
-    expect(buildHealth(model)).toEqual({ ok: true, staleMachines: [], olderWb: [], remoteErrors: [], exportDropped: [], publishErrors: [], scanErrors: [] })
+    expect(buildHealth(model)).toEqual({ ok: true, staleMachines: [], olderWb: [], remoteErrors: [], exportDropped: [], publishErrors: [], deskErrors: [], scanErrors: [] })
   })
 
   it('shows a stale machine, an older WB and a scan error, each with a command to copy', () => {
@@ -617,6 +617,29 @@ describe('machines and Fleet health', () => {
       { reason: 'nothing to run here: update the hub' },
     ])
     expect(buildHealth(modelOf({ machines: [m('alpha')] })).publishErrors).toEqual([])
+  })
+
+  // desk-connect#req:revocation-is-respected: the Desk error shows in Fleet health with the command that fixes it.
+  it('lists this machine\'s desk_error with its fixing guidance and the command to copy, here; nothing when absent', () => {
+    const health = buildHealth(modelOf({ machines: [m('alpha', { desk_error: 'revoked' })] }))
+    expect(health.ok).toBe(false)
+    expect(health.deskErrors).toHaveLength(1)
+    expect(health.deskErrors[0].text).toBe('alpha is no longer connected to Desk: its credential was revoked. Run `wb desk connect`')
+    expect(health.deskErrors[0].command).toEqual({ text: 'wb desk connect', label: 'run here', needsEdit: false })
+    expect(health.deskErrors[0].link).toEqual({ path: '/machines', query: { machine: 'mach-alpha' } })
+    const codes = ['unreachable', 'timeout', 'revoked', 'rejected_payload', 'schema_unsupported', 'too_large', 'rate_limited'] as const
+    const commands = codes.map((code) => buildHealth(modelOf({ machines: [m('alpha', { desk_error: code })] })).deskErrors[0].command)
+    expect(commands).toEqual([
+      { text: 'wb desk status', label: 'run here', needsEdit: false },
+      { text: 'wb desk status', label: 'run here', needsEdit: false },
+      { text: 'wb desk connect', label: 'run here', needsEdit: false },
+      { text: 'wb desk push', label: 'run here', needsEdit: false },
+      { text: 'wb self-update', label: 'run here', needsEdit: false },
+      { reason: "nothing to run here: the snapshot is over Desk's limit" },
+      { reason: 'nothing to run here: the daemon retries on its own' },
+    ])
+    expect(buildHealth(modelOf({ machines: [m('alpha')] })).deskErrors).toEqual([])
+    expect(deskFix('new_code')).toEqual({ guidance: 'has an unknown Desk problem', command: { ok: false, reason: expect.stringContaining('unknown error') } })
   })
 
   it('says each publish_error with guidance and in a few words, and a code from the future as an unknown problem', () => {

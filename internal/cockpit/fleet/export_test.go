@@ -185,3 +185,14 @@ func TestExportCarriesTheAgentActivityAndRunLinkFields(t *testing.T) {
 		t.Errorf("an unknown activity = %v, want it refused", err)
 	}
 }
+
+// SentinelExport is the sentinel export for the external desk-reduction test
+// (desk_reduction_test.go), which must import internal/deskpublish and so
+// cannot live in this package; Sentinel is the marker it must never find.
+func SentinelExport(t *testing.T) Envelope {
+	t.Helper()
+	envelope, _ := exportedEnvelope(t, false)
+	return envelope
+}
+
+const Sentinel = sentinel

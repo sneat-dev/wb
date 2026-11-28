@@ -426,6 +426,9 @@ internal/discover::TestIsArchivedFalse	serial pending case-by-case review (sneat
 internal/discover::TestIsArchivedRejectsUnexpectedOutput	kept serial because a nested subtest must stay serial: #1
 internal/discover::TestIsArchivedRejectsUnexpectedOutput/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/discover::TestIsArchivedTrue	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/discover::TestListRemoteHonorsGitHubProtocol	kept serial because a nested subtest must stay serial: #1
+internal/discover::TestListRemoteHonorsGitHubProtocol/#1	serial pending case-by-case review (sneat-dev/wb#623 baseline)
+internal/discover::TestListRemoteLooksUpTheProtocolOncePerHost	calls t.Setenv, which Go's testing package forbids combined with t.Parallel (on this test or any ancestor)
 internal/discover::TestListRemoteMapsRepositoryFields	serial pending case-by-case review (sneat-dev/wb#623 baseline)
 internal/discover::TestListRemoteReportsFailures	kept serial because a nested subtest must stay serial: gh error
 internal/discover::TestListRemoteReportsFailures/gh error	serial pending case-by-case review (sneat-dev/wb#623 baseline)

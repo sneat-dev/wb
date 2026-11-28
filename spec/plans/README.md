@@ -18,6 +18,7 @@ Canonical index of all plans in this repository. Each plan is a single Markdown 
 | [cockpit-actions](cockpit-actions/README.md) | Approved | cockpit-actions | 2026-10-01 | alex |
 | [cockpit-views](cockpit-views/README.md) | Implemented | cockpit-views | 2026-10-01 | alex |
 | [coverage-to-100](coverage-to-100/README.md) | Executing | idea:quality-diff-and-thresholds | 2026-09-23 | alex |
+| [desk-connect](desk-connect/README.md) | Draft | desk-connect | 2026-11-27 | alex |
 | [fleet-metrics-web](fleet-metrics-web.md) | Implemented | fleet-quality | 2026-09-26 | alex |
 | [herdr-session-transport](herdr-session-transport.md) | Draft | herdr-session-transport | 2026-09-19 | ai |
 | [linux-container-execution-policy](linux-container-execution-policy/README.md) | Draft | none | 2026-10-28 | alex |

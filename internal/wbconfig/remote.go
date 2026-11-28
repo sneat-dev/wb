@@ -22,34 +22,57 @@ func SetRemoteHub(path, hubURL, machine, tokenFile string) error {
 // test passes its own Injector to reach the create/chmod/write/sync/close/
 // rename failure branches deterministically.
 func setRemoteHubInjected(path, hubURL, machine, tokenFile string, inj *filewrite.Injector) error {
-	var document yaml.Node
-	raw, err := os.ReadFile(path)
-	switch {
-	case err == nil:
-		if err := yaml.Unmarshal(raw, &document); err != nil {
-			return fmt.Errorf("parse config %s: %w", path, err)
-		}
-	case errors.Is(err, os.ErrNotExist):
-		document = yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{{Kind: yaml.MappingNode}}}
-	default:
-		return fmt.Errorf("read config %s: %w", path, err)
+	document, root, err := loadDocument(path)
+	if err != nil {
+		return err
 	}
-	if len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
-		return fmt.Errorf("parse config %s: top level must be a mapping", path)
-	}
-	root := document.Content[0]
-	remote := mappingValue(root, "remote")
-	if remote == nil {
-		remote = &yaml.Node{Kind: yaml.MappingNode}
-		root.Content = append(root.Content, scalar("remote"), remote)
-	} else if remote.Kind != yaml.MappingNode {
-		return fmt.Errorf("parse config %s: remote must be a mapping", path)
+	remote, err := section(path, root, "remote")
+	if err != nil {
+		return err
 	}
 	setMappingScalar(remote, "provider", "hub")
 	setMappingScalar(remote, "url", hubURL)
 	setMappingScalar(remote, "machine", machine)
 	setMappingScalar(remote, "token_file", tokenFile)
+	return writeDocument(path, document, inj)
+}
 
+// loadDocument reads the configuration as a YAML node tree, or an empty
+// mapping when the file does not exist, so a writer can change its own keys
+// and keep every other setting, comment and order.
+func loadDocument(path string) (*yaml.Node, *yaml.Node, error) {
+	var document yaml.Node
+	raw, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		if err := yaml.Unmarshal(raw, &document); err != nil {
+			return nil, nil, fmt.Errorf("parse config %s: %w", path, err)
+		}
+	case errors.Is(err, os.ErrNotExist):
+		document = yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{{Kind: yaml.MappingNode}}}
+	default:
+		return nil, nil, fmt.Errorf("read config %s: %w", path, err)
+	}
+	if len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
+		return nil, nil, fmt.Errorf("parse config %s: top level must be a mapping", path)
+	}
+	return &document, document.Content[0], nil
+}
+
+// section is the top-level mapping named key, added when absent.
+func section(path string, root *yaml.Node, key string) (*yaml.Node, error) {
+	value := mappingValue(root, key)
+	if value == nil {
+		value = &yaml.Node{Kind: yaml.MappingNode}
+		root.Content = append(root.Content, scalar(key), value)
+	} else if value.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("parse config %s: %s must be a mapping", path, key)
+	}
+	return value, nil
+}
+
+// writeDocument replaces the configuration atomically with a 0600 file.
+func writeDocument(path string, document *yaml.Node, inj *filewrite.Injector) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create config directory: %w", err)
 	}
@@ -65,7 +88,7 @@ func setRemoteHubInjected(path, hubURL, machine, tokenFile string, inj *filewrit
 	}
 	encoder := yaml.NewEncoder(filewrite.Writer(temporary, temporaryName, inj))
 	encoder.SetIndent(2)
-	if err := encoder.Encode(&document); err != nil {
+	if err := encoder.Encode(document); err != nil {
 		_ = filewrite.Close(temporary, temporaryName, inj)
 		return fmt.Errorf("encode config: %w", err)
 	}
