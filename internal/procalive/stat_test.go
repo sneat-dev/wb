@@ -16,6 +16,7 @@ func TestParseProcStatStateHandlesCommSpacesAndParens(t *testing.T) {
 		{name: "zombie single thread", contents: "42 (codex) Z 1 42 42 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0\n", wantState: 'Z', wantOK: true, wantDead: true},
 		{name: "zombie zero threads", contents: "42 (codex) Z 1 42 42 0 -1 0 0 0 0 0 0 0 0 0 20 0 0 0\n", wantState: 'Z', wantOK: true, wantDead: true},
 		{name: "zombie main thread with live workers", contents: "42 (codex) Z 1 42 42 0 -1 0 0 0 0 0 0 0 0 0 20 0 4 0\n", wantState: 'Z', wantOK: true},
+		{name: "zombie truncated inside num_threads", contents: "42 (codex) Z 1 42 42 0 -1 0 0 0 0 0 0 0 0 0 20 0 1", wantState: 'Z', wantOK: true},
 		{name: "zombie truncated record", contents: "42 (codex) Z 1 42 42 0 -1\n", wantState: 'Z', wantOK: true},
 		{name: "zombie non-numeric threads", contents: "42 (codex) Z 1 42 42 0 -1 0 0 0 0 0 0 0 0 0 20 0 x 0\n", wantState: 'Z', wantOK: true},
 		{name: "zombie negative threads", contents: "42 (codex) Z 1 42 42 0 -1 0 0 0 0 0 0 0 0 0 20 0 -1 0\n", wantState: 'Z', wantOK: true},

@@ -36,7 +36,9 @@ func parseProcStatState(contents string) (byte, bool) {
 // /proc/<pid>/stat record.
 func parseProcStatNumThreads(contents string) (int, bool) {
 	fields := procStatFields(contents)
-	if len(fields) <= procStatNumThreadsIndex {
+	// Require the following field (itrealvalue) too, so a record truncated
+	// inside num_threads (e.g. "12" cut to "1") is never accepted.
+	if len(fields) <= procStatNumThreadsIndex+1 {
 		return 0, false
 	}
 	n, err := strconv.Atoi(fields[procStatNumThreadsIndex])
