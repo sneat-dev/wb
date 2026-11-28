@@ -24,6 +24,8 @@ func categoriesByName(report Report) map[string]Category {
 // trees must be attributed to one category, not reported by each: on
 // 2026-11-27 that made the retired home look like 8.8 GB of WB state when 3.5
 // GB of it was worktrees wb clean already owns.
+//
+//nolint:paralleltest // isolate sets process env (HOME, GOCACHE, TMPDIR)
 func TestNestedWorktreeRootIsNotAlsoCountedAsLegacyHome(t *testing.T) {
 	isolate(t)
 	projects := t.TempDir()
@@ -66,6 +68,8 @@ func TestNestedWorktreeRootIsNotAlsoCountedAsLegacyHome(t *testing.T) {
 // wb disk must measure the state directory and checkout store the projects
 // root actually uses, and every canonical clone's own store at whatever depth
 // its placement puts it, not only {org}/{repo}.
+//
+//nolint:paralleltest // isolate sets process env (HOME, GOCACHE, TMPDIR) and the test replaces a package-level seam
 func TestDiskMeasuresTheCurrentLayout(t *testing.T) {
 	isolate(t)
 	projects := t.TempDir()
@@ -138,6 +142,8 @@ func TestLegacyHomeIsOmittedWhenItIsTheStateDirectory(t *testing.T) {
 // A store found twice — once by clone discovery, once by the {org}/{repo}
 // scan — is one root, and a discovered repository without a local path, or a
 // discovery failure, adds nothing rather than a wrong root.
+//
+//nolint:paralleltest // isolate sets process env (HOME, GOCACHE, TMPDIR) and the test replaces the package-level scanLocal seam
 func TestCheckoutStoresAreDeduplicatedAndToleratesDiscoveryGaps(t *testing.T) {
 	isolate(t)
 	projects := t.TempDir()
@@ -170,6 +176,8 @@ func TestCheckoutStoresAreDeduplicatedAndToleratesDiscoveryGaps(t *testing.T) {
 
 // A state directory that cannot be resolved is an error, not a silent fallback
 // to the retired home.
+//
+//nolint:paralleltest // isolate sets process env (HOME, GOCACHE, TMPDIR) and the test replaces a package-level seam
 func TestCollectReportsAnUnresolvableStateDirectory(t *testing.T) {
 	isolate(t)
 	failure := os.ErrInvalid
@@ -195,6 +203,8 @@ func TestProbeMeasuresTheFilesystem(t *testing.T) {
 // through a symlink is measured at its target; an unreadable subtree marks
 // the category partial; a root that fails to stat for another reason than
 // not existing is reported.
+//
+//nolint:paralleltest // isolate sets process env (HOME, GOCACHE, TMPDIR)
 func TestDiskResolvesEqualSymlinkedAndUnreadableRoots(t *testing.T) {
 	isolate(t)
 	shared := t.TempDir()

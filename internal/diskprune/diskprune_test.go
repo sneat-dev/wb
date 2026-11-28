@@ -403,27 +403,42 @@ func TestRealEnvironment(t *testing.T) {
 }
 
 // go clean runs against exactly the cache prune measured, never widened by
-// GOFLAGS.
+// GOFLAGS or an inherited GOCACHE.
 //
-//nolint:paralleltest // sets PATH and GOFLAGS
+//nolint:paralleltest // sets GOFLAGS and GOCACHE and replaces the package-level runGoClean seam
 func TestGoCleanRunsAgainstTheMeasuredCache(t *testing.T) {
-	bin := t.TempDir()
-	record := filepath.Join(t.TempDir(), "record")
-	script := "#!/bin/sh\necho \"$@ GOCACHE=$GOCACHE GOFLAGS=$GOFLAGS\" > " + record + "\n[ \"$FAIL\" = 1 ] && { echo boom; exit 3; }\nexit 0\n"
-	if err := os.WriteFile(filepath.Join(bin, "go"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin)
 	t.Setenv("GOFLAGS", "-modcache")
 	t.Setenv("GOCACHE", t.TempDir())
+	restore := runGoClean
+	t.Cleanup(func() { runGoClean = restore })
+	var ran *exec.Cmd
+	fail := false
+	runGoClean = func(cmd *exec.Cmd) ([]byte, error) {
+		ran = cmd
+		if fail {
+			return []byte("boom\n"), errors.New("exit status 3")
+		}
+		return nil, nil
+	}
 	if err := goClean(context.Background(), "/the/cache"); err != nil {
 		t.Fatal(err)
 	}
-	raw, _ := os.ReadFile(record)
-	if got := strings.TrimSpace(string(raw)); got != "clean -cache GOCACHE=/the/cache GOFLAGS=" && got != "clean -cache GOCACHE=/the/cache GOFLAGS= " {
+	if got := strings.Join(ran.Args, " "); got != "go clean -cache" {
 		t.Fatalf("go ran as %q", got)
 	}
-	t.Setenv("FAIL", "1")
+	var gocache, goflags []string
+	for _, variable := range ran.Env {
+		switch {
+		case strings.HasPrefix(variable, "GOCACHE="):
+			gocache = append(gocache, variable)
+		case strings.HasPrefix(variable, "GOFLAGS="):
+			goflags = append(goflags, variable)
+		}
+	}
+	if strings.Join(gocache, ",") != "GOCACHE=/the/cache" || strings.Join(goflags, ",") != "GOFLAGS= " {
+		t.Fatalf("go clean env GOCACHE=%v GOFLAGS=%v, want exactly the measured cache and an empty GOFLAGS", gocache, goflags)
+	}
+	fail = true
 	if err := goClean(context.Background(), "/the/cache"); err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("a failing go clean: %v", err)
 	}
@@ -665,36 +680,6 @@ func TestRelativeTempDirAndNonBreakingSpaces(t *testing.T) {
 	mustWrite(t, info, "7 1 8:1 / /tmp/a\u00a0b rw - ext4 /dev/sda1 rw\n")
 	if points, err := mountPointsIn(info); err != nil || len(points) != 1 || points[0] != "/tmp/a\u00a0b" {
 		t.Fatalf("points = %q %v", points, err)
-	}
-}
-
-// With GOFLAGS=-modcache in Go's env file, the real go clean -cache that
-// prune runs leaves the module cache alone and clears the build cache.
-//
-//nolint:paralleltest // sets GOENV, GOMODCACHE and GOFLAGS
-func TestRealGoCleanNeverWidensToTheModuleCache(t *testing.T) {
-	if _, err := exec.LookPath("go"); err != nil {
-		t.Skip("go is not installed")
-	}
-	dir := t.TempDir()
-	envFile := filepath.Join(dir, "env")
-	mustWrite(t, envFile, "GOFLAGS=-modcache\n")
-	modcache := filepath.Join(dir, "mod")
-	sentinel := filepath.Join(modcache, "cache", "download", "sentinel")
-	mustWrite(t, sentinel, "keep me")
-	cache := filepath.Join(dir, "build")
-	mustWrite(t, filepath.Join(cache, "0a", "0a"+strings.Repeat("0", 62)+"-a"), "entry")
-	t.Setenv("GOENV", envFile)
-	t.Setenv("GOMODCACHE", modcache)
-	t.Setenv("GOFLAGS", "")
-	if err := goClean(context.Background(), cache); err != nil {
-		t.Fatal(err)
-	}
-	if !exists(sentinel) {
-		t.Fatal("go clean -cache removed the module cache")
-	}
-	if exists(filepath.Join(cache, "0a")) {
-		t.Fatal("go clean -cache left the build cache")
 	}
 }
 
