@@ -194,13 +194,67 @@ func TestReduceKeepsTheDefaultBranchAndHashesCanonically(t *testing.T) {
 	if agent["task"] != nil || agent["worktrees"] != nil || agent["task_key"] != key.Of("task-a") {
 		t.Fatalf("agent = %v", agent)
 	}
-	full, err := Reduce(publishableEnvelope(), nil, desk.LevelFull, TaskKey{})
-	if err != nil || full.TaskKeyID != "" || !strings.Contains(string(full.Envelope), `"task":"task-a"`) {
-		t.Fatalf("full = %s, %v", full.Envelope, err)
+	full, err := Reduce(publishableEnvelope(), nil, desk.LevelFull, key)
+	if err != nil || full.TaskKeyID != key.ID() || !strings.Contains(string(full.Envelope), `"task":"task-a"`) {
+		t.Fatalf("full = %+v, %v", full, err)
 	}
-	request := first.Request(time.Date(2026, 11, 27, 0, 0, 0, 0, time.UTC))
-	if request.Validate() != nil || request.Hash != first.Hash || string(request.Envelope) != string(first.Envelope) {
+	if err := desk.CheckLevel(full.RepositoriesEnvelope, desk.LevelRepositories); err != nil {
+		t.Fatalf("full repositories copy failed CheckLevel: %v", err)
+	}
+	if string(full.RepositoriesEnvelope) != string(first.Envelope) {
+		t.Fatalf("full repositories copy differs from repositories-detail snapshot:\nfull: %s\nrepo: %s", full.RepositoriesEnvelope, first.Envelope)
+	}
+	now := time.Date(2026, 11, 27, 0, 0, 0, 0, time.UTC)
+	fullRequest := full.Request(now)
+	if err := fullRequest.Validate(); err != nil || fullRequest.TaskKeyID != key.ID() || string(fullRequest.RepositoriesEnvelope) != string(first.Envelope) {
+		t.Fatalf("full request = %+v, err = %v", fullRequest, err)
+	}
+	request := first.Request(now)
+	if request.Validate() != nil || request.Hash != first.Hash || string(request.Envelope) != string(first.Envelope) || len(request.RepositoriesEnvelope) != 0 {
 		t.Fatalf("request = %+v", request)
+	}
+}
+
+func TestReduceFullCopiesThroughputAndMatchesRepositoriesTaskKeys(t *testing.T) {
+	t.Parallel()
+	key := fixedKey(t, "k")
+	throughput := &fleet.Throughput{WindowDays: 7, Slowest: []fleet.ThroughputTask{
+		{Task: "task-a", DurationSeconds: 90, LandedAt: time.Date(2026, 11, 26, 0, 0, 0, 0, time.UTC)},
+	}}
+	repos, err := Reduce(publishableEnvelope(), throughput, desk.LevelRepositories, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	full, err := Reduce(publishableEnvelope(), throughput, desk.LevelFull, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := desk.CheckLevel(full.RepositoriesEnvelope, desk.LevelRepositories); err != nil {
+		t.Fatalf("CheckLevel(full.RepositoriesEnvelope, repositories) = %v", err)
+	}
+	if string(full.RepositoriesEnvelope) != string(repos.Envelope) {
+		t.Fatalf("repositories copy mismatch:\ngot:  %s\nwant: %s", full.RepositoriesEnvelope, repos.Envelope)
+	}
+	var decoded struct {
+		Fleet struct {
+			Worktrees  []map[string]any `json:"worktrees"`
+			Agents     []map[string]any `json:"agents"`
+			Throughput struct {
+				Slowest []map[string]any `json:"slowest"`
+			} `json:"throughput"`
+		} `json:"fleet"`
+	}
+	if err := json.Unmarshal(full.RepositoriesEnvelope, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	wantTaskKey := key.Of("task-a")
+	if decoded.Fleet.Worktrees[1]["task_key"] != wantTaskKey ||
+		decoded.Fleet.Agents[0]["task_key"] != wantTaskKey ||
+		decoded.Fleet.Throughput.Slowest[0]["task_key"] != wantTaskKey {
+		t.Fatalf("task keys in full repositories copy = %+v, want %q", decoded.Fleet, wantTaskKey)
+	}
+	if err := full.Request(time.Date(2026, 11, 27, 0, 0, 0, 0, time.UTC)).Validate(); err != nil {
+		t.Fatalf("full request invalid: %v", err)
 	}
 }
 
@@ -216,8 +270,10 @@ func TestReduceRefusesWhatMustNotBePublished(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	if _, err := Reduce(publishableEnvelope(), nil, desk.LevelRepositories, TaskKey{}); !errors.Is(err, ErrInvalidTaskKey) {
-		t.Errorf("repositories detail without a key = %v", err)
+	for _, level := range []desk.Level{desk.LevelRepositories, desk.LevelFull} {
+		if _, err := Reduce(publishableEnvelope(), nil, level, TaskKey{}); !errors.Is(err, ErrInvalidTaskKey) {
+			t.Errorf("%s detail without a key = %v", level, err)
+		}
 	}
 	if _, err := Reduce(publishableEnvelope(), nil, "summary", key); err == nil {
 		t.Error("summary is a share level, never a machine detail level")
@@ -225,5 +281,27 @@ func TestReduceRefusesWhatMustNotBePublished(t *testing.T) {
 	unencodable := &fleet.Throughput{Slowest: []fleet.ThroughputTask{{Task: "t", LandedAt: time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)}}}
 	if _, err := Reduce(publishableEnvelope(), unencodable, desk.LevelRepositories, key); err == nil {
 		t.Error("an unencodable snapshot must fail, not publish")
+	}
+}
+
+func TestReduceFullRepublishesWhenOnlyTheTaskKeyChanges(t *testing.T) {
+	t.Parallel()
+	first, err := Reduce(publishableEnvelope(), nil, desk.LevelFull, fixedKey(t, "a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := Reduce(publishableEnvelope(), nil, desk.LevelFull, fixedKey(t, "a"))
+	if err != nil || again.Hash != first.Hash {
+		t.Fatalf("same fleet and key: hash %q, want %q (%v)", again.Hash, first.Hash, err)
+	}
+	rekeyed, err := Reduce(publishableEnvelope(), nil, desk.LevelFull, fixedKey(t, "b"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(rekeyed.Envelope) != string(first.Envelope) {
+		t.Fatal("a new task key changed the full envelope itself")
+	}
+	if rekeyed.Hash == first.Hash {
+		t.Fatal("a new task key kept the hash, so the publisher would skip the new repositories copy")
 	}
 }

@@ -55,8 +55,8 @@ func TestTheDaemonPublishesToDeskOnlyWhenConnected(t *testing.T) {
 	if got := deskPublisher(full, "1", random(), logf, newDeskClient); got == nil {
 		t.Fatal("a connected machine at full detail publishes")
 	}
-	if _, err := os.Stat(deskrun.TaskKeyPath(full)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("full detail needs no task key and creates none")
+	if info, err := os.Stat(deskrun.TaskKeyPath(full)); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("full detail loads or creates a private task key: %v", err)
 	}
 	repositories := deskConfig(t, "repositories")
 	if got := deskPublisher(repositories, "1", random(), logf, newDeskClient); got == nil {

@@ -170,8 +170,10 @@ one.
 #### REQ: heartbeat
 
 While connected, the daemon MUST send `POST <desk.url>/v0/desk/machines/self/heartbeat`
-every `desk.heartbeat.interval` (default 5 minutes, floor 1 minute). The body is the
-observation time, the WB version, and the hash of the last accepted snapshot, nothing else.
+every `desk.heartbeat.interval` (default 5 minutes, floor 1 minute). The body carries the
+observation time, the WB version, and the hash of the last accepted snapshot, and optionally
+the daemon's heartbeat interval (`interval_seconds`) and last recorded `desk_error` code
+(`last_error`, cleared after a success), nothing else.
 Desk derives online, stale, and offline from heartbeats, independently of whether the fleet
 changed. Heartbeats start when the daemon starts, not after its first full pass, so a machine
 whose passes do not complete is still seen as running.
@@ -237,7 +239,9 @@ changed with `wb desk connect --detail <level>` on a connected machine.
   id keyed under the task key, with its kind prefix kept.
 - **`full`** sends the export envelope as the hub export route builds it, which is at most
   Cockpit's anonymous metadata set
-  ([cockpit](../cockpit/README.md)#req:anonymous-local-reads-metadata-only).
+  ([cockpit](../cockpit/README.md)#req:anonymous-local-reads-metadata-only). At `full` the
+  machine also sends its own `repositories` reduction (`repositories_envelope`) alongside it,
+  so Desk can serve a share below `full` without reducing anything itself.
 
 At both levels, the daemon adds the machine's `throughput` block back. The export itself
 leaves it out, and it is in the metadata set.
@@ -283,7 +287,8 @@ recover common task names by guessing.
   fix.
 - Task keys are per person. Two people's keys differ, so a space never correlates tasks across
   people at `repositories` detail.
-- At `full` detail the task name is sent and no `task_key` is needed.
+- At `full` detail the full envelope carries task names directly, while the accompanying
+  `repositories` reduction uses the same task key and `task_key_id`.
 
 ### Configuration and coexistence
 

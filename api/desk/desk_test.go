@@ -211,20 +211,89 @@ func TestSnapshotRequestTiesTaskKeyToDetailLevel(t *testing.T) {
 		change(&request)
 		return request
 	}
+	fullWithRepos := func(change func(*SnapshotRequest)) SnapshotRequest {
+		request := SnapshotRequest{
+			SchemaVersion:        SchemaVersion,
+			Detail:               LevelFull,
+			TaskKeyID:            "0123456789abcdef",
+			ObservedAt:           testTime,
+			Hash:                 testHash,
+			Envelope:             json.RawMessage(`{"fleet":{"agents":[{"task":"secret-task"}]}}`),
+			RepositoriesEnvelope: json.RawMessage(reducedEnvelope),
+		}
+		change(&request)
+		return request
+	}
 	runValidation(t, []validationCase{
 		{"repositories with key", snapshot(), true},
-		{"full without key", with(func(r *SnapshotRequest) { r.Detail, r.TaskKeyID = LevelFull, "" }), true},
+		{"full without key or repositories envelope", with(func(r *SnapshotRequest) { r.Detail, r.TaskKeyID = LevelFull, "" }), true},
+		{"full with repositories envelope and key", fullWithRepos(func(*SnapshotRequest) {}), true},
 		{"other schema", with(func(r *SnapshotRequest) { r.SchemaVersion = 0 }), false},
 		{"bad detail", with(func(r *SnapshotRequest) { r.Detail = "summary" }), false},
+		{"repositories with repositories envelope", with(func(r *SnapshotRequest) { r.RepositoriesEnvelope = json.RawMessage(`{}`) }), false},
 		{"repositories without key", with(func(r *SnapshotRequest) { r.TaskKeyID = "" }), false},
-		{"full with key", with(func(r *SnapshotRequest) { r.Detail = LevelFull }), false},
+		{"full with key but no repositories envelope", with(func(r *SnapshotRequest) { r.Detail = LevelFull }), false},
+		{"full with repositories envelope without key", fullWithRepos(func(r *SnapshotRequest) { r.TaskKeyID = "" }), false},
+		{"full with repositories envelope and malformed key", fullWithRepos(func(r *SnapshotRequest) { r.TaskKeyID = "secret-key" }), false},
 		{"malformed key id", with(func(r *SnapshotRequest) { r.TaskKeyID = "XYZ" }), false},
 		{"no observation time", with(func(r *SnapshotRequest) { r.ObservedAt = time.Time{} }), false},
 		{"bad hash", with(func(r *SnapshotRequest) { r.Hash = "sha256:xyz" }), false},
 		{"empty envelope", with(func(r *SnapshotRequest) { r.Envelope = nil }), false},
 		{"envelope not an object", with(func(r *SnapshotRequest) { r.Envelope = json.RawMessage(`[1]`) }), false},
 		{"envelope not json", with(func(r *SnapshotRequest) { r.Envelope = json.RawMessage(`{`) }), false},
+		{"repositories envelope not an object", fullWithRepos(func(r *SnapshotRequest) { r.RepositoriesEnvelope = json.RawMessage(`[1]`) }), false},
+		{"repositories envelope null", fullWithRepos(func(r *SnapshotRequest) { r.RepositoriesEnvelope = json.RawMessage(`null`) }), false},
+		{"repositories envelope not json", fullWithRepos(func(r *SnapshotRequest) { r.RepositoriesEnvelope = json.RawMessage(`{`) }), false},
+		{"repositories envelope carries withheld field", fullWithRepos(func(r *SnapshotRequest) {
+			r.RepositoriesEnvelope = json.RawMessage(`{"fleet":{"agents":[{"task":"secret-task"}]}}`)
+		}), false},
 	})
+}
+
+func TestValidationErrorsNeverLeakFieldValues(t *testing.T) {
+	t.Parallel()
+	const sentinel = "secret-field-value"
+	cases := map[string]Validator{
+		"malformed task key": SnapshotRequest{
+			SchemaVersion: SchemaVersion, Detail: LevelRepositories, TaskKeyID: sentinel,
+			ObservedAt: testTime, Hash: testHash, Envelope: json.RawMessage(`{}`),
+		},
+		"repositories envelope at repositories detail": SnapshotRequest{
+			SchemaVersion: SchemaVersion, Detail: LevelRepositories, TaskKeyID: "0123456789abcdef",
+			ObservedAt: testTime, Hash: testHash, Envelope: json.RawMessage(`{}`),
+			RepositoriesEnvelope: json.RawMessage(`{"note":"` + sentinel + `"}`),
+		},
+		"non-object repositories envelope": SnapshotRequest{
+			SchemaVersion: SchemaVersion, Detail: LevelFull, TaskKeyID: "0123456789abcdef",
+			ObservedAt: testTime, Hash: testHash, Envelope: json.RawMessage(`{}`),
+			RepositoriesEnvelope: json.RawMessage(`"` + sentinel + `"`),
+		},
+		"withheld value in repositories envelope": SnapshotRequest{
+			SchemaVersion: SchemaVersion, Detail: LevelFull, TaskKeyID: "0123456789abcdef",
+			ObservedAt: testTime, Hash: testHash, Envelope: json.RawMessage(`{}`),
+			RepositoriesEnvelope: json.RawMessage(`{"fleet":{"worktrees":[{"task":"` + sentinel + `"}]}}`),
+		},
+		"invalid heartbeat last_error": HeartbeatRequest{
+			SchemaVersion: SchemaVersion, ObservedAt: testTime, WBVersion: "0.211.0",
+			LastError: ErrorCode(sentinel),
+		},
+		"out of range heartbeat interval": HeartbeatRequest{
+			SchemaVersion: SchemaVersion, ObservedAt: testTime, WBVersion: "0.211.0",
+			IntervalSeconds: 999999,
+		},
+	}
+	for name, value := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			err := value.Validate()
+			if !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Validate() = %v, want ErrInvalid", err)
+			}
+			if strings.Contains(err.Error(), sentinel) || strings.Contains(err.Error(), "999999") {
+				t.Fatalf("Validate() leaked value in error: %v", err)
+			}
+		})
+	}
 }
 
 func TestReceiptsHeartbeatsAndSchemaAnswers(t *testing.T) {
@@ -239,6 +308,12 @@ func TestReceiptsHeartbeatsAndSchemaAnswers(t *testing.T) {
 		{"receipt without time", SnapshotReceipt{Hash: testHash}, false},
 		{"heartbeat", heartbeat(), true},
 		{"first heartbeat", hb(func(r *HeartbeatRequest) { r.LastSnapshotHash = "" }), true},
+		{"heartbeat minimum interval", hb(func(r *HeartbeatRequest) { r.IntervalSeconds = 1 }), true},
+		{"heartbeat maximum interval", hb(func(r *HeartbeatRequest) { r.IntervalSeconds = MaxHeartbeatIntervalSeconds }), true},
+		{"heartbeat negative interval", hb(func(r *HeartbeatRequest) { r.IntervalSeconds = -1 }), false},
+		{"heartbeat over-max interval", hb(func(r *HeartbeatRequest) { r.IntervalSeconds = MaxHeartbeatIntervalSeconds + 1 }), false},
+		{"heartbeat with valid last error", hb(func(r *HeartbeatRequest) { r.LastError = ErrorTimeout }), true},
+		{"heartbeat with invalid last error", hb(func(r *HeartbeatRequest) { r.LastError = "free text" }), false},
 		{"heartbeat other schema", hb(func(r *HeartbeatRequest) { r.SchemaVersion = 9 }), false},
 		{"heartbeat without time", hb(func(r *HeartbeatRequest) { r.ObservedAt = time.Time{} }), false},
 		{"heartbeat without version", hb(func(r *HeartbeatRequest) { r.WBVersion = "" }), false},
@@ -302,5 +377,47 @@ func TestEncodingRoundTripsKeepEveryField(t *testing.T) {
 	body, _ := json.Marshal(ConnectTokenResponse{Error: GrantSlowDown})
 	if string(body) != `{"error":"slow_down"}` {
 		t.Fatalf("a grant error encodes alone, got %s", body)
+	}
+	fullWithRepos := SnapshotRequest{
+		SchemaVersion:        SchemaVersion,
+		Detail:               LevelFull,
+		TaskKeyID:            "0123456789abcdef",
+		ObservedAt:           testTime,
+		Hash:                 testHash,
+		Envelope:             json.RawMessage(`{"schema_version":1}`),
+		RepositoriesEnvelope: json.RawMessage(`{"schema_version":1}`),
+	}
+	encodedSnapshot, err := json.Marshal(fullWithRepos)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decodedSnapshot SnapshotRequest
+	if err := Decode(strings.NewReader(string(encodedSnapshot)), MaxResponseBytes, &decodedSnapshot); err != nil {
+		t.Fatalf("Decode(full snapshot with repositories_envelope) = %v", err)
+	}
+	if string(decodedSnapshot.RepositoriesEnvelope) != `{"schema_version":1}` {
+		t.Fatalf("decoded repositories_envelope = %s", decodedSnapshot.RepositoriesEnvelope)
+	}
+	richHeartbeat := heartbeat()
+	richHeartbeat.IntervalSeconds = 300
+	richHeartbeat.LastError = ErrorTimeout
+	encodedBeat, err := json.Marshal(richHeartbeat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decodedBeat HeartbeatRequest
+	if err := Decode(strings.NewReader(string(encodedBeat)), MaxResponseBytes, &decodedBeat); err != nil {
+		t.Fatalf("Decode(heartbeat with interval and last_error) = %v", err)
+	}
+	if decodedBeat.IntervalSeconds != 300 || decodedBeat.LastError != ErrorTimeout {
+		t.Fatalf("decoded heartbeat = %+v", decodedBeat)
+	}
+	plainBeat, _ := json.Marshal(heartbeat())
+	if strings.Contains(string(plainBeat), "interval_seconds") || strings.Contains(string(plainBeat), "last_error") {
+		t.Fatalf("empty optional heartbeat fields must be omitted: %s", plainBeat)
+	}
+	plainSnapshot, _ := json.Marshal(snapshot())
+	if strings.Contains(string(plainSnapshot), "repositories_envelope") {
+		t.Fatalf("empty repositories_envelope must be omitted: %s", plainSnapshot)
 	}
 }

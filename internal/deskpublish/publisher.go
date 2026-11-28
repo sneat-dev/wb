@@ -83,10 +83,15 @@ func wait(ctx context.Context, d time.Duration) error {
 func (p *Publisher) Diagnostic() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	return string(p.lastError())
+}
+
+// lastError is the current failure code; the caller holds mu.
+func (p *Publisher) lastError() desk.ErrorCode {
 	if p.publishErr != "" {
-		return string(p.publishErr)
+		return p.publishErr
 	}
-	return string(p.beatErr)
+	return p.beatErr
 }
 
 // code is err as a desk.ErrorCode; a failure that is not Desk's (a missing or
@@ -168,8 +173,10 @@ func (p *Publisher) beat(ctx context.Context) bool {
 		return false
 	}
 	now := p.options.Now()
+	intervalSeconds := min(max(0, int(p.options.HeartbeatInterval/time.Second)), desk.MaxHeartbeatIntervalSeconds)
 	request := desk.HeartbeatRequest{SchemaVersion: desk.SchemaVersion, ObservedAt: now,
-		WBVersion: p.options.WBVersion, LastSnapshotHash: p.lastHash}
+		WBVersion: p.options.WBVersion, LastSnapshotHash: p.lastHash,
+		IntervalSeconds: intervalSeconds, LastError: p.lastError()}
 	p.mu.Unlock()
 	err := p.options.Client.Heartbeat(ctx, request)
 	p.mu.Lock()

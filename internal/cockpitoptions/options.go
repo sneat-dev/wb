@@ -12,7 +12,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/sneat-dev/wb/api/desk"
 	"github.com/sneat-dev/wb/internal/buildinfo"
 	cockpitfleet "github.com/sneat-dev/wb/internal/cockpit/fleet"
 	"github.com/sneat-dev/wb/internal/cockpit/machinemetrics"
@@ -275,12 +274,10 @@ func deskPublisher(configPath, version string, random io.Reader, logf func(strin
 		logf("desk: not publishing: %v", err)
 		return nil
 	}
-	var key deskpublish.TaskKey
-	if config.Detail == desk.LevelRepositories {
-		if key, _, err = deskpublish.LoadOrCreateTaskKey(deskrun.TaskKeyPath(configPath), random); err != nil {
-			logf("desk: not publishing: %v", err)
-			return nil
-		}
+	key, _, err := deskpublish.LoadOrCreateTaskKey(deskrun.TaskKeyPath(configPath), random)
+	if err != nil {
+		logf("desk: not publishing: %v", err)
+		return nil
 	}
 	logf("desk: publishing to %s at %s detail", config.URL, config.Detail)
 	return deskpublish.NewPublisher(deskpublish.PublisherOptions{Client: client, Detail: config.Detail, Key: key,
