@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -20,17 +19,11 @@ import (
 func TestRetireAcceptsInvokingSessionWhenRecordedOwnerIsZombie(t *testing.T) {
 	worktree := newJournalWorktree(t)
 
-	// Start a real subprocess owned by this user so kill(pid, 0) succeeds, then
-	// simulate it turning into a zombie via the injected /proc/<pid>/stat reader.
-	cmd := exec.Command("sleep", "60")
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start owner subprocess: %v", err)
-	}
-	ownerPID := cmd.Process.Pid
-	t.Cleanup(func() {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-	})
+	// Use the test runner's parent, a real live process owned by this user, as
+	// the recorded owner so kill(pid, 0) succeeds without starting a process,
+	// then simulate it turning into a zombie via the injected
+	// /proc/<pid>/stat reader.
+	ownerPID := os.Getppid()
 
 	if _, err := recordOwner(worktree, "retire-zombie", "codex/owner", "test-model", ownerPID); err != nil {
 		t.Fatalf("recordOwner: %v", err)

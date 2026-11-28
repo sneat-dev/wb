@@ -5,7 +5,6 @@ package session
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -16,18 +15,11 @@ import (
 func TestPruneRemovesZombieOwnedSessionRecord(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "sessions")
 
-	// Start a real subprocess so kill(pid, 0) succeeds and Register records a
-	// genuine ProcessStartedAt, then simulate that process becoming a zombie
-	// via the injected /proc/<pid>/stat reader.
-	cmd := exec.Command("sleep", "60")
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start subprocess: %v", err)
-	}
-	zombiePID := cmd.Process.Pid
-	t.Cleanup(func() {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-	})
+	// Use the test runner's parent, a real live process, so kill(pid, 0)
+	// succeeds and Register records a genuine ProcessStartedAt without starting
+	// a process, then simulate it becoming a zombie via the injected
+	// /proc/<pid>/stat reader.
+	zombiePID := os.Getppid()
 
 	if _, err := Register(dir, Record{PID: os.Getpid(), Runtime: "claude-code"}); err != nil {
 		t.Fatalf("register live session: %v", err)

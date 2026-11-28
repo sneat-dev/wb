@@ -100,7 +100,10 @@ func TestAliveReportsRealZombieProcessAsDead(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("zombie /proc/<pid>/stat detection is Linux-specific")
 	}
-	cmd := exec.Command("/bin/sh", "-c", "exit 0")
+	// Re-run this test binary as a child that exits at once (helper-process
+	// pattern); the parent deliberately does not Wait until after asserting.
+	cmd := exec.Command(os.Args[0], "-test.run=^TestZombieChildHelper$")
+	cmd.Env = append(os.Environ(), zombieChildHelperEnv+"=1")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start child process: %v", err)
 	}
@@ -142,4 +145,17 @@ func TestAliveReportsRealZombieProcessAsDead(t *testing.T) {
 	if err := cmd.Wait(); err != nil {
 		t.Fatalf("reap zombie child %d: %v", pid, err)
 	}
+}
+
+const zombieChildHelperEnv = "WB_PROCALIVE_ZOMBIE_CHILD_HELPER"
+
+// TestZombieChildHelper is the child half of
+// TestAliveReportsRealZombieProcessAsDead: when re-run with
+// zombieChildHelperEnv set it exits immediately; otherwise it is a no-op.
+func TestZombieChildHelper(t *testing.T) {
+	t.Parallel()
+	if os.Getenv(zombieChildHelperEnv) != "1" {
+		return
+	}
+	os.Exit(0)
 }
